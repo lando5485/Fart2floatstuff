@@ -1,0 +1,7 @@
+<roblox version="4">
+	<Item class="Model" referent="RBXFarmerPlaceholder">
+		<Properties>
+			<string name="Name">FarmerNPC</string>
+		</Properties>
+	</Item>
+</roblox>

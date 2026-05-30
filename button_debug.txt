@@ -1,0 +1,66 @@
+
+	if hrp.Position.Y >= cap then
+		gasMeter = 0
+		updateMeter()
+		stopFlying()
+		return
+	end
+
+	bodyVel.Velocity = Vector3.new(0, speed, 0)
+
+	if hrp.Position.Y > _G.peakHeight then _G.peakHeight = hrp.Position.Y end
+
+	flightStatsFrame.Visible = true
+	fsHeight.Text = "\xF0\x9F\x93\x8F Height: " .. math.floor(hrp.Position.Y)
+	fsRings.Text = "\xF0\x9F\x92\x8D Rings: " .. _G.ringsCollectedFlight .. " (x" .. string.format("%.1f", ringMultiplier) .. ")"
+	fsAir.Text = "\xe2\x8f\xb1 Air: " .. math.floor(tick() - flightStartTime) .. "s"
+
+	coinTimer = coinTimer + dt
+	if coinTimer >= 0.2 then
+		coinTimer = 0
+		local height = math.max(0, hrp.Position.Y - 5)
+		local coins = math.floor(height / 8) * 0.3 * _G.serverEventCoinMult
+		if coins > 0 then pcall(function() CoinEvent:FireServer(coins) end) end
+	end
+
+	-- ring collection
+	for i = #_G.activeRings, 1, -1 do
+		local r = _G.activeRings[i]
+		if r.part and r.part.Parent then
+			if (hrp.Position - r.part.Position).Magnitude < 16 then
+				local rpos, rcol, ridx, rdir = r.pos, r.color, r.idx, r.dir
+				r.part:Destroy(); table.remove(_G.activeRings, i)
+				ringStreak = ringStreak + 1; ringMultiplier = 1 + ringStreak * 0.2
+				local bonus = math.floor(15 * ringMultiplier * _G.serverEventRingMult)
+				_G.ringsCollectedFlight = _G.ringsCollectedFlight + 1
+				if CoinEvent then pcall(function() CoinEvent:FireServer(bonus) end) end
+				showFloatingText("+" .. bonus .. " \xF0\x9F\xAA\x99 x" .. string.format("%.1f", ringMultiplier), Color3.fromRGB(255, 215, 0))
+				task.delay(30, function() if _G.spawnRing then _G.spawnRing(rpos, rcol, ridx, rdir) end end)
+			end
+		else table.remove(_G.activeRings, i) end
+	end
+
+	-- gas pocket collection
+	for i = #_G.activeGasPockets, 1, -1 do
+		local p = _G.activeGasPockets[i]
+		if p and p.Parent then
+			if (hrp.Position - p.Position).Magnitude < 20 then
+				local ppos = p.Position; p:Destroy(); table.remove(_G.activeGasPockets, i)
+				gasMeter = math.min(maxGasMeter, gasMeter + 30); updateMeter()
+				showFloatingText("+\xF0\x9F\x92\xA8 GAS BOOST!", Color3.fromRGB(0, 255, 100))
+				effectFlashFrame.BackgroundColor3 = Color3.fromRGB(0, 255, 100); effectFlashFrame.BackgroundTransparency = 0.7
+				TweenService:Create(effectFlashFrame, TweenInfo.new(0.15), {BackgroundTransparency = 0.97}):Play()
+				task.delay(45, function() if _G.spawnGasPocket then _G.spawnGasPocket(ppos) end end)
+			end
+		else table.remove(_G.activeGasPockets, i) end
+	end
+
+	cloudTimer = cloudTimer + dt
+	if cloudTimer >= 0.1 then cloudTimer = 0; pcall(spawnCloud) end
+end)
+
+-- ===== INPUT =====
+fartBtn.MouseButton1Down:Connect(function()
+	if hasBoughtFood and gasMeter > 0 then
+		startFlying()
+	end

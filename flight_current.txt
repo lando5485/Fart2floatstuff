@@ -1,0 +1,181 @@
+				task.wait(0.2)
+				local pct = stomachMax > 0 and (currentPower / stomachMax) or 0
+				gasMeter = maxGasMeter * pct
+				maxAchievedPower = currentPower
+				updateMeter()
+				updateFartBtn()
+				if updateStomachDisplay then updateStomachDisplay() end
+			end
+		end
+		lastMaterial = hum.FloorMaterial
+	end)
+end
+
+-- ===== FLIGHT =====
+local bodyVel = nil
+local cloudTimer = 0
+local coinTimer = 0
+
+local function stopFlying()
+	isFlying = false
+	_G.isFlying = false
+	local char = player.Character
+	if char then
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		local hum = char:FindFirstChild("Humanoid")
+		if bodyVel then bodyVel:Destroy() end
+		if hrp then
+			local old = hrp:FindFirstChild("FartVelocity")
+			if old then old:Destroy() end
+		end
+		if hum then hum.PlatformStand = false end
+	end
+	bodyVel = nil
+	_G.gui.flightStatsFrame.Visible = false; _G.gui.windIndicatorFrame.Visible = false
+	if _G.checkMilestones then _G.checkMilestones() end
+	_G.peakHeight = 0; _G.ringsCollectedFlight = 0
+	updateFartBtn()
+end
+_G.stopFlying = stopFlying
+
+local function startFlying()
+	if isFlying then return end
+	if gasMeter <= 0 then return end
+	if not hasBoughtFood then return end
+	local char = player.Character
+	if not char then return end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	local hum = char:FindFirstChild("Humanoid")
+
+	isFlying = true
+	_G.isFlying = true
+	flightStartY = hrp.Position.Y; flightStartTime = tick()
+	_G.peakHeight = hrp.Position.Y; _G.ringsCollectedFlight = 0
+
+	if bodyVel then bodyVel:Destroy() end
+	local old = hrp:FindFirstChild("FartVelocity")
+	if old then old:Destroy() end
+
+	if hum then hum.PlatformStand = true end
+
+	bodyVel = Instance.new("BodyVelocity")
+	bodyVel.Name = "FartVelocity"
+	bodyVel.MaxForce = Vector3.new(0, 1e6, 0)
+	bodyVel.Velocity = Vector3.new(0, 60, 0)
+	bodyVel.Parent = hrp
+
+	updateFartBtn()
+end
+
+player.CharacterAdded:Connect(function(char)
+	isFlying = false; _G.isFlying = false
+	if bodyVel then bodyVel:Destroy(); bodyVel = nil end
+	gasMeter = 0; currentPower = 0; hasBoughtFood = false; _G.hasLanded = true
+	updateMeter(); updateFartBtn()
+	onLand(char)
+end)
+onLand(character)
+
+local function getFlightSpeed(power)
+	if power < 50 then return 25
+	elseif power < 150 then return 35
+	elseif power < 300 then return 47
+	elseif power < 600 then return 60
+	elseif power < 1000 then return 75
+	elseif power < 1800 then return 92
+	elseif power < 3000 then return 112
+	elseif power < 5000 then return 134
+	elseif power < 8000 then return 158
+	elseif power < 12000 then return 185
+	else return 215 end
+end
+
+local function getMaxHeight()
+	return 50 + (currentPower * 14)
+end
+
+-- ===== HEARTBEAT =====
+RunService.Heartbeat:Connect(function(dt)
+	if twoXBoostActive and os.time() > twoXBoostEndTime then twoXBoostActive = false end
+	if not isFlying then return end
+	local char = player.Character
+	if not char then stopFlying(); return end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not hrp then stopFlying(); return end
+
+	local power = 0
+	pcall(function()
+		if leaderstats then
+			local t = leaderstats:FindFirstChild("TotalFartPower"); if t then power = t.Value end
+		end
+	end)
+
+	local speed = getFlightSpeed(power)
+	speed = speed * _G.serverEventSpeedMult
+	if twoXBoostActive then speed = speed * 2 end
+
+	if not bodyVel or not bodyVel.Parent then
+		bodyVel = Instance.new("BodyVelocity")
+		bodyVel.Name = "FartVelocity"
+		bodyVel.MaxForce = Vector3.new(0, 1e6, 0)
+		bodyVel.Parent = hrp
+	end
+
+	-- cap based on currentPower at start of this frame
+	local cap = getMaxHeight() * _G.serverEventHeightMult
+
+	local camCF = workspace.CurrentCamera.CFrame
+	local fwd = Vector3.new(camCF.LookVector.X, 0, camCF.LookVector.Z)
+	if fwd.Magnitude > 0 then fwd = fwd.Unit end
+	local rgt = Vector3.new(camCF.RightVector.X, 0, camCF.RightVector.Z)
+	if rgt.Magnitude > 0 then rgt = rgt.Unit end
+	local move = Vector3.new(0, 0, 0)
+	if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + fwd end
+	if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - fwd end
+	if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - rgt end
+	if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + rgt end
+	if move.Magnitude > 0 then move = move.Unit end
+	bodyVel.MaxForce = Vector3.new(50000, 1e6, 50000)
+	-- always drain at same rate
+	gasMeter = math.max(0, gasMeter - 8 * dt)
+
+	if hrp.Position.Y >= cap then
+		-- at cap hover, don't go higher
+		bodyVel.Velocity = Vector3.new(move.X * 27, 0, move.Z * 27)
+	else
+		-- flying up
+		bodyVel.Velocity = Vector3.new(move.X * 27, speed, move.Z * 27)
+	end
+
+	currentPower = (gasMeter / maxGasMeter) * stomachMax
+	updateMeter()
+
+	if gasMeter <= 0 then
+		currentPower = 0
+		pcall(function() RegenEvent:FireServer("POWER_EMPTY") end)
+		stopFlying()
+		return
+	end
+
+	if hrp.Position.Y > _G.peakHeight then _G.peakHeight = hrp.Position.Y end
+
+	_G.gui.flightStatsFrame.Visible = true
+	_G.gui.fsHeight.Text = "\xF0\x9F\x93\x8F Height: " .. math.floor(hrp.Position.Y)
+	_G.gui.fsRings.Text = "\xF0\x9F\x92\x8D Rings: " .. _G.ringsCollectedFlight .. " (x" .. string.format("%.1f", ringMultiplier) .. ")"
+	_G.gui.fsAir.Text = "\xe2\x8f\xb1 Air: " .. math.floor(tick() - flightStartTime) .. "s"
+
+	coinTimer = coinTimer + dt
+	if coinTimer >= 0.5 then
+		coinTimer = 0
+		if isFlying then
+			local height = math.max(1, hrp.Position.Y)
+			local coins = 1 + (height * 0.006)
+			pcall(function()
+				CoinEvent:FireServer(coins)
+			end)
+		end
+	end
+
+	-- ring collection
+	for i = #_G.activeRings, 1, -1 do

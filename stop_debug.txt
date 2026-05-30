@@ -1,0 +1,71 @@
+				task.wait(0.2)
+				local pct = stomachMax > 0 and (currentPower / stomachMax) or 0
+				gasMeter = maxGasMeter * pct
+				maxAchievedPower = currentPower
+				updateMeter()
+				updateFartBtn()
+				if updateStomachDisplay then updateStomachDisplay() end
+			end
+		end
+		lastMaterial = hum.FloorMaterial
+	end)
+end
+
+-- ===== FLIGHT =====
+local bodyVel = nil
+local cloudTimer = 0
+local coinTimer = 0
+
+local function stopFlying()
+	isFlying = false
+	_G.isFlying = false
+	local char = player.Character
+	if char then
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		local hum = char:FindFirstChild("Humanoid")
+		if bodyVel then bodyVel:Destroy() end
+		if hrp then
+			local old = hrp:FindFirstChild("FartVelocity")
+			if old then old:Destroy() end
+		end
+		if hum then hum.PlatformStand = false end
+	end
+	bodyVel = nil
+	_G.gui.flightStatsFrame.Visible = false; _G.gui.windIndicatorFrame.Visible = false
+	if _G.checkMilestones then _G.checkMilestones() end
+	_G.peakHeight = 0; _G.ringsCollectedFlight = 0
+	updateFartBtn()
+end
+_G.stopFlying = stopFlying
+
+local function startFlying()
+	if isFlying then return end
+	if gasMeter <= 0 then return end
+	if not hasBoughtFood then return end
+	local char = player.Character
+	if not char then return end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	local hum = char:FindFirstChild("Humanoid")
+
+	isFlying = true
+	_G.isFlying = true
+	flightStartY = hrp.Position.Y; flightStartTime = tick()
+	_G.peakHeight = hrp.Position.Y; _G.ringsCollectedFlight = 0
+
+	if bodyVel then bodyVel:Destroy() end
+	local old = hrp:FindFirstChild("FartVelocity")
+	if old then old:Destroy() end
+
+	if hum then hum.PlatformStand = true end
+
+	bodyVel = Instance.new("BodyVelocity")
+	bodyVel.Name = "FartVelocity"
+	bodyVel.MaxForce = Vector3.new(0, 1e6, 0)
+	bodyVel.Velocity = Vector3.new(0, 60, 0)
+	bodyVel.Parent = hrp
+
+	updateFartBtn()
+end
+
+player.CharacterAdded:Connect(function(char)

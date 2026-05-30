@@ -1,0 +1,37 @@
+-- ===== TOP RIGHT: COIN DISPLAY =====
+sg=Instance.new("ScreenGui"); sg.Name="CoinGui"; sg.ResetOnSpawn=false; sg.IgnoreGuiInset=true; sg.Parent=PlayerGui
+local coinGui=sg
+local coinPill=mkFrame(sg,{Position=UDim2.new(1,-10,0,10),Size=UDim2.new(0,200,0,50),BackgroundColor3=Color3.fromRGB(220,160,0),AnchorPoint=Vector2.new(1,0),ClipsDescendants=false,ZIndex=4})
+mkCorner(coinPill,25); mkStroke(coinPill,Color3.fromRGB(180,120,0),3)
+local coinGrad=Instance.new("UIGradient")
+coinGrad.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromRGB(255,190,20)),ColorSequenceKeypoint.new(1,Color3.fromRGB(200,140,0))})
+coinGrad.Rotation=90; coinGrad.Parent=coinPill
+local coinIcon=Instance.new("ImageLabel")
+coinIcon.Name="CoinIcon"
+coinIcon.Size=UDim2.new(0,36,0,36)
+coinIcon.Position=UDim2.new(0,8,0.5,0)
+coinIcon.AnchorPoint=Vector2.new(0,0.5)
+coinIcon.BackgroundTransparency=1
+coinIcon.Image="rbxassetid://4483362458"
+coinIcon.ImageColor3=Color3.fromRGB(255,255,255)
+coinIcon.ImageTransparency=0
+coinIcon.ScaleType=Enum.ScaleType.Fit
+coinIcon.Visible=true
+coinIcon.ZIndex=5
+coinIcon.Parent=coinPill
+local coinAmountLabel=mkLabel(coinPill,{Name="Amount",Text="0",Font=Enum.Font.GothamBold,TextSize=22,TextColor3=Color3.fromRGB(255,255,255),Size=UDim2.new(1,-100,1,0),Position=UDim2.new(0,48,0,0),TextXAlignment=Enum.TextXAlignment.Left})
+mkStroke(coinAmountLabel,Color3.fromRGB(100,60,0),2)
+local coinPlusBtn=mkButton(coinPill,{Size=UDim2.new(0,38,0,38),Position=UDim2.new(1,-42,0.5,0),AnchorPoint=Vector2.new(0,0.5),BackgroundColor3=Color3.fromRGB(50,180,50),Text="+",Font=Enum.Font.GothamBold,TextSize=24,TextColor3=Color3.fromRGB(255,255,255)})
+mkCorner(coinPlusBtn,19); mkStroke(coinPlusBtn,Color3.fromRGB(0,130,0),2)
+coinPlusBtn.MouseButton1Click:Connect(function()
+	local psg=PlayerGui:FindFirstChild("PremiumShopGui")
+	if psg then psg.Enabled=not psg.Enabled end
+end)
+local coinAmount=coinAmountLabel
+
+print("COIN PILL:", coinPill and coinPill.Parent and coinPill.Parent.Name or "NO PARENT")
+print("COIN ICON:", coinIcon and tostring(coinIcon.AbsoluteSize) or "NIL")
+print("COIN AMOUNT:", coinAmountLabel and coinAmountLabel.Text or "NIL")
+print("COIN PILL VISIBLE:", coinPill and tostring(coinPill.Visible) or "NIL")
+print("COIN GUI ENABLED:", coinGui and tostring(coinGui.Enabled) or "NIL")
+

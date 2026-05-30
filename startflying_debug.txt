@@ -1,0 +1,51 @@
+_G.stopFlying = stopFlying
+
+local function startFlying()
+	if isFlying then return end
+	if gasMeter <= 0 then return end
+	if not hasBoughtFood then return end
+	local char = player.Character
+	if not char then return end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	local hum = char:FindFirstChild("Humanoid")
+
+	isFlying = true
+	_G.isFlying = true
+	flightStartY = hrp.Position.Y; flightStartTime = tick()
+	_G.peakHeight = hrp.Position.Y; _G.ringsCollectedFlight = 0
+
+	if bodyVel then bodyVel:Destroy() end
+	local old = hrp:FindFirstChild("FartVelocity")
+	if old then old:Destroy() end
+
+	if hum then hum.PlatformStand = true end
+
+	bodyVel = Instance.new("BodyVelocity")
+	bodyVel.Name = "FartVelocity"
+	bodyVel.MaxForce = Vector3.new(0, 1e6, 0)
+	bodyVel.Velocity = Vector3.new(0, 60, 0)
+	bodyVel.Parent = hrp
+
+	updateFartBtn()
+end
+
+player.CharacterAdded:Connect(function(char)
+	isFlying = false; _G.isFlying = false
+	if bodyVel then bodyVel:Destroy(); bodyVel = nil end
+	gasMeter = 0; hasBoughtFood = false; _G.hasLanded = true
+	updateMeter(); updateFartBtn()
+	onLand(char)
+end)
+onLand(character)
+
+local function getFlightSpeed(power)
+	if power < 50 then return 25
+	elseif power < 150 then return 35
+	elseif power < 300 then return 47
+	elseif power < 600 then return 60
+	elseif power < 1000 then return 75
+	elseif power < 1800 then return 92
+	elseif power < 3000 then return 112
+	elseif power < 5000 then return 134
+	elseif power < 8000 then return 158

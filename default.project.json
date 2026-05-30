@@ -1,0 +1,255 @@
+{
+  "name": "FartToFloat",
+  "tree": {
+    "$className": "DataModel",
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "PlayerStats": {
+        "$path": "src/server/PlayerStats.server.lua"
+      },
+      "FarmerSpawner": {
+        "$path": "src/server/FarmerNPC.server.lua"
+      },
+      "RocketEventManager": {
+        "$path": "src/server/RocketEventManager.server.lua"
+      },
+      "RocketNPCs": {
+        "$path": "src/server/RocketNPCs.lua"
+      },
+      "RocketLogic": {
+        "$path": "src/server/RocketLogic.lua"
+      },
+      "RocketEffects": {
+        "$path": "src/server/RocketEffects.lua"
+      },
+      "MeteorManager": {
+        "$path": "src/server/MeteorManager.server.lua"
+      },
+      "MeteorSpawn": {
+        "$path": "src/server/MeteorSpawn.lua"
+      },
+      "MeteorImpact": {
+        "$path": "src/server/MeteorImpact.lua"
+      },
+      "MeteorReward": {
+        "$path": "src/server/MeteorReward.lua"
+      },
+      "UFOManager": {
+        "$path": "src/server/UFOManager.server.lua"
+      },
+      "UFOEffects": {
+        "$path": "src/server/UFOEffects.lua"
+      },
+      "UFOBeam": {
+        "$path": "src/server/UFOBeam.lua"
+      },
+      "UFOAbduction": {
+        "$path": "src/server/UFOAbduction.lua"
+      },
+      "WeatherManager": {
+        "$path": "src/server/WeatherManager.server.lua"
+      },
+      "IcePhysics": {
+        "$path": "src/server/IcePhysics.lua"
+      },
+      "Blizzard": {
+        "$path": "src/server/Blizzard.lua"
+      },
+      "IceMeteor": {
+        "$path": "src/server/IceMeteor.lua"
+      },
+      "IceVFX": {
+        "$path": "src/server/IceVFX.lua"
+      },
+      "MutationManager": {
+        "$path": "src/server/MutationManager.server.lua"
+      },
+      "MutationEffects": {
+        "$path": "src/server/MutationEffects.lua"
+      },
+      "NPCMutationSystem": {
+        "$path": "src/server/NPCMutationSystem.lua"
+      },
+      "RandomMutationGenerator": {
+        "$path": "src/server/RandomMutationGenerator.lua"
+      },
+      "RainbowBeamManager": {
+        "$path": "src/server/RainbowBeamManager.server.lua"
+      },
+      "BeamGeneration": {
+        "$path": "src/server/BeamGeneration.lua"
+      },
+      "BeamPattern": {
+        "$path": "src/server/BeamPattern.lua"
+      },
+      "BeamCollision": {
+        "$path": "src/server/BeamCollision.lua"
+      },
+      "BeamKnockback": {
+        "$path": "src/server/BeamKnockback.lua"
+      },
+      "BeamEffects": {
+        "$path": "src/server/BeamEffects.lua"
+      },
+      "BigEventScheduler": {
+        "$path": "src/server/BigEventScheduler.server.lua"
+      },
+      "MusicManager": {
+        "$path": "src/server/MusicManager.server.lua"
+      },
+      "LateJoinEventSync": {
+        "$path": "src/server/LateJoinEventSync.server.lua"
+      }
+    },
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "BuyFoodEvent": {
+        "$className": "RemoteEvent"
+      },
+      "RegenEvent": {
+        "$className": "RemoteEvent"
+      },
+      "CoinEvent": {
+        "$className": "RemoteEvent"
+      },
+      "SkipIslandEvent": {
+        "$className": "RemoteEvent"
+      },
+      "IslandUnlockEvent": {
+        "$className": "RemoteEvent"
+      },
+      "AnnouncementEvent": {
+        "$className": "RemoteEvent"
+      },
+      "ServerEventNotify": {
+        "$className": "RemoteEvent"
+      },
+      "StandsReadyEvent": {
+        "$className": "RemoteEvent"
+      },
+      "GamepassEvent": {
+        "$className": "RemoteEvent"
+      },
+      "BirdNukeEvent": {
+        "$className": "RemoteEvent"
+      },
+      "DailyRewardEvent": {
+        "$className": "RemoteEvent"
+      },
+      "ClaimRewardEvent": {
+        "$className": "RemoteEvent"
+      },
+      "PurchaseAnnouncementEvent": {
+        "$className": "RemoteEvent"
+      },
+      "StomachFullEvent": {
+        "$className": "RemoteEvent"
+      },
+      "BuyStomachEvent": {
+        "$className": "RemoteEvent"
+      },
+      "StomachUpdateEvent": {
+        "$className": "RemoteEvent"
+      },
+      "RequestPlayerState": {
+        "$className": "RemoteEvent"
+      },
+      "LandingEvent": {
+        "$className": "RemoteEvent"
+      },
+      "SelectIslandEvent": {
+        "$className": "RemoteEvent"
+      },
+      "RocketEventSync": {
+        "$className": "RemoteEvent"
+      },
+      "MeteorSync": {
+        "$className": "RemoteEvent"
+      },
+      "MeteorImpactSound": {
+        "$className": "RemoteEvent"
+      },
+      "UFOSync": {
+        "$className": "RemoteEvent"
+      },
+      "IceAgeSync": {
+        "$className": "RemoteEvent"
+      },
+      "MutationSync": {
+        "$className": "RemoteEvent"
+      },
+      "GoToIsland1Event": {
+        "$className": "RemoteEvent"
+      },
+      "RainbowBeamSync": {
+        "$className": "RemoteEvent"
+      }
+    },
+    "ReplicatedFirst": {
+      "$className": "ReplicatedFirst",
+      "LoadingScreen": {
+        "$path": "src/client/LoadingScreen.client.lua"
+      }
+    },
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "CoreClient": {
+          "$path": "src/client/CoreClient.client.lua"
+        },
+        "ShopClient": {
+          "$path": "src/client/ShopClient.client.lua"
+        },
+        "WorldClient": {
+          "$path": "src/client/WorldClient.client.lua"
+        },
+        "EventClient": {
+          "$path": "src/client/EventClient.client.lua"
+        },
+        "FarmerTutorial": {
+          "$path": "src/client/FarmerTutorial.client.lua"
+        },
+        "RocketUI": {
+          "$path": "src/client/RocketUI.client.lua"
+        },
+        "MeteorUI": {
+          "$path": "src/client/MeteorUI.client.lua"
+        },
+        "UFOUI": {
+          "$path": "src/client/UFOUI.client.lua"
+        },
+        "IceAgeUI": {
+          "$path": "src/client/IceAgeUI.client.lua"
+        },
+        "MutationUI": {
+          "$path": "src/client/MutationUI.client.lua"
+        },
+        "RainbowBeamUI": {
+          "$path": "src/client/RainbowBeamUI.client.lua"
+        },
+        "MusicDucking": {
+          "$path": "src/client/MusicDucking.client.lua"
+        },
+        "MusicClient": {
+          "$path": "src/client/MusicClient.client.lua"
+        },
+        "MeteorImpactSound": {
+          "$path": "src/client/MeteorImpactSound.client.lua"
+        },
+        "RocketBuildPreload": {
+          "$path": "src/client/RocketBuildPreload.client.lua"
+        },
+        "EventSoundPreload": {
+          "$path": "src/client/EventSoundPreload.client.lua"
+        },
+        "RocketSounds": {
+          "$path": "src/client/RocketSounds.client.lua"
+        },
+        "SettingsMenu": {
+          "$path": "src/client/SettingsMenu.client.lua"
+        }
+      }
+    }
+  }
+}

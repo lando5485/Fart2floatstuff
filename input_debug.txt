@@ -1,0 +1,51 @@
+	end
+end)
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then stopFlying() end
+end)
+UserInputService.TouchEnded:Connect(function() stopFlying() end)
+
+-- ===== GLIDE CONTROL (WASD while falling, not flying) =====
+RunService.Heartbeat:Connect(function()
+	local char=player.Character; if not char then return end
+	local hum=char:FindFirstChild("Humanoid"); if not hum then return end
+	local hrpNow=char:FindFirstChild("HumanoidRootPart"); if not hrpNow then return end
+	if not isFlying and hum.FloorMaterial==Enum.Material.Air then
+		if not glideVel or not glideVel.Parent then
+			glideVel=Instance.new("BodyVelocity"); glideVel.Name="GlideVelocity"
+			glideVel.MaxForce=Vector3.new(8000,0,8000); glideVel.Velocity=Vector3.new(0,0,0)
+			glideVel.Parent=hrpNow
+		end
+		local camCF=workspace.CurrentCamera.CFrame
+		local fwd=Vector3.new(camCF.LookVector.X,0,camCF.LookVector.Z)
+		if fwd.Magnitude>0 then fwd=fwd.Unit end
+		local rgt=Vector3.new(camCF.RightVector.X,0,camCF.RightVector.Z)
+		if rgt.Magnitude>0 then rgt=rgt.Unit end
+		local md=Vector3.new(0,0,0)
+		if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Up) then md=md+fwd end
+		if UserInputService:IsKeyDown(Enum.KeyCode.S) or UserInputService:IsKeyDown(Enum.KeyCode.Down) then md=md-fwd end
+		if UserInputService:IsKeyDown(Enum.KeyCode.A) or UserInputService:IsKeyDown(Enum.KeyCode.Left) then md=md-rgt end
+		if UserInputService:IsKeyDown(Enum.KeyCode.D) or UserInputService:IsKeyDown(Enum.KeyCode.Right) then md=md+rgt end
+		if md.Magnitude>0 then md=md.Unit end
+		glideVel.Velocity=md*35
+	else
+		if glideVel then glideVel:Destroy(); glideVel=nil end
+	end
+end)
+
+-- ===== REMOTE HANDLERS =====
+pcall(function()
+	if RegenEvent then
+		RegenEvent.OnClientEvent:Connect(function(power)
+			hasBoughtFood = true
+			gasMeter = math.min(maxGasMeter, gasMeter + (tonumber(power) or 0) / 20)
+			updateMeter()
+			updateFartBtn()
+		end)
+	end
+end)
+if AnnouncementEvent then
+	AnnouncementEvent.OnClientEvent:Connect(function(pName,islandNum,islandName)
+		queueAnnouncement("\xF0\x9F\x8F\x9D\xEF\xB8\x8F "..tostring(pName).." reached "..tostring(islandName).."!")
+	end)
+end
