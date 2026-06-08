@@ -914,46 +914,13 @@ local function applyScaling()
 	end
 end
 
--- ===== HIDE HUD WHILE A SHOP / MENU POPUP IS OPEN =====
--- Popups sit on much higher DisplayOrder ScreenGuis, but to GUARANTEE the HUD never bleeds through on
--- top of an open shop (Tiny Gut pill / gas meter / fart button / sidebar / coins / stats), we also
--- DISABLE the HUD ScreenGuis whenever any popup is open, and re-enable them once every popup is closed.
--- refreshHud is a GLOBAL (not a chunk local) and its tables live INSIDE it, and the watcher's vars
--- live inside a do-block — so this whole feature adds ZERO module-level locals. CoreClient's main
--- chunk is right at Luau's 200-local-per-function limit; going over it makes the WHOLE script fail
--- to compile (which blanks the UI), so we must not add chunk-level locals here.
-_G.refreshHud = function()
-	if not hudRevealed then return end -- stay hidden until the player has actually spawned in
-	local POPUP_NAMES = {"FoodShopGui","StomachShopGui","PremiumShopGui","DailyRewardsGui"}
-	local HUD_NAMES = {"BottomStackGui","SidebarGui","CoinGui","RightPanelGui","StomachGui"}
-	local open = false
-	for _, name in ipairs(POPUP_NAMES) do
-		local g = PlayerGui:FindFirstChild(name)
-		if g and g.Enabled then open = true; break end
-	end
-	for _, name in ipairs(HUD_NAMES) do
-		local g = PlayerGui:FindFirstChild(name)
-		if g then g.Enabled = not open end -- hide HUD ScreenGuis while a popup is open
-	end
-end
-do
-	local POPUPS = {"FoodShopGui","StomachShopGui","PremiumShopGui","DailyRewardsGui"}
-	local function watch(g)
-		g:GetPropertyChangedSignal("Enabled"):Connect(_G.refreshHud)
-		_G.refreshHud()
-	end
-	for _, name in ipairs(POPUPS) do
-		local g = PlayerGui:FindFirstChild(name); if g then watch(g) end
-	end
-	-- FoodShopGui / PremiumShopGui are created later by ShopClient, so catch them as they appear.
-	PlayerGui.ChildAdded:Connect(function(child)
-		if child:IsA("ScreenGui") then
-			for _, name in ipairs(POPUPS) do
-				if child.Name == name then watch(child); break end
-			end
-		end
-	end)
-end
+-- ===== HUD STAYS VISIBLE WHILE A SHOP / MENU POPUP IS OPEN =====
+-- The HUD is intentionally LEFT VISIBLE while a popup (food shop / stomach shop / premium shop /
+-- daily rewards) is open. Each shop's own full-screen invisible overlay (Active=true) catches input,
+-- so the HUD can't be clicked through while shopping — but it remains on screen. The previous code
+-- here disabled BottomStackGui / SidebarGui / CoinGui / RightPanelGui / StomachGui on popup-open and
+-- re-enabled them on close; that hide/re-enable behavior has been removed.
+-- _G.refreshHud is left undefined; its one remaining caller (repositionGUIs) guards with `if _G.refreshHud`.
 
 local function repositionGUIs()
 	-- coin display
@@ -973,7 +940,7 @@ local function repositionGUIs()
 	-- Tiny Gut pill + gas meter + fart button are ONE centered group (BottomStack + UIListLayout);
 	-- their size/position/centering is owned by that layout + the per-cluster UIScale below — nothing to set here.
 	applyScaling()
-	if _G.refreshHud then _G.refreshHud() end -- re-apply popup-based HUD hiding (this fn force-enables coinGui above)
+	if _G.refreshHud then _G.refreshHud() end -- no-op now (popup-based HUD hiding removed); guarded so it's safe if undefined
 end
 
 workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(repositionGUIs)

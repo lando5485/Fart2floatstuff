@@ -54,7 +54,7 @@ local sg
 -- Food Shop
 sg=Instance.new("ScreenGui"); sg.Name="FoodShopGui"; sg.ResetOnSpawn=false; sg.Enabled=false; sg.DisplayOrder=100; sg.Parent=PlayerGui -- DisplayOrder 100 = definitively above the HUD (<=5) so the shop covers it
 local FoodShopGui=sg
-mkFrame(sg,{Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.new(0,0,0),BackgroundTransparency=0.4})
+mkFrame(sg,{Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.new(0,0,0),BackgroundTransparency=1,Active=true}) -- invisible (was 0.4 dark film); Active=true keeps it click-blocking so HUD stays visible but not interactable while shop is open
 local foodPanel=mkFrame(sg,{Size=UDim2.new(0.92,0,0.78,0),Position=UDim2.new(0.5,0,0.5,0),AnchorPoint=Vector2.new(0.5,0.5),BackgroundColor3=Color3.fromRGB(240,248,255)})
 mkCorner(foodPanel,16); mkStroke(foodPanel,Color3.fromRGB(100,180,255),4)
 local foodHeader=mkFrame(foodPanel,{Size=UDim2.new(1,0,0,55),BackgroundColor3=Color3.fromRGB(80,160,255)}); mkCorner(foodHeader,16)
@@ -117,7 +117,7 @@ print("ICON FIX DONE")
 -- Premium Shop
 sg=Instance.new("ScreenGui"); sg.Name="PremiumShopGui"; sg.ResetOnSpawn=false; sg.Enabled=false; sg.DisplayOrder=100; sg.Parent=PlayerGui -- DisplayOrder 100 = definitively above the HUD (<=5) so the shop covers it
 local PremiumShopGui=sg
-mkFrame(sg,{Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.new(0,0,0),BackgroundTransparency=0.5})
+mkFrame(sg,{Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.new(0,0,0),BackgroundTransparency=1,Active=true}) -- invisible (was 0.5 dark film); Active=true keeps it click-blocking so HUD stays visible but not interactable while shop is open
 local premPanel=mkFrame(sg,{Size=UDim2.new(0.9,0,0.85,0),Position=UDim2.new(0.5,0,0.5,0),AnchorPoint=Vector2.new(0.5,0.5),BackgroundColor3=Color3.fromRGB(25,90,185),ClipsDescendants=true})
 mkCorner(premPanel,20); mkStroke(premPanel,Color3.new(1,1,1),3)
 
@@ -234,8 +234,14 @@ local function updateHotbar()
 end
 _G.updateHotbar=updateHotbar
 
+-- Forward declaration: the embedded "live gas meter" mirror inside the food shop. Its UI is built
+-- after the shop layout below; this lets updateFoodShop drive it. updateFoodShop already runs on shop
+-- open and on every Coins / CurrentPower / StomachMax change, so the mirror stays in sync with the HUD.
+local updateGasMirror
+
 local function updateFoodShop(islandNum)
 	nearIslandNumber=islandNum
+	if updateGasMirror then updateGasMirror() end  -- refresh the embedded gas meter live (same source as the HUD meter)
 	foodTitle.Text="\xF0\x9F\x8F\x9D\xEF\xB8\x8F ISLAND "..islandNum.." FOOD STAND"
 	local locked=not isUnlocked(islandNum)
 	foodLockedFrame.Visible=locked; foodEmoji.Visible=not locked; foodName.Visible=not locked
@@ -670,6 +676,48 @@ pcs.Color = Color3.fromRGB(0,0,0); pcs.Thickness = 2; pcs.Parent = premClose
 	local fclS = foodCloseBtn:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
 	fclS.Color = Color3.fromRGB(0,0,0); fclS.Thickness = 2; fclS.Parent = foodCloseBtn
 end)()
+
+-- ===== EMBEDDED LIVE GAS METER (mirror of the HUD gas meter) =====
+-- A visible copy of the player's gas meter placed in the food shop's bottom strip, to the RIGHT of
+-- the BUY / BUY MAX buttons (which end at x=278 on the 700-wide panel). It mirrors the HUD meter's
+-- look (gold "GAS METER" title, dark track, green gradient fill, white "x/y" readout) and reads the
+-- SAME source the HUD reads — the player's CurrentPower / StomachMax — so it fills in real time as
+-- food is bought. This is purely additive: it does NOT touch the HUD meter, purchase logic, or any math.
+local gasMirrorFill, gasMirrorGradient, gasMirrorText
+do
+	local panel = mkFrame(foodPanel,{Name="GasMirrorPanel",Position=UDim2.new(0,286,1,-58),Size=UDim2.new(0,404,0,48),BackgroundColor3=Color3.fromRGB(45,120,220)})
+	mkCorner(panel,12); mkStroke(panel,Color3.fromRGB(20,65,165),3)
+	-- Title (matches the HUD's gold "GAS METER" label)
+	local title=mkLabel(panel,{Text="GAS METER",Font=Enum.Font.FredokaOne,TextSize=16,TextColor3=Color3.fromRGB(255,215,0),Size=UDim2.new(0,92,1,0),Position=UDim2.new(0,8,0,0),TextXAlignment=Enum.TextXAlignment.Left})
+	mkStroke(title,Color3.fromRGB(0,0,0),2)
+	-- Track + fill (same colors/gradient as the HUD gasBg/gasFill)
+	local bg=mkFrame(panel,{Name="Track",Size=UDim2.new(1,-112,0,26),Position=UDim2.new(0,104,0.5,0),AnchorPoint=Vector2.new(0,0.5),BackgroundColor3=Color3.fromRGB(18,28,66)})
+	mkCorner(bg,13)
+	gasMirrorFill=mkFrame(bg,{Name="Fill",Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.fromRGB(60,210,90),ZIndex=2})
+	mkCorner(gasMirrorFill,13)
+	gasMirrorGradient=Instance.new("UIGradient")
+	gasMirrorGradient.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromRGB(130,240,120)),ColorSequenceKeypoint.new(1,Color3.fromRGB(45,190,70))})
+	gasMirrorGradient.Rotation=90; gasMirrorGradient.Parent=gasMirrorFill
+	gasMirrorText=mkLabel(bg,{Name="Readout",Size=UDim2.new(1,0,1,0),Text="0/0",Font=Enum.Font.FredokaOne,TextSize=16,TextColor3=Color3.fromRGB(255,255,255),ZIndex=3,TextXAlignment=Enum.TextXAlignment.Center})
+	mkStroke(gasMirrorText,Color3.fromRGB(0,0,0),2)
+end
+
+-- Mirrors the HUD's updateMeter() exactly: fill = clamp(CurrentPower/StomachMax,0,1); readout =
+-- floor(min(CurrentPower,StomachMax)).."/"..StomachMax. Reads leaderstats — the same values the
+-- server replicates on every food purchase — so this copy and the HUD meter never diverge.
+updateGasMirror=function()
+	if not gasMirrorFill then return end
+	local cp, sm = 0, 100
+	pcall(function() if _G.leaderstats then
+		local c=_G.leaderstats:FindFirstChild("CurrentPower"); if c then cp=c.Value end
+		local m=_G.leaderstats:FindFirstChild("StomachMax"); if m then sm=m.Value end
+	end end)
+	local fill = sm>0 and math.clamp(cp/sm,0,1) or 0
+	gasMirrorFill.Size=UDim2.new(fill,0,1,0)
+	gasMirrorGradient.Offset=Vector2.new(-(1-fill),0)
+	gasMirrorText.Text=math.floor(math.min(cp, sm)).."/"..sm
+end
+updateGasMirror() -- initial paint so it's correct the first time the shop opens
 
 premClose.MouseButton1Click:Connect(function() if _G.playUIClick then _G.playUIClick() end; PremiumShopGui.Enabled=false end)
 foodCloseBtn.MouseButton1Click:Connect(function()

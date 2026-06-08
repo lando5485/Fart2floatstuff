@@ -50,16 +50,26 @@ function BeamEffects.rainbowColorSequence()
 end
 
 --------------------------------------------------------------------
--- applyRainbowGradient(part): paint a part with a rainbow UIGradient-style
--- look. Surface parts can't take a UIGradient, so we drive the rainbow via
--- a long Beam's color (used by BeamGeneration on the beam streak) AND set
--- the part itself Neon white so the glow blooms. Returns nothing.
+-- hueColor(phase): a single VIVID, fully-saturated spectrum colour for a
+-- phase in [0,1) -- 0=red, ~.1=orange, ~.17=yellow, ~.33=green, ~.6=blue,
+-- ~.8=violet. Used to colour each beam a different rainbow hue so a burst of
+-- beams spans the whole spectrum (red/orange/yellow/green/blue/purple).
 --------------------------------------------------------------------
-function BeamEffects.applyRainbowGradient(part)
+function BeamEffects.hueColor(phase)
+	return Color3.fromHSV((phase or 0) % 1, 1, 1)
+end
+
+--------------------------------------------------------------------
+-- applyBeamColor(part, phase): paint a beam part its own VIVID spectrum hue
+-- (replaces the old flat Neon white that made beams read as plain white
+-- lines). Each beam picks a different hue from `phase`, so across a flashing
+-- burst the beams are red, orange, yellow, green, blue and violet. The full
+-- rainbow Beam streak + rainbow sparks (below) layer on top, so every single
+-- beam still reads as a multi-coloured rainbow streak, not one solid bar.
+--------------------------------------------------------------------
+function BeamEffects.applyBeamColor(part, phase)
 	part.Material = Enum.Material.Neon
-	-- A neutral-bright base; the rainbow itself is carried by the Beam + particles
-	-- layered on top (a single Neon part can only be one solid colour).
-	part.Color = Color3.fromRGB(255, 255, 255)
+	part.Color = BeamEffects.hueColor(phase or 0)
 end
 
 --------------------------------------------------------------------
@@ -86,8 +96,8 @@ function BeamEffects.addRainbowBeam(part, length)
 	beam.LightEmission = 1            -- full bloom: "compressed light"
 	beam.LightInfluence = 0           -- ignore world lighting; always vivid
 	beam.FaceCamera = true            -- always presents broadside to the viewer
-	beam.Width0 = 2.2
-	beam.Width1 = 2.2
+	beam.Width0 = 3.2                 -- chunkier, more vivid rainbow streak (was 2.2)
+	beam.Width1 = 3.2
 	beam.Texture = ""                 -- solid gradient (no scrolling texture)
 	beam.Transparency = NumberSequence.new(0)
 	beam.Segments = 1
@@ -100,9 +110,9 @@ end
 -- corridor. Intensity is modest; one light per beam (capped by MAX_BEAMS).
 -- Returns the light.
 --------------------------------------------------------------------
-function BeamEffects.addGlow(part)
+function BeamEffects.addGlow(part, phase)
 	local light = Instance.new("PointLight")
-	light.Color = Color3.fromRGB(255, 120, 255)
+	light.Color = phase and BeamEffects.hueColor(phase) or Color3.fromRGB(255, 120, 255)  -- glow matches the beam's own hue
 	light.Brightness = 3
 	light.Range = 28
 	light.Shadows = false

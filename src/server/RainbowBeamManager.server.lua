@@ -3,12 +3,13 @@
 --======================================================================
 -- Orchestrates the "RAINBOW BEAMS" aerial hazard.
 --
--- Long, thin, glowing RAINBOW beams sweep ACROSS the vertical climb
--- corridor between certain islands. They EXTEND from a side of the gap,
--- HOLD on a steady readable beat, then RETRACT before the next cycle. A
--- flying player who drifts into a beam line gets their flight REWOUND --
--- but this script does NOT implement the rewind. It only DETECTS the hit
--- and tells the client to run the pre-built `_G.applyBeamHit()`.
+-- Long, thin, glowing RAINBOW beams fill the vertical climb corridor between
+-- certain islands as PERSISTENT SPINNING BLADES: each is a flat, horizontal
+-- rainbow line that spins continuously about its own hub (like a helicopter
+-- blade) at its own speed/direction -- they do NOT flicker on/off. A flying
+-- player who drifts into a beam line gets their flight REWOUND -- but this
+-- script does NOT implement the rewind. It only DETECTS the hit and tells the
+-- client to run the pre-built `_G.applyBeamHit()`.
 --
 -- DESIGN / SAFETY (mirrors the Meteor / UFO / Plane events' contract):
 --   * SERVER-AUTHORITATIVE + SYNCED: this script (server) creates the beam
@@ -20,8 +21,8 @@
 --     PRE-APPROVED snapshot/restore. This script NEVER reads or writes the
 --     fart meter, flight, food, guts, island heights, coins, or earn rate.
 --   * ACTIVE ONLY WHILE A PLAYER IS IN A BEAM BAND (like the propeller
---     planes): beams spawn/extend while at least one player is inside a beam
---     band's Y range, and everything is cleared the moment none are.
+--     planes): the spinning blades spawn once a player is inside a beam band's
+--     Y range and spin until they leave; everything is cleared the moment none are.
 --   * Everything is capped (MAX_BEAMS, particle rates) + cleaned up on every
 --     band-empty and on shutdown (no leaks).
 --======================================================================
@@ -38,45 +39,27 @@
 -- CONFIG  -- EDIT ANYTHING HERE. Every value is tunable + commented.
 --======================================================================
 local CONFIG = {
-	-- ---------------- STEADY BEAT (seconds) ----------------
-	-- CLEAR 5s RESET CYCLE: beams fire, fully retract, then ~5s later the next cycle
-	-- fires -- a clean, learnable rhythm. INVARIANT (must hold): BEAM_INTERVAL minus the
-	-- timing wobble (BeamPattern.timingOffset, +/-0.2s) must stay >= the full beam
-	-- lifecycle (BEAM_EXTEND_TIME + BEAM_DURATION + BEAM_RETRACT_TIME) so one cycle's
-	-- beams are fully GONE before the next fires. Only ONE cycle of beams is ever live,
-	-- so the per-cycle reserved safe lane is ALWAYS the live open route (never a wall).
-	-- Lifecycle = 0.30 + 1.9 + 0.25 = 2.45s; min interval = 5 - 0.2 = 4.8s >= 2.45 (huge margin). ✓
-	BEAM_INTERVAL    = 5,     -- seconds between beam cycles (clear, learnable 5s rhythm)
-	BEAM_DURATION    = 1.9,   -- how long each beam HOLDS fully extended (well under the 5s interval -> full retract)
-	BEAM_EXTEND_TIME = 0.30,  -- grow-out animation time (beam shoots across the corridor)
-	BEAM_RETRACT_TIME = 0.25, -- shrink/fade animation time before the next cycle
-
-	-- ---------------- PATTERN VARIATION ----------------
-	BEAM_ANGLE_VARIANCE = 35, -- max +/- tilt (DEGREES). RAISED 18->35 for many more, more chaotic angles. At the
-	                          -- corridor CENTRE a beam always sits at its slot HEIGHT (the tilt rotates ABOUT the
-	                          -- centre point), so a wider tilt can NEVER move a beam into the reserved lane; it only
-	                          -- grows a beam's vertical reach at centre to HIT_RADIUS/cos(tilt). SAFE_LANE_MIN below
-	                          -- is sized so even a 35-deg neighbour beam can't close the reserved gap.
-	BEAMS_PER_CYCLE  = 28,    -- BEAM COUNT per cycle. RAISED 7->28 -> a LOT more beams, densely filling the 8-9
-	                          -- corridor from both sides. Beams ALTERNATE sides (left<->right) in BeamPattern so
-	                          -- they cross from BOTH directions. ALWAYS capped to slotCount-1, so the ONE reserved
-	                          -- safe lane can never be filled no matter how high this goes.
-	SAFE_LANE_MIN    = 22,    -- min GUARANTEED open vertical gap (studs) with NO beam. SHRUNK 55->22: a tight,
-	                          -- hard-to-spot opening the player must thread precisely. NEVER zero -> BeamPattern
-	                          -- ALWAYS reserves one whole >=SAFE_LANE_MIN slot. Worst case (BOTH neighbour slots
-	                          -- filled, each jittered toward the lane, at the steepest 35-deg tilt) still leaves a
-	                          -- clear vertical window at the corridor centre: 1.6*slot - 2*(9/cos35) = ~13.7 > 0.
+	-- ---------------- PERSISTENT SPINNING BLADES ----------------
+	-- The beams are NOT flickering on/off. When a player enters the band we spawn a
+	-- fixed set of beams spaced through the climb height, and they SPIN CONTINUOUSLY
+	-- about their own hubs until the band empties. Each blade's own spin speed +
+	-- direction (below) makes its line sweep past every spot periodically, so a
+	-- timed gap to pass through always recurs -- safety is inherent to the spin.
+	BEAM_COUNT       = 14,    -- how many persistent spinning blades fill the corridor (kept ~same density as before)
+	SPIN_SPEED_MIN   = 0.25,  -- slowest blade spin (rad/s, ~14 deg/s) -- "some spin slow"
+	SPIN_SPEED_MAX   = 1.5,   -- fastest blade spin (rad/s, ~86 deg/s) -- "some spin fast"; sign is randomised per beam (CW/CCW)
+	HUB_OFFSET_MIN   = 25,    -- min horizontal nudge of a blade's hub OFF the central climb axis (studs)
+	HUB_OFFSET_MAX   = 65,    -- max hub nudge. Off-centre hubs mean the central climb line gets periodic clear openings,
+	                          -- not a permanently-blocked pivot -> a timed pass straight up the middle always recurs.
 
 	-- ---------------- PERF CAPS ----------------
-	MAX_BEAMS        = 32,    -- HARD cap on simultaneous beam parts. RAISED 10->32 so ALL BEAMS_PER_CYCLE (28)
-	                          -- beams actually appear (the dense pattern). Clipping only ever REMOVES beams, never
-	                          -- fills the reserved lane, so the cap can never wall the corridor.
+	MAX_BEAMS        = 36,    -- HARD cap on simultaneous beam parts (>= BEAM_COUNT). Clipping only ever REMOVES beams.
 	MAX_PARTICLE_RATE = 26,   -- HARD cap on every ParticleEmitter Rate (BeamEffects honours this)
 
 	-- ---------------- COLLISION ----------------
 	BEAM_HIT_RADIUS  = 9,     -- studs from a beam LINE that counts as a hit (point-to-segment)
 	HIT_DEBOUNCE     = 2.0,   -- seconds a player is immune to further hits after one (1 crossing = 1 rewind)
-	COLLISION_TICK   = 0.12,  -- seconds between server proximity checks while active
+	COLLISION_TICK   = 0.10,  -- seconds between server proximity checks (faster, so quick flashes still register)
 
 	-- ---------------- CORRIDOR (matches the plane hazard's lane) ----------------
 	CORRIDOR_CENTER  = Vector3.new(0, 0, 0), -- X/Z centre of the climb corridor (Y is per-beam)
@@ -90,8 +73,7 @@ local CONFIG = {
 
 	-- ---------------- ZONE SELECT ----------------
 	-- "real" => use BEAM_SPAWN_ZONES (the islands 8-9 gap). "1-2" => a short test
-	-- band {150,790} for testing without climbing. The Pattern module guarantees a
-	-- safe lane in either band.
+	-- band {150,790} for testing without climbing. Spinning blades fill either band.
 	BEAM_TEST_ZONE = "real",  -- beams active in the islands 8-9 gap
 }
 
@@ -99,6 +81,7 @@ local CONFIG = {
 -- Services + module requires.
 --======================================================================
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -154,10 +137,9 @@ end
 --======================================================================
 -- State.
 --======================================================================
-local activeBand = nil       -- the band we are currently running beams in (nil = idle)
-local forceCycleNow = false  -- set by the test trigger to fire a cycle immediately
+local activeBand = nil       -- the band whose spinning blades are currently live (nil = idle)
 
--- clearAll(): retract/destroy every beam + reset debounce. Idempotent.
+-- clearAll(): destroy every beam + reset debounce. Idempotent.
 local function clearAll()
 	BeamGeneration.cleanup()
 	BeamKnockback.reset()
@@ -165,28 +147,34 @@ local function clearAll()
 end
 
 --======================================================================
--- runCycle(band): plan + spawn this cycle's beams, then schedule their
--- retract after BEAM_DURATION. The collision loop (separate, faster) does
--- the hit detection independently so it stays responsive.
+-- spawnLayout(band): lay out the PERSISTENT spinning blades for this band ONCE
+-- (called when a player first enters the band). The pattern brain decides each
+-- blade's height, hub, spin speed/direction and colour; we just spawn them.
+-- After this they spin forever (driven by the SPIN LOOP) until the band empties.
 --======================================================================
-local function runCycle(band)
-	-- Ask the pattern brain which beams fire this cycle (guarantees a safe lane).
-	local descriptors = BeamPattern.planCycle(band)
+local function spawnLayout(band)
+	local descriptors = BeamPattern.planLayout(band)
 	for _, d in ipairs(descriptors) do
-		local rec = BeamGeneration.spawnBeam(d)   -- nil if MAX_BEAMS reached (safely skipped)
-		if rec then
-			-- Schedule THIS beam's retract after it has held for BEAM_DURATION
-			-- (the hold begins once it finishes extending).
-			task.delay(CONFIG.BEAM_EXTEND_TIME + CONFIG.BEAM_DURATION, function()
-				BeamGeneration.retractBeam(rec)
-			end)
-		end
+		BeamGeneration.spawnBeam(d)   -- persistent; nil (skipped) only if MAX_BEAMS reached
 	end
 end
 
 --======================================================================
+-- SPIN LOOP: every frame, while a band is active, advance every blade's
+-- rotation by its own speed/direction (BeamGeneration.update recomputes each
+-- beam's CFrame + collision endpoints). This is what makes the blades spin
+-- continuously instead of flickering on/off.
+--======================================================================
+RunService.Heartbeat:Connect(function(dt)
+	if activeBand then
+		BeamGeneration.update(dt)
+	end
+end)
+
+--======================================================================
 -- COLLISION LOOP: a fast, independent loop that checks proximity every
 -- COLLISION_TICK while a band is active and routes hits to BeamKnockback.
+-- (Reads the live, just-rotated endpoints, so hits match what the player sees.)
 --======================================================================
 task.spawn(function()
 	while true do
@@ -204,31 +192,24 @@ task.spawn(function()
 end)
 
 --======================================================================
--- MAIN LOOP: the steady BEAT. While a player occupies a beam band, run a
--- pattern cycle every BEAM_INTERVAL (+ a tiny per-cycle wobble). When no
--- player is in any band, clear everything and idle cheaply.
+-- MAIN LOOP: while a player occupies the beam band, the spinning blades are
+-- spawned ONCE (on entry) and left to spin. When the band empties, everything
+-- is cleared and we idle cheaply. No on/off cycle -- the blades are persistent.
 --======================================================================
 task.spawn(function()
 	while true do
 		local band = anyPlayerInBand()
 
 		if band then
-			-- Entering / staying active in a band.
-			activeBand = band
-			runCycle(band)
-
-			-- Wait the steady beat (+ small organic wobble) before the next
-			-- cycle, but bail early if a forced test cycle is requested or the
-			-- band empties (so cleanup is prompt).
-			local waitFor = CONFIG.BEAM_INTERVAL + BeamPattern.timingOffset()
-			local deadline = os.clock() + waitFor
-			while os.clock() < deadline do
-				task.wait(0.1)
-				if forceCycleNow then forceCycleNow = false break end
-				if not anyPlayerInBand() then break end
+			if activeBand ~= band then
+				-- First entry into this band: build the persistent spinning layout once.
+				clearAll()             -- fresh start (also resets the hit debounce)
+				activeBand = band
+				spawnLayout(band)
 			end
+			task.wait(0.2)
 		else
-			-- No player in any band: ensure beams are cleared, then idle.
+			-- No player in the band: clear the blades, then idle.
 			if BeamGeneration.count() > 0 or activeBand then
 				clearAll()
 			end
@@ -242,6 +223,6 @@ Players.PlayerRemoving:Connect(function(player)
 	BeamKnockback.clearPlayer(player)
 end)
 
--- (Pre-launch cleanup: the "/beams" chat command + _G.startBeams manual test trigger were removed.
--- The beam hazard still runs on its own via the collision/cycle loop above — forceCycleNow simply stays
--- false now, so cycles fire on normal timing.)
+-- (The beam hazard runs on its own: the main loop spawns the persistent spinning
+-- blades while a player is in the 8-9 band, the Heartbeat spin loop rotates them,
+-- and the collision loop routes touches to the launch-snapshot rewind.)
