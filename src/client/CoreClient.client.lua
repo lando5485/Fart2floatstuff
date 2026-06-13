@@ -186,6 +186,7 @@ _G.serverEventSpeedMult=1; _G.serverEventCoinMult=1; _G.serverEventGasDrainMult=
 _G.serverEventHeightMult=1; _G.serverEventRingMult=1
 _G.thunderstormActive=false; _G.windstormActive=false
 _G.windstormDir=Vector3.new(1,0,0); _G.stormWindTimer=0; _G.activeBirds={}
+_G.thunderWindVec=Vector3.new(0,0,0) -- LIGHT varying thunderstorm wind (set by EventClient); zero = no push
 -- ===== WORLD TABLES (populated by WorldClient) =====
 _G.activeRings={}; _G.activeGasPockets={}; _G.landingPads={}
 -- ===== GAMEPASS STATE =====
@@ -319,9 +320,40 @@ coinAmountLabel.ZIndex=5
 coinAmountLabel.Parent=coinPill
 local coinPlusBtn=mkButton(coinPill,{Size=UDim2.new(0,34*scale,0,34*scale),Position=UDim2.new(1,-42,0.5,0),AnchorPoint=Vector2.new(0,0.5),BackgroundColor3=Color3.fromRGB(50,180,50),Text="+",Font=Enum.Font.GothamBold,TextSize=24,TextColor3=Color3.fromRGB(255,255,255)})
 mkCorner(coinPlusBtn,19); mkStroke(coinPlusBtn,Color3.fromRGB(0,130,0),2)
+-- ===== MAIN-MENU MUTUAL EXCLUSIVITY: a tiny shared manager (ONE instance across all client scripts, via _G)
+-- so only ONE main menu (food shop / food stand / pet hub / stomach shop / premium shop) is open at a time.
+-- Opening any registered menu first CLOSES whichever other one is open (direct click-to-switch, no X needed).
+-- The factory is guarded so whichever client script loads first creates it and the rest reuse it. =====
+if not _G.MainMenuManager then
+	local mgr = { current = nil, hiders = {} }
+	function mgr.register(name, hideFn) mgr.hiders[name] = hideFn end          -- each menu provides a full-hide fn
+	function mgr.notifyOpened(name)                                             -- call right BEFORE showing a menu
+		if mgr.current and mgr.current ~= name then
+			local h = mgr.hiders[mgr.current]; if h then pcall(h) end           -- fully close the other open menu
+		end
+		mgr.current = name
+	end
+	function mgr.notifyClosed(name) if mgr.current == name then mgr.current = nil end end -- call when a menu hides
+	function mgr.isOtherOpen(name) return mgr.current ~= nil and mgr.current ~= name end  -- a DIFFERENT menu is open?
+	_G.MainMenuManager = mgr
+end
+-- toggle an Enabled-driven menu through the manager (open => first close any other; close => clear current)
+local function toggleMainMenu(name, guiName)
+	local g = PlayerGui:FindFirstChild(guiName); if not g then return end
+	print("[MenuMgr] button "..name.." clicked while "..tostring(_G.MainMenuManager.current).." open") -- diagnostic: confirms the click is received even with another menu open
+	if g.Enabled then
+		g.Enabled = false; _G.MainMenuManager.notifyClosed(name)
+	else
+		_G.MainMenuManager.notifyOpened(name) -- direct switch: closes any other open main menu first
+		g.Enabled = true
+	end
+end
+-- register full-hide fns for the two menus CoreClient drives (used when ANOTHER menu opens over them)
+_G.MainMenuManager.register("Premium", function() local g=PlayerGui:FindFirstChild("PremiumShopGui"); if g then g.Enabled=false end end)
+_G.MainMenuManager.register("Stomach", function() local g=PlayerGui:FindFirstChild("StomachShopGui"); if g then g.Enabled=false end end)
+
 coinPlusBtn.MouseButton1Click:Connect(function()
-	local psg=PlayerGui:FindFirstChild("PremiumShopGui")
-	if psg then psg.Enabled=not psg.Enabled end
+	toggleMainMenu("Premium", "PremiumShopGui")
 end)
 -- coinAmount alias removed (unused)
 
@@ -371,12 +403,9 @@ heightLabel.Font = Enum.Font.GothamBold; heightLabel.TextSize = 22; heightLabel.
 heightLabel.TextScaled = true; heightLabel.RichText = false
 heightLabel.TextXAlignment = Enum.TextXAlignment.Left; heightLabel.Parent = statsSection
 
-local fartsLabel = Instance.new("TextLabel")
-fartsLabel.Size = UDim2.new(1,0,0,36); fartsLabel.Position = UDim2.new(0,0,0,116)
-fartsLabel.BackgroundTransparency = 1; fartsLabel.Text = "\xF0\x9F\x92\xa8 Farts: 0"
-fartsLabel.Font = Enum.Font.GothamBold; fartsLabel.TextSize = 22; fartsLabel.TextColor3 = Color3.fromRGB(255,255,255)
-fartsLabel.TextScaled = true; fartsLabel.RichText = false
-fartsLabel.TextXAlignment = Enum.TextXAlignment.Left; fartsLabel.Parent = statsSection
+-- Farts stat REMOVED from the stats display (was the last row at y=116; "Max Height" above is now
+-- the bottom stat, so the remaining rows stay contiguous with no gap). The TotalFartPower leaderstat
+-- it read is untouched — it's still tracked server-side and used by flight/power.
 
 -- lbIsland/lbMaxHeight/lbEarned/statsPanel aliases removed; use originals directly
 
@@ -555,9 +584,9 @@ local function mkSideBtn(yOff,bgCol,iconTxt,labelTxt)
 end
 local shopSideFrame,shopSideClick=mkSideBtn(-90*scale,Color3.fromRGB(50,180,50),"\xF0\x9F\x9b\x92","SHOP")
 local inviteSideFrame,inviteSideClick=mkSideBtn(0,Color3.fromRGB(100,80,200),"\xF0\x9F\x91\xa5","INVITE")
-local dailySideFrame,dailySideClick=mkSideBtn(90*scale,Color3.fromRGB(255,160,0),"\xF0\x9F\x8e\x81","DAILY")
-local dailyBadge=mkLabel(dailySideFrame,{Text="1",Font=Enum.Font.GothamBold,TextSize=12,TextColor3=Color3.new(1,1,1),Size=UDim2.new(0,20,0,20),Position=UDim2.new(1,-18,0,-2),BackgroundColor3=Color3.fromRGB(255,50,50),ZIndex=3,Visible=false})
-mkCorner(dailyBadge,10)
+-- Repurposed: the former DAILY button is now the PET INVENTORY button (paw icon). Var name kept so the
+-- existing HUD layout/restyle code still references it.
+local dailySideFrame,dailySideClick=mkSideBtn(90*scale,Color3.fromRGB(80,170,70),"\xF0\x9F\x90\xBE","PETS")
 local stomachSideFrame,stomachSideClick=mkSideBtn(180*scale,Color3.fromRGB(220,80,180),"","STOMACH") -- gut icon is now an IMAGE (added below), not an emoji
 -- Gut icon IMAGE in the STOMACH side button (replaces the gut emoji). Non-interactive, so the button's click still works.
 local stomachSideIcon=Instance.new("ImageLabel"); stomachSideIcon.Name="GutIcon"
@@ -566,7 +595,7 @@ stomachSideIcon.Size=UDim2.new(0,math.floor(46*scale),0,math.floor(46*scale)); s
 stomachSideIcon.ZIndex=2; stomachSideIcon.Parent=stomachSideFrame
 shopSideClick.MouseButton1Click:Connect(function()
 	playUIClick()
-	local g=PlayerGui:FindFirstChild("PremiumShopGui"); if g then g.Enabled=not g.Enabled end
+	toggleMainMenu("Premium", "PremiumShopGui")
 end)
 inviteSideClick.MouseButton1Click:Connect(function()
 	playUIClick()
@@ -574,11 +603,12 @@ inviteSideClick.MouseButton1Click:Connect(function()
 end)
 dailySideClick.MouseButton1Click:Connect(function()
 	playUIClick()
-	local g=PlayerGui:FindFirstChild("DailyRewardsGui"); if g then g.Enabled=not g.Enabled end
+	print("[MenuMgr] button PetInv clicked while "..tostring(_G.MainMenuManager and _G.MainMenuManager.current).." open") -- diagnostic: confirms the PETS click is received even with another menu open
+	local ev = PlayerGui:FindFirstChild("PetInvToggle"); if ev then ev:Fire() end -- toggle the Pet Inventory panel (built in PetFollow)
 end)
 stomachSideClick.MouseButton1Click:Connect(function()
 	playUIClick()
-	local g=PlayerGui:FindFirstChild("StomachShopGui"); if g then g.Enabled=not g.Enabled end
+	toggleMainMenu("Stomach", "StomachShopGui")
 end)
 
 -- ===== BOTTOM-CENTER STACK: Tiny Gut pill + GAS METER + fart button =====
@@ -681,190 +711,6 @@ mkStroke(_G.gui.fsAir,Color3.new(0,0,0),1)
 sg=Instance.new("ScreenGui"); sg.Name="FlashGui"; sg.ResetOnSpawn=false; sg.ZIndexBehavior=Enum.ZIndexBehavior.Global; sg.Parent=PlayerGui
 _G.effectFlashFrame=mkFrame(sg,{Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,ZIndex=10})
 
--- ===== DAILY REWARDS GUI =====
-sg=Instance.new("ScreenGui"); sg.Name="DailyRewardsGui"; sg.ResetOnSpawn=false; sg.Enabled=false; sg.DisplayOrder=100; sg.Parent=PlayerGui -- DisplayOrder 100 = definitively above the HUD (<=5) so the popup covers it
-local DailyRewardsGui=sg
-mkFrame(DailyRewardsGui,{Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.new(0,0,0),BackgroundTransparency=0.5})
-local dailyPanel=mkFrame(DailyRewardsGui,{Size=UDim2.new(0.9,0,0.85,0),Position=UDim2.new(0.5,0,0.5,0),AnchorPoint=Vector2.new(0.5,0.5),BackgroundColor3=Color3.fromRGB(25,90,185),ClipsDescendants=true})
-mkCorner(dailyPanel,20); mkStroke(dailyPanel,Color3.new(1,1,1),3)
-
--- Header
-local dailyHeader=mkFrame(dailyPanel,{Size=UDim2.new(1,0,0,65),Position=UDim2.new(0,0,0,0),BackgroundColor3=Color3.fromRGB(15,60,140)})
-mkCorner(dailyHeader,20)
-local dailyTitleL=Instance.new("TextLabel"); dailyTitleL.Text="\xF0\x9F\x8E\x81 DAILY REWARDS"
-dailyTitleL.Font=Enum.Font.GothamBold; dailyTitleL.TextSize=26; dailyTitleL.RichText=false
-dailyTitleL.TextColor3=Color3.fromRGB(255,200,0); dailyTitleL.BackgroundTransparency=1
-dailyTitleL.Size=UDim2.new(1,-60,0,36); dailyTitleL.Position=UDim2.new(0,10,0,6)
-dailyTitleL.TextXAlignment=Enum.TextXAlignment.Center; dailyTitleL.Parent=dailyHeader
-mkStroke(dailyTitleL,Color3.new(0,0,0),2)
-local dailySubL=mkLabel(dailyHeader,{Text="Login daily for coins!",Font=Enum.Font.Gotham,TextSize=13,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,-60,0,18),Position=UDim2.new(0,10,0,43),TextXAlignment=Enum.TextXAlignment.Center,BackgroundTransparency=1})
-local dailyCloseBtn=mkButton(dailyHeader,{Size=UDim2.new(0,36,0,36),Position=UDim2.new(1,-46,0,12),BackgroundColor3=Color3.fromRGB(220,50,50),Text="X",Font=Enum.Font.FredokaOne,TextScaled=true,TextColor3=Color3.fromRGB(255,255,255)})
-mkCorner(dailyCloseBtn,8)
-local dcs=Instance.new("UIStroke"); dcs.Color=Color3.fromRGB(0,0,0); dcs.Thickness=2; dcs.Parent=dailyCloseBtn
-dailyCloseBtn.MouseButton1Click:Connect(function() playUIClick(); DailyRewardsGui.Enabled=false end)
-
--- Streak display
-local streakBar=mkFrame(dailyPanel,{Size=UDim2.new(1,-20,0,50),Position=UDim2.new(0,10,0,72),BackgroundColor3=Color3.fromRGB(15,60,140)})
-mkCorner(streakBar,12)
-local dailyStreakLabel=Instance.new("TextLabel"); dailyStreakLabel.Text="\xF0\x9F\x94\xa5 Day 0 Streak!"
-dailyStreakLabel.Font=Enum.Font.GothamBold; dailyStreakLabel.TextSize=20; dailyStreakLabel.RichText=false
-dailyStreakLabel.TextColor3=Color3.fromRGB(255,140,0); dailyStreakLabel.BackgroundTransparency=1
-dailyStreakLabel.Size=UDim2.new(1,-10,0,26); dailyStreakLabel.Position=UDim2.new(0,5,0,4)
-dailyStreakLabel.TextXAlignment=Enum.TextXAlignment.Center; dailyStreakLabel.Parent=streakBar
-local dailyNextLabel=mkLabel(streakBar,{Text="Next reward: 5 Coins",Font=Enum.Font.Gotham,TextSize=13,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,-10,0,16),Position=UDim2.new(0,5,0,31),TextXAlignment=Enum.TextXAlignment.Center,BackgroundTransparency=1})
-
--- Reward grid (7 boxes for current week cycle)
-local dailyGridFrame=mkFrame(dailyPanel,{Size=UDim2.new(1,-20,0,108),Position=UDim2.new(0,10,0,130),BackgroundTransparency=1})
-local dailyGridLayout=Instance.new("UIGridLayout")
-dailyGridLayout.CellSize=UDim2.new(0,72,0,90); dailyGridLayout.CellPadding=UDim2.new(0,8,0,8)
-dailyGridLayout.HorizontalAlignment=Enum.HorizontalAlignment.Center
-dailyGridLayout.VerticalAlignment=Enum.VerticalAlignment.Center
-dailyGridLayout.Parent=dailyGridFrame
--- COINS ONLY now (matches the server DAILY_REWARDS 7-day ladder). No trails/items.
-local GUI_CYCLE_REWARDS={
-	{emoji="\xF0\x9F\xAA\x99",label="5 Coins"},
-	{emoji="\xF0\x9F\xAA\x99",label="15 Coins"},
-	{emoji="\xF0\x9F\xAA\x99",label="30 Coins"},
-	{emoji="\xF0\x9F\xAA\x99",label="60 Coins"},
-	{emoji="\xF0\x9F\xAA\x99",label="100 Coins"},
-	{emoji="\xF0\x9F\xAA\x99",label="175 Coins"},
-	{emoji="\xF0\x9F\xAA\x99",label="300 Coins"},
-}
-local dailyBoxes={}
-for i=1,7 do
-	local box=mkFrame(dailyGridFrame,{BackgroundColor3=Color3.fromRGB(20,60,120)})
-	mkCorner(box,10); mkStroke(box,Color3.fromRGB(50,100,200),2)
-	mkLabel(box,{Text="Day "..i,Font=Enum.Font.Gotham,TextSize=11,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,0,0,16),Position=UDim2.new(0,0,0,3),TextXAlignment=Enum.TextXAlignment.Center,BackgroundTransparency=1})
-	local rd=GUI_CYCLE_REWARDS[i]
-	-- Per-day reward icon: a real COIN IMAGE before claiming, swapped to the CHECKMARK
-	-- IMAGE once claimed (handled in updateRewardGrid). Named "_icon" so the refresh can
-	-- find + toggle it. Uses the SAME shared assets as the coin counter for consistency.
-	local emojiL=Instance.new("ImageLabel"); emojiL.Name="_icon"; emojiL.Image=_G.COIN_IMAGE
-	emojiL.BackgroundTransparency=1; emojiL.ScaleType=Enum.ScaleType.Fit
-	emojiL.Size=UDim2.new(0,34,0,34); emojiL.Position=UDim2.new(0.5,-17,0,18)
-	emojiL.Parent=box
-	mkLabel(box,{Text=rd.label,Font=Enum.Font.Gotham,TextSize=10,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,-4,0,14),Position=UDim2.new(0,2,1,-16),TextXAlignment=Enum.TextXAlignment.Center,TextWrapped=true,BackgroundTransparency=1})
-	dailyBoxes[i]=box
-end
-
--- Milestone section
-local msTitle=Instance.new("TextLabel"); msTitle.Text="\xF0\x9F\x8F\x86 MILESTONE REWARDS"
-msTitle.Font=Enum.Font.GothamBold; msTitle.TextSize=14; msTitle.RichText=false
-msTitle.TextColor3=Color3.fromRGB(255,200,0); msTitle.BackgroundTransparency=1
-msTitle.Size=UDim2.new(1,-20,0,20); msTitle.Position=UDim2.new(0,10,0,252)
-msTitle.TextXAlignment=Enum.TextXAlignment.Left; msTitle.Parent=dailyPanel
-local milestoneFrame=mkFrame(dailyPanel,{Size=UDim2.new(1,-20,0,80),Position=UDim2.new(0,10,0,276),BackgroundTransparency=1})
-local msLayout=Instance.new("UIGridLayout"); msLayout.CellSize=UDim2.new(0,120,0,70); msLayout.CellPadding=UDim2.new(0,8,0,0)
-msLayout.HorizontalAlignment=Enum.HorizontalAlignment.Center; msLayout.Parent=milestoneFrame
--- Milestone TRAIL rewards REMOVED (daily rewards are coins-only; the colored trail
--- is shop-only now). Empty list + the title/frame are hidden just below.
-local MILESTONES={}
-msTitle.Visible=false
-milestoneFrame.Visible=false
-local milestoneBoxes={}
-for _,ms in ipairs(MILESTONES) do
-	local mb=mkFrame(milestoneFrame,{BackgroundColor3=Color3.fromRGB(15,60,140)}); mkCorner(mb,10); mkStroke(mb,Color3.fromRGB(255,200,0),2)
-	mkLabel(mb,{Text="Day "..ms.day,Font=Enum.Font.Gotham,TextSize=11,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,0,0,16),Position=UDim2.new(0,0,0,3),TextXAlignment=Enum.TextXAlignment.Center,BackgroundTransparency=1})
-	local msEmoji=Instance.new("TextLabel"); msEmoji.Text=ms.emoji; msEmoji.RichText=false
-	msEmoji.Font=Enum.Font.Gotham; msEmoji.TextSize=24; msEmoji.BackgroundTransparency=1
-	msEmoji.Size=UDim2.new(1,0,0,28); msEmoji.Position=UDim2.new(0,0,0,18)
-	msEmoji.TextXAlignment=Enum.TextXAlignment.Center; msEmoji.Parent=mb
-	mkLabel(mb,{Text=ms.name,Font=Enum.Font.Gotham,TextSize=10,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,0,0,14),Position=UDim2.new(0,0,1,-15),TextXAlignment=Enum.TextXAlignment.Center,BackgroundTransparency=1})
-	milestoneBoxes[ms.day]=mb
-end
-
--- Claim button
-local dailyClaimBtn=mkButton(dailyPanel,{Size=UDim2.new(0,320,0,55),Position=UDim2.new(0.5,0,1,-70),AnchorPoint=Vector2.new(0.5,1),BackgroundColor3=Color3.fromRGB(50,200,50),Font=Enum.Font.GothamBold,TextSize=1,TextColor3=Color3.new(1,1,1),Visible=false})
-mkCorner(dailyClaimBtn,12); mkStroke(dailyClaimBtn,Color3.fromRGB(0,150,0),3)
-dailyClaimBtn.Text = ""
-local claimBtnL=Instance.new("TextLabel"); claimBtnL.Text="\xF0\x9F\x8E\x81  Claim Reward!"; claimBtnL.RichText=false
-claimBtnL.Font=Enum.Font.GothamBold; claimBtnL.TextSize=20; claimBtnL.TextColor3=Color3.new(1,1,1)
-claimBtnL.BackgroundTransparency=1; claimBtnL.Size=UDim2.new(1,0,1,0); claimBtnL.TextXAlignment=Enum.TextXAlignment.Center
-claimBtnL.Parent=dailyClaimBtn; mkStroke(claimBtnL,Color3.new(0,0,0),2)
-local dailyClaimScale=Instance.new("UIScale"); dailyClaimScale.Scale=1; dailyClaimScale.Parent=dailyClaimBtn
-local dailyUnavailLabel=mkButton(dailyPanel,{Size=UDim2.new(0,320,0,55),Position=UDim2.new(0.5,0,1,-70),AnchorPoint=Vector2.new(0.5,1),BackgroundColor3=Color3.fromRGB(80,80,80),Text="\xe2\x9c\x85 Come back tomorrow!",Font=Enum.Font.GothamBold,TextSize=16,TextColor3=Color3.fromRGB(180,180,180),Visible=true,Active=false})
-mkCorner(dailyUnavailLabel,12)
-task.spawn(function()
-	while true do
-		task.wait(0.4)
-		if dailyClaimBtn.Visible then
-			TweenService:Create(dailyClaimScale,TweenInfo.new(0.8,Enum.EasingStyle.Sine),{Scale=1.03}):Play()
-			task.wait(0.8)
-			TweenService:Create(dailyClaimScale,TweenInfo.new(0.8,Enum.EasingStyle.Sine),{Scale=1.0}):Play()
-			task.wait(0.8)
-		end
-	end
-end)
-
-for _,v in ipairs(dailyPanel:GetDescendants()) do
-	if v:IsA("TextLabel") or v:IsA("TextButton") then v.TextScaled=true end
-end
-
--- ===== DAILY REWARDS LAYOUT =====
-;(function()
-	-- Main panel: fixed size, centered
-	dailyPanel.Size = UDim2.new(0,700,0,560)
-	dailyPanel.Position = UDim2.new(0.5,0,0.5,0)
-	dailyPanel.AnchorPoint = Vector2.new(0.5,0.5)
-
-	-- Streak banner
-	streakBar.Size = UDim2.new(1,-20,0,65)
-	streakBar.Position = UDim2.new(0,10,0,80)
-
-	-- Day cards: 7 × (88×110) with 6px padding
-	dailyGridFrame.Size = UDim2.new(1,-20,0,118)
-	dailyGridFrame.Position = UDim2.new(0,10,0,152)
-	dailyGridLayout.CellSize = UDim2.new(0,88,0,110)
-	dailyGridLayout.CellPadding = UDim2.new(0,6,0,6)
-
-	-- Milestone section title
-	msTitle.Position = UDim2.new(0,10,0,278)
-
-	-- Milestone cards: 4 × (145×110) with 8px padding
-	milestoneFrame.Size = UDim2.new(1,-20,0,118)
-	milestoneFrame.Position = UDim2.new(0,10,0,306)
-	msLayout.CellSize = UDim2.new(0,145,0,110)
-	msLayout.CellPadding = UDim2.new(0,8,0,0)
-
-	-- Come back tomorrow / claim button: full-width at bottom, 10px margin
-	dailyClaimBtn.Size = UDim2.new(1,-20,0,55)
-	dailyClaimBtn.Position = UDim2.new(0.5,0,1,-10)
-	dailyClaimBtn.AnchorPoint = Vector2.new(0.5,1)
-	-- Ensure TextScaled on all content
-	for _, v in ipairs(dailyPanel:GetDescendants()) do
-		if v:IsA("TextLabel") or v:IsA("TextButton") then v.TextScaled = true end
-	end
-end)()
-
-dailyUnavailLabel:Destroy()
-
--- Destroy any stray green Frame (not a button) that may sit behind the claim button
-for _, v in ipairs(dailyPanel:GetDescendants()) do
-	if v:IsA("Frame") then
-		local r,g,b = v.BackgroundColor3.R*255, v.BackgroundColor3.G*255, v.BackgroundColor3.B*255
-		if g > 180 and r < 150 and b < 150 then
-			v:Destroy()
-		end
-	end
-end
-
--- Pulse claim button ONLY when it is visible (prevents green bleed behind come-back button)
-dailyClaimBtn.BackgroundColor3 = Color3.fromRGB(50,210,50)
-task.spawn(function()
-	while true do
-		task.wait(0.3)
-		if dailyClaimBtn.Visible then
-			TweenService:Create(dailyClaimBtn,
-				TweenInfo.new(0.7, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
-				{BackgroundColor3 = Color3.fromRGB(100,255,100)}):Play()
-			task.wait(0.7)
-			TweenService:Create(dailyClaimBtn,
-				TweenInfo.new(0.7, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
-				{BackgroundColor3 = Color3.fromRGB(50,210,50)}):Play()
-			task.wait(0.7)
-		end
-	end
-end)
 
 if isMobile then
 	task.defer(function()
@@ -1097,13 +943,13 @@ task.spawn(function()
 	local stomachShopGui=Instance.new("ScreenGui"); stomachShopGui.Name="StomachShopGui"; stomachShopGui.ResetOnSpawn=false; stomachShopGui.Enabled=false; stomachShopGui.DisplayOrder=100; stomachShopGui.Parent=PlayerGui -- DisplayOrder 100 = definitively above the HUD (<=5) so the shop covers it
 	local currentStomachLabel; local scrollFrame; local ttlIcon; local ttlIconImg
 	do
-		local stomachPanel=Instance.new("Frame"); stomachPanel.Size=UDim2.new(0,680,0,500)
-		stomachPanel.Position=UDim2.new(0.5,0,0.5,0); stomachPanel.AnchorPoint=Vector2.new(0.5,0.5)
-		stomachPanel.BackgroundColor3=Color3.fromRGB(30,120,220); stomachPanel.BorderSizePixel=0; stomachPanel.Parent=stomachShopGui
+		local stomachPanel=Instance.new("Frame"); stomachPanel.Size=UDim2.new(0,700,0,520) -- matches the FOOD SHOP panel size (700x520)
+		stomachPanel.Position=UDim2.new(0.5,0,0.5,-45); stomachPanel.AnchorPoint=Vector2.new(0.5,0.5) -- nudged UP 45px to match the food shop's on-screen position
+		stomachPanel.BackgroundColor3=Color3.fromRGB(30,120,220); stomachPanel.BorderSizePixel=0; stomachPanel.Active=true; stomachPanel.Parent=stomachShopGui -- Active=true so panel clicks don't leak to the HUD behind it
 		mkCorner(stomachPanel,20); mkStroke(stomachPanel,Color3.fromRGB(20,60,160),3)
 		do
 			local bg=Instance.new("Frame"); bg.Size=UDim2.new(1,0,1,0); bg.BackgroundColor3=Color3.new(0,0,0)
-			bg.BackgroundTransparency=0.5; bg.BorderSizePixel=0; bg.ZIndex=0; bg.Parent=stomachShopGui
+			bg.BackgroundTransparency=1; bg.Active=false; bg.BorderSizePixel=0; bg.ZIndex=0; bg.Parent=stomachShopGui -- invisible + Active=FALSE so clicks OUTSIDE the panel fall through to the HUD MENU BUTTONS (direct click-to-switch)
 			-- Per-tier gut EMOJI to the LEFT of the shop title (shows the CURRENT gut's own emoji).
 			ttlIcon=Instance.new("TextLabel"); ttlIcon.Name="GutIcon"; ttlIcon.BackgroundTransparency=1
 			ttlIcon.Text=(_G.GUT_EMOJI[stomachName] or ""); ttlIcon.Font=Enum.Font.GothamBold; ttlIcon.TextScaled=true
@@ -1120,7 +966,7 @@ task.spawn(function()
 		do
 			local sc=mkButton(stomachPanel,{Size=UDim2.new(0,40,0,40),Position=UDim2.new(1,-48,0,8),BackgroundColor3=Color3.fromRGB(255,60,60),Text="X",Font=Enum.Font.FredokaOne,TextScaled=true,TextColor3=Color3.fromRGB(255,255,255),BorderSizePixel=0})
 			mkCorner(sc,8); mkStroke(sc,Color3.fromRGB(160,20,20),2)
-			sc.MouseButton1Click:Connect(function() playUIClick(); stomachShopGui.Enabled=false end)
+			sc.MouseButton1Click:Connect(function() playUIClick(); stomachShopGui.Enabled=false; _G.MainMenuManager.notifyClosed("Stomach") end)
 		end
 		currentStomachLabel=mkLabel(stomachPanel,{Size=UDim2.new(1,-20,0,35),Position=UDim2.new(0,10,0,62),BackgroundColor3=Color3.fromRGB(20,80,180),BackgroundTransparency=0,Text="Current: Tiny Gut (100 max power)",Font=Enum.Font.FredokaOne,TextScaled=true,TextColor3=Color3.fromRGB(255,255,255),BorderSizePixel=0})
 		mkCorner(currentStomachLabel,10); mkStroke(currentStomachLabel,Color3.fromRGB(255,255,255),2)
@@ -1296,6 +1142,26 @@ local function applyBirdDrain()
 end
 _G.applyBirdDrain = applyBirdDrain
 
+-- Bird hit (NEW behavior for the aggressive event birds): NO kill, NO knockdown -- just HALVE the
+-- player's CURRENT gas (floored), with a 1s cooldown so multiple birds can't drain you to nothing in
+-- one pass. Returns true if it applied, false if it was on cooldown (so the caller can skip feedback).
+local BIRD_HALVE_COOLDOWN = 1 -- seconds of invulnerability between gas-halving bird hits
+_G.lastBirdHalveTime = -math.huge
+_G.applyBirdHalve = function()
+	local now = os.clock()
+	if now - (_G.lastBirdHalveTime or -math.huge) < BIRD_HALVE_COOLDOWN then
+		print("[BIRD] hit ignored (within "..BIRD_HALVE_COOLDOWN.."s cooldown)")
+		return false
+	end
+	_G.lastBirdHalveTime = now
+	local before = gasMeter
+	gasMeter = math.floor(gasMeter / 2)                                            -- halve CURRENT gas, floored
+	currentPower = (stomachMax > 0) and (gasMeter / maxGasMeter) * stomachMax or 0 -- keep power in sync with the reduced gas
+	if _G.updateMeter then _G.updateMeter() end
+	print(string.format("[BIRD] hit -> gas HALVED: before=%.1f after=%.1f (no kill, no knockdown)", before, gasMeter))
+	return true
+end
+
 -- Space-junk hit (called from EventClient): END THE CURRENT RISE exactly like running out of power —
 -- _G.stopFlying() clears isFlying + the upward BodyVelocity so the player falls under gravity. It does
 -- NOT touch currentPower/gasMeter, so the meter is FULLY PRESERVED (the out-of-power path zeroes power
@@ -1317,13 +1183,12 @@ _G.applyJunkHit = function(pushDown)
 	print(string.format("JUNK HIT: rise ended (fall state), meter PRESERVED at %.1f (no drain)", meter))
 end
 
--- Rainbow-beam hit (called from the beam system's client listener): UNDO the whole flight.
--- 1) restore the fart meter to the EXACT amount the player LAUNCHED with this flight (from
---    _G.beamLaunchSnapshot.power -- NOT the drained amount at the moment of hit), and
+-- Rainbow-beam hit (called from the beam system's client listener): knock the player down.
+-- 1) GAS IS LEFT AS-IS -- the meter keeps whatever value it has at the instant of the hit (it is NO
+--    LONGER restored to the launch/pre-takeoff amount), and
 -- 2) knock them back through the air to the island they LAUNCHED from, releasing control there.
--- This is the ONE allowed write to the meter (the explicit "restore" exception). It NEVER touches
--- food/gut/earn/coins; the server's CurrentPower stays at the launch value all flight (it only syncs
--- on landing, decrease-only), so on landing the restored value reports clean -> a true full rewind.
+-- It NEVER touches food/gut/earn/coins. (The knockdown physics below are unchanged; only the old
+-- gas-restore step was removed.)
 -- GUARDRAIL: the knock-back island must be AT or BELOW the player's current Y. If the launch-island
 -- snapshot is somehow higher than the player, fall back to the closest island below (never go up).
 _G.beamBlasting = false
@@ -1348,15 +1213,11 @@ _G.applyBeamHit = function()
 		end
 	end
 
-	-- ---- restore the meter to the LAUNCH amount (full rewind) ----
-	if snap and snap.power then
-		currentPower = math.max(0, math.min(snap.power, stomachMax))
-		gasMeter = math.min(effGasMax(), (stomachMax > 0) and (currentPower / stomachMax) * maxGasMeter or 0)
-		if _G.updateMeter then _G.updateMeter() end
-		print(string.format("BEAM HIT: flight rewound -> meter RESTORED to launch power %.1f", currentPower))
-	else
-		print("BEAM HIT: no launch snapshot -> meter left as-is")
-	end
+	-- ---- GAS: LEAVE IT AS-IS (changed) ----
+	-- A rainbow hit no longer RESTORES the meter to the launch (pre-takeoff) amount. The gas meter is
+	-- left at whatever value it has at the instant of the hit -- only the knockdown below runs. stopFlying
+	-- above does NOT touch the meter, so removing the restore leaves the current drained value intact.
+	print(string.format("BEAM HIT: knockdown only -> gas LEFT AS-IS at %.1f", gasMeter))
 
 	if not destIdx then
 		-- Nothing at/below us: never go up -- just drop in place (meter already restored).
@@ -1534,10 +1395,21 @@ _G.showFloatingText=showFloatingText
 task.spawn(function()
 	local StomachFullEvent=RS:WaitForChild("StomachFullEvent",30)
 	if StomachFullEvent then
-		StomachFullEvent.OnClientEvent:Connect(function()
-			showFloatingText("\xe2\x9a\xa0 STOMACH FULL! Buy a bigger gut!", Color3.fromRGB(255,100,100))
-			local g = PlayerGui:FindFirstChild("StomachShopGui")
-			if g then g.Enabled = true end
+		StomachFullEvent.OnClientEvent:Connect(function(reason)
+			if reason == "not_enough_coins" then
+				-- Coin shortfall: show the correct message; do NOT open the stomach shop.
+				showFloatingText("\xe2\x9a\xa0 Not Enough Coins", Color3.fromRGB(255,100,100))
+			elseif reason == "not_enough_room" then
+				-- HAS room but this food is too big to fit -> distinct message; nudge to a bigger gut.
+				showFloatingText("\xe2\x9a\xa0 Not Enough Room!", Color3.fromRGB(255,100,100))
+				local g = PlayerGui:FindFirstChild("StomachShopGui")
+				if g then _G.MainMenuManager.notifyOpened("Stomach"); g.Enabled = true end
+			else
+				-- "stomach_full" (or nil, for backward compatibility): full gut -> nudge to a bigger gut.
+				showFloatingText("\xe2\x9a\xa0 Stomach Full! Buy a bigger gut!", Color3.fromRGB(255,100,100))
+				local g = PlayerGui:FindFirstChild("StomachShopGui")
+				if g then _G.MainMenuManager.notifyOpened("Stomach"); g.Enabled = true end
+			end
 		end)
 	end
 end)
@@ -1985,6 +1857,51 @@ RunService.Heartbeat:Connect(function(dt)
 		updateFartBtn()        -- keep the fart button usable (e.g. right after a respawn cleared the flags)
 	end
 
+	-- FART BUBBLES (gas pockets): runs EVERY frame, OUTSIDE the isFlying block, so a bubble pops
+	-- whether the player is RISING or FALLING through it. Touching one (within 20 studs) POPS it
+	-- (expand+fade + particle burst + pop sound via _G.popGasPocket) AND grants a +15 gas boost.
+	-- It re-spawns after 45s so the pickup stays available.
+	for i = #_G.activeGasPockets, 1, -1 do
+		local p = _G.activeGasPockets[i]
+		if p and p.Parent then
+			if (hrp.Position - p.Position).Magnitude < 20 then
+				local ppos = p.Position
+				table.remove(_G.activeGasPockets, i)
+				if _G.popGasPocket then _G.popGasPocket(p) end   -- VISUAL pop
+				-- GAS BUBBLE BOOST: +15 on a 100 max = 15% (noticeable but moderate). Fires whether the
+				-- player is RISING or FALLING (this loop runs OUTSIDE the isFlying block, verified).
+				local BUBBLE_GAS_BOOST = 15
+				local gasBefore = gasMeter
+				gasMeter = math.min(maxGasMeter, gasMeter + BUBBLE_GAS_BOOST)
+				updateMeter()
+				print(string.format("[BUBBLE] popped - gas before=%.1f, +%d, gas after=%.1f", gasBefore, BUBBLE_GAS_BOOST, gasMeter))
+				showFloatingText("+\xF0\x9F\x92\xA8 GAS BOOST!", Color3.fromRGB(0, 255, 100))
+				task.delay(45, function() if _G.spawnGasPocket then _G.spawnGasPocket(ppos) end end)
+			end
+		else table.remove(_G.activeGasPockets, i) end
+	end
+
+	-- RINGS: runs EVERY frame, OUTSIDE the isFlying block, so a ring collects whether the player is
+	-- RISING or FALLING through it. The reward (coin bonus + streak multiplier) fires either direction,
+	-- same as the bubble's gas boost. Re-spawns after 30s so the pickup stays available.
+	for i = #_G.activeRings, 1, -1 do
+		local r = _G.activeRings[i]
+		if r.part and r.part.Parent then
+			if (hrp.Position - r.part.Position).Magnitude < 16 then
+				local rpos, rcol, ridx, rdir = r.pos, r.color, r.idx, r.dir
+				r.part:Destroy(); table.remove(_G.activeRings, i)
+				playRingSound() -- one clean play per ring hit
+				ringStreak = ringStreak + 1; ringMultiplier = 1 + ringStreak * 0.2
+				local bonus = math.floor(15 * ringMultiplier * _G.serverEventRingMult)
+				_G.ringsCollectedFlight = _G.ringsCollectedFlight + 1
+				_G.ringBonusFlight = (_G.ringBonusFlight or 0) + bonus -- track ring-bonus coins for FLIGHT DEBUG
+				if CoinEvent then pcall(function() CoinEvent:FireServer(bonus) end) end
+				showFloatingText("+" .. bonus .. " \xF0\x9F\xAA\x99 x" .. string.format("%.1f", ringMultiplier), Color3.fromRGB(255, 215, 0))
+				task.delay(30, function() if _G.spawnRing then _G.spawnRing(rpos, rcol, ridx, rdir) end end)
+			end
+		else table.remove(_G.activeRings, i) end
+	end
+
 	if isFlying and gasMeter > 0 then
 		-- Button held + gas left -> thrust straight up.
 		if not infiniteGut then
@@ -2014,6 +1931,10 @@ RunService.Heartbeat:Connect(function(dt)
 			wpx = _G.windstormDir.X * 150
 			wpz = _G.windstormDir.Z * 150
 		end
+		-- LIGHT thunderstorm wind: a soft varying buffet set by EventClient (_G.thunderWindVec); zero outside the
+		-- storm, so normal flight is unchanged. Much gentler than the windstorm shove above.
+		local tw = _G.thunderWindVec
+		if tw then wpx = wpx + tw.X; wpz = wpz + tw.Z end
 		bodyVel.Velocity = Vector3.new(move.X * FLIGHT_HORIZONTAL_SPEED + wpx, speed, move.Z * FLIGHT_HORIZONTAL_SPEED + wpz)
 
 		updateMeter()
@@ -2044,41 +1965,8 @@ RunService.Heartbeat:Connect(function(dt)
 			end
 		end
 
-		-- ring collection
-		for i = #_G.activeRings, 1, -1 do
-			local r = _G.activeRings[i]
-			if r.part and r.part.Parent then
-				if (hrp.Position - r.part.Position).Magnitude < 16 then
-					local rpos, rcol, ridx, rdir = r.pos, r.color, r.idx, r.dir
-					r.part:Destroy(); table.remove(_G.activeRings, i)
-					playRingSound() -- one clean play per ring hit
-					ringStreak = ringStreak + 1; ringMultiplier = 1 + ringStreak * 0.2
-					local bonus = math.floor(15 * ringMultiplier * _G.serverEventRingMult)
-					_G.ringsCollectedFlight = _G.ringsCollectedFlight + 1
-					_G.ringBonusFlight = (_G.ringBonusFlight or 0) + bonus -- track ring-bonus coins for FLIGHT DEBUG
-					if CoinEvent then pcall(function() CoinEvent:FireServer(bonus) end) end
-					showFloatingText("+" .. bonus .. " \xF0\x9F\xAA\x99 x" .. string.format("%.1f", ringMultiplier), Color3.fromRGB(255, 215, 0))
-					task.delay(30, function() if _G.spawnRing then _G.spawnRing(rpos, rcol, ridx, rdir) end end)
-				end
-			else table.remove(_G.activeRings, i) end
-		end
-
-		-- FART BUBBLES (gas pockets): PURE VISUAL. Touching one POPS it (expand+fade +
-		-- particle burst + pop sound via _G.popGasPocket) but gives ZERO gas/power and ZERO
-		-- coins -- only the visual pop happens. It re-spawns after a delay so the cosmetic
-		-- stays available. (No boost, no "GAS BOOST!" text, no flash -- the mechanical effect
-		-- is gone; only the pop remains.)
-		for i = #_G.activeGasPockets, 1, -1 do
-			local p = _G.activeGasPockets[i]
-			if p and p.Parent then
-				if (hrp.Position - p.Position).Magnitude < 20 then
-					local ppos = p.Position
-					table.remove(_G.activeGasPockets, i)
-					if _G.popGasPocket then _G.popGasPocket(p) end   -- VISUAL pop only
-					task.delay(45, function() if _G.spawnGasPocket then _G.spawnGasPocket(ppos) end end)
-				end
-			else table.remove(_G.activeGasPockets, i) end
-		end
+		-- (ring collection moved OUTSIDE this block — see the RINGS loop above; rings now collect
+		-- whether rising or falling, same as the gas-pocket bubbles.)
 
 		-- cosmetic fart-trail particle (NOT a platform: non-collidable, fades out in ~1.5s)
 		cloudTimer = cloudTimer + dt
@@ -2214,7 +2102,7 @@ task.spawn(function()
 				local sh=math.floor(math.max(_G.peakHeight or 0,sessionMaxHeight))
 				if sh>sessionMaxHeight then sessionMaxHeight=sh end
 				heightLabel.Text="\xF0\x9F\x8f\x86 Max Height: "..sh
-				if tfp then fartsLabel.Text="\xF0\x9F\x92\xa8 Farts: "..tostring(leaderstats.TotalFartPower.Value) end
+				-- Farts stat row removed from the stats display (TotalFartPower itself is untouched)
 			end
 		end)
 		updateCoins()
@@ -2238,142 +2126,6 @@ task.spawn(function()
 	end
 end)
 
--- ===== DAILY REWARD CLIENT HANDLER =====
-task.spawn(function()
-	local DailyRewardEvent2=RS:WaitForChild("DailyRewardEvent",30)
-	local ClaimRewardEvent=RS:WaitForChild("ClaimRewardEvent",30)
-	if not DailyRewardEvent2 then print("DAILY REWARDS SYSTEM READY"); return end
-	if ClaimRewardEvent then
-		dailyClaimBtn.MouseButton1Click:Connect(function()
-			-- Send the claim FIRST so nothing below can block it. (BUG FIX: dailyUnavailLabel is
-			-- :Destroy()ed during setup, and setting .Visible on the destroyed label threw HERE, before
-			-- FireServer ran -> the server never received the claim, so no coins and no confetti/sound.)
-			pcall(function() ClaimRewardEvent:FireServer() end)
-			dailyClaimBtn.Visible=false; dailyBadge.Visible=false
-			if dailyUnavailLabel and dailyUnavailLabel.Parent then dailyUnavailLabel.Visible=true end
-		end)
-	end
-	local function updateRewardGrid(streak,available)
-		local cyclePos=streak%7
-		for i=1,7 do
-			local box=dailyBoxes[i]; if not box then continue end
-			local st=box:FindFirstChildWhichIsA("UIStroke")
-			local scl=box:FindFirstChildOfClass("UIScale")
-			local icon=box:FindFirstChild("_icon")  -- per-day reward icon: coin (unclaimed) vs checkmark (claimed)
-			if available and i==cyclePos+1 then
-				box.BackgroundColor3=Color3.fromRGB(255,180,0)
-				if icon then icon.Image=_G.COIN_IMAGE end  -- AVAILABLE / not yet claimed -> coin image
-				if st then st.Color=Color3.fromRGB(255,200,0); st.Thickness=3 end
-				if not scl then scl=Instance.new("UIScale"); scl.Parent=box end
-				task.spawn(function()
-					while box and box.Parent and available do
-						TweenService:Create(scl,TweenInfo.new(0.6,Enum.EasingStyle.Sine),{Scale=1.05}):Play()
-						task.wait(0.6)
-						TweenService:Create(scl,TweenInfo.new(0.6,Enum.EasingStyle.Sine),{Scale=1.0}):Play()
-						task.wait(0.6)
-					end
-				end)
-			elseif i<=cyclePos then
-				box.BackgroundColor3=Color3.fromRGB(50,150,50)
-				if st then st.Color=Color3.fromRGB(0,120,0); st.Thickness=2 end
-				if scl then scl:Destroy() end
-				-- CLAIMED: swap the coin image to the CHECKMARK image (replaces the old overlaid _check label).
-				if icon then icon.Image=_G.CHECK_IMAGE end
-				local oldCk=box:FindFirstChild("_check"); if oldCk then oldCk:Destroy() end  -- remove any legacy overlay
-			else
-				box.BackgroundColor3=Color3.fromRGB(20,60,120); box.BackgroundTransparency=0.2
-				if st then st.Color=Color3.fromRGB(50,100,200); st.Thickness=2 end
-				if scl then scl:Destroy() end
-				if icon then icon.Image=_G.COIN_IMAGE end  -- FUTURE day (incl. after a cycle reset) -> back to coin image
-			end
-		end
-	end
-	local function updateMilestones(streak)
-		for day,mb in pairs(milestoneBoxes) do
-			if streak>=day then
-				mb.BackgroundColor3=Color3.fromRGB(50,150,50)
-				local st=mb:FindFirstChildWhichIsA("UIStroke"); if st then st.Color=Color3.fromRGB(255,200,0); st.Thickness=3 end
-				local ckL=mb:FindFirstChild("_check")
-				if not ckL then
-					ckL=Instance.new("TextLabel"); ckL.Name="_check"; ckL.Text="\xe2\x9c\x93"; ckL.RichText=false
-					ckL.Font=Enum.Font.GothamBold; ckL.TextSize=14; ckL.TextColor3=Color3.fromRGB(100,255,100); ckL.BackgroundTransparency=1
-					ckL.Size=UDim2.new(0,16,0,16); ckL.Position=UDim2.new(1,-18,0,2)
-					ckL.TextXAlignment=Enum.TextXAlignment.Center; ckL.Parent=mb
-				end
-			end
-		end
-	end
-	DailyRewardEvent2.OnClientEvent:Connect(function(data)
-		pcall(function()
-			local streak=data.streak or 0
-			dailyStreakLabel.Text="\xF0\x9F\x94\xa5 Day "..streak.." Streak!"
-			local nextDay=streak+1
-			local nextNames={"5 Coins","25 Coins","75 Coins","150 Coins","300 Coins","500 Coins","1000 Coins"}
-			local nextName=nextNames[((nextDay-1)%7)+1]
-			dailyNextLabel.Text="Next reward: "..(nextName or ("Day "..nextDay))
-			dailyBadge.Visible=data.available==true
-			dailyClaimBtn.Visible=data.available==true
-			-- Guarded: dailyUnavailLabel is :Destroy()ed at setup; touching it here would throw and (since
-			-- this whole handler is pcall'd) silently skip the confetti + sound block below.
-			if dailyUnavailLabel and dailyUnavailLabel.Parent then dailyUnavailLabel.Visible=data.available~=true end
-			updateRewardGrid(streak,data.available)
-			updateMilestones(streak)
-			_G.unlockedTrails=data.unlockedTrails or {}
-			_G.hasRainbowTrail=data.hasRainbow or false
-			updateTrailSelector()
-			if data.justClaimed then
-				local reward=data.justClaimed
-				-- Sound
-				local claimSound=Instance.new("Sound"); claimSound.SoundId="rbxassetid://112825313814792"
-				claimSound.Volume=0.8; claimSound.Parent=workspace; claimSound:Play()
-				game:GetService("Debris"):AddItem(claimSound,5)
-				-- 2D GUI confetti
-				local dailyConfettiGui=Instance.new("ScreenGui"); dailyConfettiGui.Name="DailyConfetti"
-				dailyConfettiGui.ResetOnSpawn=false; dailyConfettiGui.Parent=PlayerGui
-				task.spawn(function()
-					for i=1,40 do
-						task.wait(0.04)
-						local confetti=Instance.new("Frame")
-						confetti.Size=UDim2.new(0,math.random(10,16),0,math.random(10,16))
-						confetti.Position=UDim2.new(math.random(10,90)/100,0,0,math.random(-20,0))
-						confetti.BackgroundColor3=Color3.fromHSV(math.random(0,100)/100,1,1)
-						confetti.BorderSizePixel=0; confetti.ZIndex=25; confetti.Rotation=math.random(0,360)
-						confetti.Parent=dailyConfettiGui
-						local uic=Instance.new("UICorner"); uic.CornerRadius=UDim.new(0,3); uic.Parent=confetti
-						TweenService:Create(confetti,TweenInfo.new(2.5),{
-							Position=UDim2.new(confetti.Position.X.Scale,0,1,60),
-							Rotation=math.random(360),
-							BackgroundTransparency=1
-						}):Play()
-						game:GetService("Debris"):AddItem(confetti,2.6)
-					end
-					task.wait(3)
-					dailyConfettiGui:Destroy()
-				end)
-				showFloatingText("\xF0\x9F\x8E\x81 "..(reward.name or "Reward").." UNLOCKED!",Color3.fromRGB(255,215,0))
-				if reward.type=="trail" then task.delay(0.5,function() updateTrailSelector() end) end
-				local char2=player.Character; local hrp2=char2 and char2:FindFirstChild("HumanoidRootPart")
-				if hrp2 then
-					local Debris=game:GetService("Debris")
-					for j=1,25 do
-						task.delay(j*0.08,function()
-							pcall(function()
-								local c=Instance.new("Part"); c.Size=Vector3.new(0.5,0.5,0.5)
-								c.Color=Color3.fromHSV(math.random(),0.9,1); c.Material=Enum.Material.Neon
-								c.CanCollide=false; c.CastShadow=false; c.Anchored=false
-								c.Position=hrp2.Position+Vector3.new(math.random(-12,12),15,math.random(-12,12)); c.Parent=workspace
-								local bv=Instance.new("BodyVelocity"); bv.MaxForce=Vector3.new(1e6,1e6,1e6)
-								bv.Velocity=Vector3.new(math.random(-6,6),-6,math.random(-6,6)); bv.Parent=c
-								Debris:AddItem(c,2.5)
-							end)
-						end)
-					end
-				end
-			end
-		end)
-	end)
-	print("DAILY REWARDS SYSTEM READY")
-end)
 
 -- ===== BIRD NUKE (offensive): DIE + RESPAWN AT LAUNCH AMOUNT when someone ELSE nukes =====
 -- When another player nukes, the victim's character is KILLED here (Humanoid.Health = 0) and goes
@@ -2536,12 +2288,12 @@ end
 	local inS = inviteSideFrame:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
 	inS.Color = Color3.fromRGB(80,30,140); inS.Thickness = 3; inS.Parent = inviteSideFrame
 
-	-- DAILY BUTTON  (variable: dailySideFrame, line 303)
-	dailySideFrame.BackgroundColor3 = Color3.fromRGB(255,150,30)
+	-- PETS BUTTON  (variable kept as dailySideFrame; repurposed paw button)
+	dailySideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70)
 	local daC = dailySideFrame:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
 	daC.CornerRadius = UDim.new(0,16); daC.Parent = dailySideFrame
 	local daS = dailySideFrame:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
-	daS.Color = Color3.fromRGB(180,80,0); daS.Thickness = 3; daS.Parent = dailySideFrame
+	daS.Color = Color3.fromRGB(40,110,40); daS.Thickness = 3; daS.Parent = dailySideFrame
 
 	-- RIGHT PANEL  (variable: rightPanel, line 160)
 	rightPanel.BackgroundColor3 = Color3.fromRGB(40,120,220)
@@ -2628,7 +2380,7 @@ end)()
 	}) end
 	shopSideFrame.BackgroundColor3 = Color3.fromRGB(50,220,50)
 	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(180,80,255)
-	dailySideFrame.BackgroundColor3 = Color3.fromRGB(255,160,20)
+	dailySideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70)
 	shopSideFrame.Size = UDim2.new(0,95,0,95)
 	inviteSideFrame.Size = UDim2.new(0,95,0,95)
 	dailySideFrame.Size = UDim2.new(0,95,0,95)

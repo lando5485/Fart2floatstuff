@@ -3,7 +3,7 @@
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
-local rewardStore = nil
+-- (Daily Rewards removed: rewardStore / DAILY_REWARDS / claim logic deleted.)
 
 -- HOLD players on join: no character auto-spawns, so nothing falls/moves while the loading screen +
 -- island-select menu are up. The player is spawned manually onto their chosen island (SelectIslandEvent).
@@ -164,24 +164,7 @@ local DISABLE_PERKS_FOR_BALANCE = false
 -- (Ambient bird swarms are gated by a matching DISABLE_EVENTS flag in EventClient.client.lua — keep
 -- the two in sync. The Bird Nuke PRODUCT is unaffected and still works.)
 local DISABLE_EVENTS = false
--- COINS ONLY now -- no trails, items, or gamepasses in the daily rewards. Small amounts
--- by design so they don't shortcut the early grind or eclipse normal flight earnings on
--- upper islands. (The colored/glitter trail is SHOP-ONLY now -- the GlitterTrail gamepass.)
-local DAILY_REWARDS = {
-	[1] = {type="coins", amount=5,    name="5 Coins",    emoji="\xF0\x9F\xAA\x99"},
-	[2] = {type="coins", amount=25,   name="25 Coins",   emoji="\xF0\x9F\xAA\x99"},
-	[3] = {type="coins", amount=75,   name="75 Coins",   emoji="\xF0\x9F\xAA\x99"},
-	[4] = {type="coins", amount=150,  name="150 Coins",  emoji="\xF0\x9F\xAA\x99"},
-	[5] = {type="coins", amount=300,  name="300 Coins",  emoji="\xF0\x9F\xAA\x99"},
-	[6] = {type="coins", amount=500,  name="500 Coins",  emoji="\xF0\x9F\xAA\x99"},
-	[7] = {type="coins", amount=1000, name="1000 Coins", emoji="\xF0\x9F\xAA\x99"},
-}
--- Days 8+ loop these (coins only, kept modest).
-local CYCLE_REWARDS = {
-	{type="coins", amount=100, name="100 Coins", emoji="\xF0\x9F\xAA\x99"},
-	{type="coins", amount=175, name="175 Coins", emoji="\xF0\x9F\xAA\x99"},
-	{type="coins", amount=300, name="300 Coins", emoji="\xF0\x9F\xAA\x99"},
-}
+-- (Daily Rewards feature removed entirely -- reward tables, claim logic, and the DailyRewards_v1 store deleted.)
 local playerCoinAccum = {}
 local GamepassEvent = nil
 task.spawn(function() GamepassEvent = RS:WaitForChild("GamepassEvent", 10) end)
@@ -192,7 +175,6 @@ task.spawn(function() BirdNukeEvent = RS:WaitForChild("BirdNukeEvent", 10) end)
 local playerDataStore = nil
 pcall(function()
 	local DataStoreService = game:GetService("DataStoreService")
-	rewardStore = DataStoreService:GetDataStore("DailyRewards_v1")
 	playerDataStore = DataStoreService:GetDataStore("PlayerData_v1")
 end)
 print("NOTE: Enable Studio API Access in")
@@ -211,12 +193,60 @@ local gamepassState = {}          -- [player] = { twoXForever=bool, glitterTrail
 local gamepassReady = {}          -- [player] = true once the on-join ownership check completed
 -- PERMANENT TEST ACCOUNT: this UserId never loads/saves (always a brand-new player every join).
 local TEST_ACCOUNT_USERID = 1086836724  -- lando5485
+-- =====================================================================================================
+-- \xE2\x9A\xA0 FRESH PLAYER TEST OVERRIDE (Broskie310111) -- TEMPORARY. SET false / DELETE THIS BLOCK BEFORE LAUNCH.
+-- When FRESH_PLAYER_TEST is true, the player whose UserId == FRESH_PLAYER_USERID loads as a BRAND-NEW
+-- player (new-player DEFAULTS below), ALL their gamepasses are VOIDED for the session, and NOTHING is
+-- saved for them -- so their REAL data on disk is left untouched and is restored simply by flipping this
+-- flag back to false. (Hooks live in fetchPlayerData, savePlayerData, and the join gamepass loop.)
+--
+-- New-player DEFAULTS a fresh account gets (from DEFAULT_COINS/STOMACH/ISLAND + the load path below):
+--   coins = 25, StomachMax = 100 (Tiny Gut), Island = 1, CurrentPower/fartMeter = 0,
+--   TotalFartPower = 0, TotalCoinsEarned = 0, HighestIsland = 1, no gamepasses.
+--
+-- ===== BROSKIE RESTORE DATA (current saved state on disk, recorded BEFORE the override) =====
+--   UserId / DataStore key (PlayerData_v1): 1418148401
+--   From F9 save logs:  coins = 2,  highestIsland = 13,  stomachMax = 9999 (Infinite Gut tier),  saveVersion = 4
+--   Owned gamepasses (inferred from stomachMax 9999): Infinite Gut; plus whatever else UserOwnsGamePassAsync reports live.
+--   NOT captured in the logs (island, totalFartPower, totalCoinsEarned, fartMeter): these are UNCHANGED on
+--   disk -- because saving is DISABLED for this user in fresh mode, the real save is never overwritten, so
+--   the full record (including these fields) survives intact. RESTORE = just set FRESH_PLAYER_TEST = false.
+-- =====================================================================================================
+local FRESH_PLAYER_TEST = true          -- \xE2\x9A\xA0 TEST: forces Broskie310111 to load as a fresh new player + void gamepasses. SET false / REMOVE BEFORE LAUNCH.
+local FRESH_PLAYER_USERID = 1418148401  -- Broskie310111 (DataStore PlayerData_v1 key)
+-- \xE2\x9A\xA0 SPAWN-AT-PIZZA-PALMS TEST (Broskie310111) -- TEMPORARY. SET false / REMOVE BEFORE LAUNCH.
+-- When true, this SUPERSEDES FRESH_PLAYER_TEST for Broskie's account: instead of loading island-1 fresh
+-- defaults, they load with Island 14 (Pizza Palms) unlocked + huge test gas/stomach so they can fly up
+-- to the black hole. Saving stays DISABLED for this user (real data preserved), exactly like fresh mode.
+-- To revert: set this false (back to fresh mode) or set BOTH test flags false (back to real state).
+local SPAWN_AT_PIZZA_PALMS_TEST = true  -- \xE2\x9A\xA0 TEST: spawns Broskie310111 on Island 14 to view the black hole. SET false / REMOVE BEFORE LAUNCH.
+-- =====================================================================================================
+-- \xE2\x9A\xA0 FRESH PLAYER 2 TEST OVERRIDE (itsmaddmax2) -- TEMPORARY, INDEPENDENT of Broskie's overrides above.
+-- When FRESH_PLAYER_2_TEST is true AND the joining player is itsmaddmax2 (matched by userId OR name), they
+-- load brand-new-player DEFAULTS every join, ALL their gamepasses are VOIDED for the session, and NOTHING
+-- is saved for them -- so they always start over and their real data (if any) is preserved. Only affects
+-- itsmaddmax2; Broskie's account is matched by its own userId, so the two never interfere.
+local FRESH_PLAYER_2_TEST   = true            -- \xE2\x9A\xA0 TEST: itsmaddmax2 always loads as a fresh new player. REMOVE BEFORE LAUNCH.
+local FRESH_PLAYER_2_USERID = 0               -- \xE2\x9A\xA0 REPLACE with itsmaddmax2's real userId (printed to F9 on their first join)
+local FRESH_PLAYER_2_NAME   = "itsmaddmax2"   -- name fallback so it works before the userId is filled in
+-- True if `player` is the itsmaddmax2 fresh-player test account (by userId OR name). Independent of Broskie.
+local function isFreshPlayer2(player)
+	return FRESH_PLAYER_2_TEST and (player.UserId == FRESH_PLAYER_2_USERID or player.Name == FRESH_PLAYER_2_NAME)
+end
 -- FART-METER PERSISTENCE: lastMeter = the player's last-known live meter (snapshotted on meter changes,
 -- so a respawn/cleanup that zeros CurrentPower can't make us SAVE a stale 0). joinRestoreMeter = the
 -- saved meter to re-apply AFTER the player's first spawn settles (the spawn's onLand zeros CurrentPower,
 -- which is decrease-only, so the load must be re-applied server-side post-spawn).
 local lastMeter = {}              -- [player] = last-known meter to SAVE
 local joinRestoreMeter = {}       -- [player] = saved meter to RESTORE after first spawn
+-- PET OWNERSHIP (cosmetic). Persisted in PlayerData_v1 under saved.ownedPets and shared with
+-- PetSystem.server.lua (which reads/writes this table on claim); PlayerStats just persists it.
+-- e.g. _G.playerOwnedPets[player] = { BroccoliPet = true }. Loaded into here on join, saved on save.
+_G.playerOwnedPets = _G.playerOwnedPets or {}
+-- Equipped-pet choice (cosmetic, additive). Persisted under saved.equippedPet; shared with PetSystem.
+_G.playerEquippedPet = _G.playerEquippedPet or {}
+-- Discovered pet QUESTS (cosmetic, additive). Persisted under saved.discoveredQuests; shared with PetSystem.
+_G.playerDiscoveredQuests = _G.playerDiscoveredQuests or {}
 local DEFAULT_COINS, DEFAULT_STOMACH, DEFAULT_ISLAND = 25, 100, 1 -- new player: 25 coins, Tiny gut (100), island 1
 -- SAVE RECORD VERSION. ONE-TIME WIPE: bumped to 4. On load, any record whose saveVersion ~= SAVE_VERSION
 -- (old records have no saveVersion field at all -> nil; version-2 AND version-3 records from the prior
@@ -271,6 +301,31 @@ local function fetchPlayerData(player)
 		print("[TEST ACCOUNT] lando5485 - permanent reset, save disabled")
 		return "ok", nil -- brand-new EVERY join (25 coins, Tiny gut, island 1, no progress, no saved meter)
 	end
+	if SPAWN_AT_PIZZA_PALMS_TEST and player.UserId == FRESH_PLAYER_USERID then
+		-- PRIORITY over FRESH_PLAYER_TEST: hand back a synthetic "save" so the load path below spawns
+		-- Broskie on Island 14 (Pizza Palms) with huge test gas/stomach (full tank) to reach the black
+		-- hole. saveVersion stamped so it isn't wiped. NEVER persisted (savePlayerData skips this user).
+		print("[PlayerStats] \xE2\x9A\xA0 SPAWN_AT_PIZZA_PALMS_TEST ACTIVE for Broskie310111 - spawning on Island 14 with test gas/stomach to view black hole. Saving DISABLED. REMOVE BEFORE LAUNCH.")
+		return "ok", {
+			saveVersion      = SAVE_VERSION, -- match current version so the load path doesn't treat it as a wipe
+			coins            = 1000000,      -- generous test coins
+			stomachMax       = 99999,        -- huge gut -> tons of fuel / very high climb
+			island           = 14,           -- Pizza Palms unlocked + selected-able in the menu
+			highestIsland    = 14,           -- home base = Island 14 (spawns on its stand)
+			totalFartPower   = 0,
+			totalCoinsEarned = 0,
+			fartMeter        = 99999,         -- full gas (clamped to stomachMax on load)
+		}
+	end
+	if FRESH_PLAYER_TEST and player.UserId == FRESH_PLAYER_USERID then
+		print("[PlayerStats] \xE2\x9A\xA0 FRESH PLAYER TEST ACTIVE for Broskie310111 - loading new-player defaults, gamepasses voided, saving DISABLED for this user. REMOVE BEFORE LAUNCH.")
+		return "ok", nil -- brand-new defaults; real save is left untouched (savePlayerData also skips this user)
+	end
+	if isFreshPlayer2(player) then
+		print("[PlayerStats] itsmaddmax2 joined - userId = "..player.UserId.." (put this in FRESH_PLAYER_2_USERID)")
+		print("[PlayerStats] \xE2\x9A\xA0 FRESH PLAYER 2 TEST ACTIVE for itsmaddmax2 - new-player defaults, gamepasses voided, saving DISABLED. REMOVE BEFORE LAUNCH.")
+		return "ok", nil -- brand-new defaults; nothing saved (savePlayerData also skips this user)
+	end
 	if DISABLE_SAVE_FOR_TESTING then
 		print("LOAD: "..player.Name.." SKIPPED (DISABLE_SAVE_FOR_TESTING) — starting as a brand-new player (defaults)")
 		return "ok", nil -- "ok" + nil = brand-new player -> defaults applied (25 coins, island 1, Tiny Gut)
@@ -299,6 +354,14 @@ local function savePlayerData(player, trigger)
 	trigger = trigger or "?"
 	if player.UserId == TEST_ACCOUNT_USERID then
 		return -- permanent test account (lando5485): NEVER write to the DataStore
+	end
+	if (FRESH_PLAYER_TEST or SPAWN_AT_PIZZA_PALMS_TEST) and player.UserId == FRESH_PLAYER_USERID then
+		print("SAVE ("..trigger.."): Broskie310111 SKIPPED (FRESH/SPAWN test) — real save preserved on disk, test stats never persisted")
+		return -- \xE2\x9A\xA0 TEST: never overwrite Broskie's real data while EITHER fresh or spawn-test mode is on
+	end
+	if isFreshPlayer2(player) then
+		print("SAVE ("..trigger.."): itsmaddmax2 SKIPPED (FRESH PLAYER 2 test) — never persisted; resets fresh each session")
+		return -- \xE2\x9A\xA0 TEST: never overwrite itsmaddmax2's data while fresh-player-2 mode is on
 	end
 	if DISABLE_SAVE_FOR_TESTING then
 		print("SAVE ("..trigger.."): "..player.Name.." SKIPPED (DISABLE_SAVE_FOR_TESTING) — test runs are not persisted")
@@ -330,6 +393,9 @@ local function savePlayerData(player, trigger)
 		totalFartPower   = val("TotalFartPower", 0),
 		totalCoinsEarned = val("TotalCoinsEarned", 0),
 		fartMeter        = meterToSave,  -- persist the player's CURRENT fart-meter (raw power), from the snapshot
+		ownedPets        = _G.playerOwnedPets[player] or {},  -- cosmetic pet ownership + per-pet {level,height,time}
+		equippedPet      = _G.playerEquippedPet[player],      -- cosmetic: which pet is currently equipped (additive)
+		discoveredQuests = _G.playerDiscoveredQuests[player] or {}, -- cosmetic: which pet quests are discovered (additive)
 	}
 	print(string.format("[SAVE METER] player=%s meter=%d", player.Name, meterToSave))
 	local key = tostring(player.UserId)
@@ -653,6 +719,13 @@ Players.PlayerAdded:Connect(function(player)
 	print("LOAD ISLAND: "..player.Name.." restored highestIsland="..restoredIsland..", teleporting to stand "..restoredIsland)
 	dataLoaded[player] = true
 	playerCoinAccum[player] = 0
+	-- PETS: restore cosmetic pet ownership from the save (fresh/test/synthetic saves have no ownedPets
+	-- field -> {} -> no pet, which respects FRESH_PLAYER_TEST / SPAWN_AT_PIZZA_PALMS_TEST). Then let
+	-- PetSystem react (spawn an owned pet + send the client its state). Guarded so load never depends on it.
+	_G.playerOwnedPets[player] = saved.ownedPets or {}
+	_G.playerEquippedPet[player] = saved.equippedPet -- cosmetic equipped choice (nil if none / legacy save)
+	_G.playerDiscoveredQuests[player] = saved.discoveredQuests or {} -- cosmetic discovered-quest set (empty / legacy save)
+	if _G.petsApplyOnJoin then pcall(function() _G.petsApplyOnJoin(player) end) end
 	-- Gamepass ownership is read LIVE each join (never saved).
 	task.spawn(function()
 		local gpData = {twoXForever=false, glitterTrail=false}
@@ -661,6 +734,8 @@ Players.PlayerAdded:Connect(function(player)
 				local ok, owns = pcall(function()
 					return MarketplaceService:UserOwnsGamePassAsync(player.UserId, id)
 				end)
+				if FRESH_PLAYER_TEST and player.UserId == FRESH_PLAYER_USERID then owns = false end -- \xE2\x9A\xA0 TEST: VOID all gamepasses for Broskie310111 so they get the true fresh-player experience (no 2x, no Glitter, no Infinite Gut)
+				if isFreshPlayer2(player) then owns = false end -- \xE2\x9A\xA0 TEST: VOID all gamepasses for itsmaddmax2 (fresh-player experience)
 				if ok and owns then
 					if name == "TwoXForever" then gpData.twoXForever = true; player:SetAttribute("HasTwoXForever", true)
 					elseif name == "GlitterTrail" then gpData.glitterTrail = true; player:SetAttribute("HasGlitterTrail", true)
@@ -723,36 +798,12 @@ Players.PlayerRemoving:Connect(function(player)
 	gamepassReady[player] = nil
 	lastMeter[player] = nil       -- cleared AFTER save (save reads it for the meter)
 	joinRestoreMeter[player] = nil
+	_G.playerOwnedPets[player] = nil  -- cleared AFTER save (save reads it for ownedPets)
+	_G.playerEquippedPet[player] = nil
+	_G.playerDiscoveredQuests[player] = nil
 end)
 
-Players.PlayerAdded:Connect(function(player)
-	task.spawn(function()
-		local userId = tostring(player.UserId)
-		local isTestAccount = (player.UserId == TEST_ACCOUNT_USERID) -- lando5485: never loads/saves daily state (always fresh, always claimable)
-		local data = nil
-		if rewardStore and not isTestAccount then
-			pcall(function() data = rewardStore:GetAsync(userId) end)
-		end
-		if not data then data = {lastClaim=0, streak=0, unlockedTrails={}, hasRainbow=false} end
-		local now = os.time()
-		local hoursSince = (now - data.lastClaim) / 3600
-		local available = hoursSince >= 20
-		local broken = hoursSince >= 48 and data.lastClaim > 0
-		if broken then data.streak = 0; if rewardStore and not isTestAccount then pcall(function() rewardStore:SetAsync(userId, data) end) end end
-		player:SetAttribute("DailyStreak", data.streak)
-		player:SetAttribute("DailyAvailable", available)
-		player:SetAttribute("HasRainbowTrail", data.hasRainbow or false)
-		local DailyRewardEvent = RS:WaitForChild("DailyRewardEvent", 10)
-		if DailyRewardEvent then
-			pcall(function()
-				DailyRewardEvent:FireClient(player, {
-					streak = data.streak, available = available,
-					unlockedTrails = data.unlockedTrails, hasRainbow = data.hasRainbow or false,
-				})
-			end)
-		end
-	end)
-end)
+-- (Daily Rewards join-handshake removed.)
 
 BuyFoodEvent.OnServerEvent:Connect(function(player, foodName)
 	print("SERVER RECEIVED BUY:", player.Name, foodName)
@@ -772,8 +823,10 @@ BuyFoodEvent.OnServerEvent:Connect(function(player, foodName)
 		print("FOOD NOT FOUND:", foodName)
 		return
 	end
+	-- FAILURE CHECK 1 (COINS FIRST — the common blocker): not enough coins -> "not_enough_coins".
 	if coins.Value < food.price then
 		print("NOT ENOUGH COINS:", player.Name, coins.Value, "<", food.price)
+		pcall(function() StomachFullEvent:FireClient(player, "not_enough_coins") end) -- specific reason for the client
 		return
 	end
 	if not currentPower or not stomachMax then return end
@@ -787,9 +840,17 @@ BuyFoodEvent.OnServerEvent:Connect(function(player, foodName)
 	local powerGain   = has2x and math.floor(food.power * POWER_PASS_MULT) or food.power
 	local effectiveMax = has2x and math.floor(stomachMax.Value * POWER_PASS_MULT) or stomachMax.Value
 	local newPower = currentPower.Value + powerGain
+	-- FAILURE CHECK 2 (only reached when coins are sufficient): does it fit the REMAINING stomach space?
+	-- Distinguish TRULY FULL (no room at all -> "stomach_full") from HAS-ROOM-but-too-big ("not_enough_room").
 	if newPower > effectiveMax then
-		print("STOMACH FULL:", player.Name, currentPower.Value, "+", powerGain, ">", effectiveMax)
-		pcall(function() StomachFullEvent:FireClient(player) end)
+		local remaining = effectiveMax - currentPower.Value
+		if remaining <= 0 then
+			print("STOMACH FULL:", player.Name, currentPower.Value, "/", effectiveMax, "(no room at all)")
+			pcall(function() StomachFullEvent:FireClient(player, "stomach_full") end)    -- truly full
+		else
+			print("NOT ENOUGH ROOM:", player.Name, "+"..powerGain, ">", remaining, "remaining")
+			pcall(function() StomachFullEvent:FireClient(player, "not_enough_room") end) -- has room, this food won't fit
+		end
 		return
 	end
 	coins.Value = coins.Value - food.price
@@ -1302,6 +1363,12 @@ MarketplaceService.ProcessReceipt = function(info)
 		triggerBirdNuke(player)
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
+	-- PET upgrade Developer Product (cosmetic-only): PetSystem handles it + levels up the player's pending pet.
+	if _G.petsHandleReceipt then
+		local granted = false
+		pcall(function() granted = _G.petsHandleReceipt(player, info.ProductId) end)
+		if granted then return Enum.ProductPurchaseDecision.PurchaseGranted end
+	end
 	return Enum.ProductPurchaseDecision.NotProcessedYet
 end
 
@@ -1363,56 +1430,38 @@ task.spawn(function()
 	end
 end)
 
-task.spawn(function()
-	local ClaimRewardEvent = RS:WaitForChild("ClaimRewardEvent", 10)
-	if not ClaimRewardEvent then return end
-	ClaimRewardEvent.OnServerEvent:Connect(function(player)
-		task.spawn(function()
-			local userId = tostring(player.UserId)
-			local isTestAccount = (player.UserId == TEST_ACCOUNT_USERID) -- lando5485: never loads/saves daily state (always fresh)
-			local data = nil
-			if rewardStore and not isTestAccount then
-				pcall(function() data = rewardStore:GetAsync(userId) end)
-			end
-			if not data then data = {lastClaim=0, streak=0, unlockedTrails={}, hasRainbow=false} end
-			local now = os.time()
-			if (now - data.lastClaim) / 3600 < 20 then return end
-			data.streak = data.streak + 1
-			data.lastClaim = now
-			-- 7-DAY CYCLE: the streak keeps counting up (for the "Day N" label + milestones), but the reward
-			-- maps onto days 1-7 and repeats, matching the client's 7-day grid. This ALWAYS resolves to a
-			-- valid reward, so the coin grant below can never be skipped.
-			local cycleDay = ((data.streak - 1) % 7) + 1
-			local reward = DAILY_REWARDS[cycleDay]
-			local stats = player:FindFirstChild("leaderstats")
-			if reward then
-				if reward.type == "coins" and stats then
-					local coins = stats:FindFirstChild("Coins")
-					if coins then coins.Value = coins.Value + reward.amount end
-					local tce = stats:FindFirstChild("TotalCoinsEarned")
-					if tce then tce.Value = tce.Value + reward.amount end
-				elseif reward.type == "trail" then
-					-- (colored trail reward REMOVED -- the trail is shop-only now; grant nothing here)
-				elseif reward.type == "special" then
-					-- (rainbow trail reward REMOVED -- shop-only now; do NOT grant it from daily rewards)
-				end
-			end
-			if rewardStore and not isTestAccount then -- lando5485 never persists daily state
-				pcall(function() rewardStore:SetAsync(userId, data) end)
-			end
-			local DailyRewardEvent = RS:FindFirstChild("DailyRewardEvent")
-			if DailyRewardEvent then
-				pcall(function()
-					DailyRewardEvent:FireClient(player, {
-						streak = data.streak, available = false,
-						unlockedTrails = data.unlockedTrails, hasRainbow = data.hasRainbow,
-						justClaimed = reward,
-					})
-				end)
-			end
-		end)
+-- \xE2\x9A\xA0 TEST COMMAND: /thunderstorm triggers the storm on demand. REMOVE BEFORE LAUNCH.
+-- Lets a test account fire the THUNDERSTORM big event instantly instead of waiting for the timer.
+-- It uses the EXISTING event path -- the same ServerEventNotify FireAllClients + scheduled "END"
+-- the random loop above uses -- so the storm runs EXACTLY like normal, just on command. This does
+-- NOT change the storm or the scheduler's normal behavior (the loop above is untouched and keeps
+-- running on its own timer). Gated to the test accounts so random players can't trigger it.
+local TEST_STORM_ACCOUNTS = { ["broskie310111"] = true, ["itsmaddmax2"] = true } -- \xE2\x9A\xA0 REMOVE BEFORE LAUNCH
+local function fireThunderstormNow()
+	local ev
+	for _, e in ipairs(eventPool) do if e.name == "THUNDERSTORM" then ev = e break end end
+	if not ev then return end
+	pcall(function()
+		ServerEventNotify:FireAllClients(ev.name, ev.dispName, ev.dur, ev.msg, Color3.fromRGB(ev.r, ev.g, ev.b))
 	end)
-end)
+	task.delay(ev.dur + 2, function() -- end it after its duration, exactly like the random loop does
+		pcall(function() ServerEventNotify:FireAllClients("END", "", 0, "", Color3.new(1,1,1)) end)
+	end)
+end
+local function hookTestStormChat(player) -- \xE2\x9A\xA0 TEST: /thunderstorm chat trigger. REMOVE BEFORE LAUNCH.
+	player.Chatted:Connect(function(msg)
+		local cmd = string.lower(tostring(msg or "")):match("^%s*(.-)%s*$") -- trim + lowercase
+		if cmd == "/thunderstorm" then
+			if not TEST_STORM_ACCOUNTS[string.lower(player.Name)] then return end -- test accounts only
+			print("[TEST] /thunderstorm command used by " .. player.Name .. " - firing thunderstorm event. REMOVE BEFORE LAUNCH.")
+			fireThunderstormNow()
+		end
+	end)
+end
+for _, p in ipairs(Players:GetPlayers()) do hookTestStormChat(p) end
+Players.PlayerAdded:Connect(hookTestStormChat)
+
+-- (Daily Rewards claim handler removed.)
 
 LandingEvent.OnServerEvent:Connect(function(player, remainingPower, birdHit, realAttempt)
 	-- [LOGGING ACCURACY] Count this landing as a flight ATTEMPT only when the client reports a REAL flight

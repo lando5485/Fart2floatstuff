@@ -3,6 +3,7 @@
 -- default loading screen, preloads game assets with a REAL per-batch progress bar, then shows a
 -- PLAY button once everything is loaded. Clicking PLAY fades the screen out into the game.
 
+print("[LOADINGSCREEN] GATED-BUILD v2 running - this is the synced Rojo copy") -- [DIAG] if this does NOT appear in F9, the synced src is not the script that's running
 print("LOADING SCREEN SCRIPT RUNNING") -- confirm in F9 that this LocalScript actually executes
 
 local ReplicatedFirst    = game:GetService("ReplicatedFirst")
@@ -22,6 +23,25 @@ pcall(function() ReplicatedFirst:RemoveDefaultLoadingScreen() end)
 
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
+
+-- [DIAG] After a brief wait (let StarterGui replicate into PlayerGui + other scripts spawn), list
+-- EVERY instance named "LoadingScreen" anywhere it could live. More than one = a stale/duplicate copy
+-- is running alongside the Rojo one, which would explain a PLAY button that ignores this script's gate.
+task.spawn(function()
+	task.wait(2)
+	local found = {}
+	local function scan(container)
+		if not container then return end
+		for _, inst in ipairs(container:GetDescendants()) do
+			if inst.Name == "LoadingScreen" then table.insert(found, inst:GetFullName() .. " (" .. inst.ClassName .. ")") end
+		end
+	end
+	pcall(function() scan(game:GetService("ReplicatedFirst")) end)
+	pcall(function() scan(game:GetService("StarterGui")) end)
+	pcall(function() scan(game:GetService("StarterPlayer"):FindFirstChild("StarterPlayerScripts")) end)
+	pcall(function() scan(playerGui) end)
+	print("[LOADINGSCREEN] instances found: " .. (#found > 0 and table.concat(found, "  |  ") or "NONE"))
+end)
 
 -- ===== UI CLICK SOUND =====
 -- Same click SFX (id + volume + clone-and-play) as every other button in the game (CoreClient's
@@ -212,8 +232,9 @@ playBtn.Size = UDim2.fromScale(PLAY_W, PLAY_H)
 playBtn.BackgroundColor3 = Color3.fromRGB(55, 205, 70)
 playBtn.Text = "" -- text lives in a child label so it can have its own black outline
 playBtn.AutoButtonColor = false
-playBtn.Visible = false   -- revealed at 100%
-playBtn.Active = false    -- not clickable until ready
+playBtn.Visible = false            -- revealed at TRUE 100% (see revealPlay)
+playBtn.Active = false             -- not clickable until ready
+playBtn.BackgroundTransparency = 1 -- BULLETPROOF HIDE: fully transparent too, so it can render NOTHING before reveal even if Visible leaked (e.g. via the parent CanvasGroup)
 playBtn.ZIndex = 8
 local playCorner = Instance.new("UICorner"); playCorner.CornerRadius = UDim.new(1, 0); playCorner.Parent = playBtn -- fully rounded
 local playAspect = Instance.new("UIAspectRatioConstraint") -- keep the pill shape (width:height) on any aspect ratio
@@ -222,6 +243,7 @@ local playStroke = Instance.new("UIStroke") -- thick WHITE border around the but
 playStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 playStroke.Color = Color3.fromRGB(255, 255, 255)
 playStroke.Thickness = 5
+playStroke.Transparency = 1 -- hidden until reveal (restored in revealPlay)
 playStroke.Parent = playBtn
 local playLabel = Instance.new("TextLabel")
 playLabel.Name = "Label"
@@ -234,10 +256,11 @@ playLabel.Text = "PLAY!"
 playLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 playLabel.TextScaled = true
 playLabel.ZIndex = 9
-local playLabelStroke = Instance.new("UIStroke"); playLabelStroke.Color = Color3.fromRGB(0,0,0); playLabelStroke.Thickness = 3; playLabelStroke.Parent = playLabel
+playLabel.TextTransparency = 1 -- hidden until reveal (restored in revealPlay)
+local playLabelStroke = Instance.new("UIStroke"); playLabelStroke.Color = Color3.fromRGB(0,0,0); playLabelStroke.Thickness = 3; playLabelStroke.Transparency = 1; playLabelStroke.Parent = playLabel
 playLabel.Parent = playBtn
 playBtn.Parent = root
-playShadow = makeShadow(playBtn, root, 16); playShadow.Visible = false
+playShadow = makeShadow(playBtn, root, 16); playShadow.Visible = false; playShadow.ImageTransparency = 1 -- hidden + fully transparent until reveal
 
 -- ===== ROTATING TIPS =====
 local TIPS = {
@@ -257,10 +280,12 @@ end)
 
 -- ===== PROGRESS HELPER =====
 -- Set directly (no tween) — the driver below calls this every frame, so the fill is already smooth.
+local loadingPct = 0   -- latest whole-number percent; the PLAY button may ONLY appear once this hits 100
 local function setProgress(p)
 	p = math.clamp(p, 0, 1)
 	fill.Size = UDim2.new(p, 0, 1, 0)
 	local pct = math.floor(p * 100)
+	loadingPct = pct
 	pctPillLabel.Text = pct .. "%"
 	loadedLabel.Text = "\xF0\x9F\x92\xA5 " .. pct .. "% LOADED \xF0\x9F\x92\xA5"
 end
@@ -408,8 +433,24 @@ local function scalePlay(mult, dur)
 		{Size = UDim2.fromScale(PLAY_W * mult, PLAY_H * mult)}):Play()
 end
 
-local function revealPlay()
-	setProgress(1)
+local playRevealed = false               -- once-guard: the reveal may fire only ONCE (but IS guaranteed to fire)
+local function revealPlay(reason)
+	-- HARD GATE: the PLAY button may ONLY appear at 100% LOADED. The driver/failsafe both call setProgress(1)
+	-- right before this, so loadingPct is 100 on every legit call; an accidental early call (loadingPct < 100)
+	-- returns WITHOUT consuming the once-guard, so the real reveal can still happen later.
+	if loadingPct < 100 then return end
+	if playRevealed then return end      -- already revealed once — never double-fire
+	playRevealed = true
+	print("[LOADINGSCREEN] revealPlay fired via " .. tostring(reason or "NORMAL path") .. " (loadingPct=" .. tostring(loadingPct) .. ")")
+	setProgress(1)                       -- affirm 100% (redundant on the legit path, harmless)
+	-- Restore the transparencies that were forced to 1 at creation (the button was kept BOTH
+	-- Visible=false AND fully transparent until now, so it could not render at all before this
+	-- real-100% reveal). This is the moment — and the only moment — the button becomes visible.
+	playBtn.BackgroundTransparency = 0
+	playStroke.Transparency = 0
+	playLabel.TextTransparency = 0
+	playLabelStroke.Transparency = 0
+	playShadow.ImageTransparency = 0.5
 	playShadow.Visible = true
 	playBtn.Visible = true
 	playBtn.Active = true
@@ -431,51 +472,72 @@ playBtn.Activated:Connect(function()
 end)
 
 -- ===== TIMING + PRELOAD =====
--- The bar always takes a MINIMUM of 8s to fill (smooth, steady). PLAY appears only once BOTH
--- (a) 8s have elapsed AND (b) the real asset preload + game.Loaded are done — whichever is later.
--- So fast devices get a clean 8s fill -> PLAY; slow devices hold just shy of 100% until really loaded.
-local FILL_SECONDS = 8
+-- 10-SECOND MINIMUM fill. PLAY appears only once BOTH (a) 10s have elapsed AND (b) the real asset
+-- preload + game.Loaded are done — whichever is LATER. So if assets finish in 3s the bar still takes
+-- the full 10s; if assets take 14s it waits the full 14s. The bar HOLDS at 95% until assets are ready
+-- (it never sits at a visual 100% while still waiting), then snaps to 100% and reveals PLAY.
+local FILL_SECONDS    = 10   -- the normal MINIMUM fill time
+local PRELOAD_TIMEOUT = 11   -- if the preload hasn't finished by now (e.g. it's stuck on an unapproved/bad asset), proceed ANYWAY
+local MAX_REVEAL_TIME = 13   -- HARD FAILSAFE: PLAY is force-revealed no later than this, no matter what (must be within 12-15s)
 local assetsReady = false
+local preloadStart = os.clock()
 
--- REAL preload runs underneath; it only flips `assetsReady` when finished (it no longer drives the bar).
+-- WATCHDOG: GUARANTEES `assetsReady` flips even if PreloadAsync HANGS. PreloadAsync yields (waits) on a
+-- stuck/unapproved asset id (e.g. the "not approved" / "type does not match" sound ids), and a pcall can't
+-- interrupt a yield -- so the real preload coroutine below could block forever and never set assetsReady.
+-- This independent timer flips it after PRELOAD_TIMEOUT regardless, so the loader never waits on a stuck asset.
 task.spawn(function()
-	if not game:IsLoaded() then game.Loaded:Wait() end
-	-- Gather everything now that the place has replicated, then preload in batches (PreloadAsync
-	-- ignores instances with no content, so this is safe).
-	local assets = game:GetDescendants()
-	local total = #assets
-	local BATCH = 50
-	local i = 0
-	local loadStart = os.clock()
-	while i < total do
-		local batch = {}
-		for _ = 1, BATCH do
-			i = i + 1
-			if i > total then break end
-			batch[#batch + 1] = assets[i]
-		end
-		-- pcall so a broken/unapproved asset (e.g. bad sound id) can't error out the loader.
-		pcall(function() ContentProvider:PreloadAsync(batch) end)
-		-- 15s safety timeout: failing assets can stall PreloadAsync, so never block the player forever.
-		if os.clock() - loadStart > 15 then
-			print("LOADING: 15s safety timeout reached, proceeding")
-			break
-		end
+	while not assetsReady and (os.clock() - preloadStart) < PRELOAD_TIMEOUT do task.wait(0.1) end
+	if not assetsReady then
+		assetsReady = true
+		print(string.format("[LOADINGSCREEN] preload finished (or timed out after %.1fs)", os.clock() - preloadStart))
 	end
-	print("LOADING: preloaded " .. total .. " assets, ready")
-	assetsReady = true
 end)
 
--- DRIVER: smooth time-based fill. The % counts up in sync. The bar is held just below 100% until the
--- real load is done, then snaps to 100% and PLAY is revealed.
+-- REAL preload (best-effort, underneath). The WHOLE thing is in a pcall so a thrown error can't kill it, and
+-- each batch is in its own pcall so one bad asset can't stop the rest. Flips assetsReady when it finishes --
+-- but only if the watchdog above hasn't already.
+task.spawn(function()
+	local ok, err = pcall(function()
+		if not game:IsLoaded() then game.Loaded:Wait() end
+		local assets = game:GetDescendants()
+		local total = #assets
+		local BATCH = 50
+		local i = 0
+		while i < total do
+			local batch = {}
+			for _ = 1, BATCH do
+				i = i + 1
+				if i > total then break end
+				batch[#batch + 1] = assets[i]
+			end
+			pcall(function() ContentProvider:PreloadAsync(batch) end)
+			if (os.clock() - preloadStart) > 30 then break end -- absolute cap on the batch loop
+		end
+	end)
+	if not ok then print("[LOADINGSCREEN] preload pcall caught error: " .. tostring(err)) end
+	if not assetsReady then
+		assetsReady = true
+		print(string.format("[LOADINGSCREEN] preload finished (or timed out after %.1fs)", os.clock() - preloadStart))
+	end
+end)
+
+-- DRIVER: smooth time-based fill to the 10s MINIMUM, held just below 100% (capped at 0.95) until assets are
+-- ready, then snaps to 100% and reveals PLAY. TWO exit conditions, whichever comes FIRST:
+--   NORMAL   -> 10s elapsed AND assetsReady (the intended path),
+--   FAILSAFE -> the hard MAX_REVEAL_TIME cap (so PLAY ALWAYS appears, even if everything above stalls).
 task.spawn(function()
 	local startT = os.clock()
 	while true do
-		local timeP = math.min((os.clock() - startT) / FILL_SECONDS, 1)
-		setProgress(assetsReady and timeP or math.min(timeP, 0.95))
-		if assetsReady and timeP >= 1 then break end
+		local elapsed = os.clock() - startT
+		local timeP = math.min(elapsed / FILL_SECONDS, 1)
+		setProgress(assetsReady and timeP or math.min(timeP, 0.95)) -- hold at 95% until assets are ready
+		if assetsReady and timeP >= 1 then
+			setProgress(1); revealPlay("NORMAL path"); break
+		end
+		if elapsed >= MAX_REVEAL_TIME then
+			setProgress(1); revealPlay("FAILSAFE timeout"); break    -- never leave the player without a PLAY button
+		end
 		task.wait()
 	end
-	setProgress(1)
-	revealPlay()
 end)

@@ -717,14 +717,149 @@ end
 local activeEventSgs={}
 local function addEventSg(sg2) table.insert(activeEventSgs,sg2) end
 
+-- ===== THUNDERSTORM SKY + WEATHER (rebuilt) -- DARK storm-cloud look while FLYING, island visible when LANDED.
+-- All world/Lighting + 3D particles (no GUI overlay, so the HUD stays bright). Base Lighting is snapshotted and
+-- fully restored on storm end. Lightning = a 3D Lighting spike. Wind = _G.thunderWindVec (CoreClient applies it). =====
+local stormCC = nil
+local savedStormLighting = nil
+local stormApplied = nil            -- the active Lighting target (FLY or LAND) -- a lightning flash returns to it
+local stormClouds = nil
+local savedClouds = nil
+local stormCloudsOurs = false
+local hiddenAtmos = nil             -- a pre-existing Atmosphere temporarily DETACHED so legacy Fog renders
+local stormFXFolder = nil
+local stormFXConn = nil
+local stormMist = nil               -- enveloping dark-cloud emitter (ON while flying, OFF while landed)
+local stormRain = nil               -- heavy-rain emitter (on the whole storm)
+local stormState = nil              -- true=flying / false=landed (only tween Lighting on a transition)
+local STORM_WIND_FORCE = 90         -- STRONG storm wind -- buffets the player hard (steering ~48; still recoverable)
+-- FLYING = inside a heavy DARK thundercloud: moody dark storm gray, near-zero visibility (islands GONE).
+local STORM_FLY = {
+	ClockTime = 14, Brightness = 1.05, ExposureCompensation = -0.35,
+	FogColor = Color3.fromRGB(64,68,76), FogStart = 1, FogEnd = 14,
+	OutdoorAmbient = Color3.fromRGB(78,82,90), Ambient = Color3.fromRGB(80,84,92),
+}
+-- LANDED = on an island: cloud eases WAY back so the island is clearly visible (stormy but visible).
+local STORM_LAND = {
+	ClockTime = 14, Brightness = 1.6, ExposureCompensation = -0.1,
+	FogColor = Color3.fromRGB(150,156,166), FogStart = 50, FogEnd = 650,
+	OutdoorAmbient = Color3.fromRGB(150,156,166), Ambient = Color3.fromRGB(150,156,166),
+}
+local function startStormParticles()
+	if stormFXFolder then return end
+	stormFXFolder = Instance.new("Folder"); stormFXFolder.Name="ThunderstormFX"; stormFXFolder.Parent=workspace
+	local anchor = Instance.new("Part"); anchor.Name="StormFXAnchor"
+	anchor.Size=Vector3.new(46,30,46); anchor.Transparency=1
+	anchor.Anchored=true; anchor.CanCollide=false; anchor.CanQuery=false; anchor.CanTouch=false; anchor.CastShadow=false
+	anchor.Parent=stormFXFolder
+	local mist=Instance.new("ParticleEmitter"); mist.Name="StormMist"; mist.Texture="rbxasset://textures/particles/smoke_main.dds"
+	mist.Rate=44; mist.Lifetime=NumberRange.new(2.5,4.5); mist.Speed=NumberRange.new(3,9); mist.SpreadAngle=Vector2.new(180,180)
+	mist.Rotation=NumberRange.new(0,360); mist.RotSpeed=NumberRange.new(-28,28)
+	mist.Size=NumberSequence.new({NumberSequenceKeypoint.new(0,22),NumberSequenceKeypoint.new(1,44)})
+	mist.Color=ColorSequence.new(Color3.fromRGB(92,96,104),Color3.fromRGB(70,74,82)) -- DARK storm gray cloud
+	mist.LightEmission=0.1; mist.LightInfluence=0.8
+	mist.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(0.18,0.3),NumberSequenceKeypoint.new(0.8,0.34),NumberSequenceKeypoint.new(1,1)})
+	mist.Enabled=false; mist.Parent=anchor; stormMist=mist
+	local rain=Instance.new("ParticleEmitter"); rain.Name="StormRain"; rain.Texture="rbxasset://textures/particles/smoke_main.dds"
+	rain.Rate=340; rain.Lifetime=NumberRange.new(0.45,0.75); rain.Speed=NumberRange.new(0,0); rain.Acceleration=Vector3.new(0,-230,0)
+	rain.EmissionDirection=Enum.NormalId.Top; rain.SpreadAngle=Vector2.new(10,10)
+	rain.Size=NumberSequence.new(0.5); rain.Color=ColorSequence.new(Color3.fromRGB(150,170,205))
+	rain.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0.25),NumberSequenceKeypoint.new(1,0.5)})
+	rain.LightEmission=0.2; rain.LightInfluence=0.5; rain.Parent=anchor; stormRain=rain
+	stormFXConn=RunService.RenderStepped:Connect(function()
+		local c=workspace.CurrentCamera
+		if c and anchor and anchor.Parent then anchor.CFrame=c.CFrame*CFrame.new(0,4,-6) end
+	end)
+end
+local function stopStormParticles()
+	if stormFXConn then stormFXConn:Disconnect(); stormFXConn=nil end
+	stormMist=nil; stormRain=nil
+	if stormFXFolder then
+		local fdr=stormFXFolder; stormFXFolder=nil
+		for _,d in ipairs(fdr:GetDescendants()) do if d:IsA("ParticleEmitter") then d.Enabled=false end end
+		task.delay(5,function() pcall(function() if fdr then fdr:Destroy() end end) end)
+	end
+end
+local function isPlayerFlying()
+	if _G.isFlying==true then return true end
+	local ch=player.Character; local hum=ch and ch:FindFirstChildOfClass("Humanoid")
+	return (hum~=nil) and (hum.FloorMaterial==Enum.Material.Air)
+end
+local function applyStormState(flying, t)
+	local target = flying and STORM_FLY or STORM_LAND
+	stormApplied = target
+	TweenService:Create(Lighting, TweenInfo.new(t or 1.1, Enum.EasingStyle.Sine), {
+		ClockTime=target.ClockTime, Brightness=target.Brightness, ExposureCompensation=target.ExposureCompensation,
+		FogColor=target.FogColor, FogStart=target.FogStart, FogEnd=target.FogEnd,
+		OutdoorAmbient=target.OutdoorAmbient, Ambient=target.Ambient,
+	}):Play()
+	if stormMist then stormMist.Enabled = flying end -- thick enveloping cloud only while flying
+end
+local function startStormSky()
+	if not savedStormLighting then
+		savedStormLighting={ ClockTime=Lighting.ClockTime, Brightness=Lighting.Brightness, ExposureCompensation=Lighting.ExposureCompensation,
+			FogColor=Lighting.FogColor, FogStart=Lighting.FogStart, FogEnd=Lighting.FogEnd,
+			OutdoorAmbient=Lighting.OutdoorAmbient, Ambient=Lighting.Ambient }
+	end
+	if not hiddenAtmos then local atm=Lighting:FindFirstChildOfClass("Atmosphere"); if atm then hiddenAtmos=atm; atm.Parent=nil end end
+	if not stormCC then stormCC=Instance.new("ColorCorrectionEffect"); stormCC.Name="ThunderstormCC"; stormCC.Parent=Lighting end
+	stormCC.Brightness=0; stormCC.Contrast=0; stormCC.Saturation=0; stormCC.TintColor=Color3.fromRGB(255,255,255)
+	TweenService:Create(stormCC, TweenInfo.new(1.5), {Brightness=0, Contrast=-0.03, Saturation=-0.35, TintColor=Color3.fromRGB(244,246,250)}):Play()
+	startStormParticles()
+	stormState = isPlayerFlying()
+	applyStormState(stormState, 1.5)
+	local terrain=workspace:FindFirstChildOfClass("Terrain")
+	if terrain then
+		local c=terrain:FindFirstChildOfClass("Clouds")
+		if c then if not savedClouds then savedClouds={Cover=c.Cover,Density=c.Density,Color=c.Color,Enabled=c.Enabled} end stormClouds=c; stormCloudsOurs=false
+		else stormClouds=Instance.new("Clouds"); stormClouds.Parent=terrain; stormCloudsOurs=true end
+		stormClouds.Enabled=true
+		TweenService:Create(stormClouds, TweenInfo.new(1.5), {Cover=0.92,Density=0.62,Color=Color3.fromRGB(90,94,102)}):Play()
+	end
+end
+local function triggerLightning()
+	if not stormApplied then return end
+	Lighting.Brightness=5; Lighting.ExposureCompensation=1.6
+	Lighting.OutdoorAmbient=Color3.fromRGB(248,250,255); Lighting.Ambient=Color3.fromRGB(238,242,250)
+	TweenService:Create(Lighting, TweenInfo.new(0.3), {
+		Brightness=stormApplied.Brightness, ExposureCompensation=stormApplied.ExposureCompensation,
+		OutdoorAmbient=stormApplied.OutdoorAmbient, Ambient=stormApplied.Ambient,
+	}):Play()
+end
+local function stopStormSky()
+	stormApplied=nil; stormState=nil
+	stopStormParticles()
+	if savedStormLighting then
+		TweenService:Create(Lighting, TweenInfo.new(1.5), {
+			ClockTime=savedStormLighting.ClockTime, Brightness=savedStormLighting.Brightness, ExposureCompensation=savedStormLighting.ExposureCompensation,
+			FogColor=savedStormLighting.FogColor, FogStart=savedStormLighting.FogStart, FogEnd=savedStormLighting.FogEnd,
+			OutdoorAmbient=savedStormLighting.OutdoorAmbient, Ambient=savedStormLighting.Ambient,
+		}):Play()
+		savedStormLighting=nil
+	end
+	if stormCC then local cc=stormCC; stormCC=nil
+		local fd=TweenService:Create(cc, TweenInfo.new(1.5), {Brightness=0,Contrast=0,Saturation=0,TintColor=Color3.fromRGB(255,255,255)})
+		fd:Play(); fd.Completed:Connect(function() pcall(function() cc:Destroy() end) end)
+	end
+	if stormClouds then local cl=stormClouds; stormClouds=nil
+		if stormCloudsOurs then stormCloudsOurs=false
+			local t=TweenService:Create(cl, TweenInfo.new(1.5), {Cover=0,Density=0}); t:Play(); t.Completed:Connect(function() pcall(function() cl:Destroy() end) end)
+		elseif savedClouds then local s=savedClouds; savedClouds=nil
+			TweenService:Create(cl, TweenInfo.new(1.5), {Cover=s.Cover,Density=s.Density,Color=s.Color}):Play(); cl.Enabled=s.Enabled
+		end
+	end
+	if hiddenAtmos then local atm=hiddenAtmos; hiddenAtmos=nil; pcall(function() if atm and not atm.Parent then atm.Parent=Lighting end end) end
+end
+
 local function cleanupWeather()
 	for _,obj in ipairs(workspace:GetChildren()) do
 		if obj.Name=="RainDrop" or obj.Name=="WindStreak" or obj.Name=="AggressiveBird" or obj.Name=="SpaceJunk" or obj.Name=="HazardPlane" or obj.Name=="PlaneTracer" then
 			pcall(function() obj:Destroy() end)
 		end
 	end
-	-- Clear the full-screen dark storm overlay IMMEDIATELY (no lingering screen tint on mobile).
-	darkOverlay.BackgroundTransparency=1; darkOverlay.Visible=false
+	-- Restore the storm Lighting/fog/particles to normal + kill the wind (the dark look is world/Lighting-based now).
+	pcall(stopStormSky)
+	_G.thunderWindVec=Vector3.new(0,0,0)
 	-- cleanup 2D rain frames in stormSg
 	for _,obj in ipairs(stormSg:GetChildren()) do
 		if obj.Name=="RainDrop2D" then pcall(function() obj:Destroy() end) end
@@ -854,49 +989,53 @@ end
 local function startThunderstorm(dur)
 	_G.thunderstormActive=true
 	if not thunderstormSound.IsPlaying then thunderstormSound:Play() end -- once; don't replay on re-trigger
-	-- Heavy screen blur for the storm (single tunable constant), enabled only while active.
-	stormBlur.Size=THUNDERSTORM_BLUR; stormBlur.Enabled=true
-	-- Dark overlay fade-in
-	darkOverlay.Visible=true; darkOverlay.BackgroundTransparency=1
-	TweenService:Create(darkOverlay,TweenInfo.new(1),{BackgroundTransparency=0.35}):Play()
+	stormBlur.Enabled=false -- NO screen blur: the storm look is real 3D fog + cloud particles (HUD stays bright)
+	startStormSky()           -- dark thundercloud while flying / island visible when landed + cloud/rain particles
+	_G.thunderWindVec=Vector3.new(0,0,0) -- STRONG storm wind ON (the loop evolves it; CoreClient adds it to flight)
 	startGlowPulse(Color3.fromRGB(50,50,80))
 	showEventBanner("\xe2\x9b\x88 THUNDERSTORM","\xe2\x9b\x88\xef\xb8\x8f Hold on tight!",Color3.fromRGB(50,50,80))
 	countPill.BackgroundColor3=Color3.fromRGB(50,50,80); countPill.Visible=true
 	local endT=tick()+(dur or 25)
 	task.spawn(function()
-		local lightTimer=math.random(10,20)*0.1
+		local lightTimer=math.random(40,100)*0.1
 		local rainTimer=0; local rain2DTimer=0; local windChangeTimer=0; local strikeTimer=math.random(200,400)*0.01
+		local windTarget=Vector3.new(0,0,0)
 		while tick()<endT and _G.thunderstormActive do
 			local dt2=task.wait(0.05); if not dt2 then dt2=0.05 end
-			rainTimer=rainTimer+dt2; rain2DTimer=rain2DTimer+dt2; lightTimer=lightTimer-dt2; windChangeTimer=windChangeTimer+dt2; strikeTimer=strikeTimer-dt2
+			rainTimer=rainTimer+dt2; rain2DTimer=rain2DTimer+dt2; lightTimer=lightTimer-dt2; windChangeTimer=windChangeTimer-dt2; strikeTimer=strikeTimer-dt2
 			if rainTimer>=0.5 then rainTimer=0; pcall(spawnRainBatch) end
 			if rain2DTimer>=0.3 then rain2DTimer=0; pcall(spawnRain2D) end
 			if lightTimer<=0 then
-				lightTimer=math.random(10,20)*0.1
-				lightningFlash.BackgroundTransparency=0.2
-				TweenService:Create(lightningFlash,TweenInfo.new(0.1),{BackgroundTransparency=1}):Play()
-				task.delay(0.35,function() pcall(function() thunderSound:Play() end) end)
+				lightTimer=math.random(40,100)*0.1
+				triggerLightning() -- 3D lighting SPIKE lights up the cloud (no 2D frame -> GUI stays bright)
+				task.delay(math.random(15,70)*0.01,function() pcall(function() thunderSound:Play() end) end)
 			end
 			if strikeTimer<=0 then
 				strikeTimer=math.random(200,400)*0.01
 				pcall(spawnLightningStrike)
 			end
-			if windChangeTimer>=3 then
-				windChangeTimer=0
-				local rx=math.random(1,2)==1 and math.random(-10,-3) or math.random(3,10)
-				local rz=math.random(1,2)==1 and math.random(-10,-3) or math.random(3,10)
-				_G.windstormDir=Vector3.new(rx,0,rz).Unit
+			-- STRONG VARYING WIND: re-pick a hard gust from a random direction every 2-4s, then ease toward it
+			if windChangeTimer<=0 then
+				windChangeTimer=math.random(20,40)*0.1
+				local a=math.random()*math.pi*2
+				local mag=STORM_WIND_FORCE*(0.55+math.random()*0.45)   -- 55-100% of the (strong) force
+				windTarget=Vector3.new(math.cos(a)*mag,0,math.sin(a)*mag)
 			end
+			local cur=_G.thunderWindVec or Vector3.new(0,0,0)
+			_G.thunderWindVec=cur+(windTarget-cur)*math.clamp(dt2*1.4,0,1)
+			-- FLYING = dark blinding cloud (islands gone); LANDED = fog eased so the island is visible
+			local nowFly=isPlayerFlying()
+			if nowFly~=stormState then stormState=nowFly; applyStormState(nowFly, 1.0) end
 			local rem=math.max(0,math.ceil(endT-tick()))
 			countLabel.Text="\xe2\x9b\x88 THUNDERSTORM: "..rem.."s"
 			if rem<=0 then break end
 		end
 		_G.thunderstormActive=false; glowPulseActive=false
+		_G.thunderWindVec=Vector3.new(0,0,0) -- wind off (CoreClient reads zero -> normal flight)
 		thunderstormSound:Stop() -- stop the storm sound when the event ends, even mid-playback
-		stormBlur.Enabled=false -- clear the storm blur when the event ends
-		-- Clear the lightning + dark screen overlays IMMEDIATELY (no lingering tint after the storm ends).
+		stormBlur.Enabled=false
+		stopStormSky()           -- restore Lighting/fog/particles to normal
 		lightningFlash.BackgroundTransparency=1
-		darkOverlay.BackgroundTransparency=1; darkOverlay.Visible=false
 		countPill.Visible=false; hideGlow()
 	end)
 end

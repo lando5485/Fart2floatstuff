@@ -72,7 +72,19 @@
       "Bash(luau --version)",
       "Bash(command -v luau lua luac luac5.4 luac5.3)",
       "Bash(echo \"exit: $?\")",
-      "Bash(luac -p \"C:/Users/lando/Downloads/Fart2floatstuff/src/server/UFOEffects.lua\")"
+      "Bash(luac -p \"C:/Users/lando/Downloads/Fart2floatstuff/src/server/UFOEffects.lua\")",
+      "Bash(grep -rn \"foodEmojis\\\\|Beans=\\\\|Beans =\\\\|peanut\\\\|\\\\\\\\\\\\\\\\xF0\\\\\\\\\\\\\\\\x9F\\\\\\\\\\\\\\\\xA5\\\\\\\\\\\\\\\\x9C\\\\|Beans\\\\\"\" src/client/ShopClient.client.lua)",
+      "Bash(awk -F: '$1>264')",
+      "Bash(sed -n '2228,2234p' src/client/CoreClient.client.lua)",
+      "Bash(grep -n \"local data = {\\\\|fartMeter        =\\\\|highestIsland    =\\\\|SetAsync\\(key, data\\)\" src/server/PlayerStats.server.lua)",
+      "Bash(grep -n \"LineHunt\\\\|^do$\\\\|^end$\" src/client/PetFollow.client.lua)",
+      "Bash(cd \"C:\\\\Users\\\\riley\\\\Downloads\\\\Fart2floatstuff\")",
+      "Bash(head -n 2445 src/client/PetFollow.client.lua)",
+      "Bash(mv -f src/client/PetFollow.tmp src/client/PetFollow.client.lua)",
+      "Bash(rm -rf \"/c/Users/riley/AppData/Local/Roblox/logs\"/*)",
+      "Bash(rm -rf \"/c/Users/riley/AppData/Local/Temp/Roblox\"/*)",
+      "Read(//c/Users/riley/AppData/Roaming/Code/User/**)",
+      "Bash(tasklist)"
     ]
   }
 }

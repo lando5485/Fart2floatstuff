@@ -48,14 +48,29 @@ local foodEmojis = {
 	Burrito="\xF0\x9F\x8C\xAF", Pizza="\xF0\x9F\x8D\x95"
 }
 
+-- REAL uploaded image icons (override the emoji placeholder). For any food NOT in this table the
+-- emoji from foodEmojis above is used. The food icons were always emoji TEXT, not images -- Beans
+-- showed the 🥜 PEANUT emoji as a stand-in because the bean emoji 🫘 doesn't render in Roblox's font.
+-- A food listed here renders its image (ImageLabel.Image) instead of the emoji TextLabel.
+local foodImages = {
+	Beans = "rbxassetid://133231198126712", -- uploaded bean icon (replaces the 🥜 peanut placeholder)
+}
+
+-- Per-food image SCALE (fraction of the normal icon box). Image icons fill the box edge-to-edge, so
+-- they read bigger than emoji glyphs (which have built-in whitespace). A value < 1 shrinks ONLY that
+-- food's image within its slot (kept centered, so the reduction becomes even padding). Unlisted = 1.0.
+local foodImageScale = {
+	Beans = 0.8, -- bean icon: 20% smaller, centered in its slot
+}
+
 local sg
 
 
 -- Food Shop
 sg=Instance.new("ScreenGui"); sg.Name="FoodShopGui"; sg.ResetOnSpawn=false; sg.Enabled=false; sg.DisplayOrder=100; sg.Parent=PlayerGui -- DisplayOrder 100 = definitively above the HUD (<=5) so the shop covers it
 local FoodShopGui=sg
-mkFrame(sg,{Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.new(0,0,0),BackgroundTransparency=1,Active=true}) -- invisible (was 0.4 dark film); Active=true keeps it click-blocking so HUD stays visible but not interactable while shop is open
-local foodPanel=mkFrame(sg,{Size=UDim2.new(0.92,0,0.78,0),Position=UDim2.new(0.5,0,0.5,0),AnchorPoint=Vector2.new(0.5,0.5),BackgroundColor3=Color3.fromRGB(240,248,255)})
+mkFrame(sg,{Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.new(0,0,0),BackgroundTransparency=1,Active=false}) -- invisible + Active=FALSE so clicks OUTSIDE the panel fall through to the HUD MENU BUTTONS (enables direct click-to-switch). The panel itself is Active so panel clicks don't leak to the HUD.
+local foodPanel=mkFrame(sg,{Size=UDim2.new(0.92,0,0.78,0),Position=UDim2.new(0.5,0,0.5,-45),AnchorPoint=Vector2.new(0.5,0.5),BackgroundColor3=Color3.fromRGB(240,248,255),Active=true}) -- nudged UP ~45px so its bottom clears the stomach/gut indicator below; Active=true blocks pass-through behind the panel
 mkCorner(foodPanel,16); mkStroke(foodPanel,Color3.fromRGB(100,180,255),4)
 local foodHeader=mkFrame(foodPanel,{Size=UDim2.new(1,0,0,55),BackgroundColor3=Color3.fromRGB(80,160,255)}); mkCorner(foodHeader,16)
 local foodTitle=mkLabel(foodHeader,{Text="\xF0\x9F\x8F\x9D\xEF\xB8\x8F ISLAND 1 FOOD STAND",Font=Enum.Font.Gotham,TextSize=24,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,-60,1,0),RichText=true})
@@ -69,7 +84,12 @@ foodEmoji.Text="\xF0\x9F\xA5\x9C"; foodEmoji.TextSize=80; foodEmoji.Font=Enum.Fo
 foodEmoji.RichText=false; foodEmoji.TextScaled=false
 foodEmoji.TextXAlignment=Enum.TextXAlignment.Center; foodEmoji.TextYAlignment=Enum.TextYAlignment.Center
 foodEmoji.Parent=foodLeftPanel
-local foodName=mkLabel(foodLeftPanel,{Text="Beans",Font=Enum.Font.GothamBold,TextSize=26,TextColor3=Color3.fromRGB(30,30,30),Size=UDim2.new(1,-10,0,35),Position=UDim2.new(0,5,0,135),TextXAlignment=Enum.TextXAlignment.Center})
+-- IMAGE-ICON overlay for foods that have a real uploaded image (e.g. Beans). Same box as foodEmoji;
+-- updateFoodShop shows exactly ONE of them (this image if foodImages[name], else the emoji text).
+local foodEmojiImg=Instance.new("ImageLabel"); foodEmojiImg.Name="FoodEmojiImg"
+foodEmojiImg.AnchorPoint=Vector2.new(0.5,0.5); foodEmojiImg.Position=UDim2.new(0.5,0,0,70); foodEmojiImg.Size=UDim2.new(0,120,0,120) -- centered in the 120px icon box; updateFoodShop applies the per-food scale
+foodEmojiImg.BackgroundTransparency=1; foodEmojiImg.ScaleType=Enum.ScaleType.Fit; foodEmojiImg.Visible=false; foodEmojiImg.Parent=foodLeftPanel
+local foodName=mkLabel(foodLeftPanel,{Text="Beans",Font=Enum.Font.GothamBold,TextSize=26,TextColor3=Color3.fromRGB(255,255,255),Size=UDim2.new(1,-10,0,35),Position=UDim2.new(0,5,0,135),TextXAlignment=Enum.TextXAlignment.Center})
 -- Price row: a centered [coin IMAGE][price text] pair (replaces the non-rendering 🪙 emoji
 -- prefix). foodPrice stays the price TextLabel so the live update below works unchanged.
 local foodPriceRow=mkFrame(foodLeftPanel,{Name="PriceRow",Size=UDim2.new(1,-10,0,28),Position=UDim2.new(0,5,0,174),BackgroundTransparency=1})
@@ -81,6 +101,8 @@ foodPriceIcon.Size=UDim2.new(0,22,0,22); foodPriceIcon.BackgroundTransparency=1
 foodPriceIcon.Image=COIN_IMAGE; foodPriceIcon.ScaleType=Enum.ScaleType.Fit; foodPriceIcon.Parent=foodPriceRow
 local foodPrice=mkLabel(foodPriceRow,{Name="PriceText",Text="10 coins",Font=Enum.Font.Gotham,TextSize=20,TextColor3=Color3.fromRGB(200,140,0),Size=UDim2.new(0,150,1,0),TextXAlignment=Enum.TextXAlignment.Left,LayoutOrder=2})
 local foodPower=mkLabel(foodLeftPanel,{Text="+3 power",Font=Enum.Font.GothamBold,TextSize=18,TextColor3=Color3.fromRGB(0,160,60),Size=UDim2.new(1,-10,0,26),Position=UDim2.new(0,5,0,206),TextXAlignment=Enum.TextXAlignment.Center})
+-- (Gas-restored + Owned rows REMOVED from the featured display. Name/price/power remain above; the
+-- buy buttons remain pinned to the bottom -- nothing else needs to shift, the rows were the lowest stats.)
 local foodBuyBtn=mkButton(foodLeftPanel,{Size=UDim2.new(0.44,0,0,50),Position=UDim2.new(0.04,0,1,-58),BackgroundColor3=Color3.fromRGB(50,200,50),Text="BUY FOOD",Font=Enum.Font.GothamBold,TextSize=17,TextColor3=Color3.new(1,1,1)}); mkCorner(foodBuyBtn,12)
 local foodBuyMaxBtn=mkButton(foodLeftPanel,{Size=UDim2.new(0.44,0,0,50),Position=UDim2.new(0.52,0,1,-58),BackgroundColor3=Color3.fromRGB(255,140,0),Text="BUY MAX",Font=Enum.Font.GothamBold,TextSize=15,TextColor3=Color3.new(1,1,1)}); mkCorner(foodBuyMaxBtn,12)
 local foodLockedFrame=mkFrame(foodLeftPanel,{Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.fromRGB(240,240,240),Visible=false}); mkCorner(foodLockedFrame,12)
@@ -103,6 +125,13 @@ for _,f in ipairs(_G.foods) do
 	emojiLabel.TextColor3=Color3.fromRGB(255,255,255)
 	emojiLabel.TextXAlignment=Enum.TextXAlignment.Center; emojiLabel.TextYAlignment=Enum.TextYAlignment.Center
 	emojiLabel.Parent=emojiFrame
+	-- Image-icon overlay in the cell (used instead of the emoji for foods in foodImages, e.g. Beans).
+	local iconImg=Instance.new("ImageLabel"); iconImg.Name="FoodIconImg"
+	local iScale=foodImageScale[f.name] or 1
+	iconImg.Size=UDim2.new(0,50*iScale,0,50*iScale); iconImg.Position=UDim2.new(0.5,0,0.5,0); iconImg.AnchorPoint=Vector2.new(0.5,0.5) -- per-food shrink, centered
+	iconImg.BackgroundTransparency=1; iconImg.ScaleType=Enum.ScaleType.Fit
+	iconImg.Image=foodImages[f.name] or ""; iconImg.Visible=(foodImages[f.name]~=nil); iconImg.Parent=emojiFrame
+	if foodImages[f.name] then emojiLabel.Visible=false end
 	mkLabel(cell,{Name="NameLabel",Text=f.name,Font=Enum.Font.GothamBold,TextSize=13,TextColor3=Color3.fromRGB(30,30,30),Size=UDim2.new(1,-62,0,30),Position=UDim2.new(0,60,0,5),TextXAlignment=Enum.TextXAlignment.Left})
 	-- Coin IMAGE for the cell's price row (replaces the 🪙 emoji prefix). Toggled with the
 	-- price text in updateFoodShop (hidden for locked cells, shown for unlocked/priced cells).
@@ -117,8 +146,8 @@ print("ICON FIX DONE")
 -- Premium Shop
 sg=Instance.new("ScreenGui"); sg.Name="PremiumShopGui"; sg.ResetOnSpawn=false; sg.Enabled=false; sg.DisplayOrder=100; sg.Parent=PlayerGui -- DisplayOrder 100 = definitively above the HUD (<=5) so the shop covers it
 local PremiumShopGui=sg
-mkFrame(sg,{Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.new(0,0,0),BackgroundTransparency=1,Active=true}) -- invisible (was 0.5 dark film); Active=true keeps it click-blocking so HUD stays visible but not interactable while shop is open
-local premPanel=mkFrame(sg,{Size=UDim2.new(0.9,0,0.85,0),Position=UDim2.new(0.5,0,0.5,0),AnchorPoint=Vector2.new(0.5,0.5),BackgroundColor3=Color3.fromRGB(25,90,185),ClipsDescendants=true})
+mkFrame(sg,{Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.new(0,0,0),BackgroundTransparency=1,Active=false}) -- invisible + Active=FALSE so clicks OUTSIDE the panel fall through to the HUD MENU BUTTONS (direct click-to-switch)
+local premPanel=mkFrame(sg,{Size=UDim2.new(0.9,0,0.85,0),Position=UDim2.new(0.5,0,0.5,0),AnchorPoint=Vector2.new(0.5,0.5),BackgroundColor3=Color3.fromRGB(25,90,185),ClipsDescendants=true,Active=true})
 mkCorner(premPanel,20); mkStroke(premPanel,Color3.new(1,1,1),3)
 
 local premHeader=mkFrame(premPanel,{Size=UDim2.new(1,0,0,65),BackgroundColor3=Color3.fromRGB(15,60,140)})
@@ -128,36 +157,80 @@ mkLabel(premHeader,{Text="Power up your farts!",Font=Enum.Font.Gotham,TextSize=1
 local premClose=mkButton(premHeader,{Size=UDim2.new(0,40,0,40),Position=UDim2.new(1,-48,0,12),BackgroundColor3=Color3.fromRGB(220,50,50),Text="\xe2\x9c\x95",Font=Enum.Font.GothamBold,TextSize=20,TextColor3=Color3.new(1,1,1)})
 mkCorner(premClose,8)
 
-mkLabel(premPanel,{Text="\xe2\xad\x90 GAMEPASSES",Font=Enum.Font.GothamBold,TextSize=16,TextColor3=Color3.fromRGB(255,215,0),Size=UDim2.new(1,-20,0,22),Position=UDim2.new(0,12,0,74),TextXAlignment=Enum.TextXAlignment.Left,BackgroundTransparency=1})
-mkFrame(premPanel,{Size=UDim2.new(1,-24,0,2),Position=UDim2.new(0,12,0,97),BackgroundColor3=Color3.fromRGB(255,215,0)})
-
-local function mkShopCard(xPos,yPos)
-	local c=mkFrame(premPanel,{Size=UDim2.new(0,175,0,200),Position=UDim2.new(0,xPos,0,yPos),BackgroundColor3=Color3.fromRGB(20,70,160)})
-	mkCorner(c,16); mkStroke(c,Color3.new(1,1,1),2); return c
+-- ===== GAMEPASS SHOP CONTENTS -- proper LAYOUTS (no absolute positions): a vertical scroll holds two
+-- sections; each section CENTERS its 3 cards with a horizontal UIListLayout; each card STACKS its content
+-- with a vertical UIListLayout and pins the BUY button to the bottom. So every card is uniform, evenly
+-- spaced, centered + aligned, comfortably sized, and the list scrolls so nothing is ever cut off. =====
+local premScroll=Instance.new("ScrollingFrame")
+premScroll.Name="PremiumScroll"; premScroll.BackgroundTransparency=1; premScroll.BorderSizePixel=0
+premScroll.Position=UDim2.new(0,0,0,65); premScroll.Size=UDim2.new(1,0,1,-92) -- below the 65px header, above the footer
+premScroll.ScrollBarThickness=6; premScroll.ScrollBarImageColor3=Color3.fromRGB(255,215,0)
+premScroll.CanvasSize=UDim2.new(0,0,0,0); premScroll.ScrollingDirection=Enum.ScrollingDirection.Y
+premScroll.AutomaticCanvasSize=Enum.AutomaticSize.None; premScroll.Parent=premPanel -- canvas is driven explicitly by syncCanvas below
+do
+	local sll=Instance.new("UIListLayout"); sll.FillDirection=Enum.FillDirection.Vertical
+	sll.HorizontalAlignment=Enum.HorizontalAlignment.Center; sll.Padding=UDim.new(0,10); sll.SortOrder=Enum.SortOrder.LayoutOrder; sll.Parent=premScroll
+	local slp=Instance.new("UIPadding"); slp.PaddingTop=UDim.new(0,8); slp.PaddingBottom=UDim.new(0,10); slp.Parent=premScroll
+	-- CANVAS = total content height so scrolling reaches every card. We drive CanvasSize EXPLICITLY from the
+	-- layout's measured content size (self-updating) -- the reliable equivalent of AutomaticCanvasSize=Y, so the
+	-- canvas always grows past the viewport and the scroll actually moves through ALL the items.
+	local function syncCanvas() premScroll.CanvasSize=UDim2.new(0,0,0, sll.AbsoluteContentSize.Y + 18) end
+	sll:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(syncCanvas); task.defer(syncCanvas)
 end
+local CARD_W, CARD_H = 208, 190
+-- a gold section title + underline, sized to sit in the vertical scroll list
+local function sectionHeader(text,order)
+	local h=mkFrame(premScroll,{Size=UDim2.new(1,-16,0,28),BackgroundTransparency=1,LayoutOrder=order})
+	mkLabel(h,{Text=text,Font=Enum.Font.GothamBold,TextSize=16,TextColor3=Color3.fromRGB(255,215,0),Size=UDim2.new(1,-8,0,22),Position=UDim2.new(0,4,0,0),TextXAlignment=Enum.TextXAlignment.Left})
+	mkFrame(h,{Size=UDim2.new(1,-8,0,2),Position=UDim2.new(0,4,0,25),BackgroundColor3=Color3.fromRGB(255,215,0)})
+	return h
+end
+-- a full-width row that evenly spaces + centers its cards
+local function mkSectionRow(order)
+	local row=mkFrame(premScroll,{Size=UDim2.new(1,-16,0,CARD_H),BackgroundTransparency=1,LayoutOrder=order})
+	local ll=Instance.new("UIListLayout"); ll.FillDirection=Enum.FillDirection.Horizontal
+	ll.HorizontalAlignment=Enum.HorizontalAlignment.Center; ll.VerticalAlignment=Enum.VerticalAlignment.Top
+	ll.Padding=UDim.new(0,18); ll.SortOrder=Enum.SortOrder.LayoutOrder; ll.Parent=row
+	return row
+end
+-- a uniform card whose ENTIRE content is one vertical UIListLayout: icon -> name -> price -> [desc] -> BUY,
+-- top to bottom in that order. The BUY button is the LAST list item, so it ALWAYS sits below the icon/text --
+-- it can never overlap them. UIPadding leaves room at the top for card 1's "BEST VALUE" badge overlay.
+local function mkShopCard(parent,order)
+	local c=mkFrame(parent,{Size=UDim2.new(0,CARD_W,0,CARD_H),LayoutOrder=order,BackgroundColor3=Color3.fromRGB(20,70,160)})
+	mkCorner(c,16); mkStroke(c,Color3.new(1,1,1),2)
+	local holder=mkFrame(c,{Name="Content",Size=UDim2.new(1,0,1,0),BackgroundTransparency=1})
+	local hl=Instance.new("UIListLayout"); hl.FillDirection=Enum.FillDirection.Vertical
+	hl.HorizontalAlignment=Enum.HorizontalAlignment.Center; hl.VerticalAlignment=Enum.VerticalAlignment.Top
+	hl.Padding=UDim.new(0,3); hl.SortOrder=Enum.SortOrder.LayoutOrder; hl.Parent=holder
+	local hp=Instance.new("UIPadding"); hp.PaddingTop=UDim.new(0,18); hp.PaddingBottom=UDim.new(0,6); hp.PaddingLeft=UDim.new(0,8); hp.PaddingRight=UDim.new(0,8); hp.Parent=holder
+	return c
+end
+local function cH(card) return card:FindFirstChild("Content") or card end -- the content list holder
 local function cardIcon(card,txt)
-	local l=Instance.new("TextLabel"); l.Size=UDim2.new(1,0,0,54); l.Position=UDim2.new(0,0,0,28)
-	l.BackgroundTransparency=1; l.Text=txt; l.TextSize=48; l.Font=Enum.Font.Gotham
-	l.RichText=false; l.TextXAlignment=Enum.TextXAlignment.Center; l.TextYAlignment=Enum.TextYAlignment.Center; l.Parent=card
+	mkLabel(cH(card),{Text=txt,Font=Enum.Font.Gotham,TextSize=40,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,0,0,42),LayoutOrder=1,RichText=false,TextXAlignment=Enum.TextXAlignment.Center,TextYAlignment=Enum.TextYAlignment.Center})
 end
 local function cardTitles(card,main,sub,subCol)
-	mkLabel(card,{Text=main,Font=Enum.Font.GothamBold,TextSize=16,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,-8,0,20),Position=UDim2.new(0,4,0,87),TextXAlignment=Enum.TextXAlignment.Center,BackgroundTransparency=1})
-	mkLabel(card,{Text=sub,Font=Enum.Font.GothamBold,TextSize=13,TextColor3=subCol,Size=UDim2.new(1,-8,0,18),Position=UDim2.new(0,4,0,108),TextXAlignment=Enum.TextXAlignment.Center,BackgroundTransparency=1})
+	mkLabel(cH(card),{Text=main,Font=Enum.Font.GothamBold,TextSize=16,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,0,0,19),LayoutOrder=2,TextXAlignment=Enum.TextXAlignment.Center})
+	mkLabel(cH(card),{Text=sub,Font=Enum.Font.GothamBold,TextSize=12,TextColor3=subCol,Size=UDim2.new(1,0,0,15),LayoutOrder=3,TextXAlignment=Enum.TextXAlignment.Center})
 end
 local function cardPrice(card,price)
-	mkLabel(card,{Text=price,Font=Enum.Font.GothamBold,TextSize=15,TextColor3=Color3.fromRGB(255,215,0),Size=UDim2.new(1,-8,0,18),Position=UDim2.new(0,4,0,127),TextXAlignment=Enum.TextXAlignment.Center,BackgroundTransparency=1})
+	mkLabel(cH(card),{Text=price,Font=Enum.Font.GothamBold,TextSize=15,TextColor3=Color3.fromRGB(255,215,0),Size=UDim2.new(1,0,0,17),LayoutOrder=4,TextXAlignment=Enum.TextXAlignment.Center})
 end
 local function cardDesc(card,desc)
-	mkLabel(card,{Text=desc,Font=Enum.Font.Gotham,TextSize=11,TextColor3=Color3.fromRGB(180,210,255),Size=UDim2.new(1,-8,0,13),Position=UDim2.new(0,4,0,143),TextXAlignment=Enum.TextXAlignment.Center,BackgroundTransparency=1})
+	mkLabel(cH(card),{Text=desc,Font=Enum.Font.Gotham,TextSize=11,TextColor3=Color3.fromRGB(180,210,255),Size=UDim2.new(1,0,0,20),LayoutOrder=5,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Center,TextYAlignment=Enum.TextYAlignment.Top})
 end
+-- BUY button: last list item (LayoutOrder 10) -> always rendered BELOW the icon/name/price, never overlapping
 local function cardBuyBtn(card,col,txt,onClick)
-	local btn=mkButton(card,{Size=UDim2.new(1,-16,0,36),Position=UDim2.new(0,8,1,-44),BackgroundColor3=col,Text=txt,Font=Enum.Font.GothamBold,TextSize=13,TextColor3=Color3.new(1,1,1)})
+	local btn=mkButton(cH(card),{Size=UDim2.new(1,0,0,32),LayoutOrder=10,BackgroundColor3=col,Text=txt,Font=Enum.Font.GothamBold,TextSize=13,TextColor3=Color3.new(1,1,1)})
 	mkCorner(btn,8); btn.MouseButton1Click:Connect(onClick); return btn
 end
+sectionHeader("\xe2\xad\x90 GAMEPASSES",1)
+local gamepassRow=mkSectionRow(2)
 
 -- Card 1: 2x Power Forever
-local card1=mkShopCard(12,104)
-local gpBadge=mkLabel(card1,{Text="BEST VALUE \xe2\xad\x90",Font=Enum.Font.GothamBold,TextSize=11,TextColor3=Color3.fromRGB(80,40,0),Size=UDim2.new(1,-8,0,18),Position=UDim2.new(0,4,0,4),BackgroundColor3=Color3.fromRGB(255,180,0),TextXAlignment=Enum.TextXAlignment.Center})
+local card1=mkShopCard(gamepassRow,1)
+local gpBadge=mkLabel(card1,{Text="BEST VALUE \xe2\xad\x90",Font=Enum.Font.GothamBold,TextSize=11,TextColor3=Color3.fromRGB(80,40,0),Size=UDim2.new(1,-16,0,16),Position=UDim2.new(0.5,0,0,3),AnchorPoint=Vector2.new(0.5,0),BackgroundColor3=Color3.fromRGB(255,180,0),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=3})
 mkCorner(gpBadge,6)
 cardIcon(card1,"\xe2\x9a\xa1"); cardTitles(card1,"2x Power","FOREVER",Color3.fromRGB(100,220,100)); cardPrice(card1,"249 R$")
 local btn1=cardBuyBtn(card1,Color3.fromRGB(255,180,0),"BUY GAMEPASS",function()
@@ -167,7 +240,7 @@ end)
 mkStroke(btn1,Color3.fromRGB(200,130,0),2)
 
 -- Card 2: Glitter Trail
-local card2=mkShopCard(222,104)
+local card2=mkShopCard(gamepassRow,2)
 cardIcon(card2,"\xe2\x9c\xa8"); cardTitles(card2,"Glitter Trail","PERMANENT",Color3.fromRGB(100,220,100)); cardPrice(card2,"49 R$")
 local btn2=cardBuyBtn(card2,Color3.fromRGB(220,80,180),"BUY GAMEPASS",function()
 	if _G.playerGamepasses and _G.playerGamepasses.glitterTrail then return end -- already owned: do nothing
@@ -175,26 +248,26 @@ local btn2=cardBuyBtn(card2,Color3.fromRGB(220,80,180),"BUY GAMEPASS",function()
 end)
 
 -- Card 3: 2x Power 1 Hour
-local card3=mkShopCard(432,104)
+local card3=mkShopCard(gamepassRow,3)
 cardIcon(card3,"\xe2\x8f\xb0"); cardTitles(card3,"2x Power","1 HOUR",Color3.fromRGB(255,200,100)); cardPrice(card3,"59 R$")
-local twoXShopTimer=mkLabel(card3,{Text="",Font=Enum.Font.GothamBold,TextSize=11,TextColor3=Color3.fromRGB(100,220,100),Size=UDim2.new(1,-8,0,13),Position=UDim2.new(0,4,0,143),TextXAlignment=Enum.TextXAlignment.Center,BackgroundTransparency=1,Visible=false})
+local twoXShopTimer=mkLabel(cH(card3),{Text="",Font=Enum.Font.GothamBold,TextSize=11,TextColor3=Color3.fromRGB(100,220,100),Size=UDim2.new(1,-8,0,14),LayoutOrder=6,TextXAlignment=Enum.TextXAlignment.Center,Visible=false})
 cardBuyBtn(card3,Color3.fromRGB(50,150,255),"BUY NOW",function() pcall(function() MPS:PromptProductPurchase(player,PRODUCT_IDS.TwoXOneHour) end) end)
 
-mkLabel(premPanel,{Text="\xF0\x9F\x8E\xAF ONE-TIME ITEMS",Font=Enum.Font.GothamBold,TextSize=16,TextColor3=Color3.fromRGB(255,215,0),Size=UDim2.new(1,-20,0,22),Position=UDim2.new(0,12,0,316),TextXAlignment=Enum.TextXAlignment.Left,BackgroundTransparency=1})
-mkFrame(premPanel,{Size=UDim2.new(1,-24,0,2),Position=UDim2.new(0,12,0,339),BackgroundColor3=Color3.fromRGB(255,215,0)})
+sectionHeader("\xF0\x9F\x8E\xAF ONE-TIME ITEMS",3)
+local productRow=mkSectionRow(4)
 
 -- Card 4: Mid-Air Recharge
-local card4=mkShopCard(12,346)
+local card4=mkShopCard(productRow,1)
 cardIcon(card4,"\xF0\x9F\x94\x8B"); cardTitles(card4,"Mid-Air","RECHARGE",Color3.fromRGB(100,220,100)); cardPrice(card4,"39 R$"); cardDesc(card4,"Refills gas to 100%!")
 cardBuyBtn(card4,Color3.fromRGB(50,200,50),"BUY NOW",function() pcall(function() MPS:PromptProductPurchase(player,PRODUCT_IDS.MidAirRecharge) end) end)
 
 -- Card 5: Skip Island
-local card5=mkShopCard(222,346)
+local card5=mkShopCard(productRow,2)
 cardIcon(card5,"\xF0\x9F\x8F\x9D\xEF\xB8\x8F"); cardTitles(card5,"Skip Island","ONE USE",Color3.fromRGB(255,200,100)); cardPrice(card5,"69 R$"); cardDesc(card5,"Jump to next island!")
 cardBuyBtn(card5,Color3.fromRGB(255,140,0),"BUY NOW",function() pcall(function() MPS:PromptProductPurchase(player,PRODUCT_IDS.SkipIsland) end) end)
 
 -- Card 6: Bird Nuke
-local card6=mkShopCard(432,346)
+local card6=mkShopCard(productRow,3)
 cardIcon(card6,"\xF0\x9F\x92\xA5"); cardTitles(card6,"Bird Nuke","CHAOS MODE",Color3.fromRGB(255,100,100)); cardPrice(card6,"79 R$"); cardDesc(card6,"Unleash 30 birds on everyone!")
 cardBuyBtn(card6,Color3.fromRGB(220,50,50),"BUY NOW",function() pcall(function() MPS:PromptProductPurchase(player,PRODUCT_IDS.BirdNuke) end) end)
 
@@ -215,69 +288,80 @@ task.spawn(function()
 end)
 print("CHUNK 2 DONE")
 
--- Hotbar
-sg=Instance.new("ScreenGui"); sg.Name="HotbarGui"; sg.ResetOnSpawn=false; sg.Parent=PlayerGui
-local hotbarFrame=mkFrame(sg,{Position=UDim2.new(1,-10,1,-80),Size=UDim2.new(0,140,0,60),AnchorPoint=Vector2.new(1,1),BackgroundTransparency=1,Visible=false})
-local hbLayout=Instance.new("UIListLayout"); hbLayout.FillDirection=Enum.FillDirection.Horizontal; hbLayout.Padding=UDim.new(0,5); hbLayout.Parent=hotbarFrame
-local rechargeSlot=mkButton(hotbarFrame,{Size=UDim2.new(0,60,0,60),BackgroundColor3=Color3.fromRGB(50,50,50),BackgroundTransparency=0.3,Text="RCHRG",TextSize=11,Font=Enum.Font.GothamBold,TextColor3=Color3.new(1,1,1)}); mkCorner(rechargeSlot,10); mkStroke(rechargeSlot,Color3.fromRGB(100,100,100),2)
-local rechargeBadge=mkLabel(rechargeSlot,{Text="0",Font=Enum.Font.GothamBold,TextSize=12,TextColor3=Color3.new(1,1,1),Size=UDim2.new(0,20,0,20),Position=UDim2.new(1,-20,1,-20),BackgroundColor3=Color3.fromRGB(255,60,60)}); mkCorner(rechargeBadge,10)
-local skipSlot=mkButton(hotbarFrame,{Size=UDim2.new(0,60,0,60),BackgroundColor3=Color3.fromRGB(50,50,50),BackgroundTransparency=0.3,Text="SKIP",TextSize=13,Font=Enum.Font.GothamBold,TextColor3=Color3.new(1,1,1)}); mkCorner(skipSlot,10); mkStroke(skipSlot,Color3.fromRGB(100,100,100),2)
-local skipBadge=mkLabel(skipSlot,{Text="0",Font=Enum.Font.GothamBold,TextSize=12,TextColor3=Color3.new(1,1,1),Size=UDim2.new(0,20,0,20),Position=UDim2.new(1,-20,1,-20),BackgroundColor3=Color3.fromRGB(255,60,60)}); mkCorner(skipBadge,10)
+-- Hotbar REMOVED: the bottom-right consumable boxes (Mid-Air Recharge "RCHRG" + Skip Island "SKIP"
+-- slots/badges, the HotbarGui ScreenGui, and updateHotbar) are gone. Those items are used IMMEDIATELY
+-- on purchase by the server (ProcessReceipt -> triggerMidAirRecharge / triggerSkipIsland), so their
+-- held-count was always 0 and the boxes were pointless clutter. The item EFFECTS are untouched.
+-- (_G.updateHotbar is no longer defined; its one caller in CoreClient is `if _G.updateHotbar then ...`,
+-- which now safely no-ops.)
 
-local function updateHotbar()
-	local gp=_G.playerGamepasses or {}
-	local rc=gp.midAirRecharge or 0
-	local sk=gp.skipIsland or 0
-	hotbarFrame.Visible=rc>0 or sk>0
-	rechargeBadge.Text=tostring(rc)
-	skipBadge.Text=tostring(sk)
-end
-_G.updateHotbar=updateHotbar
-
--- Forward declaration: the embedded "live gas meter" mirror inside the food shop. Its UI is built
--- after the shop layout below; this lets updateFoodShop drive it. updateFoodShop already runs on shop
--- open and on every Coins / CurrentPower / StomachMax change, so the mirror stays in sync with the HUD.
-local updateGasMirror
+-- The CURRENTLY FEATURED food shown in the big left display. Defaults to the island's MAIN food
+-- (_G.foods[islandNum]) on shop open; clicking a grid cell swaps it. The BUY / BUY MAX buttons act on
+-- THIS food. Persists across live refreshes (only reset on shop open / explicit grid selection).
+local featuredFood
 
 local function updateFoodShop(islandNum)
 	nearIslandNumber=islandNum
-	if updateGasMirror then updateGasMirror() end  -- refresh the embedded gas meter live (same source as the HUD meter)
+	if not featuredFood then featuredFood = _G.foods[islandNum] end  -- safety net; shop OPEN resets to the main food
 	foodTitle.Text="\xF0\x9F\x8F\x9D\xEF\xB8\x8F ISLAND "..islandNum.." FOOD STAND"
-	local locked=not isUnlocked(islandNum)
-	foodLockedFrame.Visible=locked; foodEmoji.Visible=not locked; foodName.Visible=not locked
-	foodPriceRow.Visible=not locked; foodPower.Visible=not locked; foodBuyBtn.Visible=not locked; foodBuyMaxBtn.Visible=not locked  -- hide the whole price row (coin icon + text) when locked
-	if locked then return end
-	local f=_G.foods[islandNum]; if not f then return end
-	-- Every food (incl. Beans) shows its emoji from foodEmojis.
-	foodEmoji.Visible=true; foodEmoji.Text=foodEmojis[f.name] or "?"
-	foodName.Text=f.name
+
+	-- ===== BIG FEATURED DISPLAY =====
+	-- Shows the CURRENTLY FEATURED food (default = this island's main food; clicking a grid cell swaps
+	-- it). Stats are ALWAYS shown, even when the featured food is LOCKED -- in that case it's greyed and
+	-- the BUY buttons read "LOCKED" so the player sees what they'd get without being able to buy it.
+	local f=featuredFood; if not f then return end
+	local fLocked = not isUnlocked(f.island)
+	foodLockedFrame.Visible=false  -- locked is now shown inline (greyed stats + LOCKED buttons), not the full cover
+	foodEmoji.Visible=true; foodName.Visible=true; foodPriceRow.Visible=true; foodPower.Visible=true
+	foodBuyBtn.Visible=true; foodBuyMaxBtn.Visible=true
+	-- Icon: a real uploaded IMAGE if this food has one (e.g. Beans), otherwise the emoji TextLabel.
+	local fImg = foodImages[f.name]
+	local fScale = foodImageScale[f.name] or 1
+	foodEmojiImg.Size = UDim2.new(0, 120*fScale, 0, 120*fScale) -- per-food shrink, stays centered (anchor 0.5,0.5)
+	foodEmojiImg.Image = fImg or ""; foodEmojiImg.Visible = (fImg ~= nil); foodEmojiImg.ImageTransparency = fLocked and 0.5 or 0
+	foodEmoji.Visible = (fImg == nil)
+	foodEmoji.Text=foodEmojis[f.name] or "?"; foodEmoji.TextTransparency = fLocked and 0.5 or 0
+	foodName.Text = fLocked and (f.name.."  \xF0\x9F\x94\x92 LOCKED") or f.name
+	foodName.TextColor3 = fLocked and Color3.fromRGB(150,150,150) or Color3.fromRGB(255,255,255) -- WHITE name (was black)
 	foodPrice.Text=f.price.." coins"  -- coin shown by the CoinIcon ImageLabel in the row, not text
+	foodPrice.TextColor3 = fLocked and Color3.fromRGB(150,150,150) or Color3.fromRGB(200,140,0)
 	foodPower.Text="+"..f.power.." power"
+	foodPower.TextColor3 = fLocked and Color3.fromRGB(150,150,150) or Color3.fromRGB(0,160,60)
 	local coins, curPower, stomMax = 0, 0, 46
 	pcall(function() if _G.leaderstats then
 		local c=_G.leaderstats:FindFirstChild("Coins"); if c then coins=c.Value end
 		local cp=_G.leaderstats:FindFirstChild("CurrentPower"); if cp then curPower=cp.Value end
 		local sm=_G.leaderstats:FindFirstChild("StomachMax"); if sm then stomMax=sm.Value end
 	end end)
+	-- (Gas + Owned stat rows removed from the featured display. coins/curPower/stomMax above are still
+	-- read because the BUY/BUY MAX state below uses them.)
 	-- How many of this food actually fit in the remaining stomach space, and can be afforded.
 	local fittable    = math.floor((stomMax - curPower) / f.power)
 	local affordable  = math.floor(coins / f.price)
 	local fitAndAfford = math.min(fittable, affordable)
-	-- Single BUY: blocked if the stomach can't fit even one, then if you can't afford it.
-	if fittable < 1 then
-		foodBuyBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyBtn.Text="STOMACH FULL"; foodBuyBtn.TextSize=14
-	elseif coins>=f.price then
-		foodBuyBtn.BackgroundColor3=Color3.fromRGB(50,200,50); foodBuyBtn.Text="BUY FOOD"; foodBuyBtn.TextSize=17
+	if fLocked then
+		-- LOCKED featured food: stats shown (greyed) above, but buying is disabled.
+		foodBuyBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyBtn.Text="LOCKED"; foodBuyBtn.TextSize=16
+		foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyMaxBtn.Text="LOCKED"; foodBuyMaxBtn.TextSize=16
 	else
-		foodBuyBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyBtn.Text="NOT ENOUGH"; foodBuyBtn.TextSize=14
-	end
-	-- BUY MAX label shows the fit-and-afford quantity, never the wallet-only amount.
-	if fitAndAfford >= 1 then
-		foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(255,140,0); foodBuyMaxBtn.Text="MAX x"..fitAndAfford; foodBuyMaxBtn.TextSize=14
-	elseif fittable < 1 then
-		foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyMaxBtn.Text="FULL"; foodBuyMaxBtn.TextSize=15
-	else
-		foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyMaxBtn.Text="BUY MAX"; foodBuyMaxBtn.TextSize=15
+		-- Single BUY: COINS checked FIRST (the common blocker) -> "Not Enough Coins"; then stomach
+		-- capacity -> "Stomach Full"; only when both pass is it buyable.
+		if coins < f.price then
+			foodBuyBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyBtn.Text="Not Enough Coins"; foodBuyBtn.TextSize=14
+		elseif fittable < 1 then
+			-- can't fit one: TRULY full (no room at all) vs HAS room but this food is too big
+			foodBuyBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyBtn.Text=((stomMax-curPower)<=0) and "Stomach Full" or "Not Enough Room"; foodBuyBtn.TextSize=14
+		else
+			foodBuyBtn.BackgroundColor3=Color3.fromRGB(50,200,50); foodBuyBtn.Text="BUY FOOD"; foodBuyBtn.TextSize=17
+		end
+		-- BUY MAX label shows the fit-and-afford quantity, never the wallet-only amount.
+		if fitAndAfford >= 1 then
+			foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(255,140,0); foodBuyMaxBtn.Text="MAX x"..fitAndAfford; foodBuyMaxBtn.TextSize=14
+		elseif fittable < 1 then
+			foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyMaxBtn.Text=((stomMax-curPower)<=0) and "FULL" or "NO ROOM"; foodBuyMaxBtn.TextSize=15
+		else
+			foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyMaxBtn.Text="BUY MAX"; foodBuyMaxBtn.TextSize=15
+		end
 	end
 	local coins2=0
 	pcall(function() if _G.leaderstats then local c=_G.leaderstats:FindFirstChild("Coins"); if c then coins2=c.Value end end end)
@@ -288,26 +372,32 @@ local function updateFoodShop(islandNum)
 			local nm=cell:FindFirstChild("NameLabel")
 			local ef=cell:FindFirstChild("EmojiFrame")
 			local icon=ef and ef:FindFirstChild("FoodEmoji")
+			local iconImg=ef and ef:FindFirstChild("FoodIconImg")
 			if not isUnlocked(fd.island) then
 				-- LOCKED: keep it a mystery until the player reaches this food's island. 🔒 icon, "???"
 				-- name, no price. Cell stays the same size/position, just greyed and not buyable.
 				cell.BackgroundColor3=Color3.fromRGB(180,180,180); if st then st.Color=Color3.fromRGB(140,140,140) end
-				if icon then icon.Text="\xF0\x9F\x94\x92" end
+				if iconImg then iconImg.Visible=false end -- locked -> show the 🔒 emoji, hide any image icon
+				if icon then icon.Visible=true; icon.Text="\xF0\x9F\x94\x92" end
 				if nm then nm.Text="???" end
 				if pl then pl.Text="" end
 				local pic=cell:FindFirstChild("PriceIcon"); if pic then pic.Visible=false end  -- no price -> hide coin
+					if st then if featuredFood and fd.name==featuredFood.name then st.Color=Color3.fromRGB(255,215,0); st.Thickness=4 else st.Thickness=2 end end -- gold border = the FEATURED cell (locked food still highlightable)
 			else
 				-- UNLOCKED: reveal the real icon + name + price (restores from the locked state, so it
 				-- switches live the moment the player reaches the island).
-				if icon then icon.Text=foodEmojis[fd.name] or "\xF0\x9F\x8D\xBD\xEF\xB8\x8F" end
+				local cImg=foodImages[fd.name] -- real image icon for this food (e.g. Beans), else nil -> emoji
+				if iconImg then iconImg.Image=cImg or ""; iconImg.Visible=(cImg~=nil) end
+				if icon then icon.Visible=(cImg==nil); icon.Text=foodEmojis[fd.name] or "\xF0\x9F\x8D\xBD\xEF\xB8\x8F" end
 				if nm then nm.Text=fd.name end
-				if coins2>=fd.price then
+				if (stomMax - curPower) >= fd.power and coins2>=fd.price then  -- buyable: fits at least one of this food AND affordable
 					cell.BackgroundColor3=Color3.fromRGB(50,200,50); if st then st.Color=Color3.fromRGB(30,150,30) end
 				else
-					cell.BackgroundColor3=Color3.fromRGB(20,90,200); if st then st.Color=Color3.fromRGB(255,255,255) end
+					cell.BackgroundColor3=Color3.fromRGB(180,50,50); if st then st.Color=Color3.fromRGB(120,30,30) end  -- RED: owned/maxed (stomach can't fit one) OR can't afford
 				end
 				if pl then pl.Text=tostring(fd.price) end  -- coin shown by the PriceIcon ImageLabel, not text
 				local pic=cell:FindFirstChild("PriceIcon"); if pic then pic.Visible=true end  -- priced -> show coin
+					if st then if featuredFood and fd.name==featuredFood.name then st.Color=Color3.fromRGB(255,215,0); st.Thickness=4 else st.Thickness=2 end end -- gold border = the FEATURED cell
 			end
 		end
 	end
@@ -382,8 +472,8 @@ end)()
 -- ===== PREMIUM SHOP LAYOUT =====
 ;(function()
 	-- Panel taller to fit bigger cards
-	premPanel.Size = UDim2.new(0,680,0,590)
-	premPanel.Position = UDim2.new(0.5,0,0.5,0)
+	premPanel.Size = UDim2.new(0,700,0,520) -- matches the FOOD SHOP panel exactly (700x520); cards below were re-laid-out to fit
+	premPanel.Position = UDim2.new(0.5,0,0.5,-45) -- POSITION matched to the food shop (centered, nudged up 45px)
 	premPanel.AnchorPoint = Vector2.new(0.5,0.5)
 
 	-- Horizontal row container with UIListLayout
@@ -533,7 +623,7 @@ pcs.Color = Color3.fromRGB(0,0,0); pcs.Thickness = 2; pcs.Parent = premClose
 
 	-- FIX 2: Main panel
 	foodPanel.Size = UDim2.new(0,700,0,520)
-	foodPanel.Position = UDim2.new(0.5,0,0.5,0)
+	foodPanel.Position = UDim2.new(0.5,0,0.5,-45) -- nudged UP ~45px so the panel's bottom clears the bottom-center stomach/gut indicator below it
 	foodPanel.AnchorPoint = Vector2.new(0.5,0.5)
 	foodPanel.BackgroundColor3 = Color3.fromRGB(30,120,220)
 	local fpC = foodPanel:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
@@ -677,53 +767,32 @@ pcs.Color = Color3.fromRGB(0,0,0); pcs.Thickness = 2; pcs.Parent = premClose
 	fclS.Color = Color3.fromRGB(0,0,0); fclS.Thickness = 2; fclS.Parent = foodCloseBtn
 end)()
 
--- ===== EMBEDDED LIVE GAS METER (mirror of the HUD gas meter) =====
--- A visible copy of the player's gas meter placed in the food shop's bottom strip, to the RIGHT of
--- the BUY / BUY MAX buttons (which end at x=278 on the 700-wide panel). It mirrors the HUD meter's
--- look (gold "GAS METER" title, dark track, green gradient fill, white "x/y" readout) and reads the
--- SAME source the HUD reads — the player's CurrentPower / StomachMax — so it fills in real time as
--- food is bought. This is purely additive: it does NOT touch the HUD meter, purchase logic, or any math.
-local gasMirrorFill, gasMirrorGradient, gasMirrorText
-do
-	local panel = mkFrame(foodPanel,{Name="GasMirrorPanel",Position=UDim2.new(0,286,1,-58),Size=UDim2.new(0,404,0,48),BackgroundColor3=Color3.fromRGB(45,120,220)})
-	mkCorner(panel,12); mkStroke(panel,Color3.fromRGB(20,65,165),3)
-	-- Title (matches the HUD's gold "GAS METER" label)
-	local title=mkLabel(panel,{Text="GAS METER",Font=Enum.Font.FredokaOne,TextSize=16,TextColor3=Color3.fromRGB(255,215,0),Size=UDim2.new(0,92,1,0),Position=UDim2.new(0,8,0,0),TextXAlignment=Enum.TextXAlignment.Left})
-	mkStroke(title,Color3.fromRGB(0,0,0),2)
-	-- Track + fill (same colors/gradient as the HUD gasBg/gasFill)
-	local bg=mkFrame(panel,{Name="Track",Size=UDim2.new(1,-112,0,26),Position=UDim2.new(0,104,0.5,0),AnchorPoint=Vector2.new(0,0.5),BackgroundColor3=Color3.fromRGB(18,28,66)})
-	mkCorner(bg,13)
-	gasMirrorFill=mkFrame(bg,{Name="Fill",Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.fromRGB(60,210,90),ZIndex=2})
-	mkCorner(gasMirrorFill,13)
-	gasMirrorGradient=Instance.new("UIGradient")
-	gasMirrorGradient.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromRGB(130,240,120)),ColorSequenceKeypoint.new(1,Color3.fromRGB(45,190,70))})
-	gasMirrorGradient.Rotation=90; gasMirrorGradient.Parent=gasMirrorFill
-	gasMirrorText=mkLabel(bg,{Name="Readout",Size=UDim2.new(1,0,1,0),Text="0/0",Font=Enum.Font.FredokaOne,TextSize=16,TextColor3=Color3.fromRGB(255,255,255),ZIndex=3,TextXAlignment=Enum.TextXAlignment.Center})
-	mkStroke(gasMirrorText,Color3.fromRGB(0,0,0),2)
-end
+-- (The embedded "GAS METER" fart-power bar that used to sit in the food shop's bottom strip has been
+-- REMOVED from the stand menu. The underlying CurrentPower / StomachMax values are untouched -- they
+-- still drive flight and the HUD gas meter; only this duplicate bar display in the shop is gone.)
 
--- Mirrors the HUD's updateMeter() exactly: fill = clamp(CurrentPower/StomachMax,0,1); readout =
--- floor(min(CurrentPower,StomachMax)).."/"..StomachMax. Reads leaderstats — the same values the
--- server replicates on every food purchase — so this copy and the HUD meter never diverge.
-updateGasMirror=function()
-	if not gasMirrorFill then return end
-	local cp, sm = 0, 100
-	pcall(function() if _G.leaderstats then
-		local c=_G.leaderstats:FindFirstChild("CurrentPower"); if c then cp=c.Value end
-		local m=_G.leaderstats:FindFirstChild("StomachMax"); if m then sm=m.Value end
-	end end)
-	local fill = sm>0 and math.clamp(cp/sm,0,1) or 0
-	gasMirrorFill.Size=UDim2.new(fill,0,1,0)
-	gasMirrorGradient.Offset=Vector2.new(-(1-fill),0)
-	gasMirrorText.Text=math.floor(math.min(cp, sm)).."/"..sm
+-- ===== MAIN-MENU MUTUAL EXCLUSIVITY: shared manager (one instance across client scripts, via _G). Guarded
+-- factory so whichever client script loads first creates it. Lets opening one main menu close the others. =====
+if not _G.MainMenuManager then
+	local mgr = { current = nil, hiders = {} }
+	function mgr.register(name, hideFn) mgr.hiders[name] = hideFn end
+	function mgr.notifyOpened(name)
+		if mgr.current and mgr.current ~= name then local h = mgr.hiders[mgr.current]; if h then pcall(h) end end
+		mgr.current = name
+	end
+	function mgr.notifyClosed(name) if mgr.current == name then mgr.current = nil end end
+	function mgr.isOtherOpen(name) return mgr.current ~= nil and mgr.current ~= name end
+	_G.MainMenuManager = mgr
 end
-updateGasMirror() -- initial paint so it's correct the first time the shop opens
+-- the food-STAND menu fully hides here (also clears shopOpen so the proximity loop knows it's closed)
+_G.MainMenuManager.register("FoodShop", function() FoodShopGui.Enabled = false; shopOpen = false end)
 
-premClose.MouseButton1Click:Connect(function() if _G.playUIClick then _G.playUIClick() end; PremiumShopGui.Enabled=false end)
+premClose.MouseButton1Click:Connect(function() if _G.playUIClick then _G.playUIClick() end; PremiumShopGui.Enabled=false; _G.MainMenuManager.notifyClosed("Premium") end)
 foodCloseBtn.MouseButton1Click:Connect(function()
 	FoodShopGui.Enabled = false
 	shopOpen = false
 	playerClosedShop = true
+	_G.MainMenuManager.notifyClosed("FoodShop")
 	task.delay(3, function() playerClosedShop = false end)
 end)
 
@@ -734,12 +803,13 @@ local function playEatSound()
 end
 
 foodBuyBtn.MouseButton1Click:Connect(function()
+	local f=featuredFood; if not f then return end          -- buy the CURRENTLY FEATURED food
+	if not isUnlocked(f.island) then return end              -- locked featured food: not buyable
 	playEatSound()
-	local f=_G.foods[nearIslandNumber]; if not f then return end
 	local coins=0
 	pcall(function() if _G.leaderstats then local c=_G.leaderstats:FindFirstChild("Coins"); if c then coins=c.Value end end end)
 	if coins<f.price then
-		foodBuyBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyBtn.Text="NOT ENOUGH COINS!"; foodBuyBtn.TextSize=14
+		foodBuyBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyBtn.Text="Not Enough Coins"; foodBuyBtn.TextSize=14
 		task.delay(1,function() foodBuyBtn.BackgroundColor3=Color3.fromRGB(50,200,50); foodBuyBtn.Text="BUY FOOD"; foodBuyBtn.TextSize=17 end)
 		return
 	end
@@ -752,7 +822,8 @@ end)
 
 foodBuyMaxBtn.MouseButton1Click:Connect(function()
 	playEatSound()
-	if not _G.foods[nearIslandNumber] then return end
+	local feat=featuredFood; if not feat then return end     -- BUY MAX targets the FEATURED food
+	if not isUnlocked(feat.island) then return end           -- locked featured food: BUY MAX disabled
 	local coins, curPower, stomMax = 0, 0, 46
 	pcall(function() if _G.leaderstats then
 		local c=_G.leaderstats:FindFirstChild("Coins"); if c then coins=c.Value end
@@ -766,7 +837,7 @@ foodBuyMaxBtn.MouseButton1Click:Connect(function()
 	local remaining = stomMax - curPower
 	local coinsLeft = coins
 	local totalPower = 0
-	for i = nearIslandNumber, 1, -1 do
+	for i = feat.island, 1, -1 do  -- fill from the FEATURED food downward (its max), biggest power first
 		local f = _G.foods[i]
 		if f and isUnlocked(f.island) then
 			local qty = math.min(math.floor(remaining / f.power), math.floor(coinsLeft / f.price))
@@ -780,7 +851,11 @@ foodBuyMaxBtn.MouseButton1Click:Connect(function()
 		if remaining < _G.foods[1].power or coinsLeft < _G.foods[1].price then break end
 	end
 	if totalPower <= 0 then
-		local reason = (remaining < _G.foods[1].power) and "STOMACH FULL!" or "NOT ENOUGH COINS!"
+		-- coins checked FIRST; then TRULY full (no room) vs HAS room but the cheapest food still won't fit
+		local reason
+		if coinsLeft < _G.foods[1].price then reason = "Not Enough Coins"
+		elseif remaining <= 0 then reason = "Stomach Full"
+		else reason = "Not Enough Room" end
 		foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyMaxBtn.Text=reason; foodBuyMaxBtn.TextSize=13
 		task.delay(1,function() foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(255,140,0); foodBuyMaxBtn.Text="BUY MAX"; foodBuyMaxBtn.TextSize=15 end)
 		return
@@ -800,34 +875,20 @@ for _, f in ipairs(_G.foods) do
 	if cell then
 		local buyOverlay = mkButton(cell, {Name="BuyOverlay", Size=UDim2.new(1,0,1,0), BackgroundTransparency=1, Text="", ZIndex=5})
 		buyOverlay.MouseButton1Click:Connect(function()
-			if not isUnlocked(f.island) then return end -- only unlocked foods are buyable
-			local coins=0
-			pcall(function() if _G.leaderstats then local c=_G.leaderstats:FindFirstChild("Coins"); if c then coins=c.Value end end end)
-			if coins < f.price then return end -- server also validates; this avoids a no-op fire
-			playEatSound()
-			pcall(function() _G.BuyFoodEvent:FireServer(f.name) end)
-			local fl2=Instance.new("TextLabel"); fl2.Text="+"..f.power.." "..f.name.."!"; fl2.Font=Enum.Font.GothamBold; fl2.TextSize=20; fl2.TextColor3=Color3.fromRGB(0,200,50); fl2.BackgroundTransparency=1; fl2.Size=UDim2.new(0,220,0,40); fl2.Position=UDim2.new(0.3,0,0.6,0); fl2.ZIndex=10; fl2.Parent=FoodShopGui
-			TweenService:Create(fl2,TweenInfo.new(1.5,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Position=UDim2.new(0.3,0,0.4,0),TextTransparency=1}):Play()
-			task.delay(1.5,function() fl2:Destroy() end)
+			-- Clicking a grid food now FEATURES it in the big left display (instead of buying directly).
+			-- Locked foods feature too (shown greyed + LOCKED). Buying happens via the big BUY / BUY MAX
+			-- buttons, which target the featured food -- the purchase remote/server flow is unchanged.
+			if _G.playUIClick then pcall(_G.playUIClick) end
+			featuredFood = f
+			updateFoodShop(nearIslandNumber)  -- re-render big display + re-highlight the grid (keeps featured)
 		end)
 	end
 end
 
-rechargeSlot.MouseButton1Click:Connect(function()
-	local gp=_G.playerGamepasses
-	if gp and gp.midAirRecharge > 0 then
-		gp.midAirRecharge = gp.midAirRecharge - 1
-		_G.cosmeticGas=100; if _G.updateMeter then _G.updateMeter() end; if _G.updateFartBtn then _G.updateFartBtn() end; updateHotbar()
-	end
-end)
-skipSlot.MouseButton1Click:Connect(function()
-	local gp=_G.playerGamepasses
-	if gp and gp.skipIsland > 0 then
-		gp.skipIsland = gp.skipIsland - 1
-		pcall(function() if _G.SkipIslandEvent then _G.SkipIslandEvent:FireServer() end end)
-		updateHotbar()
-	end
-end)
+-- (Hotbar slot click handlers REMOVED with the hotbar. They were the OLD manual-use path that only
+-- fired when the held count was > 0; since Mid-Air Recharge / Skip Island are now applied IMMEDIATELY
+-- on purchase server-side, those counts stay 0 and these handlers never ran. The item effects are
+-- driven by the server's ProcessReceipt -> triggerMidAirRecharge (client rechargeNow) / triggerSkipIsland.)
 
 pcall(function()
 	if _G.leaderstats then
@@ -916,9 +977,12 @@ task.spawn(function()
 			end
 			if nearStand then
 				lastAwayTime = 0
-				if not shopOpen and not playerClosedShop then
+				-- only auto-open if no OTHER main menu is open (proximity yields to a deliberately-opened menu)
+				if not shopOpen and not playerClosedShop and not _G.MainMenuManager.isOtherOpen("FoodShop") then
 					nearIslandNumber = foundIsland
+					featuredFood = _G.foods[foundIsland]  -- big display defaults to the island's MAIN food on open
 					updateFoodShop(foundIsland)
+					_G.MainMenuManager.notifyOpened("FoodShop") -- becomes the one open main menu
 					FoodShopGui.Enabled = true
 					shopOpen = true
 					print("SHOP OPEN ISLAND", foundIsland)
@@ -929,6 +993,7 @@ task.spawn(function()
 				if shopOpen then
 					FoodShopGui.Enabled = false
 					shopOpen = false
+					_G.MainMenuManager.notifyClosed("FoodShop")
 					print("SHOP CLOSED")
 				end
 			end
