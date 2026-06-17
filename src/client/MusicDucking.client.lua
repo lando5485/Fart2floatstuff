@@ -7,7 +7,7 @@
 -- again, so this script freely tweens the LOCAL Volume for ducking without the server overriding it.
 --
 -- Detection touches NO event systems:
---   * BIG events (Rocket / Meteor / UFO / Ice Age / Mutation): read the replicated "BigEventActive"
+--   * BIG events (Rocket / Meteor): read the replicated "BigEventActive"
 --     BoolValue the server mirrors from _G.BigEvents.
 --   * MEDIUM dramatic events (Wind Storm / Thunderstorm / Fart Storm): listen to the existing
 --     ServerEventNotify remote (the same one EventClient already uses) — start = the event name,

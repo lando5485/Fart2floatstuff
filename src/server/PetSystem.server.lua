@@ -24,7 +24,7 @@ local piecesFound = {}  -- [player] = { [petId] = { [pieceIndex]=true, ... } }
 -- ===== PET CATALOG (extend this to add more pets later) =====
 local PETS = {
 	BroccoliPet = {
-		displayName  = "Broccoli Dino",
+		displayName  = "Broccoli Bunny",
 		islandName   = "Broccoli Bluff",
 		questDesc    = "Find 3 broccoli pieces hidden on the island",
 		questType    = "find",                -- find 3 pieces -> egg -> hatch
@@ -105,6 +105,27 @@ local PETS = {
 			[3] = { height = 28000, time = 600 },
 		},
 	},
+	-- PET #5: BURRITO ARMADILLO on Burrito Barrens (Island 13). "Dig for buried treasure" quest: grab a SHOVEL
+	-- at ShovelSpot -> a HOT/COLD meter guides you to the buried egg -> DIG (hold/tap minigame) at dig spots ->
+	-- DigSpot1-4 are DECOYS (junk), BuriedEggSpot is the REAL one (the armadillo egg) -> hatch. NO pieces + NO
+	-- egg marker (the egg appears where dug). Markers = the shovel spot + 4 decoy dig spots + the buried egg spot.
+	-- The real-dig completion is server-gated (PetDigEvent below sets digEggReady) so the claim can't be faked.
+	BurritoArmadillo = {
+		displayName  = "Burrito Armadillo",
+		islandName   = "Burrito Barrens",
+		questDesc    = "Grab a shovel and dig up the buried armadillo egg - use the hot/cold meter to find it",
+		questType    = "dig",
+		questUnit    = "digs",
+		islandPrefix = "Island_13_",         -- Burrito Barrens
+		pieceMarkers = {},                    -- dig has no collectible pieces
+		-- eggMarker = nil: the unearthed egg appears at the dug spot (not auto-revealed at a marker)
+		extraMarkers = { shovel = "ShovelSpot", dig1 = "DigSpot1", dig2 = "DigSpot2", dig3 = "DigSpot3", dig4 = "DigSpot4", dig5 = "DigSpot5", buriedegg = "BuriedEggSpot" },
+		maxLevel     = 3,
+		tiers = {
+			[2] = { height = 22000, time = 200 },
+			[3] = { height = 37000, time = 650 },
+		},
+	},
 }
 
 local function getOrCreateRemote(name)
@@ -135,25 +156,320 @@ local PetProgressEvent  = getOrCreateRemote("PetProgressEvent")        -- c->s: 
 local PetPendingUpgrade = getOrCreateRemote("PetPendingUpgradeEvent")  -- c->s: (petId) declared before a Robux prompt
 local PetQuestDiscovered = getOrCreateRemote("PetQuestDiscoveredEvent") -- c->s: (petId) the player landed on this pet's island
 local PetFishRoll = getOrCreateRF("PetFishRollEvent")                 -- c->s RF: () player reeled in -> SERVER rolls the catch (pity)
+local PetDigEvent = getOrCreateRemote("PetDigEvent")                  -- c->s: (petId) player dug the REAL buried-egg spot -> server unlocks the claim
+local PetRareEvent = getOrCreateRemote("PetRareEvent")                -- s->c: (petId, rareName) a RARE hatched -> client plays the fanfare
+-- ===== STAGE 3 TRADE remotes (client sends INTENTS only; the server owns + validates everything) =====
+local PetTradeRequest = getOrCreateRemote("PetTradeRequestEvent")     -- c->s: (targetUserId) ask to trade
+local PetTradeRespond = getOrCreateRemote("PetTradeRespondEvent")     -- c->s: (accept:bool) answer a request
+local PetTradeOffer   = getOrCreateRemote("PetTradeOfferEvent")       -- c->s: (petId, add:bool) add/remove a pet from your offer
+local PetTradeConfirm = getOrCreateRemote("PetTradeConfirmEvent")     -- c->s: () lock in your current offer
+local PetTradeCancel  = getOrCreateRemote("PetTradeCancelEvent")      -- c->s: () cancel the trade
+local PetTradeState   = getOrCreateRemote("PetTradeStateEvent")       -- s->c: (perspective state) live trade window
+local PetTradePrompt  = getOrCreateRemote("PetTradeRequestPromptEvent") -- s->c: (fromUserId, fromName) incoming request popup
 local fishCatches  = {}  -- [player] = number of successful reel-ins (drives the pity ramp; session-only, not saved)
 local fishEggReady = {}  -- [player] = true once the SERVER has rolled the EGG (gates the ButterDuck claim, anti-cheat)
+local digEggReady  = {}  -- [player] = true once the player DUG the real buried egg (gates the BurritoArmadillo claim, anti-cheat)
+-- (The BurritoArmadillo "Armadillo Trail" uses CLIENT-BUILT low-poly part mounds dug one-at-a-time -- no server
+-- terrain. The only server piece is the claim gate above + PetDigEvent below.)
 _G.playerDiscoveredQuests = _G.playerDiscoveredQuests or {}           -- [player] = { [petId]=true } (persisted by PlayerStats)
 _G.playerEquippedPet = _G.playerEquippedPet or {}                      -- [player] = petId (persisted by PlayerStats)
 local pendingRobuxPet = {}                                             -- [userId] = petId awaiting a Robux receipt
 local upgradeReady    = {}                                            -- [player][petId] = last canUpgrade (to avoid resend spam)
--- ⚠ REPLACE WITH REAL DEV PRODUCT ID: the Robux "skip the grind" pet-upgrade Developer Product. While this
--- is 0 the Robux button is a stub (the prompt won't open and no level is granted) -- create the product and
--- set its id here (and the matching id in PetFollow.client.lua) to enable the paid path.
-local PET_UPGRADE_PRODUCT_ID = 0
+-- \xE2\x9A\xA0 REPLACE BEFORE LAUNCH: placeholder pet-skip Developer Product ID. The Robux "Skip" fills the current
+-- level's remaining XP (one level up), gated behind ProcessReceipt. This is a PLACEHOLDER id -- create the real
+-- Developer Product(s) and set the id here (and the matching id in PetFollow.client.lua). Until replaced, real
+-- purchases won't grant (the prompt errors harmlessly); test accounts use the instant test-skip path instead.
+-- (Price scales with level in the UI label; at launch, map level brackets to per-bracket product IDs here.)
+local PET_UPGRADE_PRODUCT_ID = 123456789 -- \xE2\x9A\xA0 placeholder pet-skip product ID -- REPLACE BEFORE LAUNCH
 
 -- ============================================================================================
--- PET MODEL TEMPLATE: "BROCCOLI DINO" (FRESH BUILD). CSG/UnionAsync is SERVER-ONLY, so we construct +
--- fuse the rounded-cube body HERE once at startup, store the finished Model in ReplicatedStorage, and the
--- client CLONES it for the follow loop. This is purely the MODEL builder -- the find/egg/hatch/follow/UI/
--- persistence system is untouched and plugs into the same invisible-root PrimaryPart + role-named parts
--- (Eye/Highlight blink, Leg/ToeClaw gait, Tail/TailSpike wiggle, everything else rides the body).
--- Cosmetic only (Anchored, Massless, CanCollide=false). Local frame: +X = forward, +Y = up, +Z = width.
+-- PET MODEL TEMPLATES (all 5 pets). CSG/UnionAsync is SERVER-ONLY, so each pet's BODY+HEAD (+ears/neck/
+-- shell ridges that share its colour) is FUSED into ONE smooth gap-free solid HERE at startup, stored in
+-- ReplicatedStorage, and the client CLONES it for the follow loop. Heavy overlap -> seamless fusion (no
+-- "balls with gaps"). Separate parts (eyes + differently-coloured limbs/bills) keep their own colours and
+-- are role-named so the client animator drives them: Eye/Highlight blink, Leg gait, Tail wiggle, everything
+-- else rides the fused body. Cosmetic only (Anchored, Massless, CanCollide=false). Local frame: +X = front.
 -- ============================================================================================
+local BAL, BLK, CYL = Enum.PartType.Ball, Enum.PartType.Block, Enum.PartType.Cylinder
+local SMOOTH = Enum.SurfaceType.Smooth
+local function flagPart(p)
+	p.Anchored = true; p.CanCollide = false; p.CanQuery = false; p.CanTouch = false
+	p.CastShadow = false; p.Massless = true; p.Material = Enum.Material.Plastic -- matte plastic toy look (no gloss)
+	-- Force EVERY face Smooth: new Parts default TopSurface=Studs / BottomSurface=Inlet, which render the
+	-- Lego-stud/notch texture (very visible on cylinders). Smooth on all 6 faces -> clean matte plastic, no notches.
+	p.TopSurface = SMOOTH; p.BottomSurface = SMOOTH; p.LeftSurface = SMOOTH
+	p.RightSurface = SMOOTH; p.FrontSurface = SMOOTH; p.BackSurface = SMOOTH
+	return p
+end
+-- make a part (sizes/positions are ALREADY scaled by the caller's P closure)
+local function mkPart(model, name, shape, sx, sy, sz, color, x, y, z, rot)
+	local p = Instance.new("Part"); p.Name = name; p.Shape = shape; p.Size = Vector3.new(sx, sy, sz); p.Color = color
+	local cf = CFrame.new(x, y, z); if rot then cf = cf * rot end
+	p.CFrame = cf; flagPart(p); p.Parent = model; return p
+end
+-- FUSE a list of overlapping source parts into ONE union named `name`, coloured `color`. Returns union, err.
+-- On CSG failure it keeps the (unfused) parts renamed so the client still treats them as the body (pet still appears).
+local function fuse(model, src, name, color)
+	local first = table.remove(src, 1)
+	local ok, u = pcall(function() return first:UnionAsync(src) end)
+	if ok and typeof(u) == "Instance" then
+		first:Destroy(); for _, p in ipairs(src) do p:Destroy() end
+		flagPart(u); u.Name = name; u.UsePartColor = true; u.Color = color
+		pcall(function() u.RenderFidelity = Enum.RenderFidelity.Precise end)
+		pcall(function() u.CollisionFidelity = Enum.CollisionFidelity.Box end)
+		pcall(function() u.SmoothingAngle = 60 end) -- soft satin shading across the fused solid
+		u.Parent = model
+		return u, nil
+	else
+		table.insert(src, 1, first)
+		for _, p in ipairs(src) do p.Name = name.."Chunk" end -- unfused fallback -> client role = body
+		return nil, tostring(u)
+	end
+end
+local function newRoot(model)
+	local r = mkPart(model, "Root", BAL, 0.4, 0.4, 0.4, Color3.new(1,1,1), 0, 0, 0); r.Transparency = 1; model.PrimaryPart = r; return r
+end
+-- WELD a cosmetic part firmly to a target (the fused head/body). Returns the part for chaining. In this system
+-- every part is also anchored + code-positioned relative to the root each frame (that is what actually keeps
+-- parts glued with no gap), so the weld is a belt-and-suspenders bind that also documents the parent.
+local function weldTo(part, target)
+	if part and target then
+		local w = Instance.new("WeldConstraint"); w.Name = "Attach"; w.Part0 = target; w.Part1 = part; w.Parent = part
+	end
+	return part
+end
+-- THE STANDARD EYES (the armadillo's EXACT construction -- reused on EVERY pet so they all have the same good
+-- eyes). Each eye is a big FLAT black disc (a thin cylinder -> flat, never a bulging sphere) whose BACK embeds
+-- into the face surface and whose FRONT sits just proud (no gap, no float), plus a small FLAT white sparkle disc
+-- on the upper-front. A cylinder's circular faces point along its LOCAL X, so an un-rotated thin cylinder IS a
+-- disc facing +X (the front). `fx` = eye CENTRE -- set it per pet so the disc backs into THAT pet's face surface
+-- (centre ~ surface_x, so back ~0.11 in / front ~0.11 proud). `fy` height, `fz` lateral spread. Named
+-- Eye/Highlight so the client blink squashes them together.
+local EYE_DIA = 0.82  -- ONE standard eye size for the whole game (the armadillo's eye)
+local function eyes(P, fx, fy, fz)
+	for _, sgn in ipairs({ 1, -1 }) do
+		local zc = fz * sgn
+		P("Eye", CYL, 0.22, EYE_DIA, EYE_DIA, Color3.fromRGB(16,16,20), fx, fy, zc)                        -- big flat matte-black disc (back embedded, front proud)
+		P("Highlight", CYL, 0.12, EYE_DIA*0.34, EYE_DIA*0.34, Color3.fromRGB(255,255,255), fx + 0.16, fy + EYE_DIA*0.22, zc + EYE_DIA*0.16) -- flat white sparkle on the eye
+	end
+end
+-- a CLEAN single-shape mouth: ONE thin rounded bar laid horizontally across the +X face (a cylinder rotated so
+-- its length runs along Z). `fx,fy` = where it sits on the face, `w` = mouth width. (Ducks DON'T call this -- the
+-- bill IS the mouth.)
+local function mouth(P, fx, fy, w)
+	P("Mouth", CYL, w, 0.18, 0.18, Color3.fromRGB(48,32,30), fx, fy, 0, CFrame.Angles(0, math.rad(90), 0))
+end
+
+-- ROUNDED-CUBE BODY (Pet-Sim-99 chunky style): appends a fillet/Minkowski box -- 3 cross slabs (the flat
+-- faces) + 8 corner spheres + 12 edge cylinders -- to `src`, centred at (cx,cy,cz), dims W(width Z) x
+-- H(height Y) x D(depth X) with fillet radius R. Server-unioning `src` then yields ONE cube with smooth
+-- curved edges (gap-free). P is the builder's scaling closure. +X = front.
+local function roundedCubeInto(src, P, cx, cy, cz, W, H, D, R, color)
+	local iW, iH, iD = W - 2*R, H - 2*R, D - 2*R
+	local hW, hH, hD = iW/2, iH/2, iD/2
+	local dd = 2*R
+	local function a(sh, sx,sy,sz, x,y,z, rot) src[#src+1] = P("b", sh, sx,sy,sz, color, cx+x, cy+y, cz+z, rot) end
+	a(BLK, D, iH, iW, 0,0,0)   -- 3 cross slabs = the flat faces
+	a(BLK, iD, H, iW, 0,0,0)
+	a(BLK, iD, iH, W, 0,0,0)
+	for _, c in ipairs({ {1,1,1},{1,1,-1},{1,-1,1},{1,-1,-1},{-1,1,1},{-1,1,-1},{-1,-1,1},{-1,-1,-1} }) do
+		a(BAL, dd,dd,dd, c[1]*hD, c[2]*hH, c[3]*hW)  -- 8 corner spheres (rounds the corners)
+	end
+	for _, e in ipairs({ {1,1},{1,-1},{-1,1},{-1,-1} }) do  -- 12 edge cylinders (rounds the edges)
+		a(CYL, iD, dd, dd, 0, e[1]*hH, e[2]*hW)
+		a(CYL, iH, dd, dd, e[1]*hD, 0, e[2]*hW, CFrame.Angles(0,0,math.rad(90)))
+		a(CYL, iW, dd, dd, e[1]*hD, e[2]*hH, 0, CFrame.Angles(0,math.rad(90),0))
+	end
+end
+-- shared chunky body dims (one big rounded cube ~1:1:0.9 -- the signature look) + display scale
+local PSW, PSH, PSD, PSR, PSS = 3.8, 3.6, 3.4, 0.9, 0.85
+
+-- 1) BROCCOLI BUNNY (island 2): rounded-cube green body (+feet/eyes unchanged). Attach tall green CYLINDER ears
+-- with pink inner-ears (wide apart, tilted out, welded + deeply embedded), a flatter pink nose, a black "w"
+-- mouth, 3 whiskers per side, lighter-green cheeks, a fluffy white tail, dark-green floret bumps on top.
+local function buildBroccoliBunny()
+	local s = PSS
+	local m = Instance.new("Model"); m.Name = "BroccoliBunnyTemplate"; m.Parent = Workspace
+	local function P(n,sh,sx,sy,sz,c,x,y,z,r) return mkPart(m,n,sh,sx*s,sy*s,sz*s,c,x*s,y*s,z*s,r) end
+	newRoot(m)
+	local GREEN, FLOR, PINK, PINKI, WHITE = Color3.fromRGB(139,195,74), Color3.fromRGB(46,139,58), Color3.fromRGB(240,170,180), Color3.fromRGB(252,205,215), Color3.fromRGB(245,245,245)
+	local LGREEN, BLKM = Color3.fromRGB(176,222,116), Color3.fromRGB(20,20,24) -- lighter-green cheeks; near-black mouth/whiskers
+	local src = {}
+	roundedCubeInto(src, P, 0,0,0, PSW,PSH,PSD, PSR, GREEN)
+	local body, err = fuse(m, src, "BodyUnion", GREEN)
+	-- EARS: two TALL bunny ears, each = a CYLINDER capped on top with a half-sphere DOME (same colour) so the
+	-- tip is ROUNDED, not flat. The cylinder + dome are UNIONED into ONE "Ear" part -- the dome is fused flush to
+	-- the cylinder top (can't float) and the whole ear wiggles as one rigid unit. Green outer ear with a thinner
+	-- PINK inner-ear (also cylinder + dome) on its front. Wide apart near the head corners (z=+-1.25), tilted OUT
+	-- (gentle V ~13deg), bases sunk ~1 stud deep into the head AND welded to it.
+	local function roundedEar(cx, cy, cz, len, dia, color, rot) -- cylinder + flush dome cap -> unioned into one "Ear"
+		local up = (rot * CFrame.new(1, 0, 0)).Position -- the cylinder's length (up) axis
+		local part = {
+			P("b", CYL, len, dia, dia, color, cx, cy, cz, rot),                                          -- the ear shaft
+			P("b", BAL, dia, dia, dia, color, cx + up.X*len*0.5, cy + up.Y*len*0.5, cz + up.Z*len*0.5),   -- dome cap on the top face (half pokes out -> rounded tip)
+		}
+		weldTo(fuse(m, part, "Ear", color), body) -- one rounded-top ear part (role "ear" -> wiggles as a unit), welded to the head
+	end
+	for _, sgn in ipairs({ 1, -1 }) do
+		local zc = 1.25 * sgn
+		local rotEar = CFrame.Angles(math.rad(13) * sgn, 0, 0) * CFrame.Angles(0, 0, math.rad(90)) -- upright + outward V
+		roundedEar(0.1,  2.4, zc, 3.1, 0.92, GREEN, rotEar)  -- green outer ear (rounded dome top) -- barely shorter (3.4 -> 3.1)
+		roundedEar(0.42, 2.4, zc, 2.25, 0.5,  PINKI, rotEar) -- pink inner ear (rounded dome top), on the front -- barely shorter (2.5 -> 2.25)
+	end
+	-- VERIFY ear attachment: ears are welded to the fused head AND code-positioned relative to the root every frame
+	-- AND their bases are embedded ~1 stud into the head -> three things ensuring no gap / no float.
+	do
+		local earLen, earCenterY, splay = 3.1, 2.4, math.rad(13)
+		local earBottom = earCenterY - (earLen * 0.5) * math.cos(splay)  -- vertical reach of the tilted ear
+		local embed     = ((PSH * 0.5) - earBottom) * s                  -- how deep the base sinks into the head
+		print(string.format("[Pet] bunny ears: welded=yes, attached=%s, embedded depth=%.2f studs, cylinder size=%.2f tall x %.2f dia (wide apart, tilted out)",
+			(embed > 0.1) and "yes" or "no", embed, earLen * s, 0.92 * s))
+	end
+	-- FEET: unchanged (kept exactly as before)
+	P("Foot", BLK, 0.95,0.8,0.95, GREEN, 0.95,-1.55,0.78)
+	P("Foot", BLK, 0.95,0.8,0.95, GREEN, 0.95,-1.55,-0.78)
+	eyes(P, 1.72, 0.5, 0.62)                                        -- EYES: unchanged (the good standard eyes, kept exactly)
+	-- NOSE: kept pink, but FLATTER (shallower in X) and CENTERED below the eyes
+	weldTo(P("Nose", BAL, 0.45,0.52,0.72, PINK, 1.74,-0.05,0), body)
+	-- MOUTH: a cute bunny "w" SMILE from thin black cylinders directly below the nose -- a short vertical philtrum
+	-- + two strokes that flare UP & OUT (corners turned UP -> happy smile, the "w" flipped right-side up).
+	weldTo(P("Mouth", CYL, 0.32,0.1,0.1, BLKM, 1.74,-0.42,0,    CFrame.Angles(0,0,math.rad(90))), body)
+	weldTo(P("Mouth", CYL, 0.36,0.1,0.1, BLKM, 1.73,-0.5,0.18,  CFrame.Angles(0,math.rad(90),0)*CFrame.Angles(0,0,math.rad(-34))), body)
+	weldTo(P("Mouth", CYL, 0.36,0.1,0.1, BLKM, 1.73,-0.5,-0.18, CFrame.Angles(0,math.rad(90),0)*CFrame.Angles(0,0,math.rad(34))), body)
+	weldTo(P("Mouth", BAL, 0.15,0.15,0.15, BLKM, 1.74,-0.585,0), body) -- tiny connector bead at the junction -> closes the gap where the philtrum + the two smile strokes meet
+	-- WHISKERS: three thin black cylinders on each side of the mouth, fanned (up / level / down), poking outward
+	for _, sgn in ipairs({ 1, -1 }) do
+		weldTo(P("Whisker", CYL, 1.05,0.06,0.06, BLKM, 1.46,-0.2,0.92*sgn, CFrame.Angles(0,math.rad(90),0)*CFrame.Angles(0,0,math.rad(-12))), body)
+		weldTo(P("Whisker", CYL, 1.14,0.06,0.06, BLKM, 1.46,-0.32,0.95*sgn, CFrame.Angles(0,math.rad(90),0)), body)
+		weldTo(P("Whisker", CYL, 1.05,0.06,0.06, BLKM, 1.46,-0.44,0.92*sgn, CFrame.Angles(0,math.rad(90),0)*CFrame.Angles(0,0,math.rad(12))), body)
+	end
+	-- CHEEKS: small lighter-green spheres below the eyes -- SYMMETRIC (mirrored): both at the same height
+	-- (y -0.18) and the same distance out from centre (z = +-0.72). No left/right offset -> equal positions.
+	for _, sgn in ipairs({ 1, -1 }) do
+		weldTo(P("Cheek", BAL, 0.6,0.52,0.5, LGREEN, 1.6,-0.18,0.72*sgn), body)
+	end
+	P("Tail", BAL, 1.05,1.05,1.05, WHITE, -1.6,-0.35,0)          -- round fluffy white tail bump (back)
+	P("Floret", BAL, 0.62,0.54,0.62, FLOR, -0.3,1.9,0)            -- dark-green floret bump on top
+	P("Floret", BAL, 0.46,0.42,0.46, FLOR, 0.2,2.0,0.45)
+	return m, err
+end
+
+-- 2) COCONUT CRAB (island 5): SMALL cute wide/flat rounded shell. Attach 2 scuttling claws + 6 little legs
+-- (separate, animated), 2 coconut spots, big eyes set high on the shell, a small mouth.
+local function buildCoconutCrabT()
+	local s = PSS * 0.78  -- noticeably SMALLER -> cute little crab
+	local m = Instance.new("Model"); m.Name = "CoconutCrabTemplate"; m.Parent = Workspace
+	local function P(n,sh,sx,sy,sz,c,x,y,z,r) return mkPart(m,n,sh,sx*s,sy*s,sz*s,c,x*s,y*s,z*s,r) end
+	newRoot(m)
+	local BROWN, DARK, CLAW = Color3.fromRGB(150,72,52), Color3.fromRGB(110,52,36), Color3.fromRGB(176,92,68)
+	local src = {}
+	-- a wider/flatter rounded shell -> crab body (not a tall cube)
+	roundedCubeInto(src, P, 0,0,0, PSW*1.05, PSH*0.72, PSD, PSR*0.95, BROWN)
+	local _, err = fuse(m, src, "BodyUnion", BROWN)
+	-- 2 CLAWS out the front (role claw -> scuttle), raised pincers
+	for _, sgn in ipairs({1,-1}) do P("Claw", BAL, 1.2,1.0,1.05, CLAW, 1.7,-0.1,1.15*sgn) end
+	-- 6 LEGS (role leg -> gait scuttle): 3 down each side, thin little legs poking out + down
+	for _, sgn in ipairs({1,-1}) do
+		for _, lx in ipairs({ 0.7, 0.0, -0.7 }) do
+			P("Leg", BLK, 0.32,1.0,0.32, CLAW, lx,-1.05,1.55*sgn, CFrame.Angles(math.rad(22)*sgn,0,0))
+		end
+	end
+	for _, d in ipairs({ {1.55,0.55,0.42},{1.55,0.55,-0.42} }) do P("Dot", BAL, 0.34,0.24,0.34, DARK, d[1],d[2],d[3]) end -- 2 small coconut spots
+	eyes(P, 1.34, 1.18, 0.6)  -- STANDARD eyes, moved UP a little higher on the shell (more apparent)
+	mouth(P, 1.5, -0.05, 0.42)
+	return m, err
+end
+
+-- 3) POPCORN SHEEP (island 8): fluffy WHITE/cream wool body. Attach 4 black legs + black floppy ears, and a
+-- raised BLACK FACE PATCH (face area only) carrying the standard eyes + a small snout/mouth (its own sheep face).
+local function buildPopcornSheepT()
+	local s = PSS
+	local m = Instance.new("Model"); m.Name = "PopcornSheepTemplate"; m.Parent = Workspace
+	local function P(n,sh,sx,sy,sz,c,x,y,z,r) return mkPart(m,n,sh,sx*s,sy*s,sz*s,c,x*s,y*s,z*s,r) end
+	newRoot(m)
+	-- BLACK against the cream wool (legs/ears darkest); the FACE patch is a hair lighter charcoal so the
+	-- standard pure-black eyes (16,16,20) still contrast and read clearly on it.
+	local CREAM, BLACK, FACEBLK, SNOUT = Color3.fromRGB(252,248,228), Color3.fromRGB(26,26,30), Color3.fromRGB(46,46,52), Color3.fromRGB(64,64,72)
+	local src = {}
+	roundedCubeInto(src, P, 0,0,0, PSW,PSH,PSD, PSR, CREAM)
+	for _, b in ipairs({ {0.0,1.75,0.55},{0.0,1.75,-0.55},{-0.7,1.8,0.0},{0.7,1.65,0.0},{-1.55,0.6,0.0},{0.0,0.6,1.6},{0.0,0.6,-1.6} }) do
+		src[#src+1] = P("b", BAL, 1.15,1.1,1.15, CREAM, b[1],b[2],b[3]) -- chunkier wool bumps that clearly read (still fused -> fluffy white body)
+	end
+	local _, err = fuse(m, src, "BodyUnion", CREAM)
+	-- 4 dark block LEGS (role leg -> waddle), front + back pairs, embedded into the base
+	P("Foot", BLK, 0.85,0.9,0.9, BLACK, 1.0,-1.7,0.78)
+	P("Foot", BLK, 0.85,0.9,0.9, BLACK, 1.0,-1.7,-0.78)
+	P("Foot", BLK, 0.85,0.9,0.9, BLACK, -1.0,-1.7,0.78)
+	P("Foot", BLK, 0.85,0.9,0.9, BLACK, -1.0,-1.7,-0.78)
+	-- black floppy ears (role ear -> wiggle), bases embedded into the head top but tops standing proud above it
+	P("Ear", BAL, 0.55,0.8,0.46, BLACK, 0.55,1.78,0.95)
+	P("Ear", BAL, 0.55,0.8,0.46, BLACK, 0.55,1.78,-0.95)
+	-- BLACK-FACED SHEEP: a raised BLACK FACE PATCH covering JUST the face area (not the whole front) and
+	-- PROTRUDING from the white fluffy body. The standard eyes + a small snout/mouth sit ON this black face.
+	-- black face patch: ~2x the frontal AREA (taller + wider: 1.75x1.85 -> 2.5x2.65) so it covers much more
+	-- black around the eyes. SAME depth out: X-size (1.25) and centre x (1.45) are UNCHANGED -> the front pole
+	-- still sits at x2.075, so it does NOT protrude any further than before.
+	local facePatch = P("FacePatch", BAL, 1.25,2.5,2.65, FACEBLK, 1.45,0.05,0)
+	-- area dims are Y(height) x Z(width): old 1.75x1.85 = 3.24 -> new 2.50x2.65 = 6.63 (~2.05x). X(depth) kept 1.25.
+	local _oldArea, _newArea = 1.75*1.85, 2.50*2.65
+	print(string.format("[Pet] sheep black face resized from 1.25x1.75x1.85 to 1.25x2.50x2.65 (face area %.2f -> %.2f, ~%.2fx); actual scaled Size now = %s",
+		_oldArea, _newArea, _newArea/_oldArea, tostring(facePatch.Size)))
+	P("Snout", BAL, 0.9,0.85,1.0, SNOUT, 2.0,-0.5,0)              -- small protruding snout on the black face
+	eyes(P, 1.9, 0.45, 0.5)                                        -- SAME good eyes, pushed IN 0.1 (fx 2.0 -> 1.9) so the disc embeds FLUSH into the face patch with no gap, like the duck
+	P("Nose", BAL, 0.34,0.26,0.46, Color3.fromRGB(16,16,20), 2.32,-0.45,0) -- small nose on the snout tip
+	mouth(P, 2.18, -0.82, 0.34)                                    -- small clean mouth under the snout (not a smiley)
+	return m, err
+end
+
+-- 4) BUTTER DUCK (island 10): rounded-cube golden body (+upturned tail bump, fused). Attach 2 flapping wings
+-- (separate, animated), a flat orange bill (= the mouth, NO smile), 2 webbed feet, big eyes.
+local function buildButterDuckT()
+	local s = PSS
+	local m = Instance.new("Model"); m.Name = "ButterDuckTemplate"; m.Parent = Workspace
+	local function P(n,sh,sx,sy,sz,c,x,y,z,r) return mkPart(m,n,sh,sx*s,sy*s,sz*s,c,x*s,y*s,z*s,r) end
+	newRoot(m)
+	local BUTTER, BILL = Color3.fromRGB(248,214,96), Color3.fromRGB(244,150,40)
+	local src = {}
+	roundedCubeInto(src, P, 0,0,0, PSW,PSH,PSD, PSR, BUTTER)
+	src[#src+1] = P("b", BAL, 0.9,0.9,1.0, BUTTER, -1.6,0.5,0, CFrame.Angles(0,0,math.rad(28)))  -- upturned tail bump (fused)
+	local _, err = fuse(m, src, "BodyUnion", BUTTER)
+	-- 2 WINGS: SEPARATE flat-ish parts (role wing -> flap), inner edge embedded into the body sides
+	P("Wing", BLK, 1.3,0.45,1.5, BUTTER, -0.1,0.25,1.55)
+	P("Wing", BLK, 1.3,0.45,1.5, BUTTER, -0.1,0.25,-1.55)
+	P("Bill", BLK, 0.55,0.65,1.25, BILL, 1.85,-0.05,0)           -- flat orange bill OUT on the front (this IS the mouth -> no smile)
+	P("Foot", BLK, 0.85,0.7,1.05, BILL, 0.85,-1.62,0.72)        -- orange webbed block feet (role leg -> paddle)
+	P("Foot", BLK, 0.85,0.7,1.05, BILL, 0.85,-1.62,-0.72)
+	eyes(P, 1.72, 0.6, 0.6)  -- STANDARD eyes (fx=1.72 -> black disc backs into the body face at x1.7, front proud -> black eyes clearly visible). Bill is the mouth -> no smile.
+	return m, err
+end
+
+-- 5) BURRITO ARMADILLO (island 13): rounded-cube tan body (+BANDED shell ridges + head bump, fused). Attach 4
+-- waddling legs + a wiggling tail (separate, animated), a tiny nose, big eyes, a small mouth.
+local function buildBurritoArmadilloT()
+	local s = PSS
+	local m = Instance.new("Model"); m.Name = "BurritoArmadilloTemplate"; m.Parent = Workspace
+	local function P(n,sh,sx,sy,sz,c,x,y,z,r) return mkPart(m,n,sh,sx*s,sy*s,sz*s,c,x*s,y*s,z*s,r) end
+	newRoot(m)
+	local TAN, SNT, BAND = Color3.fromRGB(196,150,100), Color3.fromRGB(150,96,56), Color3.fromRGB(168,124,80)
+	local src = {}
+	roundedCubeInto(src, P, 0,0,0, PSW,PSH,PSD, PSR, TAN)
+	for _, bx in ipairs({ -0.8,-0.2,0.4 }) do src[#src+1] = P("b", BAL, 0.55,0.9,2.7, BAND, bx,1.95,0) end -- RAISED banded shell ridges across the top (fused)
+	src[#src+1] = P("b", BAL, 1.4,1.3,1.5, TAN, 1.82,0.0,0)         -- snout / head bump OUT at the front (fused)
+	local _, err = fuse(m, src, "BodyUnion", TAN)
+	-- 4 LEGS (role leg -> waddle), front + back pairs, embedded into the base
+	P("Foot", BLK, 0.8,0.85,0.85, SNT, 1.0,-1.65,0.82)
+	P("Foot", BLK, 0.8,0.85,0.85, SNT, 1.0,-1.65,-0.82)
+	P("Foot", BLK, 0.8,0.85,0.85, SNT, -1.0,-1.65,0.82)
+	P("Foot", BLK, 0.8,0.85,0.85, SNT, -1.0,-1.65,-0.82)
+	-- tapering TAIL out the back (role tail -> wiggle)
+	P("Tail", BAL, 1.5,0.5,0.5, SNT, -2.1,-0.45,0, CFrame.Angles(0,0,math.rad(-12)))
+	P("Nose", BAL, 0.34,0.28,0.34, SNT, 2.4,-0.22,0)             -- nose on the head bump front
+	eyes(P, 1.72, 0.95, 0.5)                                        -- eyes embedded FLUSH into the FLAT cube body face (fx 1.72, exactly like the duck -> no gap), raised to sit on the body above the snout bump
+	mouth(P, 2.18, -0.6, 0.32)                                      -- TUCKED into the snout (pushed in + down -> flusher, sits in the snout area)
+	return m, err
+end
+
+-- (legacy single-template builder kept below but UNUSED -- the 5-pet loop above replaces it)
 local function buildPetTemplate()
 	local s = 0.9 -- display scale baked into the template
 
@@ -324,15 +640,36 @@ local function buildPetTemplate()
 	model.Parent = RS -- replicate the finished template to clients (they clone it)
 	return model, unionErr
 end
+-- Build ALL 5 fused pet templates at startup, apply a slight toy gloss, and store each in ReplicatedStorage
+-- (the client clones them). Each logs its own union result. (buildPetTemplate above is legacy/unused.)
+local PET_TEMPLATE_BUILDERS = {
+	{ id = "BroccoliPet",      fn = buildBroccoliBunny },
+	{ id = "CoconutCrab",      fn = buildCoconutCrabT },
+	{ id = "PopcornSheep",     fn = buildPopcornSheepT },
+	{ id = "ButterDuck",       fn = buildButterDuckT },
+	{ id = "BurritoArmadillo", fn = buildBurritoArmadilloT },
+}
 task.spawn(function()
-	local model, err = buildPetTemplate()
-	if model and not err then
-		print("[Pet][UNION] server union SUCCESS - Broccoli Dino ready")
-	elseif model and err then
-		warn("[Pet][UNION] server union failed (" .. tostring(err) .. ") - Broccoli Dino ready with UNFUSED body (still the full pet)")
-	else
-		warn("[Pet][UNION] server pet template build FAILED: " .. tostring(err))
+	local totalSmoothed = 0
+	for _, b in ipairs(PET_TEMPLATE_BUILDERS) do
+		local ok, model, err = pcall(b.fn)
+		if ok and model then
+			-- (no gloss pass: all pet parts are matte Enum.Material.Plastic + all surfaces Smooth via flagPart ->
+			-- clean matte plastic, no Lego-stud/notch texture)
+			local n = 0
+			for _, d in ipairs(model:GetDescendants()) do if d:IsA("BasePart") then n = n + 1 end end
+			totalSmoothed = totalSmoothed + n
+			model.Parent = RS -- replicate the finished template to clients
+			if err then
+				warn("[Pet][UNION] "..b.id.." union FAILED ("..tostring(err)..") -- template ready with UNFUSED body (still appears)")
+			else
+				print("[Pet][UNION] "..b.id.." rounded-cube body SUCCESS ("..n.." parts -> matte Plastic + Smooth surfaces)")
+			end
+		else
+			warn("[Pet][UNION] "..b.id.." template build error: "..tostring(model or err))
+		end
 	end
+	print("[Pet] surface sweep: "..totalSmoothed.." pet parts set to clean matte Plastic + all faces Smooth (no stud/notch texture)")
 end)
 
 -- ===== STATE HELPERS =====
@@ -347,13 +684,58 @@ local function foundCount(player, petId)
 	local n = 0; for _ in pairs(s) do n = n + 1 end; return n
 end
 
--- ===== LEVELING (cosmetic) =====
--- Normalize an owned entry to a {level,height,time} table (legacy saves stored `true`).
+-- ===== LEVELING (cosmetic prestige -- 1..50, XP-driven, NO gameplay/flight effect whatsoever) =====
+local PET_MAX_LEVEL = 25
+-- Rising XP curve: each level needs progressively more (base * level^1.6) so 1->8 is quick and 20->25 is a
+-- real grind. xpNeeded(L) = XP to go from level L to L+1. (Rescaled for a 25-level cap.)
+local PET_XP_BASE, PET_XP_EXP = 80, 1.6
+local function xpNeeded(level)
+	if level >= PET_MAX_LEVEL then return math.huge end
+	return math.floor(PET_XP_BASE * (level ^ PET_XP_EXP))
+end
+-- XP award RATES (all tuning lives here). Cosmetic-only -- these NEVER touch flight/gas/coins balance.
+local XP_PER_COIN        = 0.15  -- coins earned -> XP (proportional)
+local XP_PER_FLIGHT_TICK = 6     -- each 0.5s coin tick fires DURING FLIGHT -> "distance flown" XP
+local XP_PER_GAS         = 0.5   -- gas/power gained from eating food -> XP
+local XP_PER_ISLAND      = 600   -- reaching a NEW island -> a chunk of XP
+-- The cosmetic VISUAL tier name for a level (milestones at 10/20/30/40/50) -- diagnostics + card hint only.
+local function tierVisual(level)
+	if level >= 25 then return "MAX (all accessories + gold + shimmer)"
+	elseif level >= 23 then return "5 accessories + full trail/aura/sparkles"
+	elseif level >= 18 then return "4 accessories + sparkles + growing"
+	elseif level >= 15 then return "3 accessories + sparkles + growing"
+	elseif level >= 13 then return "3 accessories + aura + growing"
+	elseif level >= 10 then return "2 accessories + aura + growing"
+	elseif level >= 8 then return "2 accessories + trail + growing"
+	elseif level >= 5 then return "1 accessory + trail + growing"
+	elseif level >= 3 then return "1 accessory, growing"
+	else return "starter (growing)" end
+end
+local function nextMilestoneHint(level)
+	if level >= 25 then return "MAX reached"
+	elseif level >= 23 then return "Lvl 25: MAX (gold + shimmer)"
+	elseif level >= 18 then return "Lvl 23: accessory #5"
+	elseif level >= 13 then return "Lvl 18: accessory #4"
+	elseif level >= 8 then return "Lvl 13: accessory #3 (hat)"
+	elseif level >= 3 then return "Lvl 8: accessory #2 (glasses)"
+	else return "Lvl 3: accessory #1" end
+end
+local function isMilestone(level) return level==3 or level==8 or level==13 or level==18 or level==23 or level==25 end
+-- ===== RARE HATCH VARIANTS (Stage 2): ~1% (1/99) chance on hatch, EXCEPT Butter Duck (ultra-rare 1/500). A
+-- rare is a FLAG on the owned pet (additive: data.rare=true), comes PRE-MAXED + a unique rare look. Cosmetic.
+local RARE_NAMES = {
+	BroccoliPet = "Emerald Bunny", CoconutCrab = "Golden Crab", PopcornSheep = "Cloud Sheep",
+	BurritoArmadillo = "Crystal Armadillo", ButterDuck = "Cosmic Duck",
+}
+local function rareOdds(petId) return (petId == "ButterDuck") and 500 or 99 end
+-- Normalize an owned entry to a {level,xp,height,time} table (legacy saves stored `true`; xp is ADDITIVE --
+-- missing pets/fields default to level 1, 0 XP so existing saves are never broken).
 local function getPetData(player, petId)
 	local op = _G.playerOwnedPets[player]; if not op then return nil end
 	local v = op[petId]; if v == nil then return nil end
 	if type(v) ~= "table" then v = {}; op[petId] = v end
-	v.level = v.level or 1; v.height = v.height or 0; v.time = v.time or 0
+	v.level = v.level or 1; v.xp = v.xp or 0; v.height = v.height or 0; v.time = v.time or 0
+	if v.level > PET_MAX_LEVEL then v.level = PET_MAX_LEVEL; v.xp = 0 end -- clamp legacy saves to the new 25 cap
 	return v
 end
 -- The next level + its achievement threshold (nil if already maxed).
@@ -383,6 +765,7 @@ local function sendState(player)
 			found = foundCount(player, petId), total = #def.pieceMarkers, owns = owns,
 			equipped = owns and (equipped == petId) or false, -- the client only spawns the EQUIPPED follower
 			level = owns and getPetData(player, petId).level or 1,
+			rare = owns and getPetData(player, petId).rare or false, -- rare variant flag (client applies pre-maxed + rare look)
 		}
 	end
 	pcall(function() PetStateEvent:FireClient(player, state) end)
@@ -410,11 +793,12 @@ local function sendInventory(player)
 			local nl, th = nextTier(player, petId)
 			payload.owned[petId] = {
 				displayName = def.displayName or petId,
-				level = d.level, maxLevel = def.maxLevel or 1,
-				height = math.floor(d.height), time = math.floor(d.time),
+				level = d.level, maxLevel = PET_MAX_LEVEL,
+				xp = math.floor(d.xp), xpNeed = (d.level >= PET_MAX_LEVEL) and 0 or xpNeeded(d.level),
+				milestone = nextMilestoneHint(d.level), tierVisual = tierVisual(d.level),
 				equipped = (equipped == petId),
-				canUpgrade = canUpgrade(player, petId),
-				nextLevel = nl, nextHeight = th and th.height or nil, nextTime = th and th.time or nil,
+				height = math.floor(d.height), time = math.floor(d.time),
+				rare = d.rare and true or false, rareName = d.rare and RARE_NAMES[petId] or nil, -- RARE badge + variant name
 			}
 		end
 		if questDiscovered(player, petId) then
@@ -432,16 +816,112 @@ local function sendInventory(player)
 	pcall(function() PetInventoryEvent:FireClient(player, payload) end)
 end
 
--- Level a pet up by one (both the achievement and Robux paths funnel here). Re-syncs follower + GUI.
+-- Level a pet up by one (the XP auto-level loop and the Robux/test skip all funnel here). Re-syncs follower + GUI.
 local function levelUp(player, petId, via)
 	local def = PETS[petId]; local d = getPetData(player, petId)
 	if not (def and d) then return false end
-	if d.level >= (def.maxLevel or 1) then return false end
+	if d.level >= PET_MAX_LEVEL then return false end
 	d.level = d.level + 1
-	print("[PetInv] "..petId.." leveled up to "..d.level.." (via "..tostring(via)..")")
-	sendState(player)     -- the follower re-applies its per-level visual
-	sendInventory(player) -- the card shows the new level
+	print("[PetLvl] "..petId.." LEVELED UP to "..d.level.." (via "..tostring(via)..")")
+	if isMilestone(d.level) then print("[PetLvl] "..petId.." hit milestone "..d.level.." -> "..tierVisual(d.level)) end
+	sendState(player)     -- the follower re-applies its per-level cosmetic tier visual
+	sendInventory(player) -- the card shows the new level + reset XP bar
 	return true
+end
+
+-- Throttle the XP-bar inventory resend (coins/flight feed XP fast). Always force on level-up.
+local lastInvSync = {}
+local lastXpPrint = {} -- throttle the per-tick "+XP" diagnostic for the high-frequency coins/distance sources
+local function syncXP(player, force)
+	local now = os.clock()
+	if force or not lastInvSync[player] or (now - lastInvSync[player]) >= 2.5 then
+		lastInvSync[player] = now; sendInventory(player)
+	end
+end
+-- Award XP to the player's EQUIPPED pet ONLY. Cosmetic prestige -- NEVER affects flight/gas/coins. Auto-levels
+-- (carrying the remainder) while XP fills, up to MAX (50). Diagnostics per the spec.
+local function awardXP(player, amount, source)
+	amount = tonumber(amount) or 0; if amount <= 0 then return end
+	local petId = _G.playerEquippedPet[player]; if not petId or not ownsPet(player, petId) then return end
+	local d = getPetData(player, petId); if not d then return end
+	if d.level >= PET_MAX_LEVEL then return end -- maxed -> no XP needed
+	d.xp = d.xp + amount
+	local leveled = false
+	while d.level < PET_MAX_LEVEL do
+		local need = xpNeeded(d.level)
+		if d.xp < need then break end
+		d.xp = d.xp - need
+		levelUp(player, petId, "xp:"..tostring(source)) -- force-syncs follower + GUI
+		leveled = true
+	end
+	if d.level >= PET_MAX_LEVEL then d.xp = 0 end
+	-- Diagnostic: always for level-ups + low-frequency sources (island/gas); throttle the per-0.5s coins/distance.
+	local hi = (source == "coins" or source == "distance")
+	local now = os.clock()
+	if leveled or not hi or not lastXpPrint[player] or (now - lastXpPrint[player]) >= 2.5 then
+		if hi then lastXpPrint[player] = now end
+		print(string.format("[PetLvl] %s +%d XP to %s from %s -> %d/%s",
+			player.Name, math.floor(amount), petId, tostring(source), math.floor(d.xp),
+			(d.level >= PET_MAX_LEVEL) and "MAX" or tostring(xpNeeded(d.level))))
+	end
+	if not leveled then syncXP(player, false) end -- level-up already force-synced
+end
+-- XP SOURCE HOOKS (called from PlayerStats' coin/food/island handlers; all rate tuning lives above). --
+_G.petAwardXP      = function(player, amount, source) awardXP(player, amount, source) end
+_G.petOnCoins      = function(player, coins) awardXP(player, (tonumber(coins) or 0) * XP_PER_COIN, "coins") end
+_G.petOnFlightTick = function(player)        awardXP(player, XP_PER_FLIGHT_TICK, "distance") end
+_G.petOnGas        = function(player, gas)   awardXP(player, (tonumber(gas) or 0) * XP_PER_GAS, "gas") end
+_G.petOnIsland     = function(player)        awardXP(player, XP_PER_ISLAND, "island") end
+
+-- SKIP: instantly FILL the current level's remaining XP -> the pet levels up once (Robux product OR test path).
+local function petSkip(player, petId, via)
+	if not ownsPet(player, petId) then return false end
+	local d = getPetData(player, petId); if not d then return false end
+	if d.level >= PET_MAX_LEVEL then return false end
+	d.xp = 0
+	local ok = levelUp(player, petId, "skip:"..tostring(via))
+	if ok then print("[PetLvl] skip "..tostring(via).." for "..petId.." -> filled to Lvl "..d.level) end
+	return ok
+end
+
+-- \xE2\x9A\xA0 TEST COMMAND /allpets - grants all pets to test accounts. REMOVE BEFORE LAUNCH.
+-- Grants EVERY pet in the catalog to the player using the SAME ownership structure a normal claim writes
+-- ({level=1,height=0,time=0}), marks each quest discovered, auto-equips one if none is equipped, then
+-- re-sends state + inventory so all pets show OWNED + equippable immediately (no rejoin). Gated by the
+-- CALLER (PlayerStats /allpets handler, test accounts only). Returns how many NEW pets were granted.
+_G.petsGrantAll = function(player)
+	if not player then return 0 end
+	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
+	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
+	local granted = 0
+	for petId in pairs(PETS) do
+		if not ownsPet(player, petId) then
+			_G.playerOwnedPets[player][petId] = { level = 1, height = 0, time = 0 } -- same table PetClaimEvent writes
+			granted = granted + 1
+		end
+		_G.playerDiscoveredQuests[player][petId] = true -- so the quests panel shows it as done too
+	end
+	if not _G.playerEquippedPet[player] then for petId in pairs(PETS) do _G.playerEquippedPet[player] = petId; break end end
+	sendState(player)     -- spawns the equipped follower + flags everything owned
+	sendInventory(player) -- all pets now appear in the inventory, equippable
+	return granted
+end
+-- \xE2\x9A\xA0 TEST COMMAND /rarepets - grants every pet as its RARE variant (pre-maxed + rare flag) so all 5 rare
+-- looks can be seen without gambling the odds. REMOVE BEFORE LAUNCH.
+_G.petsGrantRare = function(player)
+	if not player then return 0 end
+	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
+	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
+	local granted = 0
+	for petId in pairs(PETS) do
+		_G.playerOwnedPets[player][petId] = { level = PET_MAX_LEVEL, xp = 0, height = 0, time = 0, rare = true } -- RARE + pre-maxed
+		_G.playerDiscoveredQuests[player][petId] = true
+		granted = granted + 1
+		print(string.format("[PetRare] rare %s displayed pre-maxed + rare effect %s", petId, RARE_NAMES[petId] or petId))
+	end
+	if not _G.playerEquippedPet[player] then for petId in pairs(PETS) do _G.playerEquippedPet[player] = petId; break end end
+	sendState(player); sendInventory(player)
+	return granted
 end
 
 -- ===== MARKERS: locate + hide the raw marker parts (kept in place so clients can read positions) =====
@@ -584,6 +1064,10 @@ task.spawn(function()
 		if def.questType == "fishing" then
 			print("[Pet] "..petId.." markers found: butterlake="..(extraFound.butterlake and "yes" or "no")
 				.." (union), rodbarrel="..(extraFound.rodbarrel and "yes" or "no"))
+		elseif def.questType == "dig" then
+			local digN = 0; for _, k in ipairs({ "dig1","dig2","dig3","dig4","dig5" }) do if extraFound[k] then digN = digN + 1 end end
+			print("[Pet] "..petId.." markers found: shovel="..(extraFound.shovel and "yes" or "no")
+				..", digspots="..digN.."/5, buriedegg="..(extraFound.buriedegg and "yes" or "no"))
 		elseif def.questType == "film-reels" then
 			print("[Pet] "..petId.." markers found: "..foundN.."/"..#def.pieceMarkers
 				..", projector/screen/eggspot found: "..(extraFound.projector and "yes" or "no")
@@ -680,14 +1164,28 @@ PetClaimEvent.OnServerEvent:Connect(function(player, petId)
 	if def.questType == "fishing" then
 		-- fishing has no pieces: the SERVER-rolled egg flag is the anti-cheat gate (client can't fake a catch)
 		if not fishEggReady[player] then print("[Pet] "..player.Name.." tried to claim "..petId.." without catching the egg"); return end
+	elseif def.questType == "dig" then
+		-- dig has no pieces: the player must have DUG the real buried-egg spot (PetDigEvent set this gate)
+		if not digEggReady[player] then print("[Pet] "..player.Name.." tried to claim "..petId.." without digging up the egg"); return end
 	else
 		if foundCount(player, petId) < #def.pieceMarkers then return end -- must have all pieces (anti-cheat gate)
 	end
+	-- RARE ROLL (server-authoritative): ~1/99 (1/500 for the duck). A rare hatches PRE-MAXED + flagged.
+	local odds = rareOdds(petId)
+	local isRare = (math.random(1, odds) == 1)
+	print(string.format("[PetRare] %s hatched %s - rare roll: %s (odds 1/%d)", player.Name, petId, isRare and "hit" or "miss", odds))
+	local data = { level = 1, xp = 0, height = 0, time = 0 }
+	if isRare then
+		data.rare = true
+		data.level = PET_MAX_LEVEL -- pre-maxed: rares skip the grind, instantly at the full lvl-25 look
+		print(string.format("[PetRare] %s got RARE %s!", player.Name, RARE_NAMES[petId] or petId))
+	end
 	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
-	_G.playerOwnedPets[player][petId] = { level = 1, height = 0, time = 0 } -- now a table (PlayerStats saves it)
+	_G.playerOwnedPets[player][petId] = data -- now a table (PlayerStats saves it, incl. the rare flag)
 	if not _G.playerEquippedPet[player] then _G.playerEquippedPet[player] = petId end -- auto-equip your first pet
 	print("[Pet] "..player.Name.." claimed "..petId)
 	print("[Pet] "..petId.." following "..player.Name)
+	if isRare then pcall(function() PetRareEvent:FireClient(player, petId, RARE_NAMES[petId] or petId) end) end -- hatch fanfare
 	sendState(player)     -- client hides egg/pieces and spawns the equipped follower
 	sendInventory(player) -- the new pet shows up in the inventory GUI
 end)
@@ -715,6 +1213,16 @@ PetFishRoll.OnServerInvoke = function(player)
 	end
 end
 
+-- ===== DIG (BurritoArmadillo): the client fires this when it finishes digging the REAL BuriedEggSpot. The
+-- server unlocks the claim gate (digEggReady) so PetClaimEvent will accept the armadillo. Decoy digs (junk) are
+-- purely client-side cosmetic and never call this -- only the real buried egg does. =====
+PetDigEvent.OnServerEvent:Connect(function(player, petId)
+	local def = PETS[petId]; if not def or def.questType ~= "dig" then return end
+	if ownsPet(player, petId) then return end
+	digEggReady[player] = true
+	print("[Pet] "..player.Name.." dug BuriedEggSpot -> EGG (claim unlocked)")
+end)
+
 -- ===== INVENTORY: EQUIP / UNEQUIP (one at a time) =====
 PetEquipEvent.OnServerEvent:Connect(function(player, petId)
 	if petId == false or petId == nil then
@@ -723,7 +1231,10 @@ PetEquipEvent.OnServerEvent:Connect(function(player, petId)
 	else
 		if not ownsPet(player, petId) then return end -- can only equip what you own
 		_G.playerEquippedPet[player] = petId
-		print("[PetInv] equipped "..petId)
+		local d = getPetData(player, petId)
+		print(string.format("[PetLvl] %s equipped %s Lvl %d (%d/%s) tier visual: %s",
+			player.Name, petId, d.level, math.floor(d.xp),
+			(d.level >= PET_MAX_LEVEL) and "MAX" or tostring(xpNeeded(d.level)), tierVisual(d.level)))
 	end
 	sendState(player)     -- client spawns/despawns the follower to match
 	sendInventory(player)
@@ -757,17 +1268,24 @@ PetProgressEvent.OnServerEvent:Connect(function(player, petId, peakHeight, addTi
 	if upgradeReady[player][petId] ~= avail then upgradeReady[player][petId] = avail; sendInventory(player) end
 end)
 
--- ===== ROBUX path: client declares which pet it's upgrading, THEN prompts the Developer Product. =====
+-- ===== ROBUX SKIP path: client declares which pet it's skipping, THEN prompts the Developer Product. The
+-- actual XP-fill is gated behind ProcessReceipt (a real purchase). =====
 PetPendingUpgrade.OnServerEvent:Connect(function(player, petId)
-	if ownsPet(player, petId) then pendingRobuxPet[player.UserId] = petId end
+	if not ownsPet(player, petId) then return end
+	-- \xE2\x9A\xA0 TEST skip path: test accounts skip-fill INSTANTLY (no real purchase) so the flow is testable. REMOVE BEFORE LAUNCH.
+	if _G.isAllowedTestUser and _G.isAllowedTestUser(player) then
+		petSkip(player, petId, "test")
+		return
+	end
+	pendingRobuxPet[player.UserId] = petId
 end)
--- Called by PlayerStats' single MarketplaceService.ProcessReceipt for the pet-upgrade product. Gated behind
--- the receipt -- a real purchase is required to grant the level (never faked).
+-- Called by PlayerStats' single MarketplaceService.ProcessReceipt for the pet-SKIP product. Gated behind the
+-- receipt -- a real purchase is required to fill the level (never faked).
 _G.petsHandleReceipt = function(player, productId)
-	if PET_UPGRADE_PRODUCT_ID == 0 or productId ~= PET_UPGRADE_PRODUCT_ID then return false end -- not ours / stub
+	if productId ~= PET_UPGRADE_PRODUCT_ID then return false end -- not our product
 	local petId = pendingRobuxPet[player.UserId]; pendingRobuxPet[player.UserId] = nil
 	if not (petId and ownsPet(player, petId)) then return false end
-	return levelUp(player, petId, "robux")
+	return petSkip(player, petId, "purchased")
 end
 
 -- ===== QUEST DISCOVERY: the client fires this when the player LANDS on a pet's island. Records it
@@ -781,11 +1299,139 @@ PetQuestDiscovered.OnServerEvent:Connect(function(player, petId)
 	sendInventory(player) -- the quest now appears in the player's quests panel
 end)
 
+-- =====================================================================================================
+-- STAGE 3: PLAYER-TO-PLAYER TRADING (server-authoritative, atomic, anti-dupe). The client only sends INTENTS;
+-- the server validates ownership, owns the offer/confirm state, and executes the swap in one synchronous step.
+-- =====================================================================================================
+local tradeOf    = {} -- [player] = session (a player is in at most ONE trade -> a pet can't be in two trades)
+local incomingReq = {} -- [targetPlayer] = requesterPlayer (one pending incoming request)
+
+local function keyList(set) local t = {}; for k in pairs(set) do t[#t+1] = k end; return table.concat(t, ",") end
+local function ownedKeyList(player) local t = {}; for k in pairs(_G.playerOwnedPets[player] or {}) do t[#t+1] = k end; return table.concat(t, ",") end
+-- compact display payload for an offered pet (reuses the level/rare data so the client shows name/level/tier)
+local function petBrief(player, petId)
+	local d = getPetData(player, petId); local def = PETS[petId]; if not d then return nil end
+	return { petId = petId, name = (d.rare and RARE_NAMES[petId]) or (def and def.displayName) or petId, level = d.level, rare = d.rare and true or false }
+end
+local function offerList(owner, offerSet)
+	local list = {}; for petId in pairs(offerSet) do local b = petBrief(owner, petId); if b then list[#list+1] = b end end; return list
+end
+local function tradeStatus(myC, theirC)
+	if myC and theirC then return "trading" elseif myC then return "waiting_them" elseif theirC then return "waiting_you" else return "open" end
+end
+local function sendTradeState(session)
+	local A, B = session.a, session.b
+	pcall(function() if A.Parent then PetTradeState:FireClient(A, { active=true, withName=B.Name,
+		mine=offerList(A, session.offerA), theirs=offerList(B, session.offerB),
+		myConfirm=session.confirmA, theirConfirm=session.confirmB, status=tradeStatus(session.confirmA, session.confirmB) }) end end)
+	pcall(function() if B.Parent then PetTradeState:FireClient(B, { active=true, withName=A.Name,
+		mine=offerList(B, session.offerB), theirs=offerList(A, session.offerA),
+		myConfirm=session.confirmB, theirConfirm=session.confirmA, status=tradeStatus(session.confirmB, session.confirmA) }) end end)
+end
+local function closeTrade(session, reason, doneFlag)
+	if not tradeOf[session.a] and not tradeOf[session.b] then return end -- already closed
+	tradeOf[session.a] = nil; tradeOf[session.b] = nil
+	pcall(function() if session.a.Parent then PetTradeState:FireClient(session.a, { active=false, reason=reason }) end end)
+	pcall(function() if session.b.Parent then PetTradeState:FireClient(session.b, { active=false, reason=reason }) end end)
+	if not doneFlag then print("[Trade] CANCELLED ("..tostring(reason)..")") end
+end
+-- ATOMIC, server-validated swap. Runs synchronously (no yields) -> no duplication window.
+local function executeTrade(session)
+	local A, B = session.a, session.b
+	if not (A.Parent and B.Parent) then closeTrade(session, "a player left"); return end
+	-- SECURITY re-check at execution: both must still OWN everything they're offering (not just when added).
+	for petId in pairs(session.offerA) do if not ownsPet(A, petId) then closeTrade(session, A.Name.." no longer owns "..petId); return end end
+	for petId in pairs(session.offerB) do if not ownsPet(B, petId) then closeTrade(session, B.Name.." no longer owns "..petId); return end end
+	-- no-overwrite: a receiver must not KEEP a pet of the same type they're about to receive (1 entry per petId).
+	local keptA, keptB = {}, {}
+	for petId in pairs(_G.playerOwnedPets[A] or {}) do if not session.offerA[petId] then keptA[petId] = true end end
+	for petId in pairs(_G.playerOwnedPets[B] or {}) do if not session.offerB[petId] then keptB[petId] = true end end
+	for petId in pairs(session.offerA) do if keptB[petId] then closeTrade(session, B.Name.." already owns "..petId); return end end
+	for petId in pairs(session.offerB) do if keptA[petId] then closeTrade(session, A.Name.." already owns "..petId); return end end
+	print(string.format("[Trade] EXECUTING %s[%s] <-> %s[%s] - validated ownership both sides", A.Name, keyList(session.offerA), B.Name, keyList(session.offerB)))
+	-- snapshot the offered DATA TABLES (carry level/xp/rare/variant), then remove, then add -- all in one step.
+	local giveA, giveB = {}, {}
+	for petId in pairs(session.offerA) do giveA[petId] = _G.playerOwnedPets[A][petId] end
+	for petId in pairs(session.offerB) do giveB[petId] = _G.playerOwnedPets[B][petId] end
+	for petId in pairs(session.offerA) do _G.playerOwnedPets[A][petId] = nil end
+	for petId in pairs(session.offerB) do _G.playerOwnedPets[B][petId] = nil end
+	for petId, data in pairs(giveA) do _G.playerOwnedPets[B][petId] = data end -- A's pet (with its data) -> B
+	for petId, data in pairs(giveB) do _G.playerOwnedPets[A][petId] = data end -- B's pet (with its data) -> A
+	-- clear equipped if it was traded away (keep equip state sane)
+	if _G.playerEquippedPet[A] and not ownsPet(A, _G.playerEquippedPet[A]) then _G.playerEquippedPet[A] = nil end
+	if _G.playerEquippedPet[B] and not ownsPet(B, _G.playerEquippedPet[B]) then _G.playerEquippedPet[B] = nil end
+	tradeOf[A] = nil; tradeOf[B] = nil
+	print(string.format("[Trade] DONE - %s now owns %s, %s now owns %s", A.Name, ownedKeyList(A), B.Name, ownedKeyList(B)))
+	-- refresh both clients FIRST (the swap is already done in memory), then persist (SetAsync yields).
+	sendState(A); sendInventory(A); sendState(B); sendInventory(B)
+	pcall(function() if A.Parent then PetTradeState:FireClient(A, { active=false, reason="completed" }) end end)
+	pcall(function() if B.Parent then PetTradeState:FireClient(B, { active=false, reason="completed" }) end end)
+	if _G.savePlayerData then pcall(function() _G.savePlayerData(A, "trade") end); pcall(function() _G.savePlayerData(B, "trade") end) end -- persist BOTH now (anti-dupe)
+end
+
+PetTradeRequest.OnServerEvent:Connect(function(player, targetUserId)
+	if tradeOf[player] then return end -- already in a trade
+	local target = Players:GetPlayerByUserId(tonumber(targetUserId) or 0)
+	if not target or target == player or tradeOf[target] then return end
+	incomingReq[target] = player
+	print(string.format("[Trade] %s requested trade with %s", player.Name, target.Name))
+	pcall(function() PetTradePrompt:FireClient(target, player.UserId, player.Name) end)
+end)
+
+PetTradeRespond.OnServerEvent:Connect(function(player, accept)
+	local requester = incomingReq[player]; incomingReq[player] = nil
+	if not (requester and requester.Parent) then return end
+	if accept == true and not tradeOf[player] and not tradeOf[requester] then
+		local session = { a = requester, b = player, offerA = {}, offerB = {}, confirmA = false, confirmB = false }
+		tradeOf[requester] = session; tradeOf[player] = session
+		print(string.format("[Trade] %s accepted trade with %s", player.Name, requester.Name))
+		sendTradeState(session)
+	else
+		print(string.format("[Trade] %s declined trade from %s", player.Name, requester.Name))
+		pcall(function() if requester.Parent then PetTradeState:FireClient(requester, { active=false, reason="declined" }) end end)
+	end
+end)
+
+PetTradeOffer.OnServerEvent:Connect(function(player, petId, add)
+	local session = tradeOf[player]; if not session or type(petId) ~= "string" then return end
+	local mine = (session.a == player) and session.offerA or session.offerB
+	if add == true then
+		if not ownsPet(player, petId) then return end -- can only offer what you actually own
+		if _G.playerEquippedPet[player] == petId then -- auto-unequip the equipped pet when you offer it
+			_G.playerEquippedPet[player] = nil; sendState(player); sendInventory(player)
+		end
+		mine[petId] = true
+		print(string.format("[Trade] %s added %s to offer", player.Name, petId))
+	else
+		mine[petId] = nil
+		print(string.format("[Trade] %s removed %s from offer", player.Name, petId))
+	end
+	session.confirmA = false; session.confirmB = false -- ANY offer change RESETS both confirms (anti-scam)
+	sendTradeState(session)
+end)
+
+PetTradeConfirm.OnServerEvent:Connect(function(player)
+	local session = tradeOf[player]; if not session then return end
+	if session.a == player then session.confirmA = true else session.confirmB = true end
+	print(string.format("[Trade] %s confirmed (offers locked: %s=[%s] %s=[%s])", player.Name, session.a.Name, keyList(session.offerA), session.b.Name, keyList(session.offerB)))
+	if session.confirmA and session.confirmB then executeTrade(session) else sendTradeState(session) end
+end)
+
+PetTradeCancel.OnServerEvent:Connect(function(player)
+	local session = tradeOf[player]; if session then closeTrade(session, "cancelled by "..player.Name) end
+end)
+
 Players.PlayerRemoving:Connect(function(player)
 	piecesFound[player] = nil -- ownership/equipped/discovered clears are handled by PlayerStats (after it saves)
 	pendingRobuxPet[player.UserId] = nil
 	upgradeReady[player] = nil
+	lastInvSync[player] = nil; lastXpPrint[player] = nil -- XP-sync / diagnostic throttles (session-only)
 	fishCatches[player] = nil; fishEggReady[player] = nil -- fishing pity is session-only (not persisted)
+	digEggReady[player] = nil -- dig gate is session-only (not persisted)
+	-- TRADE: if they were trading, cancel cleanly (no item loss/dupe -- nothing was swapped until both confirmed).
+	local session = tradeOf[player]; if session then closeTrade(session, player.Name.." left") end
+	incomingReq[player] = nil
+	for tgt, req in pairs(incomingReq) do if req == player then incomingReq[tgt] = nil end end
 end)
 
 print("[Pet] PetSystem ready (cosmetic-only)")

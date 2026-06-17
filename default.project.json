@@ -37,45 +37,6 @@
       "MeteorReward": {
         "$path": "src/server/MeteorReward.lua"
       },
-      "UFOManager": {
-        "$path": "src/server/UFOManager.server.lua"
-      },
-      "UFOEffects": {
-        "$path": "src/server/UFOEffects.lua"
-      },
-      "UFOBeam": {
-        "$path": "src/server/UFOBeam.lua"
-      },
-      "UFOAbduction": {
-        "$path": "src/server/UFOAbduction.lua"
-      },
-      "WeatherManager": {
-        "$path": "src/server/WeatherManager.server.lua"
-      },
-      "IcePhysics": {
-        "$path": "src/server/IcePhysics.lua"
-      },
-      "Blizzard": {
-        "$path": "src/server/Blizzard.lua"
-      },
-      "IceMeteor": {
-        "$path": "src/server/IceMeteor.lua"
-      },
-      "IceVFX": {
-        "$path": "src/server/IceVFX.lua"
-      },
-      "MutationManager": {
-        "$path": "src/server/MutationManager.server.lua"
-      },
-      "MutationEffects": {
-        "$path": "src/server/MutationEffects.lua"
-      },
-      "NPCMutationSystem": {
-        "$path": "src/server/NPCMutationSystem.lua"
-      },
-      "RandomMutationGenerator": {
-        "$path": "src/server/RandomMutationGenerator.lua"
-      },
       "RainbowBeamManager": {
         "$path": "src/server/RainbowBeamManager.server.lua"
       },
@@ -166,15 +127,6 @@
       "MeteorImpactSound": {
         "$className": "RemoteEvent"
       },
-      "UFOSync": {
-        "$className": "RemoteEvent"
-      },
-      "IceAgeSync": {
-        "$className": "RemoteEvent"
-      },
-      "MutationSync": {
-        "$className": "RemoteEvent"
-      },
       "GoToIsland1Event": {
         "$className": "RemoteEvent"
       },
@@ -212,15 +164,6 @@
         },
         "MeteorUI": {
           "$path": "src/client/MeteorUI.client.lua"
-        },
-        "UFOUI": {
-          "$path": "src/client/UFOUI.client.lua"
-        },
-        "IceAgeUI": {
-          "$path": "src/client/IceAgeUI.client.lua"
-        },
-        "MutationUI": {
-          "$path": "src/client/MutationUI.client.lua"
         },
         "RainbowBeamUI": {
           "$path": "src/client/RainbowBeamUI.client.lua"

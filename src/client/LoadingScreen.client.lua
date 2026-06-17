@@ -24,6 +24,12 @@ pcall(function() ReplicatedFirst:RemoveDefaultLoadingScreen() end)
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
+-- \xE2\x9A\xA0 TEST: these accounts get ALL 14 islands unlocked + selectable on the island-select page (the
+-- server's SelectIslandEvent handler has a matching bypass so they can actually spawn anywhere). Matched by
+-- USERNAME (case-insensitive); mirrors the server's ALLOWED_TEST_USERS list. REMOVE BEFORE LAUNCH.
+local TEST_ACCOUNTS = { ["lando5485"] = true, ["broskie310111"] = true, ["itsmaddmax2"] = true }
+local IS_TEST_ACCOUNT = TEST_ACCOUNTS[string.lower(player.Name)] == true
+
 -- [DIAG] After a brief wait (let StarterGui replicate into PlayerGui + other scripts spawn), list
 -- EVERY instance named "LoadingScreen" anywhere it could live. More than one = a stale/duplicate copy
 -- is running alongside the Rojo one, which would explain a PLAY button that ignores this script's gate.
@@ -402,6 +408,9 @@ local function showMenu()
 	local waited = 0
 	while not highest and waited < 5 do task.wait(0.1); waited = waited + 0.1; highest = player:GetAttribute("HighestIsland") end
 	highest = highest or 1
+	-- \xE2\x9A\xA0 TEST: test accounts get ALL 14 islands unlocked/selectable; normal players keep their
+	-- reached-only locks. REMOVE BEFORE LAUNCH.
+	if IS_TEST_ACCOUNT then highest = 14 end
 	for n = 1, 14 do
 		local e = islandCards[n]
 		if n <= highest then

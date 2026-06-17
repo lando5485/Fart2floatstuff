@@ -1,8 +1,9 @@
 --======================================================================
 -- BigEventScheduler.server.lua  (Script)
 --======================================================================
--- ONE scheduler for the FIVE big server-wide events: Rocket, Meteor Storm,
--- UFO, Ice Age, Mutation. Each big-event manager registers itself into
+-- ONE scheduler for the big server-wide events: Rocket + Meteor Storm.
+-- (UFO, Ice Age, and Mutation were fully removed from the game.) Each
+-- big-event manager registers itself into
 --     _G.BigEvents[key] = { start = <fn>, isRunning = <fn returning bool> }
 -- and DISABLES its own interval timer, so big-event timing is decided ONLY
 -- here -- which fixes the old "events running on top of each other" bug.
@@ -22,8 +23,8 @@
 
 local SCHEDULE_INTERVAL = 420   -- seconds between big-event picks (7 minutes)
 local FIRST_DELAY       = 420   -- wait before the FIRST scheduled big event (fresh server isn't slammed)
-local REGISTER_GRACE    = 10    -- let the five managers register into _G.BigEvents on startup
-local ORDER = { "rocket", "meteor", "ufo", "iceage", "mutation" } -- the five big events
+local REGISTER_GRACE    = 10    -- let the big-event managers register into _G.BigEvents on startup
+local ORDER = { "rocket", "meteor" } -- the big events (UFO / Ice Age / Mutation were removed from rotation)
 
 local lastKey = nil   -- the event started last time -> never picked again the very next time
 

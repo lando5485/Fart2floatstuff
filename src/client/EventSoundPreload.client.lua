@@ -16,15 +16,13 @@
 local ContentProvider = game:GetService("ContentProvider")
 
 -- EXACT list (do NOT add others): rocket construction / countdown / launch, meteor impact / intro,
--- UFO alien, mutation, and the 4 background-music tracks.
+-- and the 4 background-music tracks. (UFO alien + mutation sounds removed with those events.)
 local EVENT_SOUND_IDS = {
 	"rbxassetid://133543192033291", -- rocket construction
 	"rbxassetid://1841791990",      -- rocket countdown
 	"rbxassetid://135490777114772", -- rocket launch
 	"rbxassetid://114095353806681", -- meteor impact
 	"rbxassetid://109362273688140", -- meteor intro
-	"rbxassetid://82428123919520",  -- UFO alien
-	"rbxassetid://97213152915968",  -- mutation
 	"rbxassetid://140517328454242", -- music track 1
 	"rbxassetid://139448720739903", -- music track 2
 	"rbxassetid://139206228229841", -- music track 3

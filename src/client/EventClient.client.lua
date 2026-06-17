@@ -18,28 +18,45 @@ local JUNK_HOMING_CHANCE = 0.05 -- 5% of pieces AIM at the player's horizontal s
 local JUNK_TEST_ON_ISLAND_1 = false -- junk spawns ONLY in JUNK_ZONES (islands 10+); no island-1 test spawn
 
 -- ===== PROPELLER PLANE HAZARD TUNABLES (easy to change) =====
-local PLANE_TEST_ZONE = "5-6"      -- planes active between islands 5-6 only
-local PLANE_COUNT = 24             -- total planes in the active band (6 LAYERS x 4 planes each = 24)
-local PLANE_LAYERS = 6             -- stacked height layers: layer 1 (lowest) .. layer 6 (highest)
-local PLANE_LAYER_GAP = 200        -- studs between ADJACENT layers; 6 layers span 5*gap (=1000), centered in the ~1240-tall 5-6 corridor (stays inside it; 200 apart = clearly distinct altitudes)
+-- REBUILT (shooting-planes version): exactly 4 planes ROAM the island-gap airspace randomly and
+-- occasionally CHASE each other. They are RANGED shooters — they never dive into the player (no
+-- kamikaze; the plane body is harmless). They fire SPREAD/CLUSTER bursts (aimed + slight lead) that
+-- the player dodges by maneuvering. No shooting while the player is LANDED (gated to airborne). At
+-- most 2 planes shoot at once. A projectile HIT reuses the rainbow knockdown (_G.applyBeamHit) ->
+-- knocked back to the most-recent island, EVERY hit, no grace.
+local PLANE_COUNT = 4              -- EXACTLY 4 planes in the gap zone (was a ~24-plane swarm)
 local PLANE_SIZE = 36              -- target wingspan in studs (base build is 16) — bigger = more imposing aircraft
 local PLANE_SCALE = PLANE_SIZE / 16 -- derived uniform scale applied to the whole welded plane model
-local PLANE_SPEED = 65             -- studs/sec along the loop
-local PLANE_LOOP_RADIUS = 150      -- studs: wide banking circle around the climb corridor (centered on X=0,Z=0)
-local PLANE_PATH = 0.5             -- where in the band the loop sits (0 = lower island, 1 = upper island)
-local PLANE_BANK = -0.35           -- roll (radians) so planes visibly bank into the turn
-local BURST_SHOTS = 10             -- tracers per burst (DENSER bursts: was 6 -> 10 = many more bullets to thread)
-local TIME_BETWEEN_BURSTS = 4.5    -- seconds of calm between a plane's bursts (kept; preserves the calm gap each cycle)
-local SHOT_INTERVAL = 0.2          -- seconds between shots in a burst (was 0.4): tighter spacing packs the extra shots into a ~2s burst so the cycle still has a clear calm gap (not a continuous stream)
-local BURST_STAGGER_SPREAD = 0.35  -- fraction of the cycle the 6 layers' bursts are spread over (was effectively 1.0). LOWER = layers bunch together = MORE bullets airborne at once; the rest of the cycle stays calm so it's overlapping waves, not a stream.
-local BULLET_SPEED = 70            -- studs/sec: SLOW enough to clearly see + dodge each tracer
-local BULLET_SIZE = 1.8            -- bullet cross-section (studs) — chunky, clearly visible (was 0.7)
-local BULLET_RANGE = 320           -- studs a tracer travels before despawning
+local PLANE_SPEED = 72             -- studs/sec cruising/roaming speed
+local PLANE_TURN_RATE = 2.2        -- how fast velocity steers toward the desired heading (higher = snappier turns)
+local PLANE_BANK = 0.5             -- max roll (radians) banked into a turn (visual)
+local GAP_RADIUS = 175             -- horizontal radius (studs) of the roaming airspace, centered on X=0,Z=0
+local GAP_VMARGIN = 90             -- studs kept clear of the band's lo/hi so planes stay inside the gap
+-- Roaming wander
+local WANDER_RETARGET_MIN = 2.0    -- seconds between picking a new random roam waypoint
+local WANDER_RETARGET_MAX = 4.5
+local WANDER_REACH_DIST = 40       -- studs: within this of the waypoint -> pick a new one (organic wandering)
+-- Occasional mutual chasing (adds life)
+local CHASE_CHANCE = 0.12          -- per-second chance an idle roaming plane starts chasing a peer
+local CHASE_DURATION_MIN = 2.5     -- seconds a chase lasts before breaking off back to roaming
+local CHASE_DURATION_MAX = 4.5
+local CHASE_SPEED_MULT = 1.5       -- chasers fly a bit faster than cruise
+-- Ranged spread shooting
+local MAX_SHOOTERS = 2             -- HARD cap: never more than 2 planes shooting the player at once
+local SHOOT_COOLDOWN_MIN = 3.5     -- seconds a plane rests between its OWN bursts (paced, not constant)
+local SHOOT_COOLDOWN_MAX = 6.5
+local SHOOT_RANGE = 280            -- studs: only lock on/shoot when the player is within this range
+local TELEGRAPH_TIME = 0.8         -- seconds the shooter flashes / aims before firing (readable warning)
+local SPREAD_COUNT = 5             -- projectiles per cluster (a fan toward the player)
+local SPREAD_HALF_ANGLE = 0.26     -- radians: half-width of the fan (total spread ~2x this) — challenging-but-fair
+local SPREAD_VJITTER = 6           -- studs of small random vertical scatter per projectile (cluster feel)
+local LEAD_FACTOR = 0.5            -- how strongly aim leads the player's velocity (0 = aim where they ARE)
+local BULLET_SPEED = 95            -- studs/sec: fast but still visibly dodgeable
+local BULLET_SIZE = 1.8            -- bullet cross-section (studs) — chunky, clearly visible
+local BULLET_RANGE = 360           -- studs a projectile travels before despawning
 local BULLET_LIFETIME = 6          -- seconds hard-cap despawn (backup)
-local BULLET_HIT_RADIUS = 5        -- studs: distance to the player that counts as a hit (unchanged so they stay dodgeable)
-local BULLET_SAFE_GAP_SIZE = 44    -- DIAMETER (studs) of the GUARANTEED-CLEAR central column (was 80). NARROWER now (~22-stud safe radius) so players must actually aim for it, but every tracer is still geometrically angled to stay outside it -> a clearly-visible safe lane ALWAYS exists each cycle and NEVER closes. The gap is shrunk, not removed.
-local BULLET_YAW_SPREAD = 0.6      -- extra RANDOM yaw (radians) added beyond the minimum miss-angle, per shot -> tracers fan unpredictably around the safe gap (no fixed/memorizable pattern); sign is also randomized
-local MAX_BULLETS = 160            -- perf cap on live tracers (raised for the denser 10-shot bursts across 24 planes; excess shots are simply skipped — purely a part-count limit, NOT a hit roll)
+local BULLET_HIT_RADIUS = 5        -- studs: distance to the player that counts as a hit
+local MAX_BULLETS = 90             -- perf cap on live projectiles (excess shots skipped — purely a part-count limit)
 
 -- [BALANCE TESTING] While TRUE, no ambient/random birds spawn during flights (so they don't
 -- interfere with balance testing). Set to false to re-enable birds. (Keep in sync with the matching
@@ -167,27 +184,20 @@ local function createBird()
 			if diff.Magnitude<6 then
 				birdModel:Destroy()
 				_G.birdHitThisFlight = true -- [BALANCE LOGGING] flag-only: a bird hit the player this flight (read by CoreClient FLIGHT DEBUG)
-				-- BIRD HAZARD HIT = RESPAWN + restore the fart meter to THIS flight's LAUNCH amount, and NOTHING
-				-- else (no gas drain, no air-knockback, no damage-over-time). We reuse the EXACT same
-				-- death->respawn->launch-restore path the Bird Nuke uses: set _G.birdNukeDeathPending so
-				-- CoreClient's Humanoid.Died handler snapshots _G.beamLaunchSnapshot.power (the shared launch
-				-- snapshot junk/planes/beams/nuke all read), end the rise cleanly, then KILL the character so it
-				-- goes through the normal Roblox respawn. The server reloads it at its home island and never
-				-- zeros CurrentPower, so the launch amount sticks via the decrease-only landing sync. If the
-				-- player wasn't mid-flight (no launch snapshot) the Died handler keeps the ended amount, i.e. a
-				-- normal respawn with no meter change.
-				_G.birdNukeDeathPending = true
-				if _G.stopFlying then _G.stopFlying() end -- end the rise (drop the BodyVelocity) before the kill
-				pcall(function()
-					local hum = c and c:FindFirstChildOfClass("Humanoid")
-					if hum then hum.Health = 0 end -- kill -> Humanoid.Died -> normal respawn at home island
-				end)
-				pcall(function() screechSound:Play() end)
-				if _G.showFloatingText then _G.showFloatingText("\xF0\x9F\x90\xA6 BIRD ATTACK!",Color3.fromRGB(255,80,0)) end
-				pcall(function()
-					local eff=_G.effectFlashFrame
-					if eff then eff.BackgroundColor3=Color3.fromRGB(255,80,0); eff.BackgroundTransparency=0.6; TweenService:Create(eff,TweenInfo.new(0.2),{BackgroundTransparency=0.97}):Play() end
-				end)
+				-- BIRD HAZARD HIT = ONLY HALVE the player's CURRENT gas. NO kill, NO knockdown, NO teleport/
+				-- respawn -- the player keeps flying with less gas. _G.applyBirdHalve (CoreClient) halves
+				-- gasMeter (and keeps currentPower in sync) and enforces the brief hit cooldown so multiple
+				-- birds can't drain you to nothing in one pass; it returns false when the hit is within that
+				-- cooldown window, so we skip the feedback for ignored hits.
+				local applied = _G.applyBirdHalve and _G.applyBirdHalve()
+				if applied then
+					pcall(function() screechSound:Play() end)
+					if _G.showFloatingText then _G.showFloatingText("\xF0\x9F\x90\xA6 BIRD ATTACK! Gas halved!",Color3.fromRGB(255,80,0)) end
+					pcall(function()
+						local eff=_G.effectFlashFrame
+						if eff then eff.BackgroundColor3=Color3.fromRGB(255,80,0); eff.BackgroundTransparency=0.6; TweenService:Create(eff,TweenInfo.new(0.2),{BackgroundTransparency=0.97}):Play() end
+					end)
+				end
 				break
 			elseif diff.Magnitude>150 then birdModel:Destroy(); break
 			else
@@ -469,15 +479,19 @@ task.spawn(function()
 	end
 end)
 
--- ===== PROPELLER PLANE HAZARD =====
--- Two propeller planes fly smooth, fixed wide banking loops in the active band and fire short, spaced,
--- visible tracer bursts across the central climb lane. A tracer touching the player calls _G.applyJunkHit
--- (instant fall, ALL fart power preserved, NO drain) — identical to a junk hit. Planes/bullets exist ONLY
--- while the player is inside a plane band (test: islands 1-2; real: 7-8 & 12-13); cleared otherwise.
+-- ===== PROPELLER PLANE HAZARD (shooting-planes rebuild) =====
+-- Exactly 4 propeller planes ROAM the island-gap airspace randomly (organic wandering, occasionally
+-- chasing each other for a few seconds) and SHOOT spread-cluster bursts at the player from RANGE —
+-- they NEVER dive into the player (no kamikaze; the plane body is harmless). The projectiles are the
+-- danger: aimed with slight lead, fanned out, so flying straight gets hit and the player must change
+-- direction to dodge. Planes only target/shoot while the player is AIRBORNE (gated on the landed
+-- state); landed = they just roam. At most 2 planes shoot at once. A projectile hit reuses the
+-- rainbow knockdown (_G.applyBeamHit) -> knocked back to the most-recent island, every hit, no grace.
+-- Planes/bullets exist ONLY while the player is inside the plane band; cleared otherwise.
 local PLANE_BANDS = { {lo=3580, hi=4820} }   -- ONLY between islands 5 and 6 (Y 3580 -> 4820)
-local function planeBandCenterY(y)
+local function planeBandFor(y)
 	for _,b in ipairs(PLANE_BANDS) do
-		if y >= b.lo and y <= b.hi then return b.lo + PLANE_PATH * (b.hi - b.lo) end
+		if y >= b.lo and y <= b.hi then return b end
 	end
 	return nil
 end
@@ -526,110 +540,223 @@ end
 
 local planes = {}
 local bullets = {}
-local activeCenterY = nil
+local activeBand = nil          -- the PLANE_BANDS entry currently active (nil = player not in a band)
+local shooterCount = 0          -- how many planes are CURRENTLY mid-shoot (telegraph+fire); capped at MAX_SHOOTERS
+local lastAirborne = nil        -- last known airborne state (for the landed/flying transition diagnostics)
+
 local function clearBullets()
 	for _,bl in ipairs(bullets) do pcall(function() if bl.part then bl.part:Destroy() end end) end
 	bullets = {}
 end
 local function clearPlanes()
 	for _,pl in ipairs(planes) do pcall(function() pl.model:Destroy() end) end
-	planes = {}; activeCenterY = nil
+	planes = {}; activeBand = nil; shooterCount = 0
 end
-local function spawnPlanes(centerY)
-	clearPlanes(); activeCenterY = centerY
-	local perLayer = math.max(1, math.floor(PLANE_COUNT / PLANE_LAYERS))   -- 4 planes per layer (24 / 6)
+
+-- Yaw a vector around the vertical (Y) axis by `ang` radians, PRESERVING its Y component (so aimed
+-- shots that point up/down keep their vertical aim while fanning horizontally).
+local function yawDir(v, ang)
+	local c, s = math.cos(ang), math.sin(ang)
+	return Vector3.new(v.X*c - v.Z*s, v.Y, v.X*s + v.Z*c)
+end
+
+-- A random point inside the gap airspace cylinder (radius GAP_RADIUS around X=0,Z=0, height between
+-- the band's padded lo/hi). sqrt() makes the points area-uniform so they don't bunch at the centre.
+local function randomGapPoint(band)
+	local r = GAP_RADIUS * math.sqrt(math.random())
+	local a = math.random() * 2 * math.pi
+	local y = (band.lo + GAP_VMARGIN) + math.random() * ((band.hi - GAP_VMARGIN) - (band.lo + GAP_VMARGIN))
+	return Vector3.new(math.cos(a) * r, y, math.sin(a) * r)
+end
+
+local function spawnPlanes(band)
+	clearPlanes(); activeBand = band
 	for i=1,PLANE_COUNT do
 		local model, blade = buildPlane()
 		model.Parent = workspace
-		-- SIX HEIGHT LAYERS (0 = lowest .. PLANE_LAYERS-1 = highest), PLANE_LAYER_GAP apart and
-		-- centered on the corridor -> 6 visibly distinct altitudes of 4 planes each.
-		local layerNum = math.floor((i-1)/perLayer)
-		local idxInLayer = (i-1) % perLayer
-		local layerY = centerY + (layerNum - (PLANE_LAYERS-1)/2) * PLANE_LAYER_GAP
-		-- Spread each layer's planes evenly around the loop; phase-offset each layer so the layers
-		-- don't sit directly stacked above one another.
-		local angle = idxInLayer * (2*math.pi/perLayer) + layerNum * (math.pi/perLayer)
-		-- STAGGER FIRE BY LAYER: the 6 layers fire as separate waves across the cycle (rhythmic
-		-- bursts with calm gaps in between), and planes within a layer are nudged slightly apart so a
-		-- layer arrives as a quick volley rather than one simultaneous blast -> never all 24 at once.
-		-- BURST_STAGGER_SPREAD compresses these offsets so the 6 layers fire closer together (more
-		-- bullets airborne at once / more overlap), while the un-used remainder of the cycle stays the
-		-- calm gap -> dense overlapping waves, not a continuous stream.
-		local layerPhase  = (layerNum / PLANE_LAYERS) * TIME_BETWEEN_BURSTS * BURST_STAGGER_SPREAD
-		local withinPhase = (idxInLayer / perLayer) * (TIME_BETWEEN_BURSTS / PLANE_LAYERS) * BURST_STAGGER_SPREAD
-		planes[i] = { model=model, blade=blade, angle=angle, spin=0, layerY=layerY,
-			burstTimer = layerPhase + withinPhase }
+		local pos = randomGapPoint(band)
+		model:PivotTo(CFrame.new(pos))
+		planes[i] = {
+			model = model, blade = blade, spin = 0,
+			pos = pos,
+			vel = Vector3.new((math.random()-0.5), 0, (math.random()-0.5) + 0.01).Unit * PLANE_SPEED,
+			target = randomGapPoint(band),
+			retargetTimer = WANDER_RETARGET_MIN + math.random() * (WANDER_RETARGET_MAX - WANDER_RETARGET_MIN),
+			mode = "roam",          -- "roam" | "chase"
+			chaseTarget = nil,      -- index of the plane being chased
+			chaseTimer = 0,
+			shootCooldown = 1.5 + math.random() * 3,  -- stagger initial shots so they don't all fire at once
+			shooting = false,       -- true while this plane is mid telegraph+fire (counts toward the cap)
+			highlight = nil,        -- telegraph flash highlight (created on demand)
+		}
+	end
+	print("[Planes] spawned " .. PLANE_COUNT .. " planes in gap zone")
+end
+
+-- Fire ONE spread/cluster of projectiles from a plane at the player: SPREAD_COUNT shots fanned around
+-- an aim point that LEADS the player's current velocity, so flying straight gets hit and the player
+-- must change direction to thread the fan.
+local function fireSpread(pl, hrp)
+	if not pl.model.PrimaryPart then return end
+	local origin = (pl.model:GetPivot() * CFrame.new(0,0,-9.5*PLANE_SCALE)).Position
+	-- Aim point = where the player IS + a slight lead along their velocity (scaled by travel time).
+	local pv = hrp.AssemblyLinearVelocity
+	local dist = (hrp.Position - origin).Magnitude
+	local travel = (BULLET_SPEED > 0) and (dist / BULLET_SPEED) or 0
+	local aimPos = hrp.Position + pv * travel * LEAD_FACTOR
+	local baseDir = (aimPos - origin)
+	if baseDir.Magnitude < 1 then return end
+	baseDir = baseDir.Unit
+	for k=1,SPREAD_COUNT do
+		if #bullets >= MAX_BULLETS then break end
+		-- Evenly fan across [-SPREAD_HALF_ANGLE, +SPREAD_HALF_ANGLE].
+		local frac = (SPREAD_COUNT > 1) and ((k-1)/(SPREAD_COUNT-1) - 0.5) or 0
+		local dir = yawDir(baseDir, frac * 2 * SPREAD_HALF_ANGLE)
+		dir = (dir + Vector3.new(0, (math.random()-0.5) * (SPREAD_VJITTER/40), 0)).Unit  -- small cluster scatter
+		local b=Instance.new("Part")
+		b.Name="PlaneTracer"; b.Size=Vector3.new(BULLET_SIZE,BULLET_SIZE,BULLET_SIZE*2.5); b.Color=Color3.fromRGB(255,90,60)
+		b.Material=Enum.Material.Neon; b.CanCollide=false; b.Anchored=true; b.CastShadow=false
+		b.CFrame=CFrame.lookAt(origin, origin+dir)
+		local a0=Instance.new("Attachment"); a0.Position=Vector3.new(0,0,1.6); a0.Parent=b
+		local a1=Instance.new("Attachment"); a1.Position=Vector3.new(0,0,-1.6); a1.Parent=b
+		local tr=Instance.new("Trail"); tr.Attachment0=a0; tr.Attachment1=a1; tr.Lifetime=0.35
+		tr.Color=ColorSequence.new(Color3.fromRGB(255,120,40)); tr.LightEmission=1
+		tr.WidthScale=NumberSequence.new(1,0); tr.Parent=b
+		b.Parent=workspace
+		task.delay(BULLET_LIFETIME, function() pcall(function() if b.Parent then b:Destroy() end end) end)
+		table.insert(bullets, {part=b, dir=dir, dist=0})
 	end
 end
--- Rotate a horizontal vector around the vertical (Y) axis by `ang` radians.
-local function rotateY(v, ang)
-	local c, s = math.cos(ang), math.sin(ang)
-	return Vector3.new(v.X*c - v.Z*s, 0, v.X*s + v.Z*c)
-end
-local function fireBullet(pl)
-	if #bullets >= MAX_BULLETS or not pl.model.PrimaryPart then return end
-	local nosePos = (pl.model:GetPivot() * CFrame.new(0,0,-9.5*PLANE_SCALE)).Position
-	local center = Vector3.new(0, pl.layerY or activeCenterY or nosePos.Y, 0)
-	-- Horizontal vector + distance from the nose to the central climb axis.
-	local toC = center - nosePos; toC = Vector3.new(toC.X, 0, toC.Z)
-	local dist2c = toC.Magnitude
-	if dist2c < 1 then toC = Vector3.new(0,0,1); dist2c = PLANE_LOOP_RADIUS end
-	local dir = toC.Unit
-	-- ★ GUARANTEED SAFE GAP ★ + ★ RANDOM VARIATION ★
-	-- Every tracer is yawed AWAY from dead-center by at least the angle whose closest approach to the
-	-- axis equals BULLET_SAFE_GAP_SIZE/2 (+ hit radius). So no bullet ever enters the central column ->
-	-- a generous, always-open lane up the middle of the corridor that NEVER closes. The yaw magnitude
-	-- then varies randomly up to +BULLET_YAW_SPREAD and its SIGN is random, so the fan of tracers
-	-- around the gap differs every shot (players can't memorize one fixed pattern). The variation is
-	-- only in WHICH angles fire, never WHETHER the opening exists.
-	local clearR = BULLET_SAFE_GAP_SIZE/2 + BULLET_HIT_RADIUS
-	local minYaw = math.asin(math.clamp(clearR / dist2c, 0, 0.85))
-	local maxYaw = math.min(minYaw + BULLET_YAW_SPREAD, 1.2)
-	local yawMag = minYaw + math.random() * (maxYaw - minYaw)
-	local yaw = (math.random() < 0.5 and -1 or 1) * yawMag
-	dir = rotateY(dir, yaw).Unit
-	local b=Instance.new("Part")
-	b.Name="PlaneTracer"; b.Size=Vector3.new(BULLET_SIZE,BULLET_SIZE,BULLET_SIZE*2.5); b.Color=Color3.fromRGB(255,220,70)
-	b.Material=Enum.Material.Neon; b.CanCollide=false; b.Anchored=true; b.CastShadow=false
-	b.CFrame=CFrame.lookAt(nosePos, nosePos+dir)
-	local a0=Instance.new("Attachment"); a0.Position=Vector3.new(0,0,1.6); a0.Parent=b
-	local a1=Instance.new("Attachment"); a1.Position=Vector3.new(0,0,-1.6); a1.Parent=b
-	local tr=Instance.new("Trail"); tr.Attachment0=a0; tr.Attachment1=a1; tr.Lifetime=0.35
-	tr.Color=ColorSequence.new(Color3.fromRGB(255,200,40)); tr.LightEmission=1
-	tr.WidthScale=NumberSequence.new(1,0); tr.Parent=b
-	b.Parent=workspace
-	task.delay(BULLET_LIFETIME, function() pcall(function() if b.Parent then b:Destroy() end end) end)
-	table.insert(bullets, {part=b, dir=dir, dist=0})
+
+-- Run a single shoot sequence for plane `pl` (index `idx`): telegraph (flash) -> fire the spread ->
+-- re-roam + cooldown. Gated so it ABORTS if the player lands mid-telegraph. Counts toward shooterCount
+-- for its whole duration so the MAX_SHOOTERS cap holds.
+local function startShoot(pl, idx)
+	pl.shooting = true
+	shooterCount = shooterCount + 1
+	print(string.format("[Planes] shooters active: %d (max %d)", shooterCount, MAX_SHOOTERS))
+	task.spawn(function()
+		-- Telegraph: bright outline so the burst is readable.
+		local hl = Instance.new("Highlight")
+		hl.FillColor = Color3.fromRGB(255,60,40); hl.FillTransparency = 0.55
+		hl.OutlineColor = Color3.fromRGB(255,230,120); hl.OutlineTransparency = 0
+		hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		pcall(function() hl.Parent = pl.model end)
+		pl.highlight = hl
+		task.wait(TELEGRAPH_TIME)
+		pcall(function() hl:Destroy() end); pl.highlight = nil
+		-- Re-check: only fire if the player is still AIRBORNE (don't shoot someone who just landed).
+		local char = player.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local airborne = hum and hum.FloorMaterial == Enum.Material.Air
+		if hrp and airborne and pl.model and pl.model.Parent then
+			fireSpread(pl, hrp)
+			print(string.format("[Planes] plane %d fired spread cluster at %s (aimed/lead)", idx, player.Name))
+		end
+		pl.shootCooldown = SHOOT_COOLDOWN_MIN + math.random() * (SHOOT_COOLDOWN_MAX - SHOOT_COOLDOWN_MIN)
+		pl.shooting = false
+		shooterCount = math.max(0, shooterCount - 1)
+	end)
 end
 
 RunService.Heartbeat:Connect(function(dt)
 	local char=player.Character
 	local hrp=char and char:FindFirstChild("HumanoidRootPart")
-	local centerY = hrp and planeBandCenterY(hrp.Position.Y) or nil
-	if not centerY then
+	local band = hrp and planeBandFor(hrp.Position.Y) or nil
+	if not band then
 		if #planes>0 then clearPlanes(); clearBullets() end
+		lastAirborne = nil
 		return
 	end
-	if centerY ~= activeCenterY then spawnPlanes(centerY) end
-	for _,pl in ipairs(planes) do
-		local center = Vector3.new(0, pl.layerY or activeCenterY, 0)  -- each plane loops at ITS layer height
-		pl.angle = pl.angle + (PLANE_SPEED/PLANE_LOOP_RADIUS)*dt
-		local a = pl.angle
-		local pos = center + Vector3.new(math.cos(a)*PLANE_LOOP_RADIUS, 0, math.sin(a)*PLANE_LOOP_RADIUS)
-		local tang = Vector3.new(-math.sin(a),0,math.cos(a))
-		local fullCF = CFrame.lookAt(pos, pos+tang) * CFrame.Angles(0,0,PLANE_BANK)
+	if band ~= activeBand then spawnPlanes(band) end
+
+	-- LANDED-vs-FLYING GATE: planes only target/shoot while the player is AIRBORNE (FloorMaterial Air).
+	-- Landed (standing on an island) = they just roam, no targeting/projectiles at the player.
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local airborne = (hum ~= nil) and (hum.FloorMaterial == Enum.Material.Air)
+	if airborne ~= lastAirborne then
+		if airborne then print("[Planes] player flying -> targeting allowed")
+		else print("[Planes] player landed -> planes stop targeting") end
+		lastAirborne = airborne
+	end
+
+	for idx,pl in ipairs(planes) do
+		-- ---- DECIDE DESTINATION (roam waypoint, or the chased plane) ----
+		pl.retargetTimer = pl.retargetTimer - dt
+		if pl.mode == "chase" then
+			pl.chaseTimer = pl.chaseTimer - dt
+			local tgt = planes[pl.chaseTarget]
+			if pl.chaseTimer <= 0 or not tgt or not tgt.model.Parent then
+				pl.mode = "roam"; pl.chaseTarget = nil
+				pl.target = randomGapPoint(band)
+				pl.retargetTimer = WANDER_RETARGET_MIN + math.random() * (WANDER_RETARGET_MAX - WANDER_RETARGET_MIN)
+				print(string.format("[Planes] plane %d roaming", idx))
+			else
+				pl.target = tgt.pos
+			end
+		else
+			-- Roaming: pick a fresh waypoint on the timer or once we arrive (organic wandering).
+			if pl.retargetTimer <= 0 or (pl.pos - pl.target).Magnitude < WANDER_REACH_DIST then
+				pl.target = randomGapPoint(band)
+				pl.retargetTimer = WANDER_RETARGET_MIN + math.random() * (WANDER_RETARGET_MAX - WANDER_RETARGET_MIN)
+			end
+			-- Occasionally start chasing another (currently roaming) plane for a few seconds.
+			if not pl.shooting and math.random() < CHASE_CHANCE * dt and PLANE_COUNT > 1 then
+				local m = 1 + math.floor(math.random() * PLANE_COUNT)
+				if m ~= idx and planes[m] and planes[m].mode == "roam" then
+					pl.mode = "chase"; pl.chaseTarget = m
+					pl.chaseTimer = CHASE_DURATION_MIN + math.random() * (CHASE_DURATION_MAX - CHASE_DURATION_MIN)
+					print(string.format("[Planes] plane %d chasing plane %d", idx, m))
+				end
+			end
+		end
+
+		-- ---- STEER + MOVE (smooth velocity lerp -> organic banking flight) ----
+		local desired = pl.target - pl.pos
+		local desiredDir = (desired.Magnitude > 1) and desired.Unit or (pl.vel.Magnitude > 0.1 and pl.vel.Unit or Vector3.new(0,0,-1))
+		local speed = PLANE_SPEED * (pl.mode == "chase" and CHASE_SPEED_MULT or 1)
+		local desiredVel = desiredDir * speed
+		pl.vel = pl.vel:Lerp(desiredVel, math.clamp(PLANE_TURN_RATE * dt, 0, 1))
+		pl.pos = pl.pos + pl.vel * dt
+
+		-- Clamp inside the gap airspace (cylinder radius + padded vertical band); bounce the heading
+		-- back inward and retarget so planes never wander off into irrelevant areas.
+		local flat = Vector3.new(pl.pos.X, 0, pl.pos.Z)
+		if flat.Magnitude > GAP_RADIUS then
+			flat = flat.Unit * GAP_RADIUS
+			pl.pos = Vector3.new(flat.X, pl.pos.Y, flat.Z)
+			pl.target = randomGapPoint(band); pl.retargetTimer = 1.0
+			pl.vel = Vector3.new(pl.vel.X * -0.3, pl.vel.Y, pl.vel.Z * -0.3)
+		end
+		local loY, hiY = band.lo + GAP_VMARGIN, band.hi - GAP_VMARGIN
+		if pl.pos.Y < loY or pl.pos.Y > hiY then
+			pl.pos = Vector3.new(pl.pos.X, math.clamp(pl.pos.Y, loY, hiY), pl.pos.Z)
+			pl.target = randomGapPoint(band); pl.retargetTimer = 1.0
+			pl.vel = Vector3.new(pl.vel.X, pl.vel.Y * -0.3, pl.vel.Z)
+		end
+
+		-- ---- ORIENT (look along velocity, bank into the horizontal turn) ----
+		local look = (pl.vel.Magnitude > 0.1) and pl.vel.Unit or Vector3.new(0,0,-1)
+		local flatVel = Vector3.new(pl.vel.X, 0, pl.vel.Z)
+		local flatDes = Vector3.new(desiredVel.X, 0, desiredVel.Z)
+		local turnSign = flatVel:Cross(flatDes).Y
+		local bank = -math.clamp(turnSign / (speed * speed + 1) * 6, -1, 1) * PLANE_BANK
+		local fullCF = CFrame.lookAt(pl.pos, pl.pos + look) * CFrame.Angles(0, 0, bank)
 		pl.model:PivotTo(fullCF)
 		pl.spin = pl.spin + dt*22
 		pl.blade.CFrame = fullCF * CFrame.new(0,0,-9.2*PLANE_SCALE) * CFrame.Angles(0,0,pl.spin)
-		pl.burstTimer = pl.burstTimer - dt
-		if pl.burstTimer <= 0 then
-			pl.burstTimer = TIME_BETWEEN_BURSTS
-			local plane = pl
-			task.spawn(function()
-				for _=1,BURST_SHOTS do fireBullet(plane); task.wait(SHOT_INTERVAL) end
-			end)
+
+		-- ---- SHOOT (only while airborne; respect per-plane cooldown + the global 2-shooter cap) ----
+		pl.shootCooldown = pl.shootCooldown - dt
+		if airborne and not pl.shooting and pl.mode == "roam" and pl.shootCooldown <= 0
+			and shooterCount < MAX_SHOOTERS and hrp
+			and (hrp.Position - pl.pos).Magnitude <= SHOOT_RANGE then
+			startShoot(pl, idx)
 		end
 	end
+
+	-- ---- PROJECTILES ----
 	for i=#bullets,1,-1 do
 		local bl=bullets[i]
 		if not bl.part or not bl.part.Parent then table.remove(bullets,i)
@@ -638,8 +765,13 @@ RunService.Heartbeat:Connect(function(dt)
 			bl.part.CFrame = bl.part.CFrame + bl.dir*step
 			bl.dist = bl.dist + step
 			if hrp and (hrp.Position - bl.part.Position).Magnitude < BULLET_HIT_RADIUS then
-				if _G.applyJunkHit then _G.applyJunkHit(JUNK_PUSH_DOWN) end
-				if _G.showFloatingText then _G.showFloatingText("\xE2\x9C\x88 SHOT DOWN! Knocked into a fall!", Color3.fromRGB(255,120,40)) end
+				-- HIT: reuse the EXACT rainbow knockdown (knock back to the most-recent island). Harsh:
+				-- every hit, no grace period. _G.applyBeamHit already chooses the launch/last island.
+				local snap = _G.beamLaunchSnapshot
+				local nm = (snap and snap.islandIndex and _G.ISLAND_DISPLAY_NAMES and _G.ISLAND_DISPLAY_NAMES[snap.islandIndex]) or "last island"
+				print(string.format("[Planes] %s HIT by projectile -> knockdown to last island %s", player.Name, nm))
+				if _G.applyBeamHit then _G.applyBeamHit() elseif _G.applyJunkHit then _G.applyJunkHit(JUNK_PUSH_DOWN) end
+				if _G.showFloatingText then _G.showFloatingText("\xE2\x9C\x88 SHOT DOWN! Knocked back!", Color3.fromRGB(255,120,40)) end
 				bl.part:Destroy(); table.remove(bullets,i)
 			elseif bl.dist > BULLET_RANGE then
 				bl.part:Destroy(); table.remove(bullets,i)
@@ -726,18 +858,24 @@ local stormApplied = nil            -- the active Lighting target (FLY or LAND) 
 local stormClouds = nil
 local savedClouds = nil
 local stormCloudsOurs = false
-local hiddenAtmos = nil             -- a pre-existing Atmosphere temporarily DETACHED so legacy Fog renders
+local stormAtmos = nil              -- the Atmosphere we DRIVE during the storm (an existing one, or a temp one we add)
+local stormAtmosOurs = false        -- true if WE created stormAtmos (remove it on end) vs an existing one (restore its props)
+local savedAtmos = nil              -- saved ORIGINAL Atmosphere props, restored on end (nil when we created a temp one)
+local stormFogConn = nil            -- per-frame enforcer: HARD-PINS the dense flying fog + thick Atmosphere so nothing can override it
 local stormFXFolder = nil
 local stormFXConn = nil
 local stormMist = nil               -- enveloping dark-cloud emitter (ON while flying, OFF while landed)
 local stormRain = nil               -- heavy-rain emitter (on the whole storm)
 local stormState = nil              -- true=flying / false=landed (only tween Lighting on a transition)
 local STORM_WIND_FORCE = 90         -- STRONG storm wind -- buffets the player hard (steering ~48; still recoverable)
--- FLYING = inside a heavy DARK thundercloud: moody dark storm gray, near-zero visibility (islands GONE).
+-- FLYING = FULLY ENGULFED in a dark thundercloud: dark storm gray, only a tiny immediate bubble is
+-- visible -- every island and everything beyond ~FogEnd studs is swallowed by solid murk. This fog is
+-- HARD-PINNED every frame by the enforcer below (an Atmosphere or any per-frame lighting setter would
+-- otherwise make legacy Fog do nothing), so these values are what actually renders while flying.
 local STORM_FLY = {
-	ClockTime = 14, Brightness = 1.05, ExposureCompensation = -0.35,
-	FogColor = Color3.fromRGB(64,68,76), FogStart = 1, FogEnd = 14,
-	OutdoorAmbient = Color3.fromRGB(78,82,90), Ambient = Color3.fromRGB(80,84,92),
+	ClockTime = 14, Brightness = 0.6, ExposureCompensation = -0.6,
+	FogColor = Color3.fromRGB(60,60,70), FogStart = 0, FogEnd = 60,  -- ~60 studs: islands fully invisible
+	OutdoorAmbient = Color3.fromRGB(45,47,55), Ambient = Color3.fromRGB(48,50,58),
 }
 -- LANDED = on an island: cloud eases WAY back so the island is clearly visible (stormy but visible).
 local STORM_LAND = {
@@ -745,6 +883,12 @@ local STORM_LAND = {
 	FogColor = Color3.fromRGB(150,156,166), FogStart = 50, FogEnd = 650,
 	OutdoorAmbient = Color3.fromRGB(150,156,166), Ambient = Color3.fromRGB(150,156,166),
 }
+-- HARD-CULL APPROACH. An Atmosphere maxes out at Density 1.0 / Haze 10 and even then only WASHES OUT
+-- distant objects (light scattering) -- it never fully occludes, so islands stayed faintly visible.
+-- The only thing that produces a SOLID wall (everything beyond N studs = 100% FogColor) is classic
+-- Fog -- but classic Fog is DISABLED whenever an Atmosphere exists. So while flying we REMOVE the
+-- Atmosphere every frame and pin a short dense classic Fog (STORM_FLY.FogEnd ~60, dark gray) = a true
+-- engulfing wall. On landed/end we re-attach the Atmosphere (saved props) so the island is visible again.
 local function startStormParticles()
 	if stormFXFolder then return end
 	stormFXFolder = Instance.new("Folder"); stormFXFolder.Name="ThunderstormFX"; stormFXFolder.Parent=workspace
@@ -788,12 +932,76 @@ end
 local function applyStormState(flying, t)
 	local target = flying and STORM_FLY or STORM_LAND
 	stormApplied = target
+	-- DIAGNOSTICS: print the state we think the player is in + the exact fog values we are applying, so we
+	-- can SEE whether the dense FLYING fog is actually being applied (or if the state is stuck on LANDED).
+	local fc = target.FogColor
+	if flying then
+		print("[Storm] player state: FLYING -> applying FLYING fog")
+		print(string.format("[Storm] FLYING fog applied: FogStart=%d FogEnd=%d FogColor=(%d,%d,%d) Brightness=%.2f",
+			target.FogStart, target.FogEnd, math.round(fc.R*255), math.round(fc.G*255), math.round(fc.B*255), target.Brightness))
+	else
+		print("[Storm] player state: LANDED -> applying LANDED fog")
+		print(string.format("[Storm] LANDED fog applied: FogStart=%d FogEnd=%d", target.FogStart, target.FogEnd))
+	end
 	TweenService:Create(Lighting, TweenInfo.new(t or 1.1, Enum.EasingStyle.Sine), {
 		ClockTime=target.ClockTime, Brightness=target.Brightness, ExposureCompensation=target.ExposureCompensation,
 		FogColor=target.FogColor, FogStart=target.FogStart, FogEnd=target.FogEnd,
 		OutdoorAmbient=target.OutdoorAmbient, Ambient=target.Ambient,
 	}):Play()
+	-- HARD-CULL atmosphere handling.
+	if flying then
+		-- The enforcer below REMOVES any Atmosphere + pins the dense classic-fog wall every frame, so just
+		-- report the actual values that make the solid wall (everything beyond FogEnd = 100% FogColor).
+		local fc2 = STORM_FLY.FogColor
+		print(string.format("[Storm] FLYING hard-cull: Atmosphere REMOVED + classic Fog FogStart=%d FogEnd=%d FogColor=(%d,%d,%d) (solid wall, islands fully hidden)",
+			STORM_FLY.FogStart, STORM_FLY.FogEnd, math.round(fc2.R*255), math.round(fc2.G*255), math.round(fc2.B*255)))
+	else
+		-- LANDED: re-attach the Atmosphere (saved original props) so the world looks normal-stormy and the
+		-- island is VISIBLE again. Classic fog also eases back via the Lighting tween above.
+		if stormAtmos then
+			if not stormAtmos.Parent then stormAtmos.Parent = Lighting end
+			if savedAtmos then
+				local s = savedAtmos
+				TweenService:Create(stormAtmos, TweenInfo.new(t or 1.1, Enum.EasingStyle.Sine), {
+					Density=s.Density, Offset=s.Offset, Color=s.Color, Decay=s.Decay, Glare=s.Glare, Haze=s.Haze,
+				}):Play()
+			end
+			print(string.format("[Storm] LANDED: Atmosphere restored (Density=%.2f) -> island visible", savedAtmos and savedAtmos.Density or 0))
+		else
+			print("[Storm] LANDED: no Atmosphere -> classic Fog eased back, island visible")
+		end
+	end
 	if stormMist then stormMist.Enabled = flying end -- thick enveloping cloud only while flying
+end
+
+-- ENFORCER: while the storm is active AND the player is flying, REMOVE any Atmosphere (it disables
+-- classic Fog) and HARD-PIN the dense classic fog every frame -> a SOLID wall, everything beyond
+-- FogEnd is 100% FogColor, islands fully hidden. Doing it every RenderStepped means even if streaming
+-- or another system re-adds an Atmosphere / restomps the fog, the storm wall wins. While LANDED the
+-- enforcer does nothing, so applyStormState re-attaches the Atmosphere + eases fog back (island visible).
+local function startStormFogEnforcer()
+	if stormFogConn then return end
+	stormFogConn = RunService.RenderStepped:Connect(function()
+		if not _G.thunderstormActive then return end
+		if not isPlayerFlying() then return end
+		-- Remove any Atmosphere every frame (it would otherwise disable classic Fog). Keep the FIRST one
+		-- captured (+ its saved props) so landed/end can re-attach and restore it.
+		local atm = Lighting:FindFirstChildOfClass("Atmosphere")
+		if atm then
+			if not stormAtmos then
+				stormAtmos = atm
+				if not savedAtmos then savedAtmos = { Density=atm.Density, Offset=atm.Offset, Color=atm.Color, Decay=atm.Decay, Glare=atm.Glare, Haze=atm.Haze } end
+			end
+			atm.Parent = nil
+		end
+		-- Pin the dense classic-fog HARD WALL (now actually rendered, since no Atmosphere is present).
+		Lighting.FogStart = STORM_FLY.FogStart
+		Lighting.FogEnd   = STORM_FLY.FogEnd
+		Lighting.FogColor = STORM_FLY.FogColor
+	end)
+end
+local function stopStormFogEnforcer()
+	if stormFogConn then stormFogConn:Disconnect(); stormFogConn = nil end
 end
 local function startStormSky()
 	if not savedStormLighting then
@@ -801,13 +1009,32 @@ local function startStormSky()
 			FogColor=Lighting.FogColor, FogStart=Lighting.FogStart, FogEnd=Lighting.FogEnd,
 			OutdoorAmbient=Lighting.OutdoorAmbient, Ambient=Lighting.Ambient }
 	end
-	if not hiddenAtmos then local atm=Lighting:FindFirstChildOfClass("Atmosphere"); if atm then hiddenAtmos=atm; atm.Parent=nil end end
+	-- ATMOSPHERE: classic Fog is DISABLED whenever an Atmosphere exists, so to make the classic-fog wall
+	-- show while flying we REMOVE the Atmosphere (in the enforcer, every frame). Capture the existing one
+	-- + SAVE its original props now so landed/end can re-attach and restore it. If none exists, classic
+	-- Fog already works directly -- nothing to remove.
+	local atm = Lighting:FindFirstChildOfClass("Atmosphere")
+	if atm then
+		stormAtmos = atm; stormAtmosOurs = false
+		if not savedAtmos then
+			savedAtmos = { Density=atm.Density, Offset=atm.Offset, Color=atm.Color, Decay=atm.Decay, Glare=atm.Glare, Haze=atm.Haze }
+		end
+		print(string.format("[Storm] Lighting.Atmosphere FOUND (it disables classic Fog) -- will REMOVE it while flying so the classic-fog wall renders. orig Density=%.2f", atm.Density))
+	else
+		stormAtmos = nil; stormAtmosOurs = false; savedAtmos = nil
+		print("[Storm] No Lighting.Atmosphere present -- classic Fog wall renders directly.")
+	end
+	-- NOTE: if islands STILL show with the classic-fog wall (FogEnd~60, no Atmosphere), the remaining
+	-- cause is render distance -- with StreamingEnabled the engine can draw distant islands past the fog.
+	print("[Storm] workspace.StreamingEnabled = "..tostring(workspace.StreamingEnabled)..
+		" (if true and islands still show through the classic-fog wall, render distance is drawing them -- needs a render-distance fix)")
 	if not stormCC then stormCC=Instance.new("ColorCorrectionEffect"); stormCC.Name="ThunderstormCC"; stormCC.Parent=Lighting end
 	stormCC.Brightness=0; stormCC.Contrast=0; stormCC.Saturation=0; stormCC.TintColor=Color3.fromRGB(255,255,255)
 	TweenService:Create(stormCC, TweenInfo.new(1.5), {Brightness=0, Contrast=-0.03, Saturation=-0.35, TintColor=Color3.fromRGB(244,246,250)}):Play()
 	startStormParticles()
 	stormState = isPlayerFlying()
 	applyStormState(stormState, 1.5)
+	startStormFogEnforcer()   -- hard-pin the dense flying fog every frame so nothing can override it
 	local terrain=workspace:FindFirstChildOfClass("Terrain")
 	if terrain then
 		local c=terrain:FindFirstChildOfClass("Clouds")
@@ -828,6 +1055,7 @@ local function triggerLightning()
 end
 local function stopStormSky()
 	stormApplied=nil; stormState=nil
+	stopStormFogEnforcer()   -- STOP pinning fog BEFORE restoring, so the restore tween isn't re-stomped each frame
 	stopStormParticles()
 	if savedStormLighting then
 		TweenService:Create(Lighting, TweenInfo.new(1.5), {
@@ -848,7 +1076,22 @@ local function stopStormSky()
 			TweenService:Create(cl, TweenInfo.new(1.5), {Cover=s.Cover,Density=s.Density,Color=s.Color}):Play(); cl.Enabled=s.Enabled
 		end
 	end
-	if hiddenAtmos then local atm=hiddenAtmos; hiddenAtmos=nil; pcall(function() if atm and not atm.Parent then atm.Parent=Lighting end end) end
+	-- ATMOSPHERE RESTORE: the enforcer leaves the Atmosphere DETACHED while flying, so on end RE-ATTACH
+	-- it and tween its saved original props back -> normal clear visibility returns.
+	if stormAtmos then
+		local a = stormAtmos; stormAtmos = nil
+		pcall(function()
+			if not a.Parent then a.Parent = Lighting end
+			if savedAtmos then
+				local s = savedAtmos
+				TweenService:Create(a, TweenInfo.new(1.5), {
+					Density=s.Density, Offset=s.Offset, Color=s.Color, Decay=s.Decay, Glare=s.Glare, Haze=s.Haze,
+				}):Play()
+			end
+		end)
+		print(string.format("[Storm] Atmosphere RE-ATTACHED + RESTORED to original Density=%.2f", savedAtmos and savedAtmos.Density or 0))
+	end
+	savedAtmos = nil; stormAtmosOurs = false
 end
 
 local function cleanupWeather()

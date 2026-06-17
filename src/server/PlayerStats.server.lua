@@ -193,6 +193,14 @@ local gamepassState = {}          -- [player] = { twoXForever=bool, glitterTrail
 local gamepassReady = {}          -- [player] = true once the on-join ownership check completed
 -- PERMANENT TEST ACCOUNT: this UserId never loads/saves (always a brand-new player every join).
 local TEST_ACCOUNT_USERID = 1086836724  -- lando5485
+-- \xE2\x9A\xA0 TEST: shared allow-list for ALL test/debug features (test chat commands AND the island-select
+-- all-islands-unlock below). Matched by USERNAME (case-insensitive). Defined early so every handler can use
+-- it. REMOVE BEFORE LAUNCH.
+local ALLOWED_TEST_USERS = { ["lando5485"] = true, ["broskie310111"] = true, ["itsmaddmax2"] = true } -- \xE2\x9A\xA0 REMOVE BEFORE LAUNCH
+local function isAllowedTestUser(player) -- \xE2\x9A\xA0 TEST: shared gate for all test/debug features. REMOVE BEFORE LAUNCH.
+	return ALLOWED_TEST_USERS[string.lower(player.Name)] == true
+end
+_G.isAllowedTestUser = isAllowedTestUser -- \xE2\x9A\xA0 TEST: shared with PetSystem (pet-skip test path). REMOVE BEFORE LAUNCH.
 -- =====================================================================================================
 -- \xE2\x9A\xA0 FRESH PLAYER TEST OVERRIDE (Broskie310111) -- TEMPORARY. SET false / DELETE THIS BLOCK BEFORE LAUNCH.
 -- When FRESH_PLAYER_TEST is true, the player whose UserId == FRESH_PLAYER_USERID loads as a BRAND-NEW
@@ -407,6 +415,7 @@ local function savePlayerData(player, trigger)
 		print("SAVE ("..trigger.."): FAILED - "..tostring(err))
 	end
 end
+_G.savePlayerData = savePlayerData -- exposed so PetSystem can persist BOTH players immediately after a trade (anti-dupe)
 
 -- Autosave loop (~every AUTOSAVE_INTERVAL s).
 task.spawn(function()
@@ -862,6 +871,9 @@ BuyFoodEvent.OnServerEvent:Connect(function(player, foodName)
 	if totalEarned then totalEarned.Value = totalEarned.Value + food.price end
 	pcall(function() RegenEvent:FireClient(player, food.power, currentPower.Value, stomachMax.Value) end)
 	print("BOUGHT:", player.Name, foodName, "+", food.power, "power, total:", currentPower.Value)
+	-- PET XP (cosmetic-only): eating food = "collecting gas" -> XP for the equipped pet (proportional to the
+	-- power/gas gained). Never affects gas/food/flight balance.
+	if _G.petOnGas then _G.petOnGas(player, powerGain) end
 end)
 
 CoinEvent.OnServerEvent:Connect(function(player, amount)
@@ -877,6 +889,10 @@ CoinEvent.OnServerEvent:Connect(function(player, amount)
 		coins.Value = coins.Value + toAdd
 		tce.Value   = tce.Value + toAdd
 	end
+	-- PET XP (cosmetic-only): this coin tick fires every 0.5s DURING FLIGHT, so it feeds BOTH the "coins
+	-- earned" and "distance flown" XP sources for the equipped pet. Never affects coins/flight balance.
+	if _G.petOnCoins then _G.petOnCoins(player, amt) end
+	if _G.petOnFlightTick then _G.petOnFlightTick(player) end
 end)
 
 
@@ -887,6 +903,8 @@ UnlockIslandEvent.OnServerEvent:Connect(function(player, islandNum)
 	if n > island.Value and n <= 14 then
 		island.Value = n
 		print("ISLAND "..n.." UNLOCKED by "..player.Name)
+		if _G.petOnIsland then _G.petOnIsland(player) end -- PET XP (cosmetic-only): reaching a NEW island -> XP chunk for the equipped pet
+
 		-- NOTE: no arrival message here. The welcome + "[username] landed" broadcast fire ONLY
 		-- from the physical-landing detection (Heartbeat above), never from this peak/unlock event.
 		-- NOTE: do NOT zero CurrentPower / gas here. Reaching or landing on a new island must
@@ -1013,7 +1031,11 @@ SelectIslandEvent.OnServerEvent:Connect(function(player, islandNum)
 	if hasChosenIsland[player] then return end -- one choice per session (the join menu)
 	islandNum = tonumber(islandNum); if not islandNum then return end
 	islandNum = math.floor(islandNum)
-	local maxIsland = highestIslandReached[player] or 1
+	-- \xE2\x9A\xA0 TEST: test accounts can spawn on ANY island from the select page. REMOVE BEFORE LAUNCH.
+	-- Test accounts bypass the "reached island" clamp so they can spawn on any of the 14 (the client unlocks
+	-- all 14 cards for them). Normal players are still validated against their saved highestIslandReached.
+	local isTester = isAllowedTestUser(player)
+	local maxIsland = isTester and 14 or (highestIslandReached[player] or 1)
 	if islandNum < 1 or islandNum > maxIsland then
 		print("ISLAND SELECT: "..player.Name.." requested LOCKED island "..tostring(islandNum).." (max "..maxIsland.."), clamping")
 		islandNum = math.clamp(islandNum, 1, maxIsland)
@@ -1022,6 +1044,7 @@ SelectIslandEvent.OnServerEvent:Connect(function(player, islandNum)
 	spawnIsland[player] = islandNum
 	player:LoadCharacter() -- spawn the held player; onCharacterAdded teleports to the chosen stand
 	print("ISLAND SELECT: "..player.Name.." spawning on island "..islandNum)
+	if isTester then print("[TEST] "..player.Name.." spawned on island "..islandNum.." via all-islands-unlocked test. REMOVE BEFORE LAUNCH.") end
 	-- FART METER RESTORE (after-spawn): the spawn's own onLand fires LandingEvent(0), which zeros the
 	-- decrease-only CurrentPower — so we must re-apply the saved meter SERVER-SIDE once the spawn has
 	-- settled, then replicate it to the client's gas meter via RegenEvent. This runs AFTER the
@@ -1436,7 +1459,9 @@ end)
 -- the random loop above uses -- so the storm runs EXACTLY like normal, just on command. This does
 -- NOT change the storm or the scheduler's normal behavior (the loop above is untouched and keeps
 -- running on its own timer). Gated to the test accounts so random players can't trigger it.
-local TEST_STORM_ACCOUNTS = { ["broskie310111"] = true, ["itsmaddmax2"] = true } -- \xE2\x9A\xA0 REMOVE BEFORE LAUNCH
+-- \xE2\x9A\xA0 TEST COMMANDS allowed for: lando5485, Broskie310111, itsmaddmax2. REMOVE BEFORE LAUNCH.
+-- (The shared ALLOWED_TEST_USERS list + isAllowedTestUser() are defined near the top of this file so the
+-- island-select all-unlock and these chat commands can both use them. /thunderstorm checks it below.)
 local function fireThunderstormNow()
 	local ev
 	for _, e in ipairs(eventPool) do if e.name == "THUNDERSTORM" then ev = e break end end
@@ -1449,12 +1474,24 @@ local function fireThunderstormNow()
 	end)
 end
 local function hookTestStormChat(player) -- \xE2\x9A\xA0 TEST: /thunderstorm chat trigger. REMOVE BEFORE LAUNCH.
+	-- \xE2\x9A\xA0 TEST: on lando5485's join, print their userId so it can be hardcoded by id later. REMOVE BEFORE LAUNCH.
+	if string.lower(player.Name) == "lando5485" then
+		print("[TEST] lando5485 joined - userId = " .. player.UserId .. " (can hardcode this in the allowed list)")
+	end
 	player.Chatted:Connect(function(msg)
 		local cmd = string.lower(tostring(msg or "")):match("^%s*(.-)%s*$") -- trim + lowercase
 		if cmd == "/thunderstorm" then
-			if not TEST_STORM_ACCOUNTS[string.lower(player.Name)] then return end -- test accounts only
+			if not isAllowedTestUser(player) then return end -- shared test-user allow-list (lando5485 + the two test accounts)
 			print("[TEST] /thunderstorm command used by " .. player.Name .. " - firing thunderstorm event. REMOVE BEFORE LAUNCH.")
 			fireThunderstormNow()
+		elseif cmd == "/allpets" then -- \xE2\x9A\xA0 TEST COMMAND /allpets - grants all pets to test accounts. REMOVE BEFORE LAUNCH.
+			if not isAllowedTestUser(player) then return end -- same allow-list as the other test commands (non-test players: ignored)
+			if _G.petsGrantAll then pcall(function() _G.petsGrantAll(player) end) end -- grant every pet (PetSystem owns the data); they appear owned + equippable instantly
+			print("[TEST] /allpets used by " .. player.Name .. " - granted all pets. REMOVE BEFORE LAUNCH.")
+		elseif cmd == "/rarepets" then -- \xE2\x9A\xA0 TEST COMMAND /rarepets - grants every pet as its RARE variant. REMOVE BEFORE LAUNCH.
+			if not isAllowedTestUser(player) then return end
+			if _G.petsGrantRare then pcall(function() _G.petsGrantRare(player) end) end -- grant all pets RARE + pre-maxed so all 5 rare looks are visible
+			print("[TEST] /rarepets used by " .. player.Name .. " - granted all RARE pets. REMOVE BEFORE LAUNCH.")
 		end
 	end)
 end

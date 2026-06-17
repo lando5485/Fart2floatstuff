@@ -11,7 +11,7 @@
 -- script does NOT implement the rewind. It only DETECTS the hit and tells the
 -- client to run the pre-built `_G.applyBeamHit()`.
 --
--- DESIGN / SAFETY (mirrors the Meteor / UFO / Plane events' contract):
+-- DESIGN / SAFETY (mirrors the Meteor / Plane events' contract):
 --   * SERVER-AUTHORITATIVE + SYNCED: this script (server) creates the beam
 --     parts (they auto-replicate, so all clients see identical beams),
 --     drives ALL timing, and decides ALL collisions. The RainbowBeamSync

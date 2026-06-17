@@ -84,7 +84,16 @@
       "Bash(rm -rf \"/c/Users/riley/AppData/Local/Roblox/logs\"/*)",
       "Bash(rm -rf \"/c/Users/riley/AppData/Local/Temp/Roblox\"/*)",
       "Read(//c/Users/riley/AppData/Roaming/Code/User/**)",
-      "Bash(tasklist)"
+      "Bash(tasklist)",
+      "PowerShell($l = \\(Get-Content \"C:\\\\Users\\\\lando\\\\Downloads\\\\Fart2floatstuff\\\\src\\\\client\\\\EventClient.client.lua\"\\)[195]; $l -replace \"`t\",\"<TAB>\" -replace \" \",\"<SP>\")",
+      "PowerShell($lines = Get-Content \"C:\\\\Users\\\\lando\\\\Downloads\\\\Fart2floatstuff\\\\src\\\\server\\\\PlayerStats.server.lua\" -Encoding UTF8; 1433,1439,1455 | ForEach-Object { \"$_`: \" + $lines[$_-1] })",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\lando\\\\Downloads\\\\Fart2floatstuff\\\\src\\\\server\\\\PlayerStats.server.lua\"\\); $text = [System.Text.Encoding]::UTF8.GetString\\($bytes\\); $idx = $text.IndexOf\\(\"REMOVE BEFORE LAUNCH\"\\); $snippet = $text.Substring\\($idx-8, 8\\); \"Chars before 'REMOVE': \"; $snippet.ToCharArray\\(\\) | ForEach-Object { [int][char]$_ })",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\lando\\\\Downloads\\\\Fart2floatstuff\\\\src\\\\server\\\\PlayerStats.server.lua\"\\); $text = [System.Text.Encoding]::UTF8.GetString\\($bytes\\); \"Contains literal backslash-xE2: \" + $text.Contains\\('\\\\xE2\\\\x9A\\\\xA0'\\); \"Contains real warning char U+26A0: \" + $text.Contains\\([char]0x26A0\\))",
+      "Bash(command -v luau-analyze luau lua luajit luacheck)",
+      "Bash(git rm *)",
+      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('default.project.json','utf8'\\)\\); console.log\\('JSON valid'\\)\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

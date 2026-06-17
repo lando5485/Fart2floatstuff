@@ -21,8 +21,8 @@
 
 -- ===== CONFIG (tunables) =====
 local BACKGROUND_MUSIC_ENABLED = true
-local MUSIC_NORMAL_VOLUME = 1     -- normal music level (the group Volume MusicDucking tweens toward)
-local MUSIC_DUCKED_VOLUME = 0.28  -- MUCH lower (~28%): when ducked the music sits well under any event audio
+local MUSIC_NORMAL_VOLUME = 0.68   -- normal music level (1.0 -> 0.8 (-20%) -> 0.68 (another -15%)) (the group Volume MusicDucking tweens toward)
+local MUSIC_DUCKED_VOLUME = 0.1904 -- event-ducked level (0.28 -> 0.224 (-20%) -> 0.1904 (another -15%) so music stays uniformly quieter)
 
 local SoundService = game:GetService("SoundService")
 
@@ -43,7 +43,7 @@ musicGroup:SetAttribute("NormalVolume", MUSIC_NORMAL_VOLUME)
 musicGroup:SetAttribute("DuckedVolume", MUSIC_DUCKED_VOLUME)
 musicGroup.Parent = SoundService
 
--- Replicated flag the client reads to know when ANY big event (Rocket/Meteor/UFO/Ice Age/Mutation) is
+-- Replicated flag the client reads to know when ANY big event (Rocket/Meteor) is
 -- active, so it can duck. Parented to the group so late joiners get the current value automatically.
 local bigFlag = Instance.new("BoolValue")
 bigFlag.Name = "BigEventActive"
