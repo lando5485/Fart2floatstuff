@@ -42,10 +42,10 @@ local PETS = {
 		-- UI metadata (DATA-DRIVEN: the quest UI reads these, so future pet islands reuse it with no hardcoding)
 		pieceLabel   = "Broccoli",                                  -- tracker/popup label ("Broccoli: 1/3")
 		iconEmoji    = "\xF0\x9F\xA5\xA6",                           -- 🥦 tracker icon
-		questHint    = "Pet Quest Available on this island...",      -- the mysterious landing hint
 		questName    = "Broccoli Bunny Quest",                       -- HUD indicator: the quest's real NAME
 		objective    = "Find 3 broccoli pieces",                     -- HUD indicator: short objective line
 		trackWord    = "Pieces",                                     -- HUD minimized tracker word ("Pieces X/3")
+		nextStep     = "Hatch the egg",                              -- tracker text once the count is complete
 	},
 	-- PET #2: COCONUT CRAB (Coconut Cove). questType "crack": 7 coconuts (tap-to-crack minigame) -> Cave Key
 	-- -> chest in the cave -> egg -> hatch. Same marker->position->visual architecture as broccoli.
@@ -56,10 +56,10 @@ local PETS = {
 		pieceMarkers = { "Coconut1","Coconut2","Coconut3","Coconut4","Coconut5","Coconut6","Coconut7" },
 		pieceLabel   = "Coconut",
 		iconEmoji    = "\xF0\x9F\xA5\xA5",                           -- 🥥 tracker icon
-		questHint    = "Pet Quest Available on this island...",
 		questName    = "Coconut Crab Quest",
 		objective    = "Crack 7 coconuts",
 		trackWord    = "Coconuts",                                   -- "Coconuts X/7"
+		nextStep     = "Unlock the chest",
 	},
 	-- PET #3: POPCORN SHEEP (Popcorn Pinnacle). questType "film-reels": find 6 FILM REELS -> load them at
 	-- the PROJECTOR -> a mini-movie plays on the SCREEN -> the egg materializes in a spotlight at the
@@ -73,11 +73,11 @@ local PETS = {
 		extraMarkers = { projector = "PopcornProjector", screen = "PopcornScreen" },
 		pieceLabel   = "Film Reel",
 		iconEmoji    = "\xF0\x9F\x90\x91",                           -- 🐑 tracker icon
-		questHint    = "Pet Quest Available on this island...",
 		allFoundMsg  = "All 6 found! Load reels at the projector!",  -- tracker text at full count (data-driven)
 		questName    = "Popcorn Sheep Quest",
 		objective    = "Collect 6 film reels",
 		trackWord    = "Reels",                                      -- "Reels X/6"
+		nextStep     = "Load the projector",
 	},
 	-- PET #4: BUTTER DUCK (Butter Swamp). questType "fishing": grab a rod at the barrel -> fish near/over the
 	-- ButterLake UNION -> cast -> bite/hook (reaction) -> reel-in tension minigame -> the SERVER rolls the catch
@@ -89,11 +89,11 @@ local PETS = {
 		extraMarkers = { butterlake = "ButterLake", rodbarrel = "RodBarrel" },
 		pieceLabel   = "Catch",
 		iconEmoji    = "\xF0\x9F\xA6\x86",                           -- 🦆 tracker icon
-		questHint    = "Pet Quest Available on this island...",
 		allFoundMsg  = "Fish in the butter to catch the egg!",
 		questName    = "Butter Duck Quest",
-		objective    = "Catch the butter duck",
+		objective    = "Catch what's in the butter lake",
 		trackWord    = "Reeled in",                                  -- fishing has no fixed total -> "Reeled in: X"
+		nextStep     = "Hatch the egg",
 	},
 	-- PET #5: BURRITO ARMADILLO (Burrito Barrens). questType "dig": grab a SHOVEL -> hot/cold hunt -> DIG
 	-- minigame at dig spots -> DigSpot1-4 are decoys (junk), BuriedEggSpot is the real one (the egg) -> hatch.
@@ -104,12 +104,19 @@ local PETS = {
 		extraMarkers = { shovel = "ShovelSpot", dig1 = "DigSpot1", dig2 = "DigSpot2", dig3 = "DigSpot3", dig4 = "DigSpot4", dig5 = "DigSpot5", buriedegg = "BuriedEggSpot" },
 		pieceLabel   = "Dig",
 		iconEmoji    = "\xF0\x9F\xAA\x96",                           -- 🪖 (armadillo-ish) tracker icon
-		questHint    = "Pet Quest Available on this island...",
 		allFoundMsg  = "Dig up the buried armadillo egg!",
 		questName    = "Burrito Armadillo Quest",
-		objective    = "Dig up the armadillo",
+		objective    = "Dig up what's buried",
 		trackWord    = "Mounds",                                     -- "Mounds X/6"
+		nextStep     = "Dig up the egg",
 	},
+	-- ===== SEASONAL PETS (Community Garden rewards) -- NO island quest (granted by the harvest). questType="seasonal"
+	-- so the startup world-builder skips them; they ONLY ever appear as the equipped FOLLOWER (cloned from the server
+	-- template via PET_TEMPLATE_NAME) + an owned inventory card. Must exist here so applyState() spawns the follower.
+	SunflowerBee = { questType = "seasonal", pieceMarkers = {}, displayName = "Sunflower Bee", iconEmoji = "\xF0\x9F\x90\x9D" },
+	MapleFox     = { questType = "seasonal", pieceMarkers = {}, displayName = "Maple Fox",     iconEmoji = "\xF0\x9F\xA6\x8A" },
+	FrostPenguin = { questType = "seasonal", pieceMarkers = {}, displayName = "Frost Penguin", iconEmoji = "\xF0\x9F\x90\xA7" },
+	BlossomBunny = { questType = "seasonal", pieceMarkers = {}, displayName = "Blossom Bunny", iconEmoji = "\xF0\x9F\x90\xB0" },
 }
 
 -- ============================================================================================
@@ -150,10 +157,16 @@ local PetTradeConfirm = RS:WaitForChild("PetTradeConfirmEvent", 30)
 local PetTradeCancel  = RS:WaitForChild("PetTradeCancelEvent", 30)
 local PetTradeState   = RS:WaitForChild("PetTradeStateEvent", 30)
 local PetTradePrompt  = RS:WaitForChild("PetTradeRequestPromptEvent", 30)
--- ⚠ REPLACE BEFORE LAUNCH: placeholder pet-skip Developer Product ID (must match PET_UPGRADE_PRODUCT_ID in
--- PetSystem.server.lua). The "Skip" button prompts this to fill the current level's XP. Until the real product
--- exists the prompt errors harmlessly for real players; test accounts skip instantly via the server test path.
-local PET_UPGRADE_PRODUCT_ID = 123456789 -- ⚠ placeholder pet-skip product ID -- REPLACE BEFORE LAUNCH
+-- ⚠ REPLACE BEFORE LAUNCH: placeholder TIER-SKIP Developer Product IDs (must match PET_SKIP_PRODUCTS in
+-- PetSystem.server.lua). Each jumps the pet to the FIRST level of the next tier; the Skip button prompts the
+-- one for the pet's current tier. Until the real products exist the prompt errors harmlessly for real players;
+-- test accounts tier-skip instantly via the server test path. (Ordered 1=Common->Uncommon ... 4=Epic->Legendary.)
+local PET_SKIP_PRODUCTS = {
+	{ to = "Uncommon",  price = 49,  id = 123456701 }, -- ⚠ placeholder product id -- REPLACE BEFORE LAUNCH
+	{ to = "Rare",      price = 99,  id = 123456702 }, -- ⚠ REPLACE BEFORE LAUNCH
+	{ to = "Epic",      price = 299, id = 123456703 }, -- ⚠ REPLACE BEFORE LAUNCH
+	{ to = "Legendary", price = 599, id = 123456704 }, -- ⚠ REPLACE BEFORE LAUNCH
+}
 
 -- ===== low-poly build helpers =====
 local function newPart(parent, name, shape, size, color, cf, material)
@@ -1006,6 +1019,15 @@ local function buildPopcornWorld(petId, def, positions)
 		newPart(proj, "ReelTop", Enum.PartType.Cylinder, Vector3.new(0.5,1.6,1.6), Color3.fromRGB(28,28,32), projCF * CFrame.new(0.7,2.6,-0.5) * CFrame.Angles(0,0,math.rad(90)))
 		newPart(proj, "Stand", Enum.PartType.Block, Vector3.new(0.7,1.4,0.7), Color3.fromRGB(30,30,34), projCF * CFrame.new(0,0.2,0))
 		proj.Parent = Workspace
+		-- gold glow on the projector (SAME chest-style Highlight) so the player can find it once the reels are
+		-- collected; toggled by applyState. st.* fields only -- no new module-scope locals.
+		st.projector = proj
+		st.projGlow = function(on)
+			if on and not st.projHl then
+				local hl = Instance.new("Highlight"); hl.Name = "ProjGlow"; hl.FillColor = Color3.fromRGB(255,225,120); hl.FillTransparency = 0.6
+				hl.OutlineColor = Color3.fromRGB(255,215,0); hl.Adornee = proj; hl.Parent = proj; st.projHl = hl
+			elseif not on and st.projHl then st.projHl:Destroy(); st.projHl = nil end
+		end
 		-- PERMANENT prop: NOT added to st.filmProps, so applyState never hides it -- the projector always stays
 		-- in the world (a fixed prop for any player arriving), even after the quest/movie.
 		-- translucent light BEAM from the lens toward the screen -- off until the projector turns ON (movie start),
@@ -2432,6 +2454,19 @@ local PET_THEME = {
 	BurritoArmadillo = { color=Color3.fromRGB(200,160,110),
 		head=CFrame.new(1.15,1.4,0), face=CFrame.new(1.5,0.8,0), glassW=0.45, neck=CFrame.new(1.2,0.15,0), back=CFrame.new(-1.5,0.35,0), side=CFrame.new(0.2,-0.1,1.5), side2=CFrame.new(0.2,-0.1,-1.5),
 		accs={ {3,"bowtie"},{7,"glasses"},{10,"safari"},{13,"backpack"},{17,"gemstuds"},{20,"lantern"},{23,"pickaxe"} } },
+	-- SEASONAL PETS: reuse the standard body/head anchors so they get the same level scaling + accessory schedule.
+	SunflowerBee = { color=Color3.fromRGB(250,205,60),
+		head=CFrame.new(0.05,1.62,0), face=CFrame.new(1.5,0.45,0), glassW=0.5, neck=CFrame.new(1.25,-0.3,0), back=CFrame.new(-1.4,0.35,0), ear=CFrame.new(0.1,1.7,0.95), side=CFrame.new(0.2,-0.1,1.35),
+		accs={ {3,"bowtie"},{7,"glasses"},{10,"crown"},{13,"backpack"},{17,"flower"},{20,"haloring"},{23,"staff"} } },
+	MapleFox = { color=Color3.fromRGB(222,120,52),
+		head=CFrame.new(0.05,1.62,0), face=CFrame.new(1.5,0.45,0), glassW=0.5, neck=CFrame.new(1.25,-0.3,0), back=CFrame.new(-1.4,0.35,0), ear=CFrame.new(0.2,2.35,1.0), side=CFrame.new(0.2,-0.1,1.35),
+		accs={ {3,"bowtie"},{7,"glasses"},{10,"crown"},{13,"backpack"},{17,"flower"},{20,"haloring"},{23,"staff"} } },
+	FrostPenguin = { color=Color3.fromRGB(120,150,200),
+		head=CFrame.new(0.15,1.6,0), face=CFrame.new(1.5,0.5,0), glassW=0.5, neck=CFrame.new(1.3,-0.3,0), back=CFrame.new(-1.4,0.4,0), side=CFrame.new(0.3,-0.3,1.35),
+		accs={ {3,"bowtie"},{7,"glasses"},{10,"tophat"},{13,"scarf"},{17,"monocle"},{20,"sparklecluster"},{23,"cane"} } },
+	BlossomBunny = { color=Color3.fromRGB(186,224,150),
+		head=CFrame.new(0.05,1.62,0), face=CFrame.new(1.5,0.45,0), glassW=0.5, neck=CFrame.new(1.25,-0.3,0), back=CFrame.new(-1.4,0.35,0), ear=CFrame.new(0.1,1.7,0.95), side=CFrame.new(0.2,-0.1,1.35),
+		accs={ {3,"bowtie"},{7,"glasses"},{10,"crown"},{13,"backpack"},{17,"flower"},{20,"haloring"},{23,"staff"} } },
 }
 local petFX = {}         -- [pet] = animated effect state (orbs/ring/pulse/burst/shimmer) driven by the FX loop
 -- RARE variant looks (Stage 2): body sheen (color/material/reflectance) + a rare-only sparkle aura. Cosmetic.
@@ -2456,7 +2491,8 @@ local function petTier(level, isRare, petId)
 	elseif level <= 20 then return "Epic",      Color3.fromRGB(180,90,235),  false, false
 	else                    return "Legendary", Color3.fromRGB(255,170,40),  false, false end
 end
-local PET_DISPLAY = { BroccoliPet="Broccoli Bunny", CoconutCrab="Coconut Crab", PopcornSheep="Popcorn Sheep", ButterDuck="Butter Duck", BurritoArmadillo="Burrito Armadillo" }
+local PET_DISPLAY = { BroccoliPet="Broccoli Bunny", CoconutCrab="Coconut Crab", PopcornSheep="Popcorn Sheep", ButterDuck="Butter Duck", BurritoArmadillo="Burrito Armadillo",
+	SunflowerBee="Sunflower Bee", MapleFox="Maple Fox", FrostPenguin="Frost Penguin", BlossomBunny="Blossom Bunny" }
 -- the name shown above a pet: the rare variant name if rare, else the normal display name.
 local function petDisplayName(petId, isRare) return (isRare and RARE_LOOK[petId] and RARE_LOOK[petId].name) or PET_DISPLAY[petId] or petId end
 local function flagAccPart(p) -- clean matte-plastic cosmetic flags (matches the pet style; never collides/affects physics)
@@ -2823,6 +2859,10 @@ local PET_TEMPLATE_NAME = {
 	PopcornSheep     = "PopcornSheepTemplate",
 	ButterDuck       = "ButterDuckTemplate",
 	BurritoArmadillo = "BurritoArmadilloTemplate",
+	SunflowerBee     = "SunflowerBeeTemplate",   -- seasonal (Summer)
+	MapleFox         = "MapleFoxTemplate",        -- seasonal (Autumn)
+	FrostPenguin     = "FrostPenguinTemplate",    -- seasonal (Winter)
+	BlossomBunny     = "BlossomBunnyTemplate",    -- seasonal (Spring)
 }
 local PET_FALLBACK = {
 	CoconutCrab      = buildCoconutCrab,
@@ -2866,6 +2906,9 @@ local function spawnFollowerPet(petId)
 			st.appliedLevel = st.level; st.appliedRare = st.rare; applyLevelVisual(st.pet, st.level or 1, petId, st.rare)
 		end
 		return
+	end
+	if PETS[petId] and PETS[petId].questType == "seasonal" then
+		print("[PetFollow] building seasonal "..(PETS[petId].displayName or petId).." follower")
 	end
 	st.pet = buildPetModel(petId)
 	st.pet.Name = petId
@@ -3077,11 +3120,11 @@ local popSub = Instance.new("TextLabel"); popSub.BackgroundTransparency=1; popSu
 -- (2b) CORNER TRACKER: top-right, persistent. Two modes -- "available" shows quest NAME + objective on two
 -- lines; "progress"/"complete" minimize to a single compact counter line. refreshQuestHUD() drives both.
 local tracker = Instance.new("Frame")
-tracker.Name="Tracker"; tracker.AnchorPoint=Vector2.new(1,0); tracker.Position=UDim2.new(1,-14,0,14); tracker.Size=UDim2.new(0,240,0,52)
+tracker.Name="Tracker"; tracker.AnchorPoint=Vector2.new(0.5,0); tracker.Position=UDim2.new(0.5,0,0,14); tracker.Size=UDim2.new(0,240,0,52) -- TOP-CENTER (anchor 0.5,0 keeps it centered as Size changes per mode)
 tracker.BackgroundColor3=Color3.fromRGB(28,52,28); tracker.BackgroundTransparency=0.12; tracker.Visible=false; tracker.Parent=questGui
 uiCorner(tracker, 10); uiStroke(tracker, 2, Color3.fromRGB(120,220,120))
 local trkIcon = Instance.new("TextLabel"); trkIcon.BackgroundTransparency=1; trkIcon.Font=Enum.Font.Gotham; trkIcon.TextSize=24; trkIcon.Size=UDim2.new(0,30,1,0); trkIcon.Position=UDim2.new(0,8,0,0); trkIcon.Text=""; trkIcon.Parent=tracker
-local trkLabel = Instance.new("TextLabel"); trkLabel.BackgroundTransparency=1; trkLabel.Font=Enum.Font.FredokaOne; trkLabel.TextSize=16; trkLabel.TextColor3=Color3.fromRGB(255,255,255); trkLabel.Size=UDim2.new(1,-50,1,0); trkLabel.Position=UDim2.new(0,42,0,0); trkLabel.TextXAlignment=Enum.TextXAlignment.Left; trkLabel.Text=""; trkLabel.Parent=tracker; uiStroke(trkLabel,2)
+local trkLabel = Instance.new("TextLabel"); trkLabel.BackgroundTransparency=1; trkLabel.Font=Enum.Font.FredokaOne; trkLabel.TextSize=16; trkLabel.TextColor3=Color3.fromRGB(255,255,255); trkLabel.Size=UDim2.new(1,-50,1,0); trkLabel.Position=UDim2.new(0,42,0,0); trkLabel.TextXAlignment=Enum.TextXAlignment.Center; trkLabel.Text=""; trkLabel.Parent=tracker; uiStroke(trkLabel,2) -- centered in the box
 local trkSub = Instance.new("TextLabel"); trkSub.BackgroundTransparency=1; trkSub.Font=Enum.Font.Gotham; trkSub.TextSize=13; trkSub.TextColor3=Color3.fromRGB(210,235,210); trkSub.Size=UDim2.new(1,-50,0,18); trkSub.Position=UDim2.new(0,42,0,28); trkSub.TextXAlignment=Enum.TextXAlignment.Left; trkSub.Text=""; trkSub.Visible=false; trkSub.Parent=tracker; uiStroke(trkSub,1)
 
 -- (3) POINTER: on-screen arrow guiding to the egg (shown at 3/3)
@@ -3094,7 +3137,7 @@ local onIsland = {}     -- [petId] = bool (for the once-per-visit landing hint)
 
 local function flashHint(def)
 	-- SHORT on-landing reveal showing the quest's real NAME + objective (the corner tracker then persists it)
-	hint.Text = (def.iconEmoji or "\xF0\x9F\x90\xBe").."  "..(def.questName or "Pet Quest").."  \xE2\x80\x94  "..(def.objective or "")
+	hint.Text = (def.iconEmoji or "\xF0\x9F\x90\xBe").."  "..(def.objective or "Pet Quest") -- objective only, no "???" (note: flashHint is no longer called)
 	hint.TextTransparency = 1; hintStroke.Transparency = 1
 	TweenService:Create(hint, TweenInfo.new(0.6), {TextTransparency=0}):Play()
 	TweenService:Create(hintStroke, TweenInfo.new(0.6), {Transparency=0}):Play()
@@ -3117,9 +3160,9 @@ local function questProgress(petId, def, st)
 	end
 	local found = (st and st.uiFound) or 0
 	local total = (st and st.total) or #def.pieceMarkers
-	-- piece quests stay "in progress" (showing the live counter, e.g. "Reels 6/6") right up until the egg is
-	-- hatched -- at which point owns=true hides the tracker. The on-screen pointer arrow guides to the egg.
-	return found, total, found >= 1, false
+	-- piece quests: started once the first piece is found; COMPLETE at full count -> the tracker swaps to the
+	-- next-step text (def.nextStep). owns=true (hatched) hides the tracker; the on-screen pointer guides to the egg.
+	return found, total, found >= 1, (total >= 1 and found >= total)
 end
 
 -- THE on-screen quest indicator. Picks the quest to show (a started/finished one wins over a merely
@@ -3128,9 +3171,11 @@ end
 refreshQuestHUD = function()
 	local showId, mode
 	-- 1) a STARTED-but-unfinished quest wins (progress); a finished-but-unhatched one shows "Complete!"
+	--    ISLAND-BOUND: `and onIsland[petId]` so the on-screen tracker only shows while the player is ON that
+	--    quest's island (hides elsewhere, reappears on return). The pet GUI quest TAB is unaffected.
 	for petId, def in pairs(PETS) do
 		local st = petState[petId]
-		if st and not st.owns then
+		if st and not st.owns and onIsland[petId] then
 			local _, _, started, complete = questProgress(petId, def, st)
 			if complete then showId, mode = petId, "complete"; break
 			elseif started then showId, mode = petId, "progress"; break end
@@ -3148,16 +3193,20 @@ refreshQuestHUD = function()
 	local def = PETS[showId]; local st = petState[showId]
 	trkIcon.Text = def.iconEmoji or "\xF0\x9F\x90\xBE"
 	if mode == "available" then
-		tracker.Size = UDim2.new(0,240,0,52)
-		trkLabel.Position = UDim2.new(0,42,0,6); trkLabel.Size = UDim2.new(1,-50,0,22)
-		trkLabel.Text = def.questName or "Pet Quest"; trkLabel.TextColor3 = Color3.fromRGB(255,240,150)
-		trkSub.Visible = true; trkSub.Text = def.objective or ""
+		-- AVAILABLE: show the OBJECTIVE cleanly (no "???"). TextWrapped so a longer objective fits two lines.
+		tracker.Size = UDim2.new(0,224,0,52)
+		trkLabel.TextWrapped = true
+		trkLabel.Position = UDim2.new(0,36,0,4); trkLabel.Size = UDim2.new(1,-44,0,44) -- centered (icon left ~36, equal-ish right margin)
+		trkLabel.Text = def.objective or ""; trkLabel.TextColor3 = Color3.fromRGB(255,240,150)
+		trkSub.Visible = false
 	else
-		tracker.Size = UDim2.new(0,206,0,40)
-		trkLabel.Position = UDim2.new(0,42,0,0); trkLabel.Size = UDim2.new(1,-50,1,0)
+		tracker.Size = UDim2.new(0,200,0,38)
+		trkLabel.TextWrapped = false
+		trkLabel.Position = UDim2.new(0,36,0,0); trkLabel.Size = UDim2.new(1,-44,1,0) -- centered (icon left ~36, equal-ish right margin)
 		trkSub.Visible = false
 		if mode == "complete" then
-			trkLabel.Text = "Complete!  \xE2\x9C\x94"; trkLabel.TextColor3 = Color3.fromRGB(160,255,160)
+			-- count finished -> show the NEXT step for this quest (def.nextStep), not the finished count
+			trkLabel.Text = def.nextStep or "Complete!"; trkLabel.TextColor3 = Color3.fromRGB(160,255,160)
 		else
 			local found, total = questProgress(showId, def, st)
 			local word = def.trackWord or def.pieceLabel or "Progress"
@@ -3297,6 +3346,7 @@ local function applyState(state)
 		local st = petState[petId]
 		local info = state[petId] or { found = 0, total = #def.pieceMarkers, owns = false }
 		local prevFound = st.uiFound or 0
+		local wasOwned = st.owns -- RE-DOABLE QUEST: detect a pet we JUST lost (traded away) to reset its local quest progress
 		st.owns = info.owns == true
 		st.equipped = info.equipped == true
 		st.level = info.level or 1
@@ -3310,6 +3360,8 @@ local function applyState(state)
 			setVisible(st.egg, false)
 			if st.chest then setVisible(st.chest, false) end
 			if st.filmProps then for _, o in ipairs(st.filmProps) do setVisible(o, false) end end -- (empty now: the projector + beam are PERMANENT, never hidden)
+			if st.projGlow then st.projGlow(false) end -- owned -> remove the projector glow
+
 			if st.fishProps then for _, o in ipairs(st.fishProps) do setVisible(o, false) end end -- fishing: hide the rod barrel + fish spot (prompt) once owned
 			if st.digProps then for _, o in ipairs(st.digProps) do setVisible(o, false) end end -- dig: hide the shovel stand + dig mounds + held shovel once owned
 			-- NOTE: st.movieGui is intentionally NOT destroyed here -- the finale end card holds on the screen permanently
@@ -3318,6 +3370,9 @@ local function applyState(state)
 			hideQuestUI(petId)
 			if not st.uiDoneLogged then st.uiDoneLogged = true; print("[Pet][UI] quest complete - UI hidden") end
 		else
+			-- RE-DOABLE QUEST: if we JUST lost this pet (traded it away), the server has reset its quest progress
+			-- to zero -- wipe the stale LOCAL progress so the pieces/egg/chest reappear and it can be re-done now.
+			if wasOwned then st.collected = {}; st.hasKey = false; st.uiFound = 0; info.found = 0 end
 			-- not owned yet: show uncollected pieces/coconuts. For "find" the egg appears at full count; for
 			-- "crack" the CHEST stays visible and glows once the player has the Cave Key (the egg is revealed
 			-- only when they open the chest). While st.hatching, leave the egg/glow alone.
@@ -3328,6 +3383,9 @@ local function applyState(state)
 			elseif st.isFilm then
 				-- projector + screen are static props (built visible); the egg appears ONLY after the projector
 				-- show (revealEgg), so don't auto-reveal it here -- st.egg stays nil until the mini-movie plays.
+				-- HIGHLIGHT the projector once all reels are collected (so the player finds where to load them);
+				-- turn it off once the egg has appeared (movie played).
+				if st.projGlow then st.projGlow(info.found >= info.total and not st.egg) end
 			elseif st.isFishing then
 				-- fishing: the rod barrel + Fish prompt are static; the egg appears ONLY when CAUGHT (spawnButterEgg),
 				-- so don't auto-reveal anything here -- st.egg stays nil until the player reels in the egg.
@@ -3393,6 +3451,7 @@ if PetRequestStateEvent then pcall(function() PetRequestStateEvent:FireServer() 
 -- Per pet: ASK the server for the marker coordinates (no Workspace searching) and build from them.
 for petId, def in pairs(PETS) do
 	petState[petId] = petState[petId] or { pieces = {}, collected = {}, egg = nil, pet = nil, built = false, owns = false }
+	if def.questType == "seasonal" then continue end -- seasonal pets have NO island quest world to build (granted by the garden)
 	task.spawn(function()
 		if not PetGetMarkers then
 			warn("[Pet][DIAG] PetGetMarkers RemoteFunction MISSING -- cannot build "..petId.." (server PetSystem not loaded/synced?)")
@@ -3439,9 +3498,19 @@ task.spawn(function()
 				if inArea and grounded and not onIsland[petId] then
 					onIsland[petId] = true
 					pcall(function() PetQuestDiscovered:FireServer(petId) end) -- record the quest as DISCOVERED (server dedups + persists)
-					local incomplete = (#def.pieceMarkers == 0) or (st.uiFound or 0) < #def.pieceMarkers -- fishing has 0 pieces -> incomplete until owned
-					if not st.owns and incomplete then flashHint(def) end
-					refreshQuestHUD() -- show this island's AVAILABLE name+objective card (or keep an in-progress counter)
+					-- (landing card removed: the big "??? Quest" flashHint card no longer shows on landing.)
+					-- Reveal the island-bound tracker only AFTER the island arrival intro finishes, so the
+					-- top-center tracker isn't covered by the "You reached ..." banner. Wait for the arrival
+					-- frame to hide (re-visits = no intro -> shows quickly), then show if still on the island.
+					task.spawn(function()
+						task.wait(0.6) -- let the arrival intro (if any) appear first
+						for _ = 1, 40 do
+							local af = _G.gui and _G.gui.arrivalFrame
+							if not (af and af.Visible) then break end
+							task.wait(0.15)
+						end
+						if onIsland[petId] then refreshQuestHUD() end
+					end)
 				elseif not inArea and onIsland[petId] then
 					onIsland[petId] = false
 					refreshQuestHUD() -- left the island: drop the AVAILABLE card (a started counter stays up)
@@ -3487,7 +3556,7 @@ end)
 -- button is the repurposed HUD button (CoreClient), which toggles this panel via a BindableEvent.
 local pg = player:WaitForChild("PlayerGui")
 local invGui = Instance.new("ScreenGui")
-invGui.Name = "PetInventoryUI"; invGui.ResetOnSpawn = false; invGui.DisplayOrder = 100 -- above the HUD, like the other popups
+invGui.Name = "PetInventoryUI"; invGui.ResetOnSpawn = false; invGui.DisplayOrder = 100 -- EXACT same ScreenGui settings as the SHOP (PremiumShopGui): DisplayOrder 100, no IgnoreGuiInset
 invGui.Parent = pg
 local function uicorner(o, r) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r); c.Parent = o; return c end
 local function uistroke(o, col, t) local s = Instance.new("UIStroke"); s.Color = col; s.Thickness = t or 2; s.Parent = o; return s end
@@ -3499,9 +3568,10 @@ local dim = Instance.new("Frame"); dim.Name = "Dim"; dim.Size = UDim2.new(1,0,1,
 -- panel itself is Active=true so panel clicks don't leak to the HUD behind it.
 dim.BackgroundTransparency = 1; dim.Visible = false; dim.Active = false; dim.Parent = invGui
 
--- PANEL -- matches the FOOD SHOP panel (700 x 520, nudged up 45px); the Stomach Shop matches this too
+-- PANEL -- EXACT same Size + Position + AnchorPoint as the SHOP menu's FINAL layout (PremiumShopGui's premPanel,
+-- after its layout pass): 700 x 520 fixed, centered, nudged up 45px. No UIScale/UISizeConstraint/UIAspectRatioConstraint on the Shop.
 local panel = Instance.new("Frame"); panel.Name = "Panel"
-panel.Size = UDim2.new(0,700,0,520); panel.Position = UDim2.new(0.5,0,0.5,-45); panel.AnchorPoint = Vector2.new(0.5,0.5) -- matches the FOOD SHOP panel size + on-screen position (700x520, nudged up 45px)
+panel.Size = UDim2.new(0,700,0,520); panel.Position = UDim2.new(0.5,0,0.5,-45); panel.AnchorPoint = Vector2.new(0.5,0.5) -- copied verbatim from the SHOP panel's final values (do NOT recompute / no responsive fit)
 panel.BackgroundColor3 = Color3.fromRGB(25,90,185); panel.ClipsDescendants = true; panel.Visible = false; panel.Active = true; panel.Parent = invGui -- Active=true so panel clicks don't leak to the HUD behind it
 uicorner(panel, 18); uistroke(panel, Color3.new(1,1,1), 3)
 
@@ -3535,8 +3605,19 @@ local function makeSection(x, w, titleText)
 end
 -- PETS now fills the FULL panel width (the pets are the star) -> 2 BIG cards per row with large 3D pictures.
 local petsSection, petsScroll = makeSection(12, 676, "\xF0\x9F\x90\xBe PETS")
+-- Panel now uses the SHOP's scale-based size (0.9 x 0.85), so make this section fill it responsively (scale width,
+-- like the quests overlay) instead of a fixed 676px -- the centered grid then sits properly at any panel width.
+petsSection.Size = UDim2.new(1, -24, 1, -74); petsSection.Position = UDim2.new(0, 12, 0, 68)
 local petsGrid = Instance.new("UIGridLayout"); petsGrid.CellSize = UDim2.new(0,322,0,252); petsGrid.CellPadding = UDim2.new(0,10,0,12)
 petsGrid.HorizontalAlignment = Enum.HorizontalAlignment.Center; petsGrid.Parent = petsScroll
+-- small TOP/side padding so the first row of pet cards isn't clipped at the scroll's top edge. Wrapped in a
+-- do-block on purpose: the `pad` local is block-scoped (freed immediately), so it adds NO persistent
+-- module-scope local -- avoiding Luau's 200-local main-chunk limit that broke the earlier all-at-once tries.
+do
+	local pad = Instance.new("UIPadding"); pad.Name = "PetsTopPad"
+	pad.PaddingTop = UDim.new(0,10); pad.PaddingLeft = UDim.new(0,4); pad.PaddingRight = UDim.new(0,4)
+	pad.Parent = petsScroll
+end
 
 -- QUEST INFO is tucked into a small COLLAPSIBLE overlay (hidden until the header "QUESTS" tab is tapped), so
 -- it no longer takes prime space away from the pets. Same look as the trade overlay.
@@ -3558,11 +3639,21 @@ questsEmpty.TextColor3 = Color3.fromRGB(200,220,255); questsEmpty.Text = "Land o
 if not _G.MainMenuManager then
 	local mgr = { current = nil, hiders = {} }
 	function mgr.register(name, hideFn) mgr.hiders[name] = hideFn end
+	function mgr.setHud(visible)                                                -- hide/show the WHOLE bottom HUD (gut pill + gas meter + fart button all live in BottomStackGui)
+		local lp = game:GetService("Players").LocalPlayer
+		local pgx = lp and lp:FindFirstChildOfClass("PlayerGui")
+		local g = pgx and pgx:FindFirstChild("BottomStackGui")
+		if g then g.Enabled = visible end
+	end
 	function mgr.notifyOpened(name)
 		if mgr.current and mgr.current ~= name then local h = mgr.hiders[mgr.current]; if h then pcall(h) end end
 		mgr.current = name
+		mgr.setHud(false)                                                       -- a main menu is now open -> hide the bottom HUD (Shop/Pet Hub/Seasonal Pets all route through here)
 	end
-	function mgr.notifyClosed(name) if mgr.current == name then mgr.current = nil end end
+	function mgr.notifyClosed(name)
+		if mgr.current == name then mgr.current = nil end
+		if mgr.current == nil then mgr.setHud(true) end                         -- last menu closed -> restore the bottom HUD
+	end
 	function mgr.isOtherOpen(name) return mgr.current ~= nil and mgr.current ~= name end
 	_G.MainMenuManager = mgr
 end
@@ -3600,6 +3691,8 @@ local function openPanel(open)
 			local nOwned = 0; for _ in pairs(latestInv.owned or {}) do nOwned = nOwned + 1 end
 			local nQuests = 0; for _ in pairs(latestInv.quests or {}) do nQuests = nQuests + 1 end
 			print("[PetInv] inventory opened - owned: " .. nOwned .. ", quests discovered: " .. nQuests)
+			if _G.applyHudScaling then _G.applyHudScaling() end -- re-apply the SHOP's identical UIScale so this panel matches the Shop size exactly
+			task.defer(function() print("[UIFix] PetHub AbsoluteSize=" .. tostring(panel.AbsoluteSize) .. " AbsolutePosition=" .. tostring(panel.AbsolutePosition)) end) -- resolved on-screen size, to compare vs the SHOP
 		else
 			_G.MainMenuManager.notifyClosed("PetInv")
 			pcall(function() questsOverlay.Visible = false end) -- reset sub-overlays on close so it re-opens clean
@@ -3779,20 +3872,21 @@ local function buildPetCard(petId, p, order)
 		if p.equipped then pcall(function() PetEquipEvent:FireServer(false) end)
 		else pcall(function() PetEquipEvent:FireServer(petId) end) end
 	end)
-	-- SKIP (Robux): fills THIS level's remaining XP -> one level up. Price scales with level (display label).
+	-- TIER SKIP (Robux): jump the WHOLE next tier at once (lands on its first level). Button shows the next
+	-- tier + price; at the top tier (Legendary) there's nothing to skip. The SERVER validates + applies the jump.
 	local sk = Instance.new("TextButton"); sk.Size = UDim2.new(0,149,0,26); sk.Position = UDim2.new(0,165,0,208)
 	sk.Font = Enum.Font.GothamBold; sk.TextSize = 12; sk.TextColor3 = Color3.new(1,1,1); sk.Parent = card; uicorner(sk, 8)
-	if maxed then
-		sk.Text = "MAX LEVEL"; sk.BackgroundColor3 = Color3.fromRGB(90,90,90); sk.AutoButtonColor = false
+	-- which tier-skip step applies to this pet's CURRENT level (Common 1-5 / Uncommon 6-10 / Rare 11-15 / Epic 16-20)
+	local skipStep = (p.level <= 5 and PET_SKIP_PRODUCTS[1]) or (p.level <= 10 and PET_SKIP_PRODUCTS[2])
+		or (p.level <= 15 and PET_SKIP_PRODUCTS[3]) or (p.level <= 20 and PET_SKIP_PRODUCTS[4]) or nil
+	if maxed or not skipStep then
+		sk.Text = maxed and "MAX LEVEL" or "MAX TIER"; sk.BackgroundColor3 = Color3.fromRGB(90,90,90); sk.AutoButtonColor = false
 	else
-		-- ⚠ display-only scaling price; the actual charge is the single placeholder product. Real per-level
-		-- pricing needs bracketed Developer Product IDs (REPLACE BEFORE LAUNCH).
-		local cost = 5 + p.level * 2
-		sk.Text = "Skip  R$" .. cost; sk.BackgroundColor3 = Color3.fromRGB(50,170,90)
+		sk.Text = "Skip to " .. skipStep.to .. "  R$" .. skipStep.price; sk.BackgroundColor3 = Color3.fromRGB(50,170,90)
 		sk.MouseButton1Click:Connect(function()
-			pcall(function() PetPendingUpgrade:FireServer(petId) end) -- declare the pet (test accounts skip-fill instantly here)
+			pcall(function() PetPendingUpgrade:FireServer(petId) end) -- declare the pet (testers tier-skip instantly here)
 			task.wait(0.15)
-			pcall(function() game:GetService("MarketplaceService"):PromptProductPurchase(player, PET_UPGRADE_PRODUCT_ID) end)
+			pcall(function() game:GetService("MarketplaceService"):PromptProductPurchase(player, skipStep.id) end)
 		end)
 	end
 end
@@ -3829,18 +3923,36 @@ local function rebuildInventory(payload)
 	local ok, err = pcall(function()
 		latestInv = payload or { owned = {}, quests = {}, totalPets = 0 }
 		local owned, quests, totalPets = latestInv.owned or {}, latestInv.quests or {}, latestInv.totalPets or 0
-		-- PETS section: owned cards first, then locked "?" slots for the rest
+		-- PETS section: ONLY owned-pet cards (no empty/locked placeholder slots); empty -> a "No Pets Unlocked" message
 		table.clear(iconSpins) -- the old card viewports (+ their icon clones) are destroyed below; drop their spin entries
 		for _, c in ipairs(petsScroll:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
 		local ownedCount, order = 0, 0
-		for petId, p in pairs(owned) do
+		-- SORT owned pets by RARITY TIER (Mythical > Exotic > Legendary > Epic > Rare > Uncommon > Common),
+		-- then by LEVEL (high->low). The Cosmic Duck (Mythical, rank 7) ranks ABOVE the 1/99 Exotics (rank 6).
+		-- All locals here are function-scoped (no new module-scope locals).
+		local rank = { Mythical = 7, Exotic = 6, Legendary = 5, Epic = 4, Rare = 3, Uncommon = 2, Common = 1 }
+		local ids = {}
+		for petId in pairs(owned) do ids[#ids + 1] = petId end
+		table.sort(ids, function(a, b)
+			local pa, pb = owned[a], owned[b]
+			local ra = rank[petTier(pa.level or 1, pa.rare, a)] or 0 -- petTier's 1st return value = tier name
+			local rb = rank[petTier(pb.level or 1, pb.rare, b)] or 0
+			if ra ~= rb then return ra > rb end                       -- higher tier first (Mythical leads)
+			return (pa.level or 0) > (pb.level or 0)                  -- same tier: higher level first
+		end)
+		for _, petId in ipairs(ids) do
 			ownedCount = ownedCount + 1; order = order + 1
-			local okc, ec = pcall(buildPetCard, petId, p, order) -- per-card: a bad icon can't abort the rest
+			local okc, ec = pcall(buildPetCard, petId, owned[petId], order) -- per-card: a bad icon can't abort the rest
 			if not okc then warn("[PetInv] card build failed for " .. tostring(petId) .. ": " .. tostring(ec)) end
 		end
-		local locked = math.max(0, totalPets - ownedCount)
-		for k = 1, locked do pcall(buildLockedSlot, 1000 + k) end -- locked slots sort AFTER the owned cards
-		petsScroll.CanvasSize = UDim2.new(0,0,0, math.ceil((ownedCount + locked) / 2) * 264 + 8) -- 2 BIG cards per row (252 cell + 12 pad)
+		-- ONLY owned pets are shown (NO empty/locked placeholder slots). When the player owns zero, a
+		-- "No Pets Unlocked" message is shown instead. This message Frame is a child of petsScroll, so the
+		-- clear loop above auto-destroys it on the next rebuild (no accumulation, no module-scope local).
+		if ownedCount == 0 then
+			local em = Instance.new("Frame"); em.Name = "PetsEmpty"; em.Size = UDim2.new(1,-20,0,90); em.Position = UDim2.new(0,10,0,8); em.BackgroundTransparency = 1; em.Parent = petsScroll
+			local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1,0,1,0); lbl.BackgroundTransparency = 1; lbl.Font = Enum.Font.GothamBold; lbl.TextSize = 20; lbl.TextWrapped = true; lbl.TextColor3 = Color3.fromRGB(190,210,255); lbl.Text = "No Pets Unlocked\nComplete pet quests on the islands to hatch your first pet!"; lbl.Parent = em
+		end
+		petsScroll.CanvasSize = UDim2.new(0,0,0, math.ceil(ownedCount / 2) * 264 + 20) -- 2 BIG cards/row (252+12) + top padding; only owned cards (no empty slots)
 		-- QUESTS section: discovered quests
 		for _, c in ipairs(questsScroll:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
 		local qCount = 0

@@ -132,6 +132,8 @@ teleportBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 -- Fully invisible by default (Visible=false AND transparent), like the event
 -- banners, so nothing shows at game load even if Visible is flipped elsewhere.
 teleportBtn.Visible = false
+teleportBtn.Active = false        -- NON-interactive until the rocket event starts (an invisible Active button still receives clicks -> this is the bug being fixed)
+teleportBtn.Selectable = false    -- and not gamepad-selectable while hidden
 teleportBtn.BackgroundTransparency = 1
 teleportBtn.TextTransparency = 1
 teleportBtn.ZIndex = 20
@@ -149,7 +151,12 @@ tbPad.PaddingTop = UDim.new(0, 8); tbPad.PaddingBottom = UDim.new(0, 8)
 tbPad.PaddingLeft = UDim.new(0, 10); tbPad.PaddingRight = UDim.new(0, 10)
 tbPad.Parent = teleportBtn
 
+-- TRUE only while the rocket event is actively running. The click handler is guarded by it so the
+-- button can NEVER teleport when the event isn't running -- even if it somehow ends up clickable.
+local eventActive = false
+
 teleportBtn.Activated:Connect(function()
+	if not eventActive then return end   -- HARD GUARD: no rocket event -> no teleport (covers any invisible-but-clickable edge case)
 	if _G.playUIClick then pcall(_G.playUIClick) end
 	GoToIsland1Event:FireServer()   -- server teleports us to island 1's stand
 end)
@@ -157,16 +164,24 @@ end)
 -- Show/hide helpers: toggle Visible AND the transparencies together so the
 -- button is genuinely invisible when no rocket event is running.
 local function showTeleportBtn()
+	eventActive = true
 	teleportBtn.BackgroundTransparency = 0
 	teleportBtn.TextTransparency = 0
 	tbStroke.Transparency = 0
+	teleportBtn.Active = true        -- clickable ONLY now (event is running)
+	teleportBtn.Selectable = true
 	teleportBtn.Visible = true
+	print("[RocketBtn] event active=true -> button visible=true")
 end
 local function hideTeleportBtn()
+	eventActive = false
 	teleportBtn.Visible = false
+	teleportBtn.Active = false        -- non-interactive: cannot be clicked / cannot teleport when hidden
+	teleportBtn.Selectable = false
 	teleportBtn.BackgroundTransparency = 1
 	teleportBtn.TextTransparency = 1
 	tbStroke.Transparency = 1
+	print("[RocketBtn] event active=false -> button visible=false")
 end
 
 --======================================================================

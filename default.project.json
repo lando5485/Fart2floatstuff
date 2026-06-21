@@ -63,6 +63,18 @@
       },
       "LateJoinEventSync": {
         "$path": "src/server/LateJoinEventSync.server.lua"
+      },
+      "BlackHoleTeleport": {
+        "$path": "src/server/BlackHoleTeleport.server.lua"
+      },
+      "EasterEggManager": {
+        "$path": "src/server/EasterEggManager.server.lua"
+      },
+      "ToasterEasterEgg": {
+        "$path": "src/server/ToasterEasterEgg.server.lua"
+      },
+      "CommunityGarden": {
+        "$path": "src/server/CommunityGarden.server.lua"
       }
     },
     "ReplicatedStorage": {
@@ -132,6 +144,9 @@
       },
       "RainbowBeamSync": {
         "$className": "RemoteEvent"
+      },
+      "GardenerChatFunction": {
+        "$className": "RemoteFunction"
       }
     },
     "ReplicatedFirst": {
@@ -191,6 +206,18 @@
         },
         "PetFollow": {
           "$path": "src/client/PetFollow.client.lua"
+        },
+        "CommunityGarden": {
+          "$path": "src/client/CommunityGarden.client.lua"
+        },
+        "RemotePets": {
+          "$path": "src/client/RemotePets.client.lua"
+        },
+        "GardenerChat": {
+          "$path": "src/client/GardenerChat.client.lua"
+        },
+        "GardenerLife": {
+          "$path": "src/client/GardenerLife.client.lua"
         }
       }
     }

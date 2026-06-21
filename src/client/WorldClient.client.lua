@@ -178,10 +178,11 @@ getStandPosition = function(islandNum) -- (forward-declared above for startBubbl
 end
 
 -- ============================================================================================
--- BlackHole: VISUAL ONLY. Teleport to Space Realm wired later. Do not add Touched/Teleport logic yet.
--- A purely decorative low-poly black hole landmark high above Pizza Palms (Island 14). It does NOT
--- teleport, NOT trigger anything, NOT collide, NOT touch, NOT affect gas/coins/flight. It only looks
--- cool + spins. Built HERE in WorldClient (which is already mapped + reliably runs and already knows
+-- BlackHole: visual landmark + SPACE REALM TELEPORT (wired at the bottom of buildBlackHole). A low-poly
+-- black hole high above Pizza Palms (Island 14). The look NEVER collides/affects gas/coins/flight; it only
+-- looks cool + spins. An invisible touch sphere detects the player touching it and fires the SERVER, which
+-- teleports them to the Space Realm place (tester-locked for now). Built HERE in WorldClient (which is
+-- already mapped + reliably runs and already knows
 -- island positions) instead of a standalone file -- the standalone BlackHole LocalScript was never
 -- synced by Rojo, so it never ran. This placement is guaranteed to execute.
 -- ============================================================================================
@@ -276,6 +277,53 @@ local function buildBlackHole(center)
 		light.Brightness = 4 + pulse * 4; light.Range = 45 + pulse * 15
 	end)
 
+	-- ============================================================================================
+	-- SPACE REALM TELEPORT (now wired). Touching the orb fires an INTENT to the SERVER, which is the single
+	-- authoritative gate: it checks the tester lock, tells us what to show, then teleports us itself (the
+	-- client never decides who may teleport, and never teleports itself). The VISUAL above is untouched --
+	-- this only adds an invisible touch sphere + a small on-screen message. All locals here are
+	-- FUNCTION-SCOPED (no new module-scope locals). The tester lock + easy-open flag live on the SERVER
+	-- (BlackHoleTeleport.server.lua, SPACE_REALM_TESTERS_ONLY).
+	-- ============================================================================================
+	-- invisible touch sphere matching the void (CanTouch=true). The visual Core stays CanCollide/CanTouch=false.
+	local touchOrb = Instance.new("Part"); touchOrb.Name = "TeleportTouch"; touchOrb.Shape = Enum.PartType.Ball
+	touchOrb.Size = Vector3.new(BH_CORE_SIZE, BH_CORE_SIZE, BH_CORE_SIZE); touchOrb.CFrame = coreCF
+	touchOrb.Anchored = true; touchOrb.CanCollide = false; touchOrb.CanQuery = false; touchOrb.CanTouch = true
+	touchOrb.Transparency = 1; touchOrb.CastShadow = false; touchOrb.Parent = model
+
+	-- small centered status message ("Traveling..." / "Coming soon!" / error)
+	local msgGui = Instance.new("ScreenGui"); msgGui.Name = "SpaceRealmMsg"; msgGui.ResetOnSpawn = false; msgGui.IgnoreGuiInset = true; msgGui.DisplayOrder = 60; msgGui.Parent = player:WaitForChild("PlayerGui")
+	local msgLbl = Instance.new("TextLabel"); msgLbl.AnchorPoint = Vector2.new(0.5,0.5); msgLbl.Position = UDim2.new(0.5,0,0.42,0); msgLbl.Size = UDim2.new(0,540,0,72)
+	msgLbl.BackgroundColor3 = Color3.fromRGB(20,8,40); msgLbl.BackgroundTransparency = 1; msgLbl.Font = Enum.Font.FredokaOne; msgLbl.TextSize = 30; msgLbl.TextColor3 = Color3.fromRGB(215,175,255)
+	msgLbl.Text = ""; msgLbl.Visible = false; msgLbl.Parent = msgGui -- box (background) HIDDEN by default; only shown with a message
+	Instance.new("UICorner", msgLbl).CornerRadius = UDim.new(0,14)
+	local mstk = Instance.new("UIStroke", msgLbl); mstk.Color = Color3.fromRGB(150,70,230); mstk.Thickness = 2
+	local function showMsg(t) msgLbl.Text = t; msgLbl.BackgroundTransparency = 0.2; msgLbl.Visible = true end -- box + text appear together
+	local function hideMsg() msgLbl.Visible = false; msgLbl.BackgroundTransparency = 1; msgLbl.Text = "" end   -- box + text hide together
+
+	local enterEvent = game:GetService("ReplicatedStorage"):WaitForChild("BlackHoleEnterEvent", 30)
+	local traveling = false -- per-player debounce (this is the local player's client)
+	if enterEvent then
+		enterEvent.OnClientEvent:Connect(function(status) -- the SERVER tells us what to show
+			if status == "traveling" then
+				showMsg("\xE2\x9C\xA8 Traveling to Space Realm...") -- shows during the brief travel; the server teleports us shortly
+				task.delay(5, function() if traveling then hideMsg(); traveling = false end end) -- fallback: if the teleport never completes (e.g. in Studio), don't leave the box up forever
+			elseif status == "locked" then
+				showMsg("\xF0\x9F\x94\x92 Space Realm \xE2\x80\x94 Coming soon!"); task.delay(2.5, function() hideMsg(); traveling = false end)
+			elseif status == "error" then
+				showMsg("Couldn't travel right now, try again"); task.delay(2.5, function() hideMsg(); traveling = false end)
+			end
+		end)
+	end
+
+	touchOrb.Touched:Connect(function(hit)
+		if traveling then return end
+		local char = player.Character
+		if not (char and hit and hit:IsDescendantOf(char)) then return end -- only the LOCAL player's character
+		traveling = true
+		if enterEvent then pcall(function() enterEvent:FireServer() end) end -- send INTENT; the SERVER gates + teleports
+	end)
+
 	return model
 end
 
@@ -340,7 +388,7 @@ task.spawn(function()
 	local bhCenter = Vector3.new(pizzaPos.X, pizzaPos.Y + BH_HEIGHT_OFFSET, pizzaPos.Z)
 	local okBH, errBH = pcall(function() buildBlackHole(bhCenter) end)
 	if okBH then
-		print(string.format("[BlackHole] placed at (%.0f, %.0f, %.0f) above Pizza Palms - VISUAL ONLY, non-functional [baseY=%.0f + offset=%d]",
+		print(string.format("[BlackHole] placed at (%.0f, %.0f, %.0f) above Pizza Palms - touch -> Space Realm teleport wired (tester-locked) [baseY=%.0f + offset=%d]",
 			bhCenter.X, bhCenter.Y, bhCenter.Z, pizzaPos.Y, BH_HEIGHT_OFFSET))
 	else
 		warn("[BlackHole] BUILD ERROR (no model created): " .. tostring(errBH))

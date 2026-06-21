@@ -776,17 +776,38 @@ end)()
 if not _G.MainMenuManager then
 	local mgr = { current = nil, hiders = {} }
 	function mgr.register(name, hideFn) mgr.hiders[name] = hideFn end
+	function mgr.setHud(visible)                                                -- hide/show the WHOLE bottom HUD (gut pill + gas meter + fart button all live in BottomStackGui)
+		local lp = game:GetService("Players").LocalPlayer
+		local pgx = lp and lp:FindFirstChildOfClass("PlayerGui")
+		local g = pgx and pgx:FindFirstChild("BottomStackGui")
+		if g then g.Enabled = visible end
+	end
 	function mgr.notifyOpened(name)
 		if mgr.current and mgr.current ~= name then local h = mgr.hiders[mgr.current]; if h then pcall(h) end end
 		mgr.current = name
+		mgr.setHud(false)                                                       -- a main menu is now open -> hide the bottom HUD (Shop/Pet Hub/Seasonal Pets all route through here)
 	end
-	function mgr.notifyClosed(name) if mgr.current == name then mgr.current = nil end end
+	function mgr.notifyClosed(name)
+		if mgr.current == name then mgr.current = nil end
+		if mgr.current == nil then mgr.setHud(true) end                         -- last menu closed -> restore the bottom HUD
+	end
 	function mgr.isOtherOpen(name) return mgr.current ~= nil and mgr.current ~= name end
 	_G.MainMenuManager = mgr
 end
 -- the food-STAND menu fully hides here (also clears shopOpen so the proximity loop knows it's closed)
 _G.MainMenuManager.register("FoodShop", function() FoodShopGui.Enabled = false; shopOpen = false end)
 
+-- [UIFix] print the SHOP panel's REAL final layout + any size-controlling constraints (so the menus can copy them exactly),
+-- then its RESOLVED on-screen size each time it opens (compare against the Pet Hub / Seasonal Pets prints).
+print("[UIFix] SHOP size=" .. tostring(premPanel.Size) .. " pos=" .. tostring(premPanel.Position) .. " anchor=" .. tostring(premPanel.AnchorPoint))
+for _, c in ipairs(premPanel:GetChildren()) do
+	if c:IsA("UIScale") then print("[UIFix] SHOP UIScale=" .. tostring(c.Scale))
+	elseif c:IsA("UISizeConstraint") then print("[UIFix] SHOP UISizeConstraint min=" .. tostring(c.MinSize) .. " max=" .. tostring(c.MaxSize))
+	elseif c:IsA("UIAspectRatioConstraint") then print("[UIFix] SHOP UIAspectRatioConstraint ratio=" .. tostring(c.AspectRatio) .. " type=" .. tostring(c.AspectType)) end
+end
+PremiumShopGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+	if PremiumShopGui.Enabled then task.defer(function() print("[UIFix] SHOP AbsoluteSize=" .. tostring(premPanel.AbsoluteSize) .. " AbsolutePosition=" .. tostring(premPanel.AbsolutePosition)) end) end
+end)
 premClose.MouseButton1Click:Connect(function() if _G.playUIClick then _G.playUIClick() end; PremiumShopGui.Enabled=false; _G.MainMenuManager.notifyClosed("Premium") end)
 foodCloseBtn.MouseButton1Click:Connect(function()
 	FoodShopGui.Enabled = false

@@ -45,6 +45,18 @@ local function revealHud()
 		if sg.Parent then sg.Enabled = wantEnabled end
 	end
 	print("HUD REVEALED: game UI shown after spawn")
+	-- The LoadingScreen has a black 50%-transparent shadow image (BarWrapShadow) that, if it lingers after
+	-- spawn, reads as a dark film over the screen (incl. the gas meter). Make sure it's fully gone.
+	local lp = game.Players.LocalPlayer
+	local ls = lp.PlayerGui:FindFirstChild("LoadingScreen")
+	if ls then
+		print("[LSCHECK] LoadingScreen STILL PRESENT after spawn, Enabled="..tostring(ls.Enabled))
+		ls.Enabled = false
+		ls:Destroy()
+		print("[LSCHECK] LoadingScreen destroyed")
+	else
+		print("[LSCHECK] LoadingScreen already gone")
+	end
 end
 player.CharacterAdded:Connect(revealHud)
 if player.Character then revealHud() end -- safety: if a character somehow already exists
@@ -263,6 +275,16 @@ local function mkButton(p,props) local b=Instance.new("TextButton"); for k,v in 
 local sg
 local SocialService = game:GetService("SocialService")
 
+-- Disable default Roblox CoreGui elements (health bar / backpack hotbar / player list) that draw behind our
+-- custom HUD -- the dark strip over the gas meter is one of these core elements, not a PlayerGui object.
+do
+	local StarterGui = game:GetService("StarterGui")
+	pcall(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Health, false) end)
+	pcall(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false) end)
+	pcall(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false) end)
+	print("[COREGUI] health + backpack + playerlist core elements disabled")
+end
+
 -- ===== TOP RIGHT: COIN DISPLAY =====
 sg=Instance.new("ScreenGui"); sg.Name="CoinGui"; sg.ResetOnSpawn=false; sg.IgnoreGuiInset=true; sg.Parent=PlayerGui
 local coinGui=sg
@@ -327,13 +349,23 @@ mkCorner(coinPlusBtn,19); mkStroke(coinPlusBtn,Color3.fromRGB(0,130,0),2)
 if not _G.MainMenuManager then
 	local mgr = { current = nil, hiders = {} }
 	function mgr.register(name, hideFn) mgr.hiders[name] = hideFn end          -- each menu provides a full-hide fn
+	function mgr.setHud(visible)                                                -- hide/show the WHOLE bottom HUD (gut pill + gas meter + fart button all live in BottomStackGui)
+		local lp = game:GetService("Players").LocalPlayer
+		local pg = lp and lp:FindFirstChildOfClass("PlayerGui")
+		local g = pg and pg:FindFirstChild("BottomStackGui")
+		if g then g.Enabled = visible end
+	end
 	function mgr.notifyOpened(name)                                             -- call right BEFORE showing a menu
 		if mgr.current and mgr.current ~= name then
 			local h = mgr.hiders[mgr.current]; if h then pcall(h) end           -- fully close the other open menu
 		end
 		mgr.current = name
+		mgr.setHud(false)                                                       -- a main menu is now open -> hide the bottom HUD (Shop/Pet Hub/Seasonal Pets all route through here)
 	end
-	function mgr.notifyClosed(name) if mgr.current == name then mgr.current = nil end end -- call when a menu hides
+	function mgr.notifyClosed(name)
+		if mgr.current == name then mgr.current = nil end                       -- call when a menu hides
+		if mgr.current == nil then mgr.setHud(true) end                         -- last menu closed -> restore the bottom HUD
+	end
 	function mgr.isOtherOpen(name) return mgr.current ~= nil and mgr.current ~= name end  -- a DIFFERENT menu is open?
 	_G.MainMenuManager = mgr
 end
@@ -582,17 +614,16 @@ local function mkSideBtn(yOff,bgCol,iconTxt,labelTxt)
 	local clickBtn=mkButton(btn,{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text=""})
 	return btn,clickBtn
 end
+local setMoreOpen, openLocker  -- MORE+ popup toggler + Locker opener (assigned after the sidebar, below)
+local moreOpenState = false    -- is the MORE+ popup currently open?
 local shopSideFrame,shopSideClick=mkSideBtn(-90*scale,Color3.fromRGB(50,180,50),"\xF0\x9F\x9b\x92","SHOP")
 local inviteSideFrame,inviteSideClick=mkSideBtn(0,Color3.fromRGB(100,80,200),"\xF0\x9F\x91\xa5","INVITE")
 -- Repurposed: the former DAILY button is now the PET INVENTORY button (paw icon). Var name kept so the
 -- existing HUD layout/restyle code still references it.
 local dailySideFrame,dailySideClick=mkSideBtn(90*scale,Color3.fromRGB(80,170,70),"\xF0\x9F\x90\xBE","PETS")
-local stomachSideFrame,stomachSideClick=mkSideBtn(180*scale,Color3.fromRGB(220,80,180),"","STOMACH") -- gut icon is now an IMAGE (added below), not an emoji
--- Gut icon IMAGE in the STOMACH side button (replaces the gut emoji). Non-interactive, so the button's click still works.
-local stomachSideIcon=Instance.new("ImageLabel"); stomachSideIcon.Name="GutIcon"
-stomachSideIcon.BackgroundTransparency=1; stomachSideIcon.Image=_G.GUT_IMAGE; stomachSideIcon.ScaleType=Enum.ScaleType.Fit
-stomachSideIcon.Size=UDim2.new(0,math.floor(46*scale),0,math.floor(46*scale)); stomachSideIcon.Position=UDim2.new(0.5,0,0,5); stomachSideIcon.AnchorPoint=Vector2.new(0.5,0)
-stomachSideIcon.ZIndex=2; stomachSideIcon.Parent=stomachSideFrame
+-- MORE+ side button (REPLACES the old STOMACH button -- Stomach now lives inside the MORE+ popup). Var names are
+-- kept (stomachSideFrame/stomachSideClick) so the existing HUD layout reposition + stomach-label refresh still apply.
+local stomachSideFrame,stomachSideClick=mkSideBtn(180*scale,Color3.fromRGB(225,70,170),"+","MORE")
 shopSideClick.MouseButton1Click:Connect(function()
 	playUIClick()
 	toggleMainMenu("Premium", "PremiumShopGui")
@@ -608,8 +639,251 @@ dailySideClick.MouseButton1Click:Connect(function()
 end)
 stomachSideClick.MouseButton1Click:Connect(function()
 	playUIClick()
-	toggleMainMenu("Stomach", "StomachShopGui")
+	setMoreOpen(not moreOpenState) -- MORE+ toggles its popup (Stomach lives inside it now)
 end)
+
+-- ===== MORE+ POPUP MENU + SEASONAL LOCKER ==============================================================
+-- The pink MORE+ side button opens a small rounded popup near the sidebar listing extra menus. It's DATA-DRIVEN:
+-- add a row to MORE_ENTRIES to add more later. "Stomach" opens the EXISTING stomach shop (same call the old
+-- STOMACH button used); "Locker" opens the seasonal cosmetics Locker (built just below).
+do
+	-- ===== SEASONAL LOCKER: expandable season cards + a big ViewportFrame pet preview, wired to the REAL seasonal pets
+	-- (equips via the SAME PetEquipEvent the pet inventory uses). Ownership is read from PetStateEvent; live garden
+	-- progress from the Workspace GardenProgress/GardenGoal/GardenSeason attributes the server mirrors. =====
+	local RSx = game:GetService("ReplicatedStorage")
+	local PetEquipEvent = RSx:FindFirstChild("PetEquipEvent")
+	local PetStateEvent = RSx:FindFirstChild("PetStateEvent")
+	local PetReqState   = RSx:FindFirstChild("PetRequestStateEvent")
+	local SEASONS = {
+		{ season="Summer", petId="SunflowerBee", petName="Sunflower Bee", tmpl="SunflowerBeeTemplate", icon="\xF0\x9F\x8C\xBB", card=Color3.fromRGB(250,243,205), accent=Color3.fromRGB(232,180,50), desc="A cheerful honeybee wrapped in sunflower petals -- the Summer harvest reward." },
+		{ season="Autumn", petId="MapleFox",     petName="Maple Fox",     tmpl="MapleFoxTemplate",     icon="\xF0\x9F\x8D\x81", card=Color3.fromRGB(246,206,170), accent=Color3.fromRGB(214,118,46), desc="A cozy little fox in warm autumn colors -- the Autumn harvest reward." },
+		{ season="Winter", petId="FrostPenguin", petName="Frost Penguin", tmpl="FrostPenguinTemplate", icon="\xE2\x9D\x84",     card=Color3.fromRGB(208,226,246), accent=Color3.fromRGB(86,148,206),  desc="A frosty penguin topped with little ice crystals -- the Winter harvest reward." },
+		{ season="Spring", petId="BlossomBunny", petName="Blossom Bunny", tmpl="BlossomBunnyTemplate", icon="\xF0\x9F\x8C\xB8", card=Color3.fromRGB(248,216,228), accent=Color3.fromRGB(228,128,168), desc="A gentle bunny wearing a fresh flower crown -- the Spring harvest reward." },
+	}
+	local seasonalOwned, seasonalEquipped = {}, nil
+	local expanded = nil
+	local cardRefreshers = {}
+	local refreshLocker -- forward
+	local WHT = Color3.new(1,1,1)
+	local lockerSpins = {} -- { {model, center}, ... } -- slow-spun while the locker is open (SAME as the pet inventory icons)
+	local function gProgress() return tonumber(workspace:GetAttribute("GardenProgress")) or 0 end
+	local function gGoal()     return tonumber(workspace:GetAttribute("GardenGoal")) or 2000 end
+	local function gSeason()   return tostring(workspace:GetAttribute("GardenSeason") or "Summer") end
+	-- render a pet template inside a ViewportFrame (lazy-fill: templates replicate a moment after join). Built EXACTLY
+	-- like the pet-inventory icons (root at origin, camera framed to the bounding box) so it can spin the same way.
+	local function fillViewport(vp, tmplName)
+		if vp:FindFirstChildWhichIsA("Model") then return end
+		local tmpl = RSx:FindFirstChild(tmplName); if not tmpl then return end
+		local m = tmpl:Clone()
+		for _, d in ipairs(m:GetDescendants()) do if d:IsA("BasePart") then d.Anchored = true; d.CanCollide = false end end
+		pcall(function()
+			m:PivotTo(CFrame.new()) -- root at origin (same as the inventory icons)
+			m.Parent = vp
+			local cam = Instance.new("Camera"); cam.FieldOfView = 50; cam.Parent = vp; vp.CurrentCamera = cam
+			local cf, size = m:GetBoundingBox()
+			local maxe = math.max(size.X, size.Y, size.Z, 1)
+			local center = cf.Position
+			local dir = Vector3.new(0.8, 0.5, 0.55).Unit -- 3/4 front view (pets face +X), slightly above
+			cam.CFrame = CFrame.lookAt(center + dir * (maxe * 1.45 + 1), center)
+			vp.Ambient = Color3.fromRGB(185,185,195); vp.LightColor = Color3.fromRGB(255,255,255); vp.LightDirection = Vector3.new(-0.4,-1,-0.5)
+			lockerSpins[#lockerSpins+1] = { model = m, center = center } -- register for the shared spin loop
+		end)
+	end
+
+	-- --- panel ---
+	local lockerGui = Instance.new("ScreenGui"); lockerGui.Name = "LockerGui"; lockerGui.ResetOnSpawn = false
+	lockerGui.DisplayOrder = 100; lockerGui.Enabled = false; lockerGui.Parent = PlayerGui -- EXACT same ScreenGui settings as the SHOP (PremiumShopGui): DisplayOrder 100, no IgnoreGuiInset
+	-- EXACT same Size + Position + AnchorPoint as the SHOP menu's FINAL layout (PremiumShopGui's premPanel, after its
+	-- layout pass): 700 x 520 fixed, centered, nudged up 45px. No UIScale/UISizeConstraint/UIAspectRatioConstraint on the Shop.
+	local lockPanel = mkFrame(lockerGui, { Size = UDim2.new(0, 700, 0, 520), Position = UDim2.new(0.5, 0, 0.5, -45), AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.fromRGB(245, 238, 214), ClipsDescendants = true })
+	mkCorner(lockPanel, 18); mkStroke(lockPanel, Color3.fromRGB(120, 78, 40), 4)
+	local function lockerFit() end -- no-op: the panel now uses the SHOP's static scale-based geometry (kept as a stub so existing call sites still work)
+	-- header (dark wood)
+	local lockHead = mkFrame(lockPanel, { Size = UDim2.new(1, 0, 0, 50), BackgroundColor3 = Color3.fromRGB(74, 48, 30), BorderSizePixel = 0 })
+	mkLabel(lockHead, { Text = "\xF0\x9F\x8C\xBB", Font = Enum.Font.FredokaOne, TextSize = 20, Size = UDim2.new(0, 26, 0, 26), Position = UDim2.new(0, 16, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5), TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center })
+	mkLabel(lockHead, { Text = "Seasonal Pets", Font = Enum.Font.FredokaOne, TextSize = 22, TextColor3 = WHT, Size = UDim2.new(1, -100, 1, 0), Position = UDim2.new(0, 50, 0, 0), TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center })
+	local lockX = mkButton(lockHead, { Size = UDim2.new(0, 34, 0, 34), Position = UDim2.new(1, -12, 0.5, 0), AnchorPoint = Vector2.new(1, 0.5), BackgroundColor3 = Color3.fromRGB(210, 60, 55), Text = "X", Font = Enum.Font.FredokaOne, TextSize = 20, TextColor3 = WHT })
+	mkCorner(lockX, 9)
+	-- subtitle banner (dark-green pill with leaf accents)
+	local sub = mkFrame(lockPanel, { Size = UDim2.new(1, -28, 0, 42), Position = UDim2.new(0, 14, 0, 60), BackgroundColor3 = Color3.fromRGB(58, 116, 52) })
+	mkCorner(sub, 12)
+	mkLabel(sub, { Text = "\xF0\x9F\x8C\xBF", Font = Enum.Font.FredokaOne, TextSize = 16, Size = UDim2.new(0, 24, 1, 0), Position = UDim2.new(0, 8, 0, 0), TextXAlignment = Enum.TextXAlignment.Center })
+	mkLabel(sub, { Text = "Grow the Community Garden each season to unlock exclusive pets!", Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = WHT, TextWrapped = true, Size = UDim2.new(1, -64, 1, 0), Position = UDim2.new(0, 32, 0, 0), TextXAlignment = Enum.TextXAlignment.Center })
+	mkLabel(sub, { Text = "\xF0\x9F\x8C\xBF", Font = Enum.Font.FredokaOne, TextSize = 16, Size = UDim2.new(0, 24, 1, 0), Position = UDim2.new(1, -32, 0, 0), TextXAlignment = Enum.TextXAlignment.Center })
+	-- footer (small green strip)
+	local footer = mkFrame(lockPanel, { Size = UDim2.new(1, 0, 0, 28), Position = UDim2.new(0, 0, 1, -28), BackgroundColor3 = Color3.fromRGB(70, 130, 60), BorderSizePixel = 0 })
+	mkLabel(footer, { Text = "New seasons, new rewards. Keep growing!", Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = WHT, Size = UDim2.new(1, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Center })
+	-- scrolling list of season cards (between subtitle + footer)
+	local scroll = Instance.new("ScrollingFrame"); scroll.BackgroundTransparency = 1; scroll.BorderSizePixel = 0
+	scroll.Position = UDim2.new(0, 12, 0, 110); scroll.Size = UDim2.new(1, -24, 1, -146); scroll.ScrollBarThickness = 5
+	scroll.ScrollBarImageColor3 = Color3.fromRGB(120, 78, 40); scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+	scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y; scroll.Parent = lockPanel
+	local slay = Instance.new("UIListLayout", scroll); slay.Padding = UDim.new(0, 10); slay.SortOrder = Enum.SortOrder.LayoutOrder; slay.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+	for i, s in ipairs(SEASONS) do
+		local card = mkFrame(scroll, { Size = UDim2.new(1, -6, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = s.card, LayoutOrder = i, ClipsDescendants = true })
+		mkCorner(card, 14); mkStroke(card, s.accent, 2)
+		local clay = Instance.new("UIListLayout", card); clay.SortOrder = Enum.SortOrder.LayoutOrder
+		-- collapsed header row (the whole row is the expand button)
+		local hrow = mkButton(card, { Size = UDim2.new(1, 0, 0, 66), BackgroundTransparency = 1, Text = "", LayoutOrder = 1, AutoButtonColor = false })
+		local mini = Instance.new("ViewportFrame"); mini.BackgroundColor3 = WHT; mini.BackgroundTransparency = 0.15
+		mini.Size = UDim2.new(0, 52, 0, 52); mini.Position = UDim2.new(0, 8, 0.5, 0); mini.AnchorPoint = Vector2.new(0, 0.5); mini.Parent = hrow; mkCorner(mini, 10)
+		mkLabel(hrow, { Text = s.icon, Font = Enum.Font.FredokaOne, TextSize = 18, Size = UDim2.new(0, 22, 0, 18), Position = UDim2.new(0, 70, 0, 10), BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left })
+		mkLabel(hrow, { Text = s.season:upper(), Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = s.accent, Size = UDim2.new(0, 150, 0, 18), Position = UDim2.new(0, 94, 0, 10), TextXAlignment = Enum.TextXAlignment.Left, BackgroundTransparency = 1 })
+		mkLabel(hrow, { Text = s.petName, Font = Enum.Font.FredokaOne, TextSize = 18, TextColor3 = Color3.fromRGB(60, 45, 30), Size = UDim2.new(0, 220, 0, 24), Position = UDim2.new(0, 70, 0, 30), TextXAlignment = Enum.TextXAlignment.Left, BackgroundTransparency = 1 })
+		local pill = mkLabel(hrow, { Text = "LOCKED", Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = WHT, Size = UDim2.new(0, 84, 0, 26), Position = UDim2.new(1, -118, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5), BackgroundColor3 = Color3.fromRGB(150, 120, 90), TextXAlignment = Enum.TextXAlignment.Center }); mkCorner(pill, 13)
+		local chev = mkLabel(hrow, { Text = "v", Font = Enum.Font.FredokaOne, TextSize = 20, TextColor3 = s.accent, Size = UDim2.new(0, 24, 1, 0), Position = UDim2.new(1, -28, 0, 0), TextXAlignment = Enum.TextXAlignment.Center, BackgroundTransparency = 1 })
+		-- expanded content (hidden until this row is the open one)
+		local exp = mkFrame(card, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = 2, Visible = false })
+		local ep = Instance.new("UIPadding", exp); ep.PaddingLeft = UDim.new(0, 12); ep.PaddingRight = UDim.new(0, 12); ep.PaddingBottom = UDim.new(0, 12)
+		local el = Instance.new("UIListLayout", exp); el.Padding = UDim.new(0, 8); el.SortOrder = Enum.SortOrder.LayoutOrder; el.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		local big = Instance.new("ViewportFrame"); big.BackgroundColor3 = WHT; big.BackgroundTransparency = 0.05; big.Size = UDim2.new(1, 0, 0, 150); big.LayoutOrder = 1; big.Parent = exp; mkCorner(big, 12); mkStroke(big, s.accent, 2)
+		mkLabel(exp, { Text = s.season:upper() .. " REWARD", Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = s.accent, Size = UDim2.new(1, 0, 0, 18), LayoutOrder = 2, TextXAlignment = Enum.TextXAlignment.Center, BackgroundTransparency = 1 })
+		mkLabel(exp, { Text = s.petName, Font = Enum.Font.FredokaOne, TextSize = 24, TextColor3 = Color3.fromRGB(60, 45, 30), Size = UDim2.new(1, 0, 0, 30), LayoutOrder = 3, TextXAlignment = Enum.TextXAlignment.Center, BackgroundTransparency = 1 })
+		local barBG = mkFrame(exp, { Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = Color3.fromRGB(225, 215, 190), LayoutOrder = 4 }); mkCorner(barBG, 11)
+		local barFill = mkFrame(barBG, { Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = Color3.fromRGB(90, 200, 80) }); mkCorner(barFill, 11)
+		local barTxt = mkLabel(barBG, { Text = "0 / 2000 Flowers", Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = Color3.fromRGB(60, 50, 40), Size = UDim2.new(1, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3, BackgroundTransparency = 1 })
+		mkLabel(exp, { Text = s.desc, Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = Color3.fromRGB(80, 65, 45), TextWrapped = true, Size = UDim2.new(1, 0, 0, 38), LayoutOrder = 5, TextXAlignment = Enum.TextXAlignment.Center, BackgroundTransparency = 1 })
+		local equipBtn = mkButton(exp, { Size = UDim2.new(1, 0, 0, 40), BackgroundColor3 = Color3.fromRGB(70, 150, 55), Text = "EQUIP", Font = Enum.Font.FredokaOne, TextSize = 18, TextColor3 = WHT, LayoutOrder = 6 }); mkCorner(equipBtn, 12)
+
+		hrow.MouseButton1Click:Connect(function() playUIClick(); expanded = (expanded == s.season) and nil or s.season; refreshLocker() end)
+		equipBtn.MouseButton1Click:Connect(function()
+			playUIClick()
+			if not seasonalOwned[s.petId] or not PetEquipEvent then return end
+			if seasonalEquipped == s.petId then pcall(function() PetEquipEvent:FireServer(false) end) -- toggle off (same as inventory)
+			else pcall(function() PetEquipEvent:FireServer(s.petId) end) end
+		end)
+
+		cardRefreshers[i] = function()
+			fillViewport(mini, s.tmpl); fillViewport(big, s.tmpl)
+			local owns = seasonalOwned[s.petId] == true
+			local isExp = (expanded == s.season)
+			chev.Text = isExp and "^" or "v"; exp.Visible = isExp
+			if owns then
+				if seasonalEquipped == s.petId then pill.Text = "EQUIPPED"; pill.BackgroundColor3 = Color3.fromRGB(70, 150, 55)
+				else pill.Text = "OWNED"; pill.BackgroundColor3 = Color3.fromRGB(90, 160, 210) end
+			else pill.Text = "LOCKED"; pill.BackgroundColor3 = Color3.fromRGB(150, 120, 90) end
+			local cur, p, g = gSeason(), gProgress(), gGoal()
+			local frac, label
+			if owns then frac, label = 1, "Earned \xE2\x9C\x93"
+			elseif s.season == cur then frac, label = math.clamp(p / g, 0, 1), string.format("%d / %d Flowers", p, g)
+			else frac, label = 0, "0 / " .. g .. " Flowers" end
+			barFill.Size = UDim2.new(frac, 0, 1, 0); barTxt.Text = label
+			equipBtn.Visible = owns
+			equipBtn.Text = (seasonalEquipped == s.petId) and "EQUIPPED \xE2\x9C\x93" or "EQUIP"
+			equipBtn.BackgroundColor3 = (seasonalEquipped == s.petId) and Color3.fromRGB(120, 160, 110) or Color3.fromRGB(70, 150, 55)
+		end
+	end
+
+	refreshLocker = function() for _, fn in ipairs(cardRefreshers) do pcall(fn) end end
+
+	-- live ownership from the pet system (same source the inventory uses) + live garden progress from Workspace attrs
+	if PetStateEvent then
+		PetStateEvent.OnClientEvent:Connect(function(state)
+			if type(state) ~= "table" then return end
+			for _, s in ipairs(SEASONS) do
+				local info = state[s.petId]
+				if info then
+					seasonalOwned[s.petId] = info.owns == true
+					if info.equipped then seasonalEquipped = s.petId elseif seasonalEquipped == s.petId then seasonalEquipped = nil end
+				end
+			end
+			if lockerGui.Enabled then refreshLocker() end
+		end)
+	end
+	workspace:GetAttributeChangedSignal("GardenProgress"):Connect(function() if lockerGui.Enabled then refreshLocker() end end)
+	workspace:GetAttributeChangedSignal("GardenSeason"):Connect(function() if lockerGui.Enabled then refreshLocker() end end)
+
+	-- SLOW AUTO-ROTATE for every locker pet ViewportFrame (mini thumbnails + big preview) -- EXACT same approach as the
+	-- pet inventory icons (Y-axis PivotTo about the bounding-box centre at dt*0.6, only while the menu is open).
+	do
+		local angle = 0
+		game:GetService("RunService").RenderStepped:Connect(function(dt)
+			if not lockerGui.Enabled or #lockerSpins == 0 then return end
+			angle = (angle + dt * 0.6) % (2 * math.pi) -- slow + smooth (same speed/axis as the backpack pets)
+			for i = #lockerSpins, 1, -1 do
+				local ic = lockerSpins[i]
+				if ic.model and ic.model.Parent then
+					ic.model:PivotTo(CFrame.new(ic.center) * CFrame.Angles(0, angle, 0) * CFrame.new(-ic.center))
+				else
+					table.remove(lockerSpins, i)
+				end
+			end
+		end)
+	end
+
+	_G.MainMenuManager.register("Locker", function() lockerGui.Enabled = false end) -- closed when another menu opens
+	lockX.MouseButton1Click:Connect(function() playUIClick(); lockerGui.Enabled = false; _G.MainMenuManager.notifyClosed("Locker") end)
+	openLocker = function()
+		if PetReqState then pcall(function() PetReqState:FireServer() end) end -- refresh ownership from the server
+		expanded = expanded or "Summer"   -- default: Summer card open (matches the reference)
+		refreshLocker()
+		toggleMainMenu("Locker", "LockerGui")
+		lockerFit() -- no-op stub (panel uses the SHOP's static geometry)
+		if _G.applyHudScaling then _G.applyHudScaling() end -- re-apply the SHOP's identical UIScale so this panel matches the Shop size exactly
+		task.defer(function() print("[UIFix] Locker AbsoluteSize=" .. tostring(lockPanel.AbsoluteSize) .. " AbsolutePosition=" .. tostring(lockPanel.AbsolutePosition)) end) -- resolved on-screen size, to compare vs the SHOP
+	end
+
+	-- --- the MORE+ popup itself ---
+	local moreGui = Instance.new("ScreenGui"); moreGui.Name = "MoreMenuGui"; moreGui.ResetOnSpawn = false
+	moreGui.DisplayOrder = 8; moreGui.Parent = PlayerGui
+	local catcher = mkButton(moreGui, { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "", ZIndex = 1, Visible = false }) -- tap-outside-to-close
+	local panel = mkFrame(moreGui, { Size = UDim2.new(0, 196, 0, 206), BackgroundColor3 = Color3.fromRGB(225, 70, 170), Visible = false, ZIndex = 2 }) -- FIXED size (mirrors LockerGui's fixed lockPanel) so the inner scroll has a real bounded window; 206 == the old 3-entry height
+	mkCorner(panel, 14); mkStroke(panel, Color3.new(1, 1, 1), 2)
+	local pad = Instance.new("UIPadding", panel); pad.PaddingTop = UDim.new(0, 8); pad.PaddingBottom = UDim.new(0, 8); pad.PaddingLeft = UDim.new(0, 8); pad.PaddingRight = UDim.new(0, 8)
+	local hdr = mkFrame(panel, { Size = UDim2.new(1, 0, 0, 28), Position = UDim2.new(0, 0, 0, 0), BackgroundTransparency = 1, ZIndex = 2 }) -- header pinned at top; panel no longer uses a UIListLayout (mirrors Locker's manual layout) so the scroll's canvas can compute
+	mkLabel(hdr, { Text = "MORE", Font = Enum.Font.FredokaOne, TextSize = 18, TextColor3 = Color3.new(1, 1, 1), Size = UDim2.new(1, -32, 1, 0), Position = UDim2.new(0, 4, 0, 0), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3 })
+	local moreX = mkButton(hdr, { Size = UDim2.new(0, 26, 0, 26), Position = UDim2.new(1, -26, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5), BackgroundColor3 = Color3.fromRGB(210, 60, 55), Text = "X", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = Color3.new(1, 1, 1), ZIndex = 3 })
+	mkCorner(moreX, 8)
+
+	-- Entry-list scroll -- COPIED from LockerGui's working scroll (lines ~717-721): manual Position + SCALE-based
+	-- Size inside a FIXED panel, CanvasSize 0 + AutomaticCanvasSize Y, with a UIListLayout that drives the canvas.
+	local entryScroll = Instance.new("ScrollingFrame")
+	entryScroll.Name = "EntryList"
+	entryScroll.BackgroundTransparency = 1 -- seamless: the panel's pink shows through, so the menu looks identical
+	entryScroll.BorderSizePixel = 0
+	entryScroll.Position = UDim2.new(0, 0, 0, 36) -- below the 28px header + 8px gap (within the panel's 8px UIPadding)
+	entryScroll.Size = UDim2.new(1, 0, 1, -36) -- SCALE height off the FIXED panel (like Locker's 1,-146) -> a real bounded window
+	entryScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+	entryScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+	entryScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y -- canvas grows with the entries so overflow scrolls
+	entryScroll.ScrollBarThickness = 6
+	entryScroll.ClipsDescendants = true
+	entryScroll.ZIndex = 2
+	entryScroll.Parent = panel
+	local entryListLayout = Instance.new("UIListLayout", entryScroll); entryListLayout.SortOrder = Enum.SortOrder.LayoutOrder; entryListLayout.Padding = UDim.new(0, 8)
+
+	local MORE_ENTRIES = { -- ADD MORE HERE later (each: label + an image OR emoji icon + an action)
+		{ label = "Stomach", image = _G.GUT_IMAGE, action = function() toggleMainMenu("Stomach", "StomachShopGui") end },
+		{ label = "Seasonal Pets",  emoji = "\xF0\x9F\x90\xBE", action = function() if openLocker then openLocker() end end },
+	}
+	for i, e in ipairs(MORE_ENTRIES) do
+		local row = mkButton(entryScroll, { Size = UDim2.new(1, 0, 0, 46), BackgroundColor3 = e.color or Color3.fromRGB(248, 240, 250), Text = "", ZIndex = 2, LayoutOrder = i })
+		mkCorner(row, 10)
+		if e.image then
+			local im = Instance.new("ImageLabel"); im.BackgroundTransparency = 1; im.Image = e.image; im.ScaleType = Enum.ScaleType.Fit
+			im.Size = UDim2.new(0, 30, 0, 30); im.Position = UDim2.new(0, 8, 0.5, 0); im.AnchorPoint = Vector2.new(0, 0.5); im.ZIndex = 3; im.Parent = row
+		else
+			mkLabel(row, { Text = e.emoji or "", Font = Enum.Font.Gotham, TextSize = 22, Size = UDim2.new(0, 30, 1, 0), Position = UDim2.new(0, 8, 0, 0), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
+		end
+		mkLabel(row, { Text = e.label, Font = Enum.Font.GothamBold, TextSize = 18, TextColor3 = Color3.fromRGB(70, 40, 65), Size = UDim2.new(1, -50, 1, 0), Position = UDim2.new(0, 46, 0, 0), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3 })
+		row.MouseButton1Click:Connect(function() playUIClick(); setMoreOpen(false); pcall(e.action) end)
+	end
+	task.defer(function() print(string.format("[MOREMENU] copied Locker scroll: canvasY=%d, frameY=%d, entries=%d", math.floor(entryScroll.AbsoluteCanvasSize.Y), math.floor(entryScroll.AbsoluteSize.Y), #MORE_ENTRIES)) end) -- read after a layout pass; scrolls when canvasY > frameY
+
+	setMoreOpen = function(open)
+		moreOpenState = open and true or false
+		if moreOpenState then
+			local ap, asz = stomachSideFrame.AbsolutePosition, stomachSideFrame.AbsoluteSize
+			panel.Position = UDim2.fromOffset(ap.X + asz.X + 10, ap.Y) -- appears just to the RIGHT of the MORE+ button (any layout)
+			panel.Visible = true; catcher.Visible = true
+		else
+			panel.Visible = false; catcher.Visible = false
+		end
+	end
+	catcher.MouseButton1Click:Connect(function() setMoreOpen(false) end)
+	moreX.MouseButton1Click:Connect(function() playUIClick(); setMoreOpen(false) end)
+end
 
 -- ===== BOTTOM-CENTER STACK: Tiny Gut pill + GAS METER + fart button =====
 -- ONE vertically-stacked, horizontally-CENTERED group anchored bottom-center. A UIListLayout keeps
@@ -623,6 +897,13 @@ local bottomStack = Instance.new("Frame")
 bottomStack.Name = "BottomStack"; bottomStack.AnchorPoint = Vector2.new(0.5, 1)
 bottomStack.Position = UDim2.new(0.5, 0, 1, -12); bottomStack.Size = UDim2.new(0, 480, 0, 0)
 bottomStack.AutomaticSize = Enum.AutomaticSize.Y; bottomStack.BackgroundTransparency = 1; bottomStack.Parent = bottomStackGui
+_G.gui.bottomStack = bottomStack -- shared so BOTH menu scripts (locker here + Pet Hub in PetFollow) can read its real top edge
+task.spawn(function() -- log the bottom HUD's real top edge once it has laid out (so we can verify the menu fits above it)
+	for _ = 1, 30 do
+		task.wait(0.2)
+		if bottomStack.AbsoluteSize.Y > 0 then print("[UIFix] bottomHUD topY=" .. tostring(math.floor(bottomStack.AbsolutePosition.Y))); break end
+	end
+end)
 do
 	local sl = Instance.new("UIListLayout")
 	sl.FillDirection = Enum.FillDirection.Vertical; sl.SortOrder = Enum.SortOrder.LayoutOrder
@@ -633,12 +914,13 @@ end
 -- GAS METER box (LayoutOrder 2 = middle). Moderate FIXED width; UIScale handles screen scaling, so
 -- it stays a moderate proportional width and never stretches full-width on wide screens.
 sg=Instance.new("ScreenGui"); sg.Name="GasMeterGui"; sg.ResetOnSpawn=false; sg.Parent=PlayerGui
-_G.gui.gasMeterPanel=mkFrame(bottomStack,{Size=UDim2.new(0,480,0,85),LayoutOrder=2,BackgroundColor3=Color3.fromRGB(45,120,220)})
-mkCorner(_G.gui.gasMeterPanel,16); mkStroke(_G.gui.gasMeterPanel,Color3.fromRGB(20,65,165),4)
+_G.gui.gasMeterPanel=mkFrame(bottomStack,{Size=UDim2.new(0,480,0,85),LayoutOrder=2,BackgroundColor3=Color3.fromRGB(45,120,220)}) -- solid BLUE container (restored). The green Fill's track (gasBg) now spans the full inner height, so no blue band shows above the green.
+mkCorner(_G.gui.gasMeterPanel,16); local gmStroke0=mkStroke(_G.gui.gasMeterPanel,Color3.fromRGB(20,65,165),4); gmStroke0.Enabled=false -- dark-navy outline stays DISABLED (that was the earlier dark line)
+task.delay(10, function() if _G.gui.gasMeterPanel then print("[HUDdone] gas container bgtrans now = "..tostring(_G.gui.gasMeterPanel.BackgroundTransparency)) end end) -- confirm the blue is back (expect 0) -- DARK NAVY container outline DISABLED (this stroke was the dark line across the gas meter). Kept (not destroyed) so the restyle reuses it instead of creating a new enabled one; restyle sets only its Color/Thickness, never Enabled.
 do
 	_G.gui.gasTitleLabel=mkLabel(_G.gui.gasMeterPanel,{Text="GAS METER",Font=Enum.Font.FredokaOne,TextSize=math.floor(17*scale),TextColor3=Color3.fromRGB(255,215,0),Size=UDim2.new(1,0,0,math.floor(28*scale)),Position=UDim2.new(0,0,0,math.floor(6*scale)),TextXAlignment=Enum.TextXAlignment.Center,BackgroundTransparency=1})
 	mkStroke(_G.gui.gasTitleLabel,Color3.fromRGB(0,0,0),2)
-	_G.gui.gasBg=mkFrame(_G.gui.gasMeterPanel,{Size=UDim2.new(1,-20,0,math.floor(32*scale)),Position=UDim2.new(0,10,0,math.floor(36*scale)),BackgroundColor3=Color3.fromRGB(18,28,66)})
+	_G.gui.gasBg=mkFrame(_G.gui.gasMeterPanel,{Size=UDim2.new(1,-20,1,-(math.floor(34*scale)+8)),Position=UDim2.new(0,10,0,math.floor(34*scale)),BackgroundColor3=Color3.fromRGB(18,28,66),BackgroundTransparency=1}) -- track now FILLS the inner height: from just under the GAS METER label (y=34) down to ~8px above the bottom. The green Fill (child, height 1,0) fills this whole area -> no blue gap above/below it. Track bg stays transparent so the empty part of the bar shows the blue container.
 	mkCorner(_G.gui.gasBg,17)
 	_G.gui.gasFill=mkFrame(_G.gui.gasBg,{Name="Fill",Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.fromRGB(60,210,90),ZIndex=2})
 	mkCorner(_G.gui.gasFill,17)
@@ -646,6 +928,42 @@ do
 	_G.gui.gasPowerText=mkLabel(_G.gui.gasBg,{Size=UDim2.new(1,0,1,0),Text="100%",Font=Enum.Font.FredokaOne,TextSize=math.floor(18*scale),TextColor3=Color3.fromRGB(255,255,255),ZIndex=3,TextXAlignment=Enum.TextXAlignment.Center})
 	mkStroke(_G.gui.gasPowerText,Color3.fromRGB(0,0,0),2)
 end
+
+-- ===== GAS METER: tighten the layout so there's NO empty blue strip between the label and the green bar =====
+-- KEEP THE BLUE (transparency stays 0). Computed from the label's real offset so it's exact regardless of scaling:
+--  1) put the bar track (gasBg -> holds the green Fill child) right under the "GAS METER" label (2px gap),
+--  2) give it a fixed bar height,
+--  3) shrink the blue container's HEIGHT so it hugs: top pad + label + green bar + equal bottom pad -- nothing empty.
+-- Only Position/Size change; the green Fill, label, and number stay visible and in order. Re-run after restyles settle.
+local function tightenGasMeter()
+	local panel, label, bg = _G.gui.gasMeterPanel, _G.gui.gasTitleLabel, _G.gui.gasBg
+	if not (panel and label and bg) then return end
+	local pad = label.Position.Y.Offset                 -- top padding above the label (reused as the bottom pad)
+	local barTop = pad + label.Size.Y.Offset + 2        -- bar starts 2px under the label -> no gap
+	local barH = 40
+	bg.Position = UDim2.new(0, 10, 0, barTop)
+	bg.Size = UDim2.new(1, -20, 0, barH)                -- green Fill (child, height 1,0) fills this whole bar
+	panel.Size = UDim2.new(0, 480, 0, barTop + barH + pad) -- container hugs the content -> no empty blue strip
+	print("[HUDdone3] container AbsoluteSize="..tostring(panel.AbsoluteSize).." greenBar AbsolutePosition="..tostring(bg.AbsolutePosition))
+end
+tightenGasMeter()
+task.delay(2, tightenGasMeter); task.delay(6, tightenGasMeter); task.delay(11, tightenGasMeter) -- re-assert after restyles/scaling
+
+-- ===== GAS METER: flatten the green Fill's gradient to solid bright green (its dark stop was the dark strip) =====
+-- The Fill's UIGradient fades to a near-black stop, which reads as the dark band. Replace it with a flat bright
+-- green (no dark fade). Runtime + delayed so it OVERRIDES the restyle passes that set a red/dark gradient at load.
+local function flattenGasGradient()
+	local fill = _G.gui and _G.gui.gasFill
+	if not fill then return end
+	local g = fill:FindFirstChildOfClass("UIGradient")
+	if g then
+		g.Color = ColorSequence.new(Color3.fromRGB(60,210,90)) -- solid bright green, no dark fade
+		g.Transparency = NumberSequence.new(0)
+		print("[FLATGRAD] gas fill gradient flattened to solid green")
+	end
+end
+flattenGasGradient()
+task.delay(2, flattenGasGradient); task.delay(6, flattenGasGradient); task.delay(11, flattenGasGradient) -- override the load-time restyle gradient
 _G.flyingLabel=mkLabel(sg,{Text="",Font=Enum.Font.Gotham,TextSize=1,Size=UDim2.new(0,1,0,1),Position=UDim2.new(0,-200,0,0),BackgroundTransparency=1})
 
 -- ===== FART BUTTON (LayoutOrder 3 = bottom of the stack) =====
@@ -707,6 +1025,169 @@ mkStroke(_G.gui.fsRings,Color3.new(0,0,0),1)
 _G.gui.fsAir=mkLabel(_G.gui.flightStatsFrame,{Text="\xe2\x8f\xb1 Air: 0s",Font=Enum.Font.GothamBold,TextSize=12,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,-10,0,38),Position=UDim2.new(0,6,0,90),TextXAlignment=Enum.TextXAlignment.Left,BackgroundTransparency=1})
 mkStroke(_G.gui.fsAir,Color3.new(0,0,0),1)
 
+-- ===== GAS METER: kill the dark band in the REAL gas meter -- the separate "GasMeterGui" ScreenGui =====
+-- The visible gas meter is its OWN ScreenGui "GasMeterGui" (a pre-placed leftover, NOT the BottomStack one the
+-- source builds) -- which is why every earlier source-side fix missed it. Its "GAS METER" TextLabel has a dark
+-- background box + a black UIStroke that render as the dark band. We sweep EVERY "GasMeterGui" in PlayerGui
+-- (there can be two with the same name) and: remove label background boxes, hide dark Frame backgrounds, and
+-- DISABLE near-black UIStrokes. Only backgrounds/strokes change -> the green fill bar + text stay visible.
+local function fixGasMeterGui()
+	local pg = game.Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+	if not pg then return end
+	for _, gmg in ipairs(pg:GetChildren()) do
+		if gmg:IsA("ScreenGui") and gmg.Name == "GasMeterGui" then
+			local hits = 0
+			for _, el in ipairs(gmg:GetDescendants()) do
+				if el:IsA("TextLabel") or el:IsA("TextButton") then
+					if el.BackgroundTransparency < 1 then el.BackgroundTransparency = 1; hits = hits + 1 end -- remove the label's background box (text stays)
+				elseif el:IsA("Frame") or el:IsA("ImageLabel") then
+					local c = el.BackgroundColor3
+					if (c.R < 0.30 and c.G < 0.30 and c.B < 0.55) and el.BackgroundTransparency < 1 then
+						el.BackgroundTransparency = 1; hits = hits + 1 -- dark track/box -> hidden (bright green Fill is kept)
+					end
+				elseif el:IsA("UIStroke") then
+					local c = el.Color
+					if (c.R < 0.30 and c.G < 0.30 and c.B < 0.60) and el.Enabled then
+						el.Enabled = false; hits = hits + 1 -- the black outline (the dark band) -> off
+					end
+				end
+			end
+			print("[HUDfix] GasMeterGui cleaned -> "..hits.." dark element(s) hidden")
+		end
+	end
+end
+fixGasMeterGui()
+task.delay(3, fixGasMeterGui); task.delay(7, fixGasMeterGui); task.delay(12, fixGasMeterGui) -- catch late StarterGui copy / restyle
+PlayerGui.ChildAdded:Connect(function(ch) if ch.Name == "GasMeterGui" then task.wait(0.1); fixGasMeterGui() end end) -- re-fix if it's re-added
+game.Players.LocalPlayer.CharacterAdded:Connect(function() task.wait(0.5); fixGasMeterGui(); task.delay(3, fixGasMeterGui) end) -- and after respawn
+
+-- ===== GAS METER: remove ONLY the dark teal band the "GAS METER" text sits on (BottomStackGui) =====
+-- Surgical: find the "GAS METER" TextLabel in BottomStackGui, clear its own background, and clear its PARENT
+-- frame's background ONLY if that parent is a dark teal/green (NOT the blue container, NOT the green Fill).
+-- Touches nothing else -- blue container, green Fill, pink gut pill, and all text/number are left exactly as-is.
+local function killGasMeterBand()
+	local pg = game.Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+	local bsg = pg and pg:FindFirstChild("BottomStackGui")
+	if not bsg then return end
+	for _, el in ipairs(bsg:GetDescendants()) do
+		if el:IsA("TextLabel") and string.find(string.upper(el.Text), "GAS METER", 1, true) then
+			el.BackgroundTransparency = 1 -- (2) the label's own background, in case it has a fill
+			local label = el
+			local p = label.Parent
+			if p and p:IsA("GuiObject") then
+				local c = p.BackgroundColor3
+				local isBlue  = (math.abs(c.R-0.078) < 0.06 and math.abs(c.G-0.549) < 0.10 and math.abs(c.B-1.0) < 0.06)
+				local isGreen = (math.abs(c.R-0.235) < 0.10 and math.abs(c.G-0.823) < 0.10 and math.abs(c.B-0.353) < 0.10)
+				local isDarkTeal = (c.R < 0.30 and c.G > 0.20 and c.G < 0.60 and c.B < 0.30)
+				if isDarkTeal and not isBlue and not isGreen then
+					p.BackgroundTransparency = 1 -- (3) the dark teal strip behind the label
+				end
+				print("[BAND] label parent="..p.Name.." parentColor="..tostring(p.BackgroundColor3).." parentTransNow="..tostring(p.BackgroundTransparency))
+			end
+		end
+	end
+end
+killGasMeterBand()
+task.delay(3, killGasMeterBand); task.delay(8, killGasMeterBand); task.delay(12, killGasMeterBand) -- re-run after restyles/scaling settle
+
+-- ===== [DARK] DIAGNOSTIC: scan the ENTIRE PlayerGui for dark-colored elements (print only, no fixes) =====
+-- Runs after the HUD + restyles + scaling have settled. Lists every dark, non-transparent GuiObject and every
+-- dark enabled UIStroke with full path + color + transparency + on-screen pos/size, so the gas-meter dark band
+-- can be identified by its absPos (~465,470 area).
+task.delay(8, function()
+	for _, gui in ipairs(game.Players.LocalPlayer.PlayerGui:GetChildren()) do
+		if gui:IsA("ScreenGui") then
+			for _, el in ipairs(gui:GetDescendants()) do
+				if el:IsA("GuiObject") then
+					local c = el.BackgroundColor3
+					if (c.R < 0.25 and c.G < 0.25 and c.B < 0.5) and el.BackgroundTransparency < 1 then
+						print("[DARK] "..el:GetFullName().." "..el.ClassName.." color="..tostring(c).." trans="..tostring(el.BackgroundTransparency).." absPos="..tostring(el.AbsolutePosition).." absSize="..tostring(el.AbsoluteSize).." vis="..tostring(el.Visible))
+					end
+				elseif el:IsA("UIStroke") then
+					local c = el.Color
+					if (c.R < 0.25 and c.G < 0.25 and c.B < 0.6) and el.Enabled and el.Transparency < 1 then
+						print("[DARK-STROKE] "..el:GetFullName().." color="..tostring(c).." thickness="..tostring(el.Thickness).." trans="..tostring(el.Transparency))
+					end
+				end
+			end
+		end
+	end
+end)
+
+-- ===== [GMG] DIAGNOSTIC: dump GasMeterGui's FULL contents with NO color filter (print only) =====
+-- So we can see the teal/green band's REAL color and whether it's a UIGradient on the green fill or a label/
+-- frame background. Iterates EVERY ScreenGui named "GasMeterGui" (there can be two). Runs after HUD loads.
+task.delay(8, function()
+	for _, gmg in ipairs(game.Players.LocalPlayer.PlayerGui:GetChildren()) do
+		if gmg:IsA("ScreenGui") and gmg.Name == "GasMeterGui" then
+			print("[GMG] === ScreenGui GasMeterGui (Enabled="..tostring(gmg.Enabled)..", DisplayOrder="..tostring(gmg.DisplayOrder)..") ===")
+			for _, el in ipairs(gmg:GetDescendants()) do
+				if el:IsA("GuiObject") then
+					print("[GMG] "..el.Name.." "..el.ClassName.." bgcolor="..tostring(el.BackgroundColor3).." bgtrans="..tostring(el.BackgroundTransparency).." absPos="..tostring(el.AbsolutePosition).." absSize="..tostring(el.AbsoluteSize).." vis="..tostring(el.Visible).." zindex="..tostring(el.ZIndex))
+					local grad = el:FindFirstChildOfClass("UIGradient")
+					if grad then print("   [GMG-grad] on "..el.Name.." rotation="..tostring(grad.Rotation).." colorseq="..tostring(grad.Color)) end
+					local st = el:FindFirstChildOfClass("UIStroke")
+					if st then print("   [GMG-stroke] on "..el.Name.." color="..tostring(st.Color).." enabled="..tostring(st.Enabled).." trans="..tostring(st.Transparency).." thickness="..tostring(st.Thickness)) end
+				end
+			end
+		end
+	end
+end)
+
+-- ===== [BSG] DIAGNOSTIC: dump BottomStackGui's FULL contents with NO color filter (print only) =====
+-- The REAL on-screen gas meter is inside BottomStackGui.BottomStack (GasMeterGui is a disabled off-screen
+-- decoy). Dump every element's real color so the teal/dark-green band Frame (~absPos Y 470, between the gut
+-- pill and the green fill, bgtrans=0) can be identified. No fixes.
+task.delay(8, function()
+	local bsg = game.Players.LocalPlayer.PlayerGui:FindFirstChild("BottomStackGui")
+	if not bsg then print("[BSG] BottomStackGui not found"); return end
+	for _, el in ipairs(bsg:GetDescendants()) do
+		if el:IsA("GuiObject") then
+			print("[BSG] "..el.Name.." "..el.ClassName.." bgcolor="..tostring(el.BackgroundColor3).." bgtrans="..tostring(el.BackgroundTransparency).." absPos="..tostring(el.AbsolutePosition).." absSize="..tostring(el.AbsoluteSize).." zindex="..tostring(el.ZIndex).." vis="..tostring(el.Visible))
+			local g = el:FindFirstChildOfClass("UIGradient"); if g then print("   [BSG-grad] on "..el.Name.." rotation="..tostring(g.Rotation).." "..tostring(g.Color)) end
+			local st = el:FindFirstChildOfClass("UIStroke"); if st then print("   [BSG-stroke] on "..el.Name.." color="..tostring(st.Color).." enabled="..tostring(st.Enabled).." trans="..tostring(st.Transparency)) end
+		end
+	end
+end)
+
+-- ===== [FILM] DIAGNOSTIC: scan the WHOLE PlayerGui for any element overlapping the gas meter (a translucent film) =====
+-- Looking for a dark element (color sum < ~1.0) with BackgroundTransparency between 0 and 1 and a high ZIndex
+-- covering the ~454-wide meter strip -- i.e. a translucent black overlay sitting ON TOP of the gas meter. Print only.
+task.delay(8, function()
+	local meterYtop, meterYbot = 386, 464   -- gas meter strip vertical range (abs Y)
+	local meterXl, meterXr = 172, 627        -- gas meter horizontal range (abs X)
+	for _, el in ipairs(game.Players.LocalPlayer.PlayerGui:GetDescendants()) do
+		if el:IsA("GuiObject") and el.Visible and el.BackgroundTransparency < 1 then
+			local p, s = el.AbsolutePosition, el.AbsoluteSize
+			if p.X < meterXr and (p.X+s.X) > meterXl and p.Y < meterYbot and (p.Y+s.Y) > meterYtop then
+				local c = el.BackgroundColor3
+				print("[FILM] "..el:GetFullName().." "..el.ClassName.." color="..tostring(c).." bright="..tostring(c.R+c.G+c.B).." bgtrans="..tostring(el.BackgroundTransparency).." zindex="..tostring(el.ZIndex).." size="..tostring(s).." absPos="..tostring(p))
+			end
+		end
+	end
+end)
+
+-- ===== [OVL] DIAGNOSTIC: scan EVERYTHING over the GAS METER strip (incl. Image color/transparency) =====
+-- A black overlay can be an ImageLabel/ImageButton (dark ImageColor3 / low ImageTransparency) rather than a
+-- background -- the earlier scans only checked BackgroundTransparency, so they missed it. This lists EVERY
+-- visible GuiObject overlapping the strip with its bg + image props + zindex. Print only.
+task.delay(8, function()
+	local x1,x2,y1,y2 = 172,627,386,470   -- the GAS METER strip region (abs)
+	for _, el in ipairs(game.Players.LocalPlayer.PlayerGui:GetDescendants()) do
+		if el:IsA("GuiObject") and el.Visible then
+			local p,s = el.AbsolutePosition, el.AbsoluteSize
+			if p.X < x2 and (p.X+s.X) > x1 and p.Y < y2 and (p.Y+s.Y) > y1 then
+				local info = el.ClassName.." "..el:GetFullName()
+				info = info.." bgcolor="..tostring(el.BackgroundColor3).." bgtrans="..tostring(el.BackgroundTransparency).." zindex="..tostring(el.ZIndex).." size="..tostring(s)
+				if el:IsA("ImageLabel") or el:IsA("ImageButton") then
+					info = info.." IMAGE id="..tostring(el.Image).." imgcolor="..tostring(el.ImageColor3).." imgtrans="..tostring(el.ImageTransparency)
+				end
+				print("[OVL] "..info)
+			end
+		end
+	end
+end)
+
 -- ===== EFFECT FLASH =====
 sg=Instance.new("ScreenGui"); sg.Name="FlashGui"; sg.ResetOnSpawn=false; sg.ZIndexBehavior=Enum.ZIndexBehavior.Global; sg.Parent=PlayerGui
 _G.effectFlashFrame=mkFrame(sg,{Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,ZIndex=10})
@@ -759,6 +1240,9 @@ local function applyScaling()
 		end
 	end
 end
+-- Expose the SHOP's exact scaling pass so the Pet Hub + Seasonal Pets menus (built in other scripts, sometimes
+-- AFTER this ran) can re-apply the identical UIScale on open -> their AbsoluteSize then matches the Shop's.
+_G.applyHudScaling = applyScaling
 
 -- ===== HUD STAYS VISIBLE WHILE A SHOP / MENU POPUP IS OPEN =====
 -- The HUD is intentionally LEFT VISIBLE while a popup (food shop / stomach shop / premium shop /

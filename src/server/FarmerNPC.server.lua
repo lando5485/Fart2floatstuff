@@ -136,6 +136,30 @@ task.spawn(function()
 		prompt.Parent = promptParent
 	end
 
+	-- 6b) CONSTANT-SIZE overhead bubble (matches the cow's locked bubble): PIXEL OFFSET size only -> never shrinks
+	-- when you walk away and never grows when you walk closer. Purely cosmetic -- the ProximityPrompt + tutorial
+	-- dialog talk behavior is untouched.
+	if promptParent then
+		local bb = Instance.new("BillboardGui")
+		bb.Name = "FarmerTalkBubble"; bb.Adornee = promptParent
+		bb.Size = UDim2.fromOffset(230, 64)        -- PIXEL OFFSET units only (NO scale component) -> constant screen size at any distance
+		bb.SizeOffset = Vector2.new(0, 0)
+		bb.StudsOffset = Vector3.new(0, 2.6, 0)    -- local StudsOffset (NOT StudsOffsetWorldSpace) for the height above the head
+		bb.LightInfluence = 0                      -- ignore world lighting -> constant look near/far
+		bb.AlwaysOnTop = true; bb.MaxDistance = 20; bb.Parent = promptParent; print("[BUBBLE RANGE] farmer MaxDistance=20") -- only visible within 20 studs (Roblox auto-hides the BillboardGui beyond MaxDistance)
+		local frame = Instance.new("Frame")
+		frame.Size = UDim2.fromOffset(230, 64); frame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		frame.BackgroundTransparency = 0.05; frame.BorderSizePixel = 0; frame.Parent = bb
+		local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 12); corner.Parent = frame
+		local stroke = Instance.new("UIStroke"); stroke.Color = Color3.fromRGB(40, 40, 46); stroke.Thickness = 2; stroke.Parent = frame
+		local label = Instance.new("TextLabel")
+		label.BackgroundTransparency = 1; label.Size = UDim2.fromOffset(214, 54); label.Position = UDim2.new(0, 8, 0, 5)
+		label.Font = Enum.Font.GothamBold; label.TextScaled = false; label.TextSize = 18; label.AutomaticSize = Enum.AutomaticSize.None; label.TextColor3 = Color3.fromRGB(34, 34, 40)
+		label.TextWrapped = true; label.Text = "\xC2\xA1Hola! Press E to talk"; label.Parent = frame
+		print(string.format("[BUBBLE TEXT] farmer TextScaled=false->%s TextSize=%d sizeUsesScale=n", tostring(label.TextScaled), label.TextSize))
+		print("[BUBBLE AUDIT] FarmerTalkBubble was=offset now=offset"); print(string.format("[BUBBLE DIAG] FarmerTalkBubble SizeOffset=%s StudsOffsetWorldSpace=%s hasUIScale=%s", tostring(bb.SizeOffset), tostring(bb.StudsOffsetWorldSpace), (bb:FindFirstChildWhichIsA("UIScale", true) or bb:FindFirstChildWhichIsA("UISizeConstraint", true)) and "y" or "n")); print("[BUBBLE SPEAK] farmer method=reuses spawn bubble (static text, never re-spoken)") -- bean-stand Farmer: ONE static BillboardGui
+	end
+
 	print("FARMER: tutorial NPC placed (anchored, in Workspace.TutorialNPCs, with talk prompt).")
 end)
 

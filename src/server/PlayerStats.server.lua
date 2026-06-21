@@ -255,6 +255,9 @@ _G.playerOwnedPets = _G.playerOwnedPets or {}
 _G.playerEquippedPet = _G.playerEquippedPet or {}
 -- Discovered pet QUESTS (cosmetic, additive). Persisted under saved.discoveredQuests; shared with PetSystem.
 _G.playerDiscoveredQuests = _G.playerDiscoveredQuests or {}
+-- PERMANENT "ever completed pet quest X" flags (additive). Persisted under saved.everCompletedQuests; shared
+-- with PetSystem. Used ONLY to gate the first-time-only rare roll (separate from current ownership). Missing = never completed.
+_G.playerEverCompletedQuests = _G.playerEverCompletedQuests or {}
 local DEFAULT_COINS, DEFAULT_STOMACH, DEFAULT_ISLAND = 25, 100, 1 -- new player: 25 coins, Tiny gut (100), island 1
 -- SAVE RECORD VERSION. ONE-TIME WIPE: bumped to 4. On load, any record whose saveVersion ~= SAVE_VERSION
 -- (old records have no saveVersion field at all -> nil; version-2 AND version-3 records from the prior
@@ -404,6 +407,7 @@ local function savePlayerData(player, trigger)
 		ownedPets        = _G.playerOwnedPets[player] or {},  -- cosmetic pet ownership + per-pet {level,height,time}
 		equippedPet      = _G.playerEquippedPet[player],      -- cosmetic: which pet is currently equipped (additive)
 		discoveredQuests = _G.playerDiscoveredQuests[player] or {}, -- cosmetic: which pet quests are discovered (additive)
+		everCompletedQuests = _G.playerEverCompletedQuests[player] or {}, -- PERMANENT first-completion flags (gates the one-time rare roll; additive)
 	}
 	print(string.format("[SAVE METER] player=%s meter=%d", player.Name, meterToSave))
 	local key = tostring(player.UserId)
@@ -734,6 +738,7 @@ Players.PlayerAdded:Connect(function(player)
 	_G.playerOwnedPets[player] = saved.ownedPets or {}
 	_G.playerEquippedPet[player] = saved.equippedPet -- cosmetic equipped choice (nil if none / legacy save)
 	_G.playerDiscoveredQuests[player] = saved.discoveredQuests or {} -- cosmetic discovered-quest set (empty / legacy save)
+	_G.playerEverCompletedQuests[player] = saved.everCompletedQuests or {} -- PERMANENT first-completion flags (empty / legacy save -> never completed)
 	if _G.petsApplyOnJoin then pcall(function() _G.petsApplyOnJoin(player) end) end
 	-- Gamepass ownership is read LIVE each join (never saved).
 	task.spawn(function()
@@ -810,6 +815,7 @@ Players.PlayerRemoving:Connect(function(player)
 	_G.playerOwnedPets[player] = nil  -- cleared AFTER save (save reads it for ownedPets)
 	_G.playerEquippedPet[player] = nil
 	_G.playerDiscoveredQuests[player] = nil
+	_G.playerEverCompletedQuests[player] = nil -- cleared AFTER save (save reads it for everCompletedQuests)
 end)
 
 -- (Daily Rewards join-handshake removed.)
@@ -1170,6 +1176,14 @@ end)
 -- (just always island 1). Does NOT change unlocked islands / saved progress --
 -- it only moves the character; the fall-catch "Return" prompt still works.
 GoToIsland1Event.OnServerEvent:Connect(function(player)
+	-- GUARD: this is the ROCKET EVENT's teleport button -- only honor it WHILE the rocket event is
+	-- actually running. (Server-authoritative backstop so firing the remote outside an event -- e.g. an
+	-- invisible-but-clickable button -- can never teleport.) Flag is set by RocketEventManager.
+	local rk = _G.BigEvents and _G.BigEvents.rocket
+	if not (rk and rk.isRunning and rk.isRunning()) then
+		print("GOTO1: rejected -- no rocket event running ("..player.Name..")")
+		return
+	end
 	local char = player.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
 	if not hrp then return end

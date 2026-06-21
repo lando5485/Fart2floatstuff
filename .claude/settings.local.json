@@ -93,7 +93,19 @@
       "Bash(git rm *)",
       "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('default.project.json','utf8'\\)\\); console.log\\('JSON valid'\\)\")",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(git checkout *)",
+      "Bash(command -v luau luau-analyze lua luac)",
+      "Bash(echo \"exit:$?\")",
+      "Read(//c/Users/lando/Downloads/**)",
+      "Bash(xargs -n1 basename)",
+      "Bash(grep -nE \"nLeaves = \\\\\\(stage|leafFracs = \\\\{ 0.26|2 \\\\* math.pi / 3\\\\\\)|for i = 1, nLeaves\" src/server/CommunityGarden.server.lua)",
+      "Bash(grep -nE \"RECURSIVE nuke|CONTAINERS = \\\\{|nuked \\\\\" .. cleared\" src/server/CommunityGarden.server.lua)",
+      "Bash(grep -nE \"local PALETTE = \\\\{|function plantFlower|56 \\\\* fF|52 \\\\* fF|nB = \\\\\\(level >= 5\\\\\\) and 6 or 4|\\\\* 0.7, level\\\\\\) -- ~30% smaller\" src/server/CommunityGarden.server.lua)",
+      "Bash(grep -nE \"CYL, stemH, 0.2, 0.2|pLen, pWid = \\\\{\\\\}, 0.3, 1.1, 0.22|discR, pLen = \\\\{\\\\}, 0.25, 1.1|ø1.1|ø0.5\" src/server/CommunityGarden.server.lua)",
+      "Bash(grep -nE \"drum\\\\\\(\\\\\"OuterPath\\\\\"|PathTile|ipairs\\\\\\(\\\\{ 24, 28, 32 \\\\}\\\\\\)\" src/server/CommunityGarden.server.lua)",
+      "Bash(grep -nE \"wall\\\\\\(\\\\\"OuterWall\\\\\"|WallJamb|ipairs\\\\\\(\\\\{ 24, 28, 32 \\\\}\\\\\\)\" src/server/CommunityGarden.server.lua)"
     ]
   }
 }

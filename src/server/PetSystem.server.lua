@@ -126,6 +126,29 @@ local PETS = {
 			[3] = { height = 37000, time = 650 },
 		},
 	},
+	-- ===== SEASONAL PETS (Community Garden rewards) -- NO island quest: they are GRANTED by the garden harvest
+	-- (Summer->Sunflower Bee, Autumn->Maple Fox, Winter->Frost Penguin, Spring->Blossom Bunny). questType="seasonal"
+	-- + no islandPrefix -> the island marker scan skips them; pieceMarkers={} keeps the generic state/inventory happy.
+	SunflowerBee = {
+		displayName = "Sunflower Bee", islandName = "Community Garden", questType = "seasonal", season = "Summer",
+		questDesc = "Earned from the Summer Community Garden harvest", pieceMarkers = {},
+		maxLevel = 3, tiers = { [2] = { height = 1500, time = 120 }, [3] = { height = 7000, time = 400 } },
+	},
+	MapleFox = {
+		displayName = "Maple Fox", islandName = "Community Garden", questType = "seasonal", season = "Autumn",
+		questDesc = "Earned from the Autumn Community Garden harvest", pieceMarkers = {},
+		maxLevel = 3, tiers = { [2] = { height = 1500, time = 120 }, [3] = { height = 7000, time = 400 } },
+	},
+	FrostPenguin = {
+		displayName = "Frost Penguin", islandName = "Community Garden", questType = "seasonal", season = "Winter",
+		questDesc = "Earned from the Winter Community Garden harvest", pieceMarkers = {},
+		maxLevel = 3, tiers = { [2] = { height = 1500, time = 120 }, [3] = { height = 7000, time = 400 } },
+	},
+	BlossomBunny = {
+		displayName = "Blossom Bunny", islandName = "Community Garden", questType = "seasonal", season = "Spring",
+		questDesc = "Earned from the Spring Community Garden harvest", pieceMarkers = {},
+		maxLevel = 3, tiers = { [2] = { height = 1500, time = 120 }, [3] = { height = 7000, time = 400 } },
+	},
 }
 
 local function getOrCreateRemote(name)
@@ -158,6 +181,7 @@ local PetQuestDiscovered = getOrCreateRemote("PetQuestDiscoveredEvent") -- c->s:
 local PetFishRoll = getOrCreateRF("PetFishRollEvent")                 -- c->s RF: () player reeled in -> SERVER rolls the catch (pity)
 local PetDigEvent = getOrCreateRemote("PetDigEvent")                  -- c->s: (petId) player dug the REAL buried-egg spot -> server unlocks the claim
 local PetRareEvent = getOrCreateRemote("PetRareEvent")                -- s->c: (petId, rareName) a RARE hatched -> client plays the fanfare
+local PetEquipBroadcast = getOrCreateRemote("PetEquipBroadcast")      -- s->c (ALL): a player's equipped-pet info {userId,petId,level,isRare,variant} -> RemotePets renders OTHER players' followers
 -- ===== STAGE 3 TRADE remotes (client sends INTENTS only; the server owns + validates everything) =====
 local PetTradeRequest = getOrCreateRemote("PetTradeRequestEvent")     -- c->s: (targetUserId) ask to trade
 local PetTradeRespond = getOrCreateRemote("PetTradeRespondEvent")     -- c->s: (accept:bool) answer a request
@@ -172,6 +196,7 @@ local digEggReady  = {}  -- [player] = true once the player DUG the real buried 
 -- (The BurritoArmadillo "Armadillo Trail" uses CLIENT-BUILT low-poly part mounds dug one-at-a-time -- no server
 -- terrain. The only server piece is the claim gate above + PetDigEvent below.)
 _G.playerDiscoveredQuests = _G.playerDiscoveredQuests or {}           -- [player] = { [petId]=true } (persisted by PlayerStats)
+_G.playerEverCompletedQuests = _G.playerEverCompletedQuests or {}     -- [player] = { [petId]=true } PERMANENT "ever completed quest X" (persisted) -- gates the first-time-only rare roll, separate from ownership
 _G.playerEquippedPet = _G.playerEquippedPet or {}                      -- [player] = petId (persisted by PlayerStats)
 local pendingRobuxPet = {}                                             -- [userId] = petId awaiting a Robux receipt
 local upgradeReady    = {}                                            -- [player][petId] = last canUpgrade (to avoid resend spam)
@@ -180,7 +205,19 @@ local upgradeReady    = {}                                            -- [player
 -- Developer Product(s) and set the id here (and the matching id in PetFollow.client.lua). Until replaced, real
 -- purchases won't grant (the prompt errors harmlessly); test accounts use the instant test-skip path instead.
 -- (Price scales with level in the UI label; at launch, map level brackets to per-bracket product IDs here.)
-local PET_UPGRADE_PRODUCT_ID = 123456789 -- \xE2\x9A\xA0 placeholder pet-skip product ID -- REPLACE BEFORE LAUNCH
+local PET_UPGRADE_PRODUCT_ID = 123456789 -- \xE2\x9A\xA0 (legacy, no longer used -- superseded by the TIER-SKIP products below)
+
+-- \xE2\x9A\xA0 REPLACE BEFORE LAUNCH: placeholder TIER-SKIP Developer Product IDs (4 prices). Each jumps the pet to
+-- the FIRST level of the NEXT tier. Tiers: Common 1-5, Uncommon 6-10, Rare 11-15, Epic 16-20, Legendary 21-25.
+-- SERVER-AUTHORITATIVE: a receipt only applies if the pet is actually in that product's SOURCE tier (srcMin..
+-- srcMax) -- so a cheap product can NEVER be used to jump a higher tier. The matching ids live in
+-- PetFollow.client.lua (PET_SKIP_PRODUCTS). REPLACE ALL FOUR with the real Developer Product IDs before launch.
+local PET_SKIP_PRODUCTS = {
+	[123456701] = { target = 6,  srcMin = 1,  srcMax = 5,  price = 49,  to = "Uncommon"  }, -- Common  -> Uncommon
+	[123456702] = { target = 11, srcMin = 6,  srcMax = 10, price = 99,  to = "Rare"      }, -- Uncommon-> Rare
+	[123456703] = { target = 16, srcMin = 11, srcMax = 15, price = 299, to = "Epic"      }, -- Rare    -> Epic
+	[123456704] = { target = 21, srcMin = 16, srcMax = 20, price = 599, to = "Legendary" }, -- Epic    -> Legendary
+}
 
 -- ============================================================================================
 -- PET MODEL TEMPLATES (all 5 pets). CSG/UnionAsync is SERVER-ONLY, so each pet's BODY+HEAD (+ears/neck/
@@ -640,7 +677,99 @@ local function buildPetTemplate()
 	model.Parent = RS -- replicate the finished template to clients (they clone it)
 	return model, unionErr
 end
--- Build ALL 5 fused pet templates at startup, apply a slight toy gloss, and store each in ReplicatedStorage
+
+-- ===== SEASONAL PETS (Community Garden rewards) -- SAME rounded-cube union style/scale as the pets above
+-- (roundedCubeInto -> fuse body, then welded features), reusing the shared eyes()/mouth() so they're equally cute.
+-- SUMMER: SUNFLOWER BEE -- yellow striped body, white wings, a ring of sunflower petals round the face, antennae.
+local function buildSunflowerBeeT()
+	local s = PSS * 0.92
+	local m = Instance.new("Model"); m.Name = "SunflowerBeeTemplate"; m.Parent = Workspace
+	local function P(n,sh,sx,sy,sz,c,x,y,z,r) return mkPart(m,n,sh,sx*s,sy*s,sz*s,c,x*s,y*s,z*s,r) end
+	newRoot(m)
+	local YEL, BLKC, WHITE, PET = Color3.fromRGB(250,205,60), Color3.fromRGB(28,28,32), Color3.fromRGB(248,248,245), Color3.fromRGB(245,180,40)
+	local src = {}; roundedCubeInto(src, P, 0,0,0, PSW,PSH,PSD, PSR, YEL); local body, err = fuse(m, src, "BodyUnion", YEL)
+	for _, xo in ipairs({ -0.9, 0.0, 0.9 }) do weldTo(P("Stripe", BLK, 0.42, PSH*0.98, PSD*0.98, BLKC, xo, 0, 0), body) end -- black stripes
+	for _, sgn in ipairs({ 1, -1 }) do weldTo(P("Wing", BLK, 0.18, 1.7, 1.3, WHITE, -0.3, 1.5, 1.2*sgn, CFrame.Angles(math.rad(22*sgn),0,0)), body) end -- white wings (flap)
+	for i = 0, 9 do local a = i*(2*math.pi/10); weldTo(P("Petal", BAL, 0.32, 0.5, 1.15, PET, 1.5, math.cos(a)*1.5, math.sin(a)*1.5, CFrame.Angles(a,0,0)), body) end -- sunflower-petal collar
+	for _, sgn in ipairs({ 1, -1 }) do
+		weldTo(P("Antenna", CYL, 1.0, 0.1, 0.1, BLKC, 1.0, 2.4, 0.35*sgn, CFrame.Angles(0,0,math.rad(22))), body)
+		weldTo(P("AntTip", BAL, 0.3,0.3,0.3, BLKC, 1.4, 2.85, 0.35*sgn), body)
+	end
+	eyes(P, 1.72, 0.45, 0.6); mouth(P, 1.78, -0.35, 0.62)
+	return m, err
+end
+-- AUTUMN: MAPLE FOX -- orange body, pointy ears (white inner), white snout/cheeks, bushy white-tipped tail.
+local function buildMapleFoxT()
+	local s = PSS
+	local m = Instance.new("Model"); m.Name = "MapleFoxTemplate"; m.Parent = Workspace
+	local function P(n,sh,sx,sy,sz,c,x,y,z,r) return mkPart(m,n,sh,sx*s,sy*s,sz*s,c,x*s,y*s,z*s,r) end
+	newRoot(m)
+	local ORG, DORG, WHITE, BLKC = Color3.fromRGB(222,120,52), Color3.fromRGB(190,92,40), Color3.fromRGB(245,242,235), Color3.fromRGB(28,24,26)
+	local src = {}; roundedCubeInto(src, P, 0,0,0, PSW,PSH,PSD, PSR, ORG); local body, err = fuse(m, src, "BodyUnion", ORG)
+	for _, sgn in ipairs({ 1, -1 }) do
+		local zc = 1.0*sgn
+		weldTo(P("Ear", BLK, 0.5, 1.5, 1.0, ORG, 0.2, 2.35, zc, CFrame.Angles(math.rad(16*sgn),0,0)), body)   -- pointy outer ear
+		weldTo(P("Ear", BAL, 0.42, 0.8, 0.55, DORG, 0.3, 3.05, zc), body)                                       -- darker pointed tip
+		weldTo(P("Ear", BLK, 0.3, 0.95, 0.5, WHITE, 0.42, 2.35, zc, CFrame.Angles(math.rad(16*sgn),0,0)), body) -- white inner
+	end
+	weldTo(P("Snout", BAL, 0.6, 0.7, 0.95, WHITE, 1.5, -0.4, 0), body)
+	weldTo(P("Nose", BAL, 0.34,0.3,0.44, BLKC, 1.98, -0.3, 0), body)
+	for _, sgn in ipairs({ 1, -1 }) do weldTo(P("Cheek", BAL, 0.5,0.55,0.5, WHITE, 1.55, -0.12, 0.72*sgn), body) end
+	P("Tail", BAL, 1.3,1.0,1.0, ORG, -1.7,-0.1,0); P("Tail", BAL, 0.85,0.85,0.85, WHITE, -2.45,0.1,0) -- bushy white-tipped tail
+	P("Foot", BLK, 0.9,0.7,0.9, DORG, 0.95,-1.6,0.8); P("Foot", BLK, 0.9,0.7,0.9, DORG, 0.95,-1.6,-0.8)
+	eyes(P, 1.72, 0.5, 0.62); mouth(P, 1.7, -0.7, 0.5)
+	return m, err
+end
+-- WINTER: FROST PENGUIN -- navy body, white belly, orange beak/feet, side flippers, ice crystals on top.
+local function buildFrostPenguinT()
+	local s = PSS
+	local m = Instance.new("Model"); m.Name = "FrostPenguinTemplate"; m.Parent = Workspace
+	local function P(n,sh,sx,sy,sz,c,x,y,z,r) return mkPart(m,n,sh,sx*s,sy*s,sz*s,c,x*s,y*s,z*s,r) end
+	newRoot(m)
+	local NAVY, BELLY, ORG, ICE = Color3.fromRGB(38,46,74), Color3.fromRGB(244,246,250), Color3.fromRGB(240,150,40), Color3.fromRGB(180,225,245)
+	local src = {}; roundedCubeInto(src, P, 0,0,0, PSW,PSH,PSD, PSR, NAVY); local body, err = fuse(m, src, "BodyUnion", NAVY)
+	weldTo(P("Belly", BLK, 0.3, 2.5, 2.3, BELLY, 1.55, -0.3, 0), body)            -- white belly (flat front)
+	weldTo(P("Beak", BAL, 0.75, 0.5, 0.7, ORG, 1.95, 0.05, 0), body)             -- orange beak (the mouth)
+	for _, sgn in ipairs({ 1, -1 }) do weldTo(P("Wing", BLK, 0.9, 1.9, 0.26, NAVY, -0.1, 0.1, 1.85*sgn, CFrame.Angles(math.rad(12*sgn),0,0)), body) end -- flippers (flap)
+	P("Foot", BLK, 1.1,0.45,0.8, ORG, 0.9,-1.7,0.7); P("Foot", BLK, 1.1,0.45,0.8, ORG, 0.9,-1.7,-0.7)
+	for _, d in ipairs({ {0,2.25,0,0.6}, {0.5,2.1,0.6,0.42}, {-0.5,2.1,-0.55,0.42} }) do
+		weldTo(P("Crystal", BLK, d[4],d[4],d[4], ICE, d[1], d[2], d[3], CFrame.Angles(0,math.rad(45),math.rad(45))), body) -- ice crystals on top
+	end
+	eyes(P, 1.72, 0.6, 0.5)
+	return m, err
+end
+-- SPRING: BLOSSOM BUNNY -- pale-green body, long ears (pink inner), a flower crown, pink cheeks/nose, fluffy tail.
+local function buildBlossomBunnyT()
+	local s = PSS
+	local m = Instance.new("Model"); m.Name = "BlossomBunnyTemplate"; m.Parent = Workspace
+	local function P(n,sh,sx,sy,sz,c,x,y,z,r) return mkPart(m,n,sh,sx*s,sy*s,sz*s,c,x*s,y*s,z*s,r) end
+	newRoot(m)
+	local PGREEN, PINK, WHITE, FLPINK, FLWHT, YEL = Color3.fromRGB(186,224,150), Color3.fromRGB(240,150,180), Color3.fromRGB(248,248,245), Color3.fromRGB(245,160,195), Color3.fromRGB(250,248,250), Color3.fromRGB(250,215,90)
+	local src = {}; roundedCubeInto(src, P, 0,0,0, PSW,PSH,PSD, PSR, PGREEN); local body, err = fuse(m, src, "BodyUnion", PGREEN)
+	local function ear(cx,cy,cz,len,dia,color,rot) -- cylinder + flush dome cap -> one rounded "Ear" (wiggles)
+		local up = (rot * CFrame.new(1,0,0)).Position
+		local part = { P("b",CYL,len,dia,dia,color,cx,cy,cz,rot), P("b",BAL,dia,dia,dia,color,cx+up.X*len*0.5,cy+up.Y*len*0.5,cz+up.Z*len*0.5) }
+		weldTo(fuse(m, part, "Ear", color), body)
+	end
+	for _, sgn in ipairs({ 1, -1 }) do
+		local zc = 1.1*sgn; local rot = CFrame.Angles(math.rad(10*sgn),0,0) * CFrame.Angles(0,0,math.rad(90))
+		ear(0.1, 2.9, zc, 3.9, 0.85, PGREEN, rot)  -- long ear
+		ear(0.42, 2.9, zc, 3.0, 0.46, FLPINK, rot) -- pink inner
+	end
+	for i = -2, 2 do -- flower crown: a row of small flowers across the top-front of the head
+		local zz = i * 0.66; local col = (i % 2 == 0) and FLPINK or FLWHT
+		weldTo(P("Flower", BAL, 0.42,0.42,0.42, col, 0.35, 2.05, zz), body)
+		weldTo(P("FlowerCtr", BAL, 0.2,0.2,0.2, YEL, 0.52, 2.1, zz), body)
+	end
+	for _, sgn in ipairs({ 1, -1 }) do weldTo(P("Cheek", BAL, 0.5,0.45,0.45, PINK, 1.6,-0.15,0.7*sgn), body) end
+	weldTo(P("Nose", BAL, 0.34,0.32,0.46, PINK, 1.78,-0.05,0), body)
+	P("Tail", BAL, 1.0,1.0,1.0, WHITE, -1.65,-0.3,0)
+	P("Foot", BLK, 0.9,0.75,0.9, PGREEN, 0.95,-1.55,0.78); P("Foot", BLK, 0.9,0.75,0.9, PGREEN, 0.95,-1.55,-0.78)
+	eyes(P, 1.72, 0.5, 0.62); mouth(P, 1.74, -0.42, 0.4)
+	return m, err
+end
+
+-- Build ALL fused pet templates at startup, apply a slight toy gloss, and store each in ReplicatedStorage
 -- (the client clones them). Each logs its own union result. (buildPetTemplate above is legacy/unused.)
 local PET_TEMPLATE_BUILDERS = {
 	{ id = "BroccoliPet",      fn = buildBroccoliBunny },
@@ -648,6 +777,10 @@ local PET_TEMPLATE_BUILDERS = {
 	{ id = "PopcornSheep",     fn = buildPopcornSheepT },
 	{ id = "ButterDuck",       fn = buildButterDuckT },
 	{ id = "BurritoArmadillo", fn = buildBurritoArmadilloT },
+	{ id = "SunflowerBee",     fn = buildSunflowerBeeT,     seasonal = true, name = "Sunflower Bee" },
+	{ id = "MapleFox",         fn = buildMapleFoxT,         seasonal = true, name = "Maple Fox" },
+	{ id = "FrostPenguin",     fn = buildFrostPenguinT,     seasonal = true, name = "Frost Penguin" },
+	{ id = "BlossomBunny",     fn = buildBlossomBunnyT,     seasonal = true, name = "Blossom Bunny" },
 }
 task.spawn(function()
 	local totalSmoothed = 0
@@ -665,6 +798,7 @@ task.spawn(function()
 			else
 				print("[Pet][UNION] "..b.id.." rounded-cube body SUCCESS ("..n.." parts -> matte Plastic + Smooth surfaces)")
 			end
+			if b.seasonal then print("[Pet] seasonal "..b.name.." built ("..(err and "union FAILED" or "union ok")..")") end
 		else
 			warn("[Pet][UNION] "..b.id.." template build error: "..tostring(model or err))
 		end
@@ -682,6 +816,25 @@ local function foundCount(player, petId)
 	local s = piecesFound[player] and piecesFound[player][petId]
 	if not s then return 0 end
 	local n = 0; for _ in pairs(s) do n = n + 1 end; return n
+end
+
+-- RE-DOABLE QUESTS: a pet quest is DOABLE AGAIN whenever the player currently owns ZERO of that species
+-- (e.g. they traded their only one away). Owning >=1 keeps it completed/locked -> no farming duplicates.
+-- everCompleted is a PERMANENT flag used ONLY to gate the rare roll (see PetClaimEvent); it does NOT lock the quest.
+local function questAvailable(player, petId)
+	local owns = ownsPet(player, petId)
+	local ever = (_G.playerEverCompletedQuests[player] or {})[petId] == true
+	local available = not owns
+	print(string.format("[PetQuest] %s quest %s availability: ownsCount=%d, everCompleted=%s -> available=%s",
+		player.Name, petId, owns and 1 or 0, ever and "y" or "n", available and "y" or "n"))
+	return available
+end
+-- Wipe a pet's quest PROGRESS so it must be genuinely re-done from scratch (used when ownership drops to zero
+-- via a trade). Session-only progress: collected pieces + the fishing/dig anti-cheat gates.
+local function resetQuestProgress(player, petId)
+	if piecesFound[player] then piecesFound[player][petId] = nil end
+	if petId == "ButterDuck" then fishEggReady[player] = nil; fishCatches[player] = nil end -- duck must re-catch the egg
+	if petId == "BurritoArmadillo" then digEggReady[player] = nil end                       -- armadillo must re-dig the egg
 end
 
 -- ===== LEVELING (cosmetic prestige -- 1..50, XP-driven, NO gameplay/flight effect whatsoever) =====
@@ -801,7 +954,7 @@ local function sendInventory(player)
 				rare = d.rare and true or false, rareName = d.rare and RARE_NAMES[petId] or nil, -- RARE badge + variant name
 			}
 		end
-		if questDiscovered(player, petId) then
+		if questDiscovered(player, petId) and def.questType ~= "seasonal" then -- seasonal pets are garden rewards, not island quests
 			local found = foundCount(player, petId)
 			local total = #def.pieceMarkers
 			local status = owns and "done" or (found > 0 and "inprogress" or "available")
@@ -816,6 +969,41 @@ local function sendInventory(player)
 	pcall(function() PetInventoryEvent:FireClient(player, payload) end)
 end
 
+-- ============================================================================================
+-- CROSS-PLAYER PET VISIBILITY (Option B) -- ADDITIVE. Besides the owner-only sendState/sendInventory
+-- above, BROADCAST each player's equipped-pet info to ALL clients so RemotePets.client.lua can build +
+-- follow OTHER players' pets. This NEVER changes sendState/sendInventory or how the owner's own pet
+-- (PetFollow) works -- it's an extra fire-and-forget message. No server-side pet models / CSG here.
+-- ============================================================================================
+local function buildEquipPayload(player)
+	local petId = _G.playerEquippedPet[player]
+	local level, isRare, variant = 1, false, nil
+	if petId and ownsPet(player, petId) then
+		local d = getPetData(player, petId)
+		if d then level = d.level or 1; isRare = d.rare and true or false end
+		if isRare then variant = RARE_NAMES[petId] end
+	else
+		petId = nil -- nothing equipped -> remote clients remove this player's pet
+	end
+	return { userId = player.UserId, petId = petId, level = level, isRare = isRare, variant = variant }
+end
+local function broadcastEquip(player, reason)
+	if not player then return end
+	local payload = buildEquipPayload(player)
+	pcall(function() PetEquipBroadcast:FireAllClients(payload) end)
+	print(string.format("[RemotePets] broadcast %s pet=%s lvl=%d rare=%s (reason=%s)",
+		player.Name, tostring(payload.petId), payload.level, payload.isRare and "y" or "n", tostring(reason)))
+end
+-- Send the CURRENT equipped pet of everyone ALREADY in the server to ONE (newly-joined) client, so late
+-- joiners immediately see existing players' pets (existing players don't re-broadcast just because one joins).
+local function sendAllEquipsTo(target)
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= target then
+			pcall(function() PetEquipBroadcast:FireClient(target, buildEquipPayload(p)) end)
+		end
+	end
+end
+
 -- Level a pet up by one (the XP auto-level loop and the Robux/test skip all funnel here). Re-syncs follower + GUI.
 local function levelUp(player, petId, via)
 	local def = PETS[petId]; local d = getPetData(player, petId)
@@ -826,6 +1014,7 @@ local function levelUp(player, petId, via)
 	if isMilestone(d.level) then print("[PetLvl] "..petId.." hit milestone "..d.level.." -> "..tierVisual(d.level)) end
 	sendState(player)     -- the follower re-applies its per-level cosmetic tier visual
 	sendInventory(player) -- the card shows the new level + reset XP bar
+	if _G.playerEquippedPet[player] == petId then broadcastEquip(player, "levelup") end -- remote viewers see the new level look
 	return true
 end
 
@@ -884,6 +1073,29 @@ local function petSkip(player, petId, via)
 	return ok
 end
 
+-- TIER SKIP: jump the pet to the FIRST level of the NEXT tier (Common1-5 -> 6, Uncommon6-10 -> 11,
+-- Rare11-15 -> 16, Epic16-20 -> 21). Returns nil at the top tier (Legendary 21-25 -> nothing to skip).
+local function nextTierTarget(level)
+	if level <= 5 then return 6
+	elseif level <= 10 then return 11
+	elseif level <= 15 then return 16
+	elseif level <= 20 then return 21
+	else return nil end -- Legendary (top tier) -> no skip
+end
+-- Apply a one-tier jump from the pet's CURRENT level (used by the test path; computed server-side so it can
+-- never skip more than one tier). Re-syncs the follower + GUI like levelUp does.
+local function tierSkip(player, petId, via)
+	if not ownsPet(player, petId) then return false end
+	local d = getPetData(player, petId); if not d then return false end
+	local target = nextTierTarget(d.level)
+	if not target then return false end -- already at the top tier
+	d.level = target; d.xp = 0
+	sendState(player); sendInventory(player)
+	if _G.playerEquippedPet[player] == petId then broadcastEquip(player, "levelup") end -- remote viewers see the tier-skip look
+	print("[PetLvl] tier-skip "..tostring(via).." for "..petId.." -> Lvl "..d.level)
+	return true
+end
+
 -- \xE2\x9A\xA0 TEST COMMAND /allpets - grants all pets to test accounts. REMOVE BEFORE LAUNCH.
 -- Grants EVERY pet in the catalog to the player using the SAME ownership structure a normal claim writes
 -- ({level=1,height=0,time=0}), marks each quest discovered, auto-equips one if none is equipped, then
@@ -904,6 +1116,7 @@ _G.petsGrantAll = function(player)
 	if not _G.playerEquippedPet[player] then for petId in pairs(PETS) do _G.playerEquippedPet[player] = petId; break end end
 	sendState(player)     -- spawns the equipped follower + flags everything owned
 	sendInventory(player) -- all pets now appear in the inventory, equippable
+	broadcastEquip(player, "equip") -- let other clients render the (test-)equipped pet
 	return granted
 end
 -- \xE2\x9A\xA0 TEST COMMAND /rarepets - grants every pet as its RARE variant (pre-maxed + rare flag) so all 5 rare
@@ -921,7 +1134,28 @@ _G.petsGrantRare = function(player)
 	end
 	if not _G.playerEquippedPet[player] then for petId in pairs(PETS) do _G.playerEquippedPet[player] = petId; break end end
 	sendState(player); sendInventory(player)
+	broadcastEquip(player, "rare") -- let other clients render the (test-)equipped rare pet
 	return granted
+end
+
+-- ===== SEASONAL PET ENTITLEMENT: grant ONE seasonal pet for a season (called by the Community Garden harvest and by
+-- the /grantpet test command). Adds it with the SAME ownership structure as a normal claim, so it persists (via
+-- PlayerStats saved.ownedPets), shows OWNED in the inventory, and is equippable through the normal pet path. =====
+local SEASON_TO_PET = { Summer = "SunflowerBee", Autumn = "MapleFox", Winter = "FrostPenguin", Spring = "BlossomBunny" }
+_G.grantSeasonalPet = function(player, season)
+	if not (player and season) then return false end
+	season = tostring(season)
+	local key = season:sub(1, 1):upper() .. season:sub(2):lower() -- accept "summer"/"Summer"/"SUMMER"
+	local petId = SEASON_TO_PET[key]
+	if not petId then warn("[Pet] grantSeasonalPet: unknown season '"..season.."'"); return false end
+	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
+	if ownsPet(player, petId) then return true end -- already owned -> nothing to do
+	_G.playerOwnedPets[player][petId] = { level = 1, height = 0, time = 0 } -- same table a normal claim writes (persists)
+	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
+	_G.playerDiscoveredQuests[player][petId] = true
+	sendState(player); sendInventory(player) -- now shows OWNED + equippable immediately (no rejoin)
+	print("[Pet] seasonal "..petId.." granted to "..player.Name.." ("..key.." reward)")
+	return true
 end
 
 -- ===== MARKERS: locate + hide the raw marker parts (kept in place so clients can read positions) =====
@@ -980,6 +1214,7 @@ task.spawn(function()
 	end
 	-- Give the positioned island a moment, then find + hide each pet's markers and log diagnostics.
 	for petId, def in pairs(PETS) do
+		if not def.islandPrefix then continue end -- seasonal/grant-only pet: no island markers to scan
 		local island
 		for _ = 1, 30 do island = findIsland(def.islandPrefix); if island then break end; task.wait(1) end
 		if not island then
@@ -1122,7 +1357,21 @@ _G.petsApplyOnJoin = function(player)
 	for petId in pairs(PETS) do
 		if ownsPet(player, petId) then print("[Pet] "..petId.." owned by "..player.Name.." (equipped="..tostring(_G.playerEquippedPet[player] == petId)..")") end
 	end
+	broadcastEquip(player, "join")  -- tell everyone what this (now-loaded) player has equipped
+	sendAllEquipsTo(player)         -- and tell THIS player what everyone already here has equipped (late-join catch-up)
 end
+
+-- ADDITIVE lifecycle for cross-player pets: re-broadcast a player's pet when their character (re)spawns so
+-- remote clients re-attach the follower to the new body. (RemotePets also reads the live character each frame,
+-- so this is belt-and-suspenders.) Never touches the owner's own PetFollow pet.
+local function hookRemotePetLifecycle(player)
+	player.CharacterAdded:Connect(function()
+		task.wait(0.4) -- let the new HumanoidRootPart exist before remote clients re-target
+		broadcastEquip(player, "respawn")
+	end)
+end
+Players.PlayerAdded:Connect(hookRemotePetLifecycle)
+for _, p in ipairs(Players:GetPlayers()) do hookRemotePetLifecycle(p) end
 
 -- ===== REMOTE HANDLERS =====
 PetRequestStateEvent.OnServerEvent:Connect(function(player)
@@ -1170,16 +1419,30 @@ PetClaimEvent.OnServerEvent:Connect(function(player, petId)
 	else
 		if foundCount(player, petId) < #def.pieceMarkers then return end -- must have all pieces (anti-cheat gate)
 	end
-	-- RARE ROLL (server-authoritative): ~1/99 (1/500 for the duck). A rare hatches PRE-MAXED + flagged.
-	local odds = rareOdds(petId)
-	local isRare = (math.random(1, odds) == 1)
-	print(string.format("[PetRare] %s hatched %s - rare roll: %s (odds 1/%d)", player.Name, petId, isRare and "hit" or "miss", odds))
+	-- RARE ROLL is FIRST-TIME-ONLY (permanent): the very FIRST ever completion of this quest rolls rare
+	-- (~1/99, 1/500 for the duck, server-authoritative). Every RE-completion (quest redone after trading the
+	-- species away) grants a GUARANTEED NORMAL pet -- the rare roll never happens again, so rares can never be
+	-- re-farmed (they only come from that one first roll, or from trading). everCompleted persists across sessions.
+	_G.playerEverCompletedQuests[player] = _G.playerEverCompletedQuests[player] or {}
+	local firstTime = not _G.playerEverCompletedQuests[player][petId]
+	local isRare = false
+	if firstTime then
+		local odds = rareOdds(petId)
+		isRare = (math.random(1, odds) == 1)
+		print(string.format("[PetRare] %s hatched %s - rare roll: %s (odds 1/%d)", player.Name, petId, isRare and "hit" or "miss", odds))
+	else
+		print(string.format("[PetRare] %s re-completed %s - rare roll SKIPPED (guaranteed normal)", player.Name, petId))
+	end
+	_G.playerEverCompletedQuests[player][petId] = true -- PERMANENT: this quest has now been completed at least once
 	local data = { level = 1, xp = 0, height = 0, time = 0 }
 	if isRare then
 		data.rare = true
 		data.level = PET_MAX_LEVEL -- pre-maxed: rares skip the grind, instantly at the full lvl-25 look
 		print(string.format("[PetRare] %s got RARE %s!", player.Name, RARE_NAMES[petId] or petId))
 	end
+	print(string.format("[PetQuest] %s completed %s quest: firstTime=%s -> rareRoll=%s, granted %s",
+		player.Name, petId, firstTime and "y" or "n", firstTime and "done" or "skipped",
+		isRare and ((RARE_NAMES[petId] or petId).." (rare)") or "normal"))
 	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
 	_G.playerOwnedPets[player][petId] = data -- now a table (PlayerStats saves it, incl. the rare flag)
 	if not _G.playerEquippedPet[player] then _G.playerEquippedPet[player] = petId end -- auto-equip your first pet
@@ -1188,6 +1451,7 @@ PetClaimEvent.OnServerEvent:Connect(function(player, petId)
 	if isRare then pcall(function() PetRareEvent:FireClient(player, petId, RARE_NAMES[petId] or petId) end) end -- hatch fanfare
 	sendState(player)     -- client hides egg/pieces and spawns the equipped follower
 	sendInventory(player) -- the new pet shows up in the inventory GUI
+	if _G.playerEquippedPet[player] == petId then broadcastEquip(player, isRare and "rare" or "equip") end -- auto-equipped first pet -> show to others
 end)
 
 -- ===== FISHING CATCH ROLL (SERVER-AUTHORITATIVE): the client invokes this after a successful reel-in. The
@@ -1238,6 +1502,7 @@ PetEquipEvent.OnServerEvent:Connect(function(player, petId)
 	end
 	sendState(player)     -- client spawns/despawns the follower to match
 	sendInventory(player)
+	broadcastEquip(player, _G.playerEquippedPet[player] and "equip" or "unequip") -- mirror the change to every other client
 end)
 
 -- ===== FREE (achievement) upgrade -- gated on the threshold being met =====
@@ -1274,7 +1539,7 @@ PetPendingUpgrade.OnServerEvent:Connect(function(player, petId)
 	if not ownsPet(player, petId) then return end
 	-- \xE2\x9A\xA0 TEST skip path: test accounts skip-fill INSTANTLY (no real purchase) so the flow is testable. REMOVE BEFORE LAUNCH.
 	if _G.isAllowedTestUser and _G.isAllowedTestUser(player) then
-		petSkip(player, petId, "test")
+		tierSkip(player, petId, "test") -- testers TIER-skip instantly (no purchase) -- REMOVE BEFORE LAUNCH
 		return
 	end
 	pendingRobuxPet[player.UserId] = petId
@@ -1282,10 +1547,20 @@ end)
 -- Called by PlayerStats' single MarketplaceService.ProcessReceipt for the pet-SKIP product. Gated behind the
 -- receipt -- a real purchase is required to fill the level (never faked).
 _G.petsHandleReceipt = function(player, productId)
-	if productId ~= PET_UPGRADE_PRODUCT_ID then return false end -- not our product
+	local prod = PET_SKIP_PRODUCTS[productId]
+	if not prod then return false end -- not one of our tier-skip products
 	local petId = pendingRobuxPet[player.UserId]; pendingRobuxPet[player.UserId] = nil
 	if not (petId and ownsPet(player, petId)) then return false end
-	return petSkip(player, petId, "purchased")
+	local d = getPetData(player, petId); if not d then return false end
+	if d.level >= prod.srcMin and d.level <= prod.srcMax then
+		d.level = prod.target; d.xp = 0 -- SERVER-AUTHORITATIVE: only applies in this product's source tier
+		sendState(player); sendInventory(player)
+		print("[PetLvl] tier-skip PURCHASED (to "..prod.to..") for "..petId.." -> Lvl "..d.level)
+		return true
+	end
+	-- not in this product's source tier (pet leveled past it before the receipt) -> consume WITHOUT a wrong jump
+	warn("[PetLvl] tier-skip product "..tostring(productId).." not applicable for "..petId.." (Lvl "..d.level.."); consumed, no jump")
+	return true
 end
 
 -- ===== QUEST DISCOVERY: the client fires this when the player LANDS on a pet's island. Records it
@@ -1296,6 +1571,7 @@ PetQuestDiscovered.OnServerEvent:Connect(function(player, petId)
 	if _G.playerDiscoveredQuests[player][petId] then return end -- already discovered (idempotent)
 	_G.playerDiscoveredQuests[player][petId] = true
 	print("[PetInv] quest discovered: "..petId.." on "..(def.islandName or "?"))
+	questAvailable(player, petId) -- log doable/locked state (available iff they own zero of this species)
 	sendInventory(player) -- the quest now appears in the player's quests panel
 end)
 
@@ -1342,12 +1618,20 @@ local function executeTrade(session)
 	-- SECURITY re-check at execution: both must still OWN everything they're offering (not just when added).
 	for petId in pairs(session.offerA) do if not ownsPet(A, petId) then closeTrade(session, A.Name.." no longer owns "..petId); return end end
 	for petId in pairs(session.offerB) do if not ownsPet(B, petId) then closeTrade(session, B.Name.." no longer owns "..petId); return end end
-	-- no-overwrite: a receiver must not KEEP a pet of the same type they're about to receive (1 entry per petId).
+	-- OPEN TRADING: ANY pet for ANY pet (cross-species, normal<->rare, any combination) is allowed -- there is
+	-- NO same-species / matching restriction. The ONLY guard kept is DATA-INTEGRITY: ownership stores one entry
+	-- per species, so a receiver can't take in a species they'd still KEEP a copy of -- that would overwrite and
+	-- DESTROY their existing pet (including a rare). Such a trade is rejected (never silently overwritten); offer
+	-- the duplicate too to make it a swap. This guard is part of protecting rares, not a species restriction.
 	local keptA, keptB = {}, {}
 	for petId in pairs(_G.playerOwnedPets[A] or {}) do if not session.offerA[petId] then keptA[petId] = true end end
 	for petId in pairs(_G.playerOwnedPets[B] or {}) do if not session.offerB[petId] then keptB[petId] = true end end
-	for petId in pairs(session.offerA) do if keptB[petId] then closeTrade(session, B.Name.." already owns "..petId); return end end
-	for petId in pairs(session.offerB) do if keptA[petId] then closeTrade(session, A.Name.." already owns "..petId); return end end
+	for petId in pairs(session.offerA) do if keptB[petId] then closeTrade(session, B.Name.." would overwrite their existing "..petId.." (one per species)"); return end end
+	for petId in pairs(session.offerB) do if keptA[petId] then closeTrade(session, A.Name.." would overwrite their existing "..petId.." (one per species)"); return end end
+	-- diagnostics: log the cross-species pairings (trading is fully open, any for any)
+	for pa in pairs(session.offerA) do for pb in pairs(session.offerB) do
+		if pa ~= pb then print(string.format("[Trade] cross-species trade allowed: %s <-> %s", pa, pb)) end
+	end end
 	print(string.format("[Trade] EXECUTING %s[%s] <-> %s[%s] - validated ownership both sides", A.Name, keyList(session.offerA), B.Name, keyList(session.offerB)))
 	-- snapshot the offered DATA TABLES (carry level/xp/rare/variant), then remove, then add -- all in one step.
 	local giveA, giveB = {}, {}
@@ -1357,6 +1641,10 @@ local function executeTrade(session)
 	for petId in pairs(session.offerB) do _G.playerOwnedPets[B][petId] = nil end
 	for petId, data in pairs(giveA) do _G.playerOwnedPets[B][petId] = data end -- A's pet (with its data) -> B
 	for petId, data in pairs(giveB) do _G.playerOwnedPets[A][petId] = data end -- B's pet (with its data) -> A
+	-- RE-DOABLE QUESTS: whoever traded away their LAST of a species (now owns zero) gets that quest reset so they
+	-- can earn it again. A re-completion grants a GUARANTEED NORMAL (rare roll is first-time-only -- see PetClaimEvent).
+	for petId in pairs(giveA) do if not ownsPet(A, petId) then resetQuestProgress(A, petId); questAvailable(A, petId) end end
+	for petId in pairs(giveB) do if not ownsPet(B, petId) then resetQuestProgress(B, petId); questAvailable(B, petId) end end
 	-- clear equipped if it was traded away (keep equip state sane)
 	if _G.playerEquippedPet[A] and not ownsPet(A, _G.playerEquippedPet[A]) then _G.playerEquippedPet[A] = nil end
 	if _G.playerEquippedPet[B] and not ownsPet(B, _G.playerEquippedPet[B]) then _G.playerEquippedPet[B] = nil end
@@ -1364,6 +1652,7 @@ local function executeTrade(session)
 	print(string.format("[Trade] DONE - %s now owns %s, %s now owns %s", A.Name, ownedKeyList(A), B.Name, ownedKeyList(B)))
 	-- refresh both clients FIRST (the swap is already done in memory), then persist (SetAsync yields).
 	sendState(A); sendInventory(A); sendState(B); sendInventory(B)
+	broadcastEquip(A, "equip"); broadcastEquip(B, "equip") -- a traded-away equipped pet may have changed -> update remote views
 	pcall(function() if A.Parent then PetTradeState:FireClient(A, { active=false, reason="completed" }) end end)
 	pcall(function() if B.Parent then PetTradeState:FireClient(B, { active=false, reason="completed" }) end end)
 	if _G.savePlayerData then pcall(function() _G.savePlayerData(A, "trade") end); pcall(function() _G.savePlayerData(B, "trade") end) end -- persist BOTH now (anti-dupe)
@@ -1399,6 +1688,7 @@ PetTradeOffer.OnServerEvent:Connect(function(player, petId, add)
 		if not ownsPet(player, petId) then return end -- can only offer what you actually own
 		if _G.playerEquippedPet[player] == petId then -- auto-unequip the equipped pet when you offer it
 			_G.playerEquippedPet[player] = nil; sendState(player); sendInventory(player)
+			broadcastEquip(player, "unequip") -- remove the follower from other clients too
 		end
 		mine[petId] = true
 		print(string.format("[Trade] %s added %s to offer", player.Name, petId))
