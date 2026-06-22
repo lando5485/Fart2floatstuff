@@ -184,15 +184,15 @@ local function createBird()
 			if diff.Magnitude<6 then
 				birdModel:Destroy()
 				_G.birdHitThisFlight = true -- [BALANCE LOGGING] flag-only: a bird hit the player this flight (read by CoreClient FLIGHT DEBUG)
-				-- BIRD HAZARD HIT = ONLY HALVE the player's CURRENT gas. NO kill, NO knockdown, NO teleport/
-				-- respawn -- the player keeps flying with less gas. _G.applyBirdHalve (CoreClient) halves
+				-- BIRD HAZARD HIT = ONLY DRAIN 20% of the player's CURRENT gas. NO kill, NO knockdown, NO teleport/
+				-- respawn -- the player keeps flying with less gas. _G.applyBirdHalve (CoreClient) drains 20% of
 				-- gasMeter (and keeps currentPower in sync) and enforces the brief hit cooldown so multiple
 				-- birds can't drain you to nothing in one pass; it returns false when the hit is within that
 				-- cooldown window, so we skip the feedback for ignored hits.
 				local applied = _G.applyBirdHalve and _G.applyBirdHalve()
 				if applied then
 					pcall(function() screechSound:Play() end)
-					if _G.showFloatingText then _G.showFloatingText("\xF0\x9F\x90\xA6 BIRD ATTACK! Gas halved!",Color3.fromRGB(255,80,0)) end
+					if _G.showFloatingText then _G.showFloatingText("\xF0\x9F\x90\xA6 BIRD ATTACK! Gas drained!",Color3.fromRGB(255,80,0)) end
 					pcall(function()
 						local eff=_G.effectFlashFrame
 						if eff then eff.BackgroundColor3=Color3.fromRGB(255,80,0); eff.BackgroundTransparency=0.6; TweenService:Create(eff,TweenInfo.new(0.2),{BackgroundTransparency=0.97}):Play() end

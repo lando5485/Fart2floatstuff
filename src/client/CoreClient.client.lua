@@ -1626,10 +1626,11 @@ local function applyBirdDrain()
 end
 _G.applyBirdDrain = applyBirdDrain
 
--- Bird hit (NEW behavior for the aggressive event birds): NO kill, NO knockdown -- just HALVE the
+-- Bird hit (NEW behavior for the aggressive event birds): NO kill, NO knockdown -- just DRAIN 20% of the
 -- player's CURRENT gas (floored), with a 1s cooldown so multiple birds can't drain you to nothing in
 -- one pass. Returns true if it applied, false if it was on cooldown (so the caller can skip feedback).
-local BIRD_HALVE_COOLDOWN = 1 -- seconds of invulnerability between gas-halving bird hits
+local BIRD_HALVE_COOLDOWN = 1 -- seconds of invulnerability between bird hits
+local BIRD_GAS_DRAIN_PCT = 0.2 -- fraction of CURRENT gas removed per bird hit (was 0.5 / halve); 50% -> 20%
 _G.lastBirdHalveTime = -math.huge
 _G.applyBirdHalve = function()
 	local now = os.clock()
@@ -1639,12 +1640,13 @@ _G.applyBirdHalve = function()
 	end
 	_G.lastBirdHalveTime = now
 	local before = gasMeter
-	gasMeter = math.floor(gasMeter / 2)                                            -- halve CURRENT gas, floored
+	gasMeter = math.floor(gasMeter * (1 - BIRD_GAS_DRAIN_PCT))                     -- remove 20% of CURRENT gas, floored (was /2 = 50%)
 	currentPower = (stomachMax > 0) and (gasMeter / maxGasMeter) * stomachMax or 0 -- keep power in sync with the reduced gas
 	if _G.updateMeter then _G.updateMeter() end
-	print(string.format("[BIRD] hit -> gas HALVED: before=%.1f after=%.1f (no kill, no knockdown)", before, gasMeter))
+	print(string.format("[BIRD] hit -> gas drained 20%%: before=%.1f after=%.1f (no kill, no knockdown)", before, gasMeter))
 	return true
 end
+print("[BIRD] attack drain changed 50% -> 20% of fart power.")
 
 -- Space-junk hit (called from EventClient): END THE CURRENT RISE exactly like running out of power —
 -- _G.stopFlying() clears isFlying + the upward BodyVelocity so the player falls under gravity. It does

@@ -73,8 +73,14 @@
       "ToasterEasterEgg": {
         "$path": "src/server/ToasterEasterEgg.server.lua"
       },
+      "SquirrelEasterEgg": {
+        "$path": "src/server/SquirrelEasterEgg.server.lua"
+      },
       "CommunityGarden": {
         "$path": "src/server/CommunityGarden.server.lua"
+      },
+      "GardenBird": {
+        "$path": "src/server/GardenBird.server.lua"
       }
     },
     "ReplicatedStorage": {
@@ -218,6 +224,9 @@
         },
         "GardenerLife": {
           "$path": "src/client/GardenerLife.client.lua"
+        },
+        "GardenChestClient": {
+          "$path": "src/client/GardenChestClient.client.lua"
         }
       }
     }

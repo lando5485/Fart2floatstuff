@@ -105,7 +105,9 @@
       "Bash(grep -nE \"local PALETTE = \\\\{|function plantFlower|56 \\\\* fF|52 \\\\* fF|nB = \\\\\\(level >= 5\\\\\\) and 6 or 4|\\\\* 0.7, level\\\\\\) -- ~30% smaller\" src/server/CommunityGarden.server.lua)",
       "Bash(grep -nE \"CYL, stemH, 0.2, 0.2|pLen, pWid = \\\\{\\\\}, 0.3, 1.1, 0.22|discR, pLen = \\\\{\\\\}, 0.25, 1.1|ø1.1|ø0.5\" src/server/CommunityGarden.server.lua)",
       "Bash(grep -nE \"drum\\\\\\(\\\\\"OuterPath\\\\\"|PathTile|ipairs\\\\\\(\\\\{ 24, 28, 32 \\\\}\\\\\\)\" src/server/CommunityGarden.server.lua)",
-      "Bash(grep -nE \"wall\\\\\\(\\\\\"OuterWall\\\\\"|WallJamb|ipairs\\\\\\(\\\\{ 24, 28, 32 \\\\}\\\\\\)\" src/server/CommunityGarden.server.lua)"
+      "Bash(grep -nE \"wall\\\\\\(\\\\\"OuterWall\\\\\"|WallJamb|ipairs\\\\\\(\\\\{ 24, 28, 32 \\\\}\\\\\\)\" src/server/CommunityGarden.server.lua)",
+      "Bash(git commit *)",
+      "PowerShell(try { Get-Content \"C:\\\\Users\\\\lando\\\\Downloads\\\\Fart2floatstuff\\\\default.project.json\" -Raw | ConvertFrom-Json | Out-Null; \"JSON OK\" } catch { \"JSON ERROR: $_\" })"
     ]
   }
 }

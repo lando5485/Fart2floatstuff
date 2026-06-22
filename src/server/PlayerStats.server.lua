@@ -103,6 +103,15 @@ local ISLAND_ROTATIONS = {
 
 local GAMEPASS_IDS = {TwoXForever=1862015450, GlitterTrail=1859714979, InfiniteGut=1860686821}
 
+-- [STOMACH RESET] \xE2\x9A\xA0 TEMPORARY: while TRUE, EVERY player is forced to the BASE starting gut -- ALL gut/stomach
+-- upgrades read as UN-OWNED: Infinite Gut never auto-applies on join OR purchase (applyInfiniteGut no-ops), a stored
+-- 9999 / any saved tier is forced back to the base StomachMax on load, and HasInfiniteGut stays false so the meter
+-- never locks full. The real on-disk StomachMax is PRESERVED through save (the save writes back the loaded disk value,
+-- NOT the forced base), so flipping this FALSE cleanly restores everyone's real gut (Infinite Gut owners also re-get
+-- it live from UserOwnsGamePassAsync). Players can still buy coin tiers via BuyStomachEvent. Set FALSE to restore.
+local FORCE_BASE_STOMACH = true
+local loadedStomachMax = {} -- [player] = the StomachMax value read from disk on load (preserved through save while forced)
+
 -- INFINITE / UNLIMITED GUT gamepass (1860686821): applies the Infinite Gut tier (StomachMax = 9999, the
 -- top tier — no practical power cap, so the "stomach full" check effectively never fires). Used BOTH on
 -- a fresh purchase (PromptGamePassPurchaseFinished) AND, since it's a forever pass, on every join when
@@ -113,6 +122,7 @@ local GAMEPASS_IDS = {TwoXForever=1862015450, GlitterTrail=1859714979, InfiniteG
 local INFINITE_GUT_MAX = 9999
 local function applyInfiniteGut(player)
 	if not player then return end
+	if FORCE_BASE_STOMACH then print("[STOMACH RESET] applyInfiniteGut SKIPPED for "..player.Name.." (FORCE_BASE_STOMACH on -- gut stays base)"); return end -- never grant the Infinite Gut tier while the reset is on (join or purchase)
 	local ls = player:FindFirstChild("leaderstats"); if not ls then return end
 	local sm = ls:FindFirstChild("StomachMax"); if not sm then return end
 	-- Flag ownership FIRST. The client reads HasInfiniteGut to lock the fart meter full (never drains), so
@@ -159,6 +169,12 @@ local DISABLE_2X = true
 -- (This supersedes DISABLE_2X above, which was Studio-only.)
 -- ============================================================================================
 local DISABLE_PERKS_FOR_BALANCE = false
+-- [NOSAVE TEST] \xE2\x9A\xA0 TEMPORARY -- REMOVE BEFORE LAUNCH. While TRUE, the "2x Fart Power Forever" gamepass (TwoXForever)
+-- reads as NOT owned for EVERY player regardless of saved data / actual ownership: the join ownership check is forced
+-- false, HasTwoXForever is cleared, a fresh purchase won't grant it, and the has2x effect is forced off -- so NO player
+-- gets the 2x power boost for now. (Targets ONLY the 2x pass; Glitter/Skip/Infinite Gut are untouched.) Set FALSE to restore.
+local FORCE_NO_2X = true
+if FORCE_NO_2X then print("[NOSAVE TEST] 2xFart forced un-owned.") end
 -- [BALANCE TESTING] While TRUE, NO random server-wide events fire (FART_STORM, COIN_RUSH, LOW_GRAVITY,
 -- POWER_SURGE, RING_FEVER, THUNDERSTORM, WINDSTORM). Set to false to re-enable random events later.
 -- (Ambient bird swarms are gated by a matching DISABLE_EVENTS flag in EventClient.client.lua — keep
@@ -258,7 +274,8 @@ _G.playerDiscoveredQuests = _G.playerDiscoveredQuests or {}
 -- PERMANENT "ever completed pet quest X" flags (additive). Persisted under saved.everCompletedQuests; shared
 -- with PetSystem. Used ONLY to gate the first-time-only rare roll (separate from current ownership). Missing = never completed.
 _G.playerEverCompletedQuests = _G.playerEverCompletedQuests or {}
-local DEFAULT_COINS, DEFAULT_STOMACH, DEFAULT_ISLAND = 25, 100, 1 -- new player: 25 coins, Tiny gut (100), island 1
+local DEFAULT_COINS, DEFAULT_STOMACH, DEFAULT_ISLAND = 25, 100, 1 -- new player: 25 coins, Tiny gut (100, base StomachMax), island 1
+print("[RESET] new-player defaults: coins=25, stomach=base, gamepasses=owned-only, islands=locked-to-1, test grants removed.")
 -- SAVE RECORD VERSION. ONE-TIME WIPE: bumped to 4. On load, any record whose saveVersion ~= SAVE_VERSION
 -- (old records have no saveVersion field at all -> nil; version-2 AND version-3 records from the prior
 -- wipes also no longer match) is treated as a brand-new player (defaults: 25 coins, Tiny gut, island 1,
@@ -267,11 +284,12 @@ local DEFAULT_COINS, DEFAULT_STOMACH, DEFAULT_ISLAND = 25, 100, 1 -- new player:
 local SAVE_VERSION = 4
 local AUTOSAVE_INTERVAL = 90      -- seconds between autosaves
 local dataLoaded = {}             -- [player] = true once load succeeded & applied; gates ALL saves
--- [BALANCE TESTING] While TRUE, save/load is DISABLED: every join starts as a brand-NEW player
--- (25 coins, island 1, Tiny Gut 100, highestIslandReached 1) and NOTHING is ever written to the
--- DataStore — the join load is skipped, and the autosave / PlayerRemoving / BindToClose saves are all
--- skipped (they route through savePlayerData). Flip to false to restore normal save/load.
-local DISABLE_SAVE_FOR_TESTING = false
+-- [NOSAVE TEST] \xE2\x9A\xA0 TEMPORARY -- REMOVE BEFORE LAUNCH. While TRUE, save/load is DISABLED for EVERY player: every
+-- join starts as a brand-NEW player (forced 25 coins, island 1, Tiny Gut 100, fart power 0/100, highestIslandReached 1)
+-- and NOTHING is ever written to the DataStore -- the join load is skipped, and the autosave / PlayerRemoving /
+-- BindToClose saves are all skipped (they route through savePlayerData). Flip to false to restore normal save/load.
+local DISABLE_SAVE_FOR_TESTING = true -- \xE2\x9A\xA0 NOSAVE TEST: forced fresh 25-coin start + no persistence. REMOVE BEFORE LAUNCH.
+if DISABLE_SAVE_FOR_TESTING then print("[NOSAVE TEST] saving disabled, forced 25 coins on join — REMOVE BEFORE LAUNCH") end
 -- [TEST — ONE-TIME FULL DATA CAPTURE] While TRUE: the player joins with ~unlimited coins (9,999,999)
 -- and can buy/switch to ANY stomach tier (Tiny..Iron) from the shop for FREE (cost/coins ignored), so
 -- every tier's full-tank reach can be sampled in a single run with no grinding. This ONLY removes the
@@ -308,35 +326,9 @@ local eventsFiredTally = {}       -- { [eventName] = count }
 -- unavailable, e.g. Studio API off — run on defaults, don't persist) | "fail",nil (GetAsync errored
 -- every retry — caller must NOT hand out a fresh save that could overwrite real data).
 local function fetchPlayerData(player)
-	if player.UserId == TEST_ACCOUNT_USERID then
-		print("[TEST ACCOUNT] lando5485 - permanent reset, save disabled")
-		return "ok", nil -- brand-new EVERY join (25 coins, Tiny gut, island 1, no progress, no saved meter)
-	end
-	if SPAWN_AT_PIZZA_PALMS_TEST and player.UserId == FRESH_PLAYER_USERID then
-		-- PRIORITY over FRESH_PLAYER_TEST: hand back a synthetic "save" so the load path below spawns
-		-- Broskie on Island 14 (Pizza Palms) with huge test gas/stomach (full tank) to reach the black
-		-- hole. saveVersion stamped so it isn't wiped. NEVER persisted (savePlayerData skips this user).
-		print("[PlayerStats] \xE2\x9A\xA0 SPAWN_AT_PIZZA_PALMS_TEST ACTIVE for Broskie310111 - spawning on Island 14 with test gas/stomach to view black hole. Saving DISABLED. REMOVE BEFORE LAUNCH.")
-		return "ok", {
-			saveVersion      = SAVE_VERSION, -- match current version so the load path doesn't treat it as a wipe
-			coins            = 1000000,      -- generous test coins
-			stomachMax       = 99999,        -- huge gut -> tons of fuel / very high climb
-			island           = 14,           -- Pizza Palms unlocked + selected-able in the menu
-			highestIsland    = 14,           -- home base = Island 14 (spawns on its stand)
-			totalFartPower   = 0,
-			totalCoinsEarned = 0,
-			fartMeter        = 99999,         -- full gas (clamped to stomachMax on load)
-		}
-	end
-	if FRESH_PLAYER_TEST and player.UserId == FRESH_PLAYER_USERID then
-		print("[PlayerStats] \xE2\x9A\xA0 FRESH PLAYER TEST ACTIVE for Broskie310111 - loading new-player defaults, gamepasses voided, saving DISABLED for this user. REMOVE BEFORE LAUNCH.")
-		return "ok", nil -- brand-new defaults; real save is left untouched (savePlayerData also skips this user)
-	end
-	if isFreshPlayer2(player) then
-		print("[PlayerStats] itsmaddmax2 joined - userId = "..player.UserId.." (put this in FRESH_PLAYER_2_USERID)")
-		print("[PlayerStats] \xE2\x9A\xA0 FRESH PLAYER 2 TEST ACTIVE for itsmaddmax2 - new-player defaults, gamepasses voided, saving DISABLED. REMOVE BEFORE LAUNCH.")
-		return "ok", nil -- brand-new defaults; nothing saved (savePlayerData also skips this user)
-	end
+	-- [RESET] All per-user TEST overrides removed (permanent-reset account, Spawn-at-Pizza-Palms island-14/99999
+	-- stomach, Fresh-Player / Fresh-Player-2 forced new-player + gamepass void). Every player now loads their REAL
+	-- save below, or new-player DEFAULTS (25 coins / Tiny Gut 100 / island 1, no gamepasses) if they have none.
 	if DISABLE_SAVE_FOR_TESTING then
 		print("LOAD: "..player.Name.." SKIPPED (DISABLE_SAVE_FOR_TESTING) — starting as a brand-new player (defaults)")
 		return "ok", nil -- "ok" + nil = brand-new player -> defaults applied (25 coins, island 1, Tiny Gut)
@@ -363,17 +355,8 @@ end
 -- failed/never-loaded player can't wipe their save. pcall'd.
 local function savePlayerData(player, trigger)
 	trigger = trigger or "?"
-	if player.UserId == TEST_ACCOUNT_USERID then
-		return -- permanent test account (lando5485): NEVER write to the DataStore
-	end
-	if (FRESH_PLAYER_TEST or SPAWN_AT_PIZZA_PALMS_TEST) and player.UserId == FRESH_PLAYER_USERID then
-		print("SAVE ("..trigger.."): Broskie310111 SKIPPED (FRESH/SPAWN test) — real save preserved on disk, test stats never persisted")
-		return -- \xE2\x9A\xA0 TEST: never overwrite Broskie's real data while EITHER fresh or spawn-test mode is on
-	end
-	if isFreshPlayer2(player) then
-		print("SAVE ("..trigger.."): itsmaddmax2 SKIPPED (FRESH PLAYER 2 test) — never persisted; resets fresh each session")
-		return -- \xE2\x9A\xA0 TEST: never overwrite itsmaddmax2's data while fresh-player-2 mode is on
-	end
+	-- [RESET] per-user save-disable special-casing removed (lando5485 permanent reset, Broskie/itsmaddmax2 fresh-test
+	-- skips) -- saving now works normally for EVERY player.
 	if DISABLE_SAVE_FOR_TESTING then
 		print("SAVE ("..trigger.."): "..player.Name.." SKIPPED (DISABLE_SAVE_FOR_TESTING) — test runs are not persisted")
 		return
@@ -398,7 +381,10 @@ local function savePlayerData(player, trigger)
 	local data = {
 		saveVersion      = SAVE_VERSION,  -- stamp the current version so future joins load normally (post-wipe)
 		coins            = val("Coins", DEFAULT_COINS),
-		stomachMax       = val("StomachMax", DEFAULT_STOMACH),
+		-- [STOMACH RESET] while the gut is forced to base, persist the HIGHER of the real on-disk gut (loadedStomachMax)
+		-- and the live leaderstat -- so the reset is non-destructive (the saved tier survives) AND any coin-tier the player
+		-- buys this session still persists, while the forced base (<= both) never overwrites real progress. Reversible.
+		stomachMax       = FORCE_BASE_STOMACH and math.max(loadedStomachMax[player] or DEFAULT_STOMACH, val("StomachMax", DEFAULT_STOMACH)) or val("StomachMax", DEFAULT_STOMACH),
 		island           = val("Island", DEFAULT_ISLAND),
 		highestIsland    = highestIslandReached[player] or DEFAULT_ISLAND,
 		totalFartPower   = val("TotalFartPower", 0),
@@ -707,15 +693,32 @@ Players.PlayerAdded:Connect(function(player)
 
 	local ls = Instance.new("Folder"); ls.Name = "leaderstats"; ls.Parent = player
 	local coins  = Instance.new("IntValue"); coins.Name  = "Coins";          coins.Value  = saved.coins or DEFAULT_COINS;        coins.Parent  = ls
+	if DISABLE_SAVE_FOR_TESTING then coins.Value = DEFAULT_COINS end -- [NOSAVE TEST] \xE2\x9A\xA0 force a fresh 25-coin start, IGNORING any saved coin value. REMOVE BEFORE LAUNCH.
 	if TEST_FULL_DATA then coins.Value = TEST_FULL_DATA_COINS end -- [TEST] unlimited coins to sample every tier's reach without grinding
 	local island = Instance.new("IntValue"); island.Name = "Island";         island.Value = math.max(saved.island or DEFAULT_ISLAND, saved.highestIsland or DEFAULT_ISLAND); island.Parent = ls
 	local tfp    = Instance.new("IntValue"); tfp.Name    = "TotalFartPower"; tfp.Value    = saved.totalFartPower or 0;           tfp.Parent    = ls
 	local tce    = Instance.new("IntValue"); tce.Name    = "TotalCoinsEarned"; tce.Value  = saved.totalCoinsEarned or 0;         tce.Parent    = ls
-	local stomachMaxStat = Instance.new("IntValue"); stomachMaxStat.Name="StomachMax"; stomachMaxStat.Value=saved.stomachMax or DEFAULT_STOMACH; stomachMaxStat.Parent=ls
+	-- [STOMACH RESET] StomachMax: remember the REAL on-disk value (preserved through save), then force the live gut to
+	-- the BASE starting value while FORCE_BASE_STOMACH is on (don't trust a stored 9999 / any saved upgrade). Clear the
+	-- Infinite-Gut flag so the meter never locks full. When the reset is off, load the saved tier as normal.
+	loadedStomachMax[player] = saved.stomachMax or DEFAULT_STOMACH
+	local stomachStart = FORCE_BASE_STOMACH and DEFAULT_STOMACH or (saved.stomachMax or DEFAULT_STOMACH)
+	local stomachMaxStat = Instance.new("IntValue"); stomachMaxStat.Name="StomachMax"; stomachMaxStat.Value=stomachStart; stomachMaxStat.Parent=ls
+	if FORCE_BASE_STOMACH then player:SetAttribute("HasInfiniteGut", false) end
 	-- RESTORE FART METER: clamp the saved meter to the (restored) gut max — never above; NO lower cap.
-	-- (When DISABLE_SAVE_FOR_TESTING is on, `saved` is empty -> fartMeter nil -> 0, so it follows the save flag.)
-	local restoredMeter = math.max(0, math.min(math.floor(tonumber(saved.fartMeter) or 0), stomachMaxStat.Value))
+	-- [FART RESET] while the reset is on, the meter STARTS EMPTY (0) -- a fresh start is 0/StomachMax, never a full tank,
+	-- so a high saved meter can't restore as a FULL base tank on spawn/load. (Reset off -> restore the saved meter as
+	-- before.) (When DISABLE_SAVE_FOR_TESTING is on, `saved` is empty -> fartMeter nil -> 0, so it follows the save flag.)
+	local restoredMeter = FORCE_BASE_STOMACH and 0 or math.max(0, math.min(math.floor(tonumber(saved.fartMeter) or 0), stomachMaxStat.Value))
 	local currentPowerStat = Instance.new("IntValue"); currentPowerStat.Name="CurrentPower"; currentPowerStat.Value=restoredMeter; currentPowerStat.Parent=ls
+	print(string.format("[FART RESET] start CurrentPower=%d StomachMax=%d (should be 0/100)", currentPowerStat.Value, stomachMaxStat.Value))
+	-- [NOSAVE TEST] \xE2\x9A\xA0 TEMPORARY -- confirm the forced fresh start + that saving is off. REMOVE BEFORE LAUNCH.
+	if DISABLE_SAVE_FOR_TESTING then
+		print(string.format("[NOSAVE TEST] %s coins=%d power=%d/%d saveDisabled=yes", player.Name, coins.Value, currentPowerStat.Value, stomachMaxStat.Value))
+	end
+	-- [STOMACH RESET] confirm the starting gut + meter are base and ALL gut ownership reads false.
+	print(string.format("[STOMACH RESET] ownsInfiniteGut=%s allGutsOwned=%d StomachMax=%d CurrentPower=%d (should be base, ownership all false)",
+		FORCE_BASE_STOMACH and "n" or "?", FORCE_BASE_STOMACH and 0 or 0, stomachMaxStat.Value, currentPowerStat.Value))
 	-- METER PERSISTENCE: remember the saved meter to RE-APPLY after the first spawn settles. We can't
 	-- rely on the leaderstat value above surviving, because the spawn's onLand fires LandingEvent(0)
 	-- which (decrease-only) zeros CurrentPower. The SelectIslandEvent spawn hook re-applies this value
@@ -748,12 +751,25 @@ Players.PlayerAdded:Connect(function(player)
 				local ok, owns = pcall(function()
 					return MarketplaceService:UserOwnsGamePassAsync(player.UserId, id)
 				end)
-				if FRESH_PLAYER_TEST and player.UserId == FRESH_PLAYER_USERID then owns = false end -- \xE2\x9A\xA0 TEST: VOID all gamepasses for Broskie310111 so they get the true fresh-player experience (no 2x, no Glitter, no Infinite Gut)
-				if isFreshPlayer2(player) then owns = false end -- \xE2\x9A\xA0 TEST: VOID all gamepasses for itsmaddmax2 (fresh-player experience)
+				-- [RESET] gamepass-voiding test hooks removed: ownership is whatever Roblox reports (owned-only) for EVERY player.
+				-- [STOMACH RESET] the GUT gamepass is forced un-owned while FORCE_BASE_STOMACH is on, so Infinite Gut never applies.
+				if name == "InfiniteGut" and FORCE_BASE_STOMACH then owns = false end
+				-- [NOSAVE TEST] the 2x FOREVER gamepass is forced un-owned while FORCE_NO_2X is on. REMOVE BEFORE LAUNCH.
+				if name == "TwoXForever" and FORCE_NO_2X then owns = false; player:SetAttribute("HasTwoXForever", false) end
 				if ok and owns then
 					if name == "TwoXForever" then gpData.twoXForever = true; player:SetAttribute("HasTwoXForever", true)
 					elseif name == "GlitterTrail" then gpData.glitterTrail = true; player:SetAttribute("HasGlitterTrail", true)
 					elseif name == "InfiniteGut" then applyInfiniteGut(player) -- forever pass: re-apply the Infinite Gut tier on join (effect is the StomachMax, not a client gpData flag)
+					end
+				elseif name == "InfiniteGut" and (FORCE_BASE_STOMACH or ok) then
+					-- [STOMACH RESET] forced un-owned, OR the ownership check SUCCEEDED as not-owned (never clamp on a failed
+					-- check -> don't strip a real owner on a transient error): clamp a stored 9999 back to base + clear the flag.
+					player:SetAttribute("HasInfiniteGut", false)
+					local lsg = player:FindFirstChild("leaderstats"); local smg = lsg and lsg:FindFirstChild("StomachMax")
+					if smg and smg.Value >= INFINITE_GUT_MAX then
+						smg.Value = DEFAULT_STOMACH
+						pcall(function() StomachUpdateEvent:FireClient(player, DEFAULT_STOMACH, "Tiny Gut") end)
+						print("[STOMACH RESET] clamped stored Infinite Gut (9999) back to base for "..player.Name.." (not owned / forced)")
 					end
 				end
 			end
@@ -812,6 +828,7 @@ Players.PlayerRemoving:Connect(function(player)
 	gamepassReady[player] = nil
 	lastMeter[player] = nil       -- cleared AFTER save (save reads it for the meter)
 	joinRestoreMeter[player] = nil
+	loadedStomachMax[player] = nil -- cleared AFTER save (save reads it to preserve the real on-disk gut while forced)
 	_G.playerOwnedPets[player] = nil  -- cleared AFTER save (save reads it for ownedPets)
 	_G.playerEquippedPet[player] = nil
 	_G.playerDiscoveredQuests[player] = nil
@@ -850,6 +867,7 @@ BuyFoodEvent.OnServerEvent:Connect(function(player, foodName)
 		(player:GetAttribute("TwoXHourExpiry") and player:GetAttribute("TwoXHourExpiry") > os.time())
 	if DISABLE_2X and game:GetService("RunService"):IsStudio() then has2x = false end -- [TESTING] no 2x boost in Studio
 	if DISABLE_PERKS_FOR_BALANCE then has2x = false end -- [BALANCE] force normal 1x power (Studio AND live) -> Beans = 8
+	if FORCE_NO_2X then has2x = false end -- [NOSAVE TEST] 2x forced un-owned for everyone -> no 2x power boost. REMOVE BEFORE LAUNCH.
 	-- With the pass, food adds POWER_PASS_MULT x its power to ACTUAL flight fuel, and the
 	-- effective tank grows to stomachMax * POWER_PASS_MULT (so the player flies higher).
 	local powerGain   = has2x and math.floor(food.power * POWER_PASS_MULT) or food.power
@@ -1037,11 +1055,9 @@ SelectIslandEvent.OnServerEvent:Connect(function(player, islandNum)
 	if hasChosenIsland[player] then return end -- one choice per session (the join menu)
 	islandNum = tonumber(islandNum); if not islandNum then return end
 	islandNum = math.floor(islandNum)
-	-- \xE2\x9A\xA0 TEST: test accounts can spawn on ANY island from the select page. REMOVE BEFORE LAUNCH.
-	-- Test accounts bypass the "reached island" clamp so they can spawn on any of the 14 (the client unlocks
-	-- all 14 cards for them). Normal players are still validated against their saved highestIslandReached.
-	local isTester = isAllowedTestUser(player)
-	local maxIsland = isTester and 14 or (highestIslandReached[player] or 1)
+	-- [RESET] all-islands-unlock TEST bypass removed: EVERY player is validated against their REAL reached island
+	-- (highestIslandReached), so new players are locked to island 1 and can only spawn on islands they've reached.
+	local maxIsland = highestIslandReached[player] or 1
 	if islandNum < 1 or islandNum > maxIsland then
 		print("ISLAND SELECT: "..player.Name.." requested LOCKED island "..tostring(islandNum).." (max "..maxIsland.."), clamping")
 		islandNum = math.clamp(islandNum, 1, maxIsland)
@@ -1050,7 +1066,6 @@ SelectIslandEvent.OnServerEvent:Connect(function(player, islandNum)
 	spawnIsland[player] = islandNum
 	player:LoadCharacter() -- spawn the held player; onCharacterAdded teleports to the chosen stand
 	print("ISLAND SELECT: "..player.Name.." spawning on island "..islandNum)
-	if isTester then print("[TEST] "..player.Name.." spawned on island "..islandNum.." via all-islands-unlocked test. REMOVE BEFORE LAUNCH.") end
 	-- FART METER RESTORE (after-spawn): the spawn's own onLand fires LandingEvent(0), which zeros the
 	-- decrease-only CurrentPower — so we must re-apply the saved meter SERVER-SIDE once the spawn has
 	-- settled, then replicate it to the client's gas meter via RegenEvent. This runs AFTER the
@@ -1063,7 +1078,9 @@ SelectIslandEvent.OnServerEvent:Connect(function(player, islandNum)
 		-- the saved meter (which could be 0/low) — otherwise it would overwrite the instant-full meter that
 		-- applyInfiniteGut set on join, and the server value would disagree with the client's full/never-drain
 		-- meter. Gated on ownership, so NON-owners restore their saved meter exactly as before.
-		local infiniteGut = (player:GetAttribute("HasInfiniteGut") == true)
+		-- [STOMACH RESET] while the gut is forced to base, NEVER take the full-tank Infinite-Gut branch (so CurrentPower
+		-- is the saved meter clamped to the base StomachMax, never the old 9999 full tank).
+		local infiniteGut = (not FORCE_BASE_STOMACH) and (player:GetAttribute("HasInfiniteGut") == true)
 		if not infiniteGut and (not want or want <= 0) then return end
 		task.wait(2.5) -- let the character spawn, settle, and fire its onLand(0) FIRST
 		if not player.Parent then return end
@@ -1412,7 +1429,7 @@ end
 MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, passId, wasPurchased)
 	if not wasPurchased then return end
 	local gpData = {}
-	if passId == GAMEPASS_IDS.TwoXForever then
+	if passId == GAMEPASS_IDS.TwoXForever and not FORCE_NO_2X then -- [NOSAVE TEST] don't grant 2x while forced un-owned. REMOVE BEFORE LAUNCH.
 		player:SetAttribute("HasTwoXForever", true); gpData.twoXForever = true
 	elseif passId == GAMEPASS_IDS.GlitterTrail then
 		player:SetAttribute("HasGlitterTrail", true); gpData.glitterTrail = true

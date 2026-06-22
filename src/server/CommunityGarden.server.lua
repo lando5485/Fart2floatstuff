@@ -92,6 +92,15 @@ local function setProgress(n)
 end
 local function addProgress(n) setProgress(gardenProgress + n) end
 
+-- ===== STAGE 4 (GLOBAL CROSS-SERVER) forward declarations. The bodies live in the "GLOBAL GARDEN" module further
+-- down; declared here so the watering handler, the fill milestone, and INIT can call them. When the backend is
+-- unreachable (e.g. Studio with API access off) globalActive stays false and EVERYTHING falls back to LOCAL-only.
+local globalActive = false   -- true once DataStore is reachable -> contributions/resets go global; else local-only
+local globalContribute       -- function(n): atomic global +n (DataStore UpdateAsync) + debounced publish; local fallback
+local performResetGlobal     -- function(reason): atomic global reset to 0 + broadcast (daily schedule + fill milestone)
+local startGlobalGarden      -- function(): subscribe + initial DataStore read + reconcile/reset loops (called from INIT)
+local recordGoalCycle        -- function(seasonName): opens the 5-day RewardChest claim window for this goal cycle; assigned in the CHEST REWARD module
+
 -- GARDENER CHAT handler (server-authoritative): "menu" returns the greeting + question list; "ask" returns the
 -- answer for a key, computing the LIVE "How close are we?" reply from the same progress the dial uses.
 local function gardenerLiveAnswer(key)
@@ -528,6 +537,30 @@ local function gardenOrigin()
 	return b, math.atan2(lsd.Z, lsd.X)
 end
 
+-- ===== [COLLISION] make the whole garden structure + props SOLID so players can't walk through them. Sweeps the
+-- build container and sets CanCollide=true on every BasePart EXCEPT (a) the field plants (CommunityGardenPlants -- kept
+-- walk-through so the field stays walkable) and (b) invisible effect / SurfaceGui host parts (Transparency >= 1).
+-- Idempotent; safe to re-run after any async prop / sunflower (re)build. The WaterSpot lives on the ISLAND (not in
+-- here), so its hold-E interaction prompt is untouched; ProximityPrompts aren't affected by CanCollide either way.
+local function setGardenSolid()
+	if not gardenBuild then return 0 end
+	local n = 0
+	for _, p in ipairs(gardenBuild:GetDescendants()) do
+		if p:IsA("BasePart") then
+			local skip = (p.Transparency >= 1) -- invisible host / anchor / SurfaceGui board backing -> leave non-colliding
+			if not skip then
+				local a = p
+				while a and a ~= gardenBuild do -- field plants (crops/flowers/tufts/bushes) stay walk-through
+					if a.Name == "CommunityGardenPlants" then skip = true; break end
+					a = a.Parent
+				end
+			end
+			if not skip then p.CanCollide = true; n = n + 1 end
+		end
+	end
+	return n
+end
+
 local function renderStage(stage)
 	if not plantsFolder or not gardenTopCF then return end
 	plantsFolder:ClearAllChildren()
@@ -541,7 +574,7 @@ local function renderStage(stage)
 		if toSign.Magnitude < 0.05 then toSign = Vector3.new(0, 0, -1) end
 		-- face the sign, THEN turn 90deg CW so the centerpiece rotates together with the hardscape (same -90 as `base`)
 		local baseCFrame = CFrame.lookAt(center, center + toSign.Unit, Vector3.new(0, 1, 0)) * CFrame.Angles(0, math.rad(-90), 0)
-		task.spawn(function() pcall(buildSunflowerCenterpiece, stage, baseCFrame, gardenBuild) end)
+		task.spawn(function() pcall(buildSunflowerCenterpiece, stage, baseCFrame, gardenBuild); pcall(setGardenSolid) end) -- [COLLISION] re-solidify so the freshly (re)built sunflower centerpiece isn't walk-through
 	end
 	if stage <= 0 then return end -- bare soil (composed scene); the centerpiece shoot is built above
 	local scale = STAGE_SCALE[stage] or 1
@@ -712,8 +745,18 @@ harvestAndAdvance = function(reason)
 	harvestCount = harvestCount + 1
 	local sName = SEASONS[gardenSeasonIndex].name
 	print(("[Garden][Harvest] season %d (%s) harvested at %d (%s)"):format(harvestCount, sName, getProgress(), reason or "full"))
+	pcall(function() if recordGoalCycle then recordGoalCycle(sName) end end) -- [CHEST REWARD] open the 5-day RewardChest claim window for this goal cycle's pet
 	rewardEveryone(sName)
 	pcall(function() GardenWaterEvent:FireAllClients({ kind = "celebrate", text = "\xF0\x9F\x8C\xBB The garden bloomed! Everyone gets 2x coins!" }) end)
+
+	-- STAGE 4: when GLOBAL, the fill is a SHARED milestone -> this server's players were just rewarded above; we do NOT
+	-- reset the local copy here (that would desync from the global 2000 and re-trigger). The garden STAYS bloomed until
+	-- the DAILY schedule resets the global value for every server at once. Re-arm the guard so the next day can harvest.
+	if globalActive then
+		print("[GLOBAL GARDEN] fill milestone -- rewarded online players; garden stays bloomed until the daily reset")
+		harvesting = false
+		return
+	end
 
 	-- advance to the NEXT season, repaint the palette, reset progress, and rebuild visuals (all pcall'd)
 	gardenSeasonIndex = (gardenSeasonIndex % #SEASONS) + 1
@@ -736,6 +779,323 @@ task.spawn(function()
 		end
 	end
 end)
+
+--======================================================================
+-- \xF0\x9F\x8C\x8D STAGE 4: GLOBAL CROSS-SERVER GARDEN. The garden's growth is shared by EVERY live server: a DataStore holds
+-- the durable, authoritative 0..GOAL value (survives all servers being empty); contributions are ATOMIC (UpdateAsync
+-- so concurrent servers never overwrite each other); MessagingService PUSHES every change so all servers' dials +
+-- sunflowers match within a second or two; a periodic GetAsync reconcile catches any missed message; and a DAILY reset
+-- clears the global progress on a schedule (first server past the day boundary performs it, then broadcasts). EVERY
+-- backend call is pcall'd -- on failure it prints the error and falls back to LOCAL-only behaviour, never erroring the
+-- garden. LIVE-ONLY: in Studio with API access off, DataStore/MessagingService fail; that's expected (stays local +
+-- prints). It layers ON TOP of the existing local watering/dial/sunflower (which keep working as the fallback).
+--======================================================================
+do
+	local DataStoreService = game:GetService("DataStoreService")
+	local MessagingService = game:GetService("MessagingService")
+
+	local GG_STORE  = "GlobalGarden_v1"    -- DataStore name (durable source of truth)
+	local GG_KEY    = "progress"           -- key holding { progress = 0..GOAL, day = <dayId>, week = <weekId> }
+	local GG_TOPIC  = "GlobalGardenSync1"  -- MessagingService topic (real-time push)
+	local RECONCILE = 45                   -- seconds between read-only reconciles + reset-boundary checks
+	local DEBOUNCE  = 1.5                  -- seconds: batch rapid contributions into ONE publish (stay under limits)
+
+	local store
+	local function ggStore()
+		if store then return store end
+		local ok, s = pcall(function() return DataStoreService:GetDataStore(GG_STORE) end)
+		if ok then store = s end
+		return store
+	end
+
+	local function curDay()  return math.floor(os.time() / 86400) end
+	local function curWeek() return math.floor(os.time() / (7 * 86400)) end
+
+	local function sanitize(rec)
+		if type(rec) ~= "table" then rec = {} end
+		rec.progress = math.clamp(math.floor(tonumber(rec.progress) or 0), 0, GOAL)
+		rec.day  = math.floor(tonumber(rec.day)  or curDay())
+		rec.week = math.floor(tonumber(rec.week) or curWeek())
+		return rec
+	end
+
+	-- mutate `rec` to apply a DUE daily reset (+ advance the week marker). Returns true if it reset progress today.
+	local function applyDueReset(rec)
+		local didDaily = false
+		if rec.day < curDay() then rec.progress = 0; rec.day = curDay(); didDaily = true end
+		if rec.week < curWeek() then
+			-- \xF0\x9F\x94\xAE WEEKLY MILESTONE HOOK: award a weekly reward / advance the global season here (left as a clean hook).
+			rec.week = curWeek()
+		end
+		return didDaily
+	end
+
+	-- push an authoritative global value onto the LOCAL dial + sunflower (idempotent; setProgress drives everything)
+	local function applyGlobalValue(n)
+		n = math.clamp(math.floor(tonumber(n) or 0), 0, GOAL)
+		if n == getProgress() then return end
+		pcall(setProgress, n)
+	end
+
+	-- local reset side-effects (dial -> 0, season timer restart, clear harvest guard, GardenToast notification). A short
+	-- dedupe window swallows the resetting server's own broadcast echo / multiple servers resetting near-simultaneously.
+	local lastResetStamp = 0
+	local function applyResetLocally(reason)
+		if os.clock() - lastResetStamp < 3 then return end
+		lastResetStamp = os.clock()
+		pcall(setProgress, 0)
+		seasonStartTime = os.time()
+		harvesting = false
+		pcall(function() GardenWaterEvent:FireAllClients({ kind = "celebrate", text = "\xF0\x9F\x8C\x85 The Global Garden reset \xE2\x80\x94 a fresh start, water it up!" }) end)
+	end
+
+	-- debounced MessagingService publisher (batches the LATEST total; at most one publish per DEBOUNCE window)
+	local pubPending, pubScheduled = nil, false
+	local function publishNow(payload)
+		local ok, err = pcall(function() MessagingService:PublishAsync(GG_TOPIC, payload) end)
+		if not ok then print("[GLOBAL GARDEN] error PublishAsync: " .. tostring(err) .. " (fell back to local)") end
+	end
+	local function schedulePublish(total)
+		pubPending = total
+		if pubScheduled then return end
+		pubScheduled = true
+		task.delay(DEBOUNCE, function()
+			pubScheduled = false
+			local v = pubPending; pubPending = nil
+			if v then publishNow({ t = "progress", progress = v }) end
+		end)
+	end
+
+	-- ATOMIC contribution: UpdateAsync(+n) so concurrent servers can't overwrite each other; local fallback on failure.
+	globalContribute = function(n)
+		n = math.floor(tonumber(n) or 0)
+		if n == 0 then return end
+		if not globalActive then pcall(addProgress, n); return end -- backend down -> local-only
+		local s = ggStore()
+		local newTotal
+		local ok, err = pcall(function()
+			s:UpdateAsync(GG_KEY, function(old)
+				old = sanitize(old)
+				applyDueReset(old)                                  -- lazily clear if the day already rolled over
+				old.progress = math.clamp(old.progress + n, 0, GOAL)
+				newTotal = old.progress
+				return old
+			end)
+		end)
+		if ok and newTotal then
+			applyGlobalValue(newTotal)
+			print(string.format("[GLOBAL GARDEN] contribute: +%d -> global=%d, published", n, newTotal))
+			schedulePublish(newTotal)
+		else
+			print("[GLOBAL GARDEN] error UpdateAsync(contribute): " .. tostring(err) .. " (fell back to local)")
+			pcall(addProgress, n) -- still credit the player's water locally so the dial moves
+		end
+	end
+
+	-- ATOMIC reset to 0 + broadcast. reason="force" resets unconditionally (community-fill milestone / test); otherwise
+	-- it resets only if the DAILY boundary passed (idempotent -> the first server past midnight performs it exactly once).
+	performResetGlobal = function(reason)
+		if not globalActive then pcall(applyResetLocally, reason); return end
+		local s = ggStore()
+		local didReset, newProgress = false, nil
+		local ok, err = pcall(function()
+			s:UpdateAsync(GG_KEY, function(old)
+				old = sanitize(old)
+				if reason == "force" then old.progress = 0; old.day = curDay(); didReset = true
+				else didReset = applyDueReset(old) end
+				newProgress = old.progress
+				return old
+			end)
+		end)
+		if not ok then print("[GLOBAL GARDEN] error UpdateAsync(reset): " .. tostring(err) .. " (fell back to local)"); return end
+		if didReset then
+			applyResetLocally(reason)
+			local label = (reason == "force") and "milestone" or "daily"
+			publishNow({ t = "reset", reason = label })
+			print(string.format("[GLOBAL GARDEN] reset fired (%s): global -> 0, broadcast", label))
+		else
+			applyGlobalValue(newProgress or 0)
+		end
+	end
+
+	-- read-only reconcile (cheap GetAsync): match the local dial to the authoritative value + trigger a due reset.
+	local function pullGlobal(tag)
+		if not globalActive then return end
+		local s = ggStore()
+		local rec
+		local ok, err = pcall(function() rec = s:GetAsync(GG_KEY) end)
+		if not ok then print("[GLOBAL GARDEN] error GetAsync(" .. tostring(tag) .. "): " .. tostring(err) .. " (fell back to local)"); return end
+		rec = sanitize(rec)
+		if rec.day < curDay() then performResetGlobal("daily") else applyGlobalValue(rec.progress) end
+	end
+
+	-- real-time receive: any server's contribution/reset updates THIS server's dial immediately.
+	local function onMessage(message)
+		local d = message and message.Data
+		if type(d) ~= "table" then return end
+		if d.t == "reset" then
+			applyResetLocally(d.reason or "daily")
+			print(string.format("[GLOBAL GARDEN] recv message: reset (%s), dial updated", tostring(d.reason)))
+		elseif d.t == "progress" then
+			local n = math.clamp(math.floor(tonumber(d.progress) or 0), 0, GOAL)
+			applyGlobalValue(n)
+			print(string.format("[GLOBAL GARDEN] recv message: global=%d, dial updated", n))
+		end
+	end
+
+	-- (re)load the durable value from DataStore + mark the backend live. Used at startup AND retried by the loop if the
+	-- first attempt failed (transient outage / API just turned on), so a server upgrades from local-only -> global
+	-- WITHOUT a restart. Returns true once the backend is reachable.
+	local function tryInitGlobal(tag)
+		local s = ggStore()
+		if not s then print("[GLOBAL GARDEN] error GetDataStore(" .. tag .. "): DataStore unavailable (fell back to local)"); return false end
+		local rec
+		local ok, err = pcall(function() rec = s:GetAsync(GG_KEY) end)
+		if not ok then print("[GLOBAL GARDEN] error GetAsync(" .. tag .. "): " .. tostring(err) .. " (fell back to local)"); return false end
+		globalActive = true
+		rec = sanitize(rec)
+		if rec.day < curDay() then performResetGlobal("daily") else applyGlobalValue(rec.progress) end
+		print(string.format("[GLOBAL GARDEN] init: loaded global progress=%d/%d from DataStore%s", getProgress(), GOAL, (tag == "retry") and " (retry)" or ""))
+		return true
+	end
+
+	-- STARTUP (called from INIT after the garden is built so the dial exists): subscribe to real-time pushes, load the
+	-- durable value, then run a periodic reconcile (read-only) + daily-reset-boundary check. The same loop RETRIES the
+	-- DataStore load while the backend is unreachable, so a transient outage never permanently strands a server local.
+	startGlobalGarden = function()
+		local subOk, subErr = pcall(function() MessagingService:SubscribeAsync(GG_TOPIC, onMessage) end)
+		if not subOk then print("[GLOBAL GARDEN] error SubscribeAsync: " .. tostring(subErr) .. " (fell back to local)") end
+		tryInitGlobal("init")
+		task.spawn(function()
+			while true do
+				task.wait(RECONCILE)
+				if globalActive then pcall(pullGlobal, "reconcile") else pcall(tryInitGlobal, "retry") end
+			end
+		end)
+	end
+end
+
+--======================================================================
+-- \xF0\x9F\x8E\x81 CHEST REWARD -- the Global-Goal pet, claimable at the RewardChest. When the garden GOAL is reached
+-- (harvestAndAdvance -> recordGoalCycle), a 5-DAY claim window opens: each player may claim that goal-cycle's pet ONCE
+-- (the season's pet rewardEveryone grants). Cross-server consistent + idempotent via DataStore -- UpdateAsync stamps
+-- the cycle's reachedAt only if missing/expired, so EVERY server shares ONE timestamp -> a player can't double-claim
+-- across servers; the per-player claimed flag is stored per userId. LIVE-ONLY: in Studio with API access off the
+-- DataStore is nil and it falls back to in-memory (works for the session). All DataStore calls are pcall'd.
+--======================================================================
+do
+	local DataStoreService = game:GetService("DataStoreService")
+	local CHEST_WINDOW = 5 * 24 * 3600      -- claimable for 5 days after the goal is reached
+	local RELOAD       = 60                  -- re-read the shared goal cycle this often (cross-server freshness)
+	local DS_NAME, GOAL_KEY = "GardenChestReward_v1", "goalcycle"
+	local SEASON_PET_NAME = { Summer = "Sunflower Bee", Autumn = "Maple Fox", Winter = "Frost Penguin", Spring = "Blossom Bunny" }
+
+	local chestStore
+	do local ok, s = pcall(function() return DataStoreService:GetDataStore(DS_NAME) end); if ok then chestStore = s end end
+
+	local goalCycle           -- { reachedAt = <os.time>, season = <name> } or nil -> the current claimable cycle
+	local claimedCache = {}   -- [userId] = reachedAt the player last claimed (in-memory cache)
+	local claiming = {}       -- [userId] = true while a claim is mid-flight (anti double-click)
+
+	local function loadGoalCycle()
+		if not chestStore then return end
+		local ok, rec = pcall(function() return chestStore:GetAsync(GOAL_KEY) end)
+		if ok and type(rec) == "table" and tonumber(rec.reachedAt) then
+			goalCycle = { reachedAt = math.floor(rec.reachedAt), season = tostring(rec.season or "Summer") }
+		end
+	end
+
+	-- assigned to the file-level forward declaration so harvestAndAdvance can open the window when the goal is reached
+	recordGoalCycle = function(season)
+		season = tostring(season or "Summer")
+		if not chestStore then -- Studio / API-off fallback: keep it in-memory for the session
+			if (not goalCycle) or (os.time() - goalCycle.reachedAt) >= CHEST_WINDOW then
+				goalCycle = { reachedAt = os.time(), season = season }
+			end
+			print("[CHEST REWARD] goal cycle opened (local): season=" .. goalCycle.season)
+			return
+		end
+		local ok, rec = pcall(function()
+			return chestStore:UpdateAsync(GOAL_KEY, function(old)
+				old = (type(old) == "table") and old or {}
+				local now = os.time()
+				if (not tonumber(old.reachedAt)) or (now - old.reachedAt) >= CHEST_WINDOW then
+					old.reachedAt = now; old.season = season -- FIRST server this cycle stamps it; the rest read the SAME timestamp
+				end
+				return old
+			end)
+		end)
+		if ok and type(rec) == "table" and tonumber(rec.reachedAt) then
+			goalCycle = { reachedAt = math.floor(rec.reachedAt), season = tostring(rec.season or season) }
+			print("[CHEST REWARD] goal cycle opened: season=" .. goalCycle.season .. " reachedAt=" .. goalCycle.reachedAt)
+		else
+			goalCycle = { reachedAt = os.time(), season = season } -- backend hiccup -> local for now; reconcile reloads later
+			print("[CHEST REWARD] error UpdateAsync(goalcycle): " .. tostring(rec) .. " (fell back to local)")
+		end
+	end
+
+	local function playerClaimed(player) -- returns the reachedAt the player last claimed (0 = never)
+		local uid = player.UserId
+		if claimedCache[uid] ~= nil then return claimedCache[uid] end
+		local v = 0
+		if chestStore then
+			local ok, rec = pcall(function() return chestStore:GetAsync("p_" .. uid) end)
+			if ok and type(rec) == "table" and tonumber(rec.claimedAt) then v = math.floor(rec.claimedAt) end
+		end
+		claimedCache[uid] = v
+		return v
+	end
+
+	local function rewardState(player)
+		local now = os.time()
+		if not (goalCycle and goalCycle.reachedAt) then
+			return { state = "none", goalReached = false, within = false, claimed = false, petName = "the Garden pet" }
+		end
+		local within  = (now - goalCycle.reachedAt) < CHEST_WINDOW
+		local claimed = (playerClaimed(player) == goalCycle.reachedAt)
+		local state = claimed and "claimed" or (not within and "expired") or "ready"
+		return {
+			state = state, goalReached = true, within = within, claimed = claimed,
+			petName  = SEASON_PET_NAME[goalCycle.season] or (goalCycle.season .. " Pet"),
+			season   = goalCycle.season,
+			secsLeft = within and math.max(0, CHEST_WINDOW - (now - goalCycle.reachedAt)) or 0,
+		}
+	end
+
+	local function logState(player, s)
+		print(string.format("[CHEST REWARD] player=%s goalReached=%s claimed=%s withinWindow=%s -> state=%s",
+			player.Name, s.goalReached and "y" or "n", s.claimed and "y" or "n", s.within and "y" or "n", s.state))
+	end
+
+	local GardenChestState = getOrCreateRemoteFunction("GardenChestState") -- c->s: () -> reward state
+	local GardenChestClaim = getOrCreateRemoteFunction("GardenChestClaim") -- c->s: () -> grant + new state
+
+	GardenChestState.OnServerInvoke = function(player)
+		local s = rewardState(player); logState(player, s); return s
+	end
+
+	GardenChestClaim.OnServerInvoke = function(player)
+		local uid = player.UserId
+		if claiming[uid] then return rewardState(player) end -- anti double-click (mid-flight)
+		claiming[uid] = true
+		local s = rewardState(player)
+		if s.state ~= "ready" then claiming[uid] = nil; logState(player, s); return s end -- (a) goal reached + (b) unclaimed + within window
+		local granted = false
+		pcall(function() if _G.grantSeasonalPet then granted = _G.grantSeasonalPet(player, goalCycle.season) end end) -- grant the global-goal pet the normal way
+		if granted then
+			claimedCache[uid] = goalCycle.reachedAt
+			if chestStore then pcall(function() chestStore:SetAsync("p_" .. uid, { claimedAt = goalCycle.reachedAt }) end) end
+			print("[CHEST REWARD] granted global-goal pet to " .. player.Name)
+		end
+		claiming[uid] = nil
+		local ns = rewardState(player); logState(player, ns); return ns -- now "claimed" (or unchanged if the grant failed)
+	end
+
+	loadGoalCycle()
+	task.spawn(function() while true do task.wait(RELOAD); pcall(loadGoalCycle) end end) -- keep the shared cycle fresh across servers
+	Players.PlayerRemoving:Connect(function(p) claimedCache[p.UserId] = nil; claiming[p.UserId] = nil end)
+	print("[CHEST REWARD] ready (window=5d, store=" .. (chestStore and "live" or "local-fallback") .. ")")
+end
 
 local function updateSign()
 	if not signLabels then return end
@@ -922,30 +1282,69 @@ local function buildHardscape()
 		hpart("PillarBase", BLK, Vector3.new(w + 0.8, 0.6, w + 0.8), STONE2, ccf * CFrame.new(0, 1.0, 0), true)  -- darker base step
 		local sBot = 1.3
 		local sTop = sBot + h
-		-- 2) SHAFT: ONE smooth box column built as a vertical STACK of full-width (w) sections -- all flush at w/2 (a
-		-- single smooth surface, NO protruding bricks). Two of the sections are thin DARKER band rings for subtle detail.
-		local bh = 0.4                                   -- band thickness
-		local by1, by2 = sBot + h * 0.3, sBot + h * 0.7  -- band centre heights (2 bands)
-		local function seg(name, yLo, yHi, color) -- a full-width smooth section from yLo..yHi (flush column surface)
-			if yHi - yLo > 0.02 then hpart(name, BLK, Vector3.new(w, yHi - yLo, w), color, ccf * CFrame.new(0, (yLo + yHi) * 0.5, 0), true) end
+		-- ROUNDED stone moldings (CYL collars) soften the blocky base/neck so the column reads smooth, not boxy
+		local function collar(nm, y, dia, thick, color)
+			hpart(nm, CYL, Vector3.new(thick, dia, dia), color, ccf * CFrame.new(0, y, 0) * CFrame.Angles(0, 0, math.rad(90)), true)
 		end
-		seg("Pillar", sBot, by1 - bh * 0.5, STONE)                 -- lower shaft
-		seg("PillarBand", by1 - bh * 0.5, by1 + bh * 0.5, STONE2)  -- flush darker band 1
-		seg("Pillar", by1 + bh * 0.5, by2 - bh * 0.5, STONE)       -- middle shaft
-		seg("PillarBand", by2 - bh * 0.5, by2 + bh * 0.5, STONE2)  -- flush darker band 2
-		seg("Pillar", by2 + bh * 0.5, sTop, STONE)                 -- upper shaft
-		hpart("PillarCapital", BLK, Vector3.new(w + 1.1, 0.8, w + 1.1), STONE, ccf * CFrame.new(0, sTop + 0.4, 0), true)    -- flared CAPITAL
-		hpart("PillarCapital", BLK, Vector3.new(w + 1.6, 0.35, w + 1.6), STONE2, ccf * CFrame.new(0, sTop + 0.95, 0), true) -- darker abacus
+		collar("PillarFootRing", sBot + 0.2, w * 1.18, 0.55, STONE2) -- rounded base molding above the plinth
+		-- 2) SHAFT: ONE clean, smooth, SINGLE-TONE column (classical, consistent stone) -- the refinement now comes from
+		-- the rounded base molding, neck astragal, echinus and crisp capital cornice, NOT from busy two-tone mid-banding.
+		hpart("Pillar", BLK, Vector3.new(w, sTop - sBot, w), STONE, ccf * CFrame.new(0, (sBot + sTop) * 0.5, 0), true)
+		collar("PillarNeckRing", sTop - 0.2, w * 1.12, 0.45, STONE2)  -- astragal necking just under the capital
+		collar("PillarEchinus",  sTop + 0.05, w + 0.5, 0.55, STONE)   -- rounded echinus bun softening the square capital
+		hpart("PillarCapital", BLK, Vector3.new(w + 1.1, 0.8, w + 1.1), STONE, ccf * CFrame.new(0, sTop + 0.4, 0), true)     -- flared CAPITAL
+		hpart("PillarFillet",  BLK, Vector3.new(w + 1.35, 0.16, w + 1.35), STONE2, ccf * CFrame.new(0, sTop + 0.82, 0), true) -- crisp thin cornice fillet (sharp shadow line)
+		hpart("PillarCapital", BLK, Vector3.new(w + 1.6, 0.35, w + 1.6), STONE, ccf * CFrame.new(0, sTop + 1.02, 0), true)   -- abacus (same tan stone -> consistent tone)
 		-- 4) GOLD CAP: a small gold collar + a CRISP faceted gold DIAMOND -- sharp 45deg-rotated facets, a wide girdle
 		-- tapering to a clean point (sharp boxes, never blobby). Bright + glossy so it clearly crowns the column.
 		local g = ccf * CFrame.new(0, sTop + 1.15, 0)
-		local function gold(name, shape, size, cf) local p = hpart(name, shape, size, GOLDB, cf, false); p.Material = Enum.Material.SmoothPlastic; p.Reflectance = 0.3; return p end
+		local function gold(name, shape, size, cf) local p = hpart(name, shape, size, GOLDB, cf, false); p.Material = Enum.Material.SmoothPlastic; p.Reflectance = 0.25; return p end -- unified warm-gold sheen (0.25 everywhere)
 		gold("GoldCollar", CYL, Vector3.new(0.5, capW + 0.2, capW + 0.2), g * CFrame.new(0, 0.25, 0) * CFrame.Angles(0, 0, math.rad(90))) -- small gold collar
 		gold("GoldGem", BLK, Vector3.new(capW * 0.55, 0.4, capW * 0.55), g * CFrame.new(0, 0.65, 0) * CFrame.Angles(0, math.rad(45), 0)) -- bottom facet
 		gold("GoldGem", BLK, Vector3.new(capW, 0.5, capW),               g * CFrame.new(0, 1.05, 0) * CFrame.Angles(0, math.rad(45), 0)) -- girdle (widest)
 		gold("GoldGem", BLK, Vector3.new(capW * 0.66, 0.6, capW * 0.66), g * CFrame.new(0, 1.6, 0) * CFrame.Angles(0, math.rad(45), 0))  -- crown
 		gold("GoldGem", BLK, Vector3.new(capW * 0.36, 0.6, capW * 0.36), g * CFrame.new(0, 2.15, 0) * CFrame.Angles(0, math.rad(45), 0)) -- upper
 		gold("GoldTip", BLK, Vector3.new(capW * 0.14, 0.55, capW * 0.14), g * CFrame.new(0, 2.6, 0) * CFrame.Angles(0, math.rad(45), 0)) -- sharp point
+	end
+
+	-- a clean SEGMENTAL ARCH spanning two spring points (a deliberate framing beam, NOT thin bars): chunky stone
+	-- voussoir blocks following a parabolic curve, ONE consistent stone tone (darker springers) + a GOLD keystone at the
+	-- apex -> MATCHES the columns/pillars. A,B = world spring positions (only XZ used); springY = spring height; rise = apex.
+	local function buildArch(name, A, B, springY, rise, thick, depth, n, goldTip)
+		local a0 = Vector3.new(A.X, springY, A.Z)
+		local b0 = Vector3.new(B.X, springY, B.Z)
+		local along = b0 - a0
+		local span = along.Magnitude
+		if span < 2 then return end
+		local au = along.Unit
+		local up = Vector3.new(0, 1, 0)
+		local d = span * 0.5
+		local mid = (a0 + b0) * 0.5
+		local N = n or 11
+		local blockLen = (span / (N - 1)) * 1.5 -- overlap so the voussoirs butt flush (no gaps between blocks)
+		local keyIdx = (N % 2 == 1) and ((N - 1) / 2) or -1
+		for i = 0, N - 1 do
+			local t = (i / (N - 1)) * 2 - 1               -- -1 .. 1 across the span
+			local x = t * d
+			local y = rise * (1 - t * t)                  -- parabolic arch profile (0 at the springs, `rise` at the apex)
+			local dydx = (-2 * rise * t) / d              -- slope of the curve (for the voussoir tilt)
+			local pos = mid + au * x + up * y
+			local rightV = au + up * dydx; if rightV.Magnitude < 1e-3 then rightV = au end; rightV = rightV.Unit -- block long axis = arc tangent
+			local upV = (up - au * dydx).Unit             -- perpendicular to rightV in the span/up plane
+			local cf = CFrame.fromMatrix(pos, rightV, upV)
+			if i == keyIdx then
+				local k = hpart(name .. "Key", BLK, Vector3.new(blockLen * 0.92, thick * 1.4, depth * 1.18), GOLDB, cf, false) -- gold keystone
+				k.Material = Enum.Material.SmoothPlastic; k.Reflectance = 0.25
+			else
+				-- CONSISTENT stone tone for a smooth arch read; only the springer (end) voussoirs take the darker coursing tone
+				hpart(name, BLK, Vector3.new(blockLen, thick, depth), (i == 0 or i == N - 1) and STONE2 or STONE, cf, false)
+			end
+		end
+		if goldTip and keyIdx >= 0 then -- a small faceted gold finial crowning the keystone (the hero entrance arch)
+			local apex = mid + up * rise
+			local gf = hpart(name .. "Finial", BLK, Vector3.new(0.9, 0.9, 0.9), GOLDB, CFrame.new(apex + Vector3.new(0, thick * 0.8 + 0.4, 0)) * CFrame.Angles(0, math.rad(45), 0), false)
+			gf.Material = Enum.Material.SmoothPlastic; gf.Reflectance = 0.25
+		end
 	end
 
 	-- 2b) GRAND ENTRANCE: border CURBS each side + 2 TALL gate columns frame the doorway. The entrance FLOOR itself is
@@ -959,6 +1358,51 @@ local function buildHardscape()
 		buildColumn(base * CFrame.new(math.cos(openAngle) * 46, 0, math.sin(openAngle) * 46) * CFrame.Angles(0, -openAngle, 0) * CFrame.new(0, 0, side * (stairHW + 1.5)), 2.8, 7, 3.6) -- TALL gate column
 	end
 	print("[Garden][Struct] grand entrance (side curbs + 2 tall gate columns; floor is part of the ONE continuous stone surface) done")
+
+	-- 2c) WELCOME ARCH: a grand segmental stone arch springing from the two tall gate-column capitals across the doorway,
+	-- with two-tone coursing, a gold keystone + finial -- so the entrance reads as one designed gateway, not two bare posts.
+	do
+		local springY = base.Position.Y + 8.7 -- ~the gate columns' capital height (shaft top 8.3 + capital)
+		local entCF = base * CFrame.new(math.cos(openAngle) * 46, 0, math.sin(openAngle) * 46) * CFrame.Angles(0, -openAngle, 0)
+		local pA = (entCF * CFrame.new(0, 0, -(stairHW + 1.5))).Position
+		local pB = (entCF * CFrame.new(0, 0,  (stairHW + 1.5))).Position
+		local ok, err = pcall(buildArch, "EntranceArch", pA, pB, springY, 5.5, 2.0, 2.6, 13, true)
+		if ok then print("[Garden][Struct] welcome entrance arch built")
+		else warn("[Garden][Struct] welcome entrance arch FAILED -- " .. tostring(err)) end
+	end
+
+	-- 2d) ARCH SIGN: a wooden "GLOBAL GARDEN" plank board mounted across/under the top of the WELCOME ARCH, centred on the
+	-- doorway and FACING OUTWARD toward the approaching player. Built from the SAME entCF the arch uses (recomputed here so
+	-- the arch geometry is untouched). Anchored, cosmetic, parented into the hardscape so it moves/clears with the garden.
+	do
+		local okSign, errSign = pcall(function()
+			local entCF = base * CFrame.new(math.cos(openAngle) * 46, 0, math.sin(openAngle) * 46) * CFrame.Angles(0, -openAngle, 0)
+			local localY = 11.0                 -- world Y ~ base.Y + 11 -> just below the arch's top inner curve (apex is +14.2)
+			local outward = entCF.RightVector    -- entCF +X = radial outward = toward the entrance approach / the player
+			local function faceCF(frontX)        -- a CFrame at the doorway centre, pushed `frontX` outward, Front(-Z) facing the player
+				local pos = (entCF * CFrame.new(frontX, localY, 0)).Position
+				return CFrame.lookAt(pos, pos + outward, Vector3.new(0, 1, 0))
+			end
+			-- darker wooden frame/trim BEHIND the board (a touch larger -> a clean border ring shows around the plank)
+			local frame = hpart("ArchSignFrame", BLK, Vector3.new(12.0, 3.4, 0.5), Color3.fromRGB(90, 58, 30), faceCF(1.15), false)
+			frame.Material = Enum.Material.WoodPlanks
+			-- the WOOD PLANK board (proud of the frame); its outward Front(-Z) face holds the text
+			local board = hpart("ArchSignBoard", BLK, Vector3.new(11.0, 2.8, 0.45), Color3.fromRGB(120, 80, 45), faceCF(1.45), false)
+			board.Material = Enum.Material.Wood
+			local sg = Instance.new("SurfaceGui")
+			sg.Name = "ArchSignUI"; sg.Face = Enum.NormalId.Front
+			sg.CanvasSize = Vector2.new(550, 140); sg.Parent = board
+			local lbl = Instance.new("TextLabel")
+			lbl.BackgroundTransparency = 1; lbl.Size = UDim2.new(1, -20, 1, -16); lbl.Position = UDim2.new(0, 10, 0, 8)
+			lbl.Font = Enum.Font.FredokaOne; lbl.Text = "GLOBAL GARDEN"
+			lbl.TextColor3 = Color3.fromRGB(248, 244, 230); lbl.TextScaled = true
+			lbl.TextXAlignment = Enum.TextXAlignment.Center; lbl.TextYAlignment = Enum.TextYAlignment.Center
+			lbl.Parent = sg
+			local stroke = Instance.new("UIStroke", lbl); stroke.Thickness = 3; stroke.Color = Color3.fromRGB(20, 14, 8)
+			print(string.format("[ARCH SIGN] built at %s size=%s", tostring(board.Position), tostring(board.Size)))
+		end)
+		if not okSign then warn("[ARCH SIGN] FAILED -- " .. tostring(errSign)) end
+	end
 
 	-- 3) RING BEDS (dark soil drums; centre hidden by the dais) + low stone retaining WALLS, each skinned with a
 	-- brick coursing band (doorway left open). Walls close completely except the single front doorway at `openAngle`.
@@ -1014,109 +1458,29 @@ local function buildHardscape()
 	end
 	wall("InnerWall", 32, 28, 1.5, 0.26) -- snug to the walkway (~±8.3) -> closes the extra inner-doorway gap
 	wall("OuterWall", 46, 40, 1.5, 0.32) -- outer doorway; the jambs below bridge it into the gate columns
-	-- JAMBS: short stone wall pieces bridging each entrance GATE COLUMN cleanly into the outer ring wall (no gateway gap)
+	-- JAMBS: short stone wall pieces bridging each entrance GATE COLUMN into the outer ring wall. BOTH flagged stray
+	-- jambs (at ~(-64.9, 24.15) and ~(-64.9, 1.15)) are SKIPPED so they never build / can't return on rebuild.
+	local STRAY_JAMBS = { Vector2.new(-64.909, 24.151), Vector2.new(-64.909, 1.151) }
 	for _, side in ipairs({ -1, 1 }) do
 		local jcf = base * CFrame.new(math.cos(openAngle) * 46, 0.75, math.sin(openAngle) * 46) * CFrame.Angles(0, -openAngle, 0) * CFrame.new(0, 0, side * 11.5)
-		hpart("WallJamb", BLK, Vector3.new(0.9, 1.5, 7.4), STONE, jcf, true)                                  -- tangent ~7.8..15.2: overlaps the gate column AND the ring wall
-		hpart("WallJambCap", BLK, Vector3.new(1.2, 0.3, 7.5), STONE2, jcf * CFrame.new(0, 0.9, 0), true)
+		local jp = jcf.Position
+		local skip = false
+		for _, t in ipairs(STRAY_JAMBS) do if (Vector2.new(jp.X, jp.Z) - t).Magnitude < 4 then skip = true; break end end
+		if skip then
+			print("[CLEANUP] skipped stray WallJamb at " .. tostring(jp))
+		else
+			hpart("WallJamb", BLK, Vector3.new(0.9, 1.5, 7.4), STONE, jcf, true)                                  -- tangent ~7.8..15.2: overlaps the gate column AND the ring wall
+			hpart("WallJambCap", BLK, Vector3.new(1.2, 0.3, 7.5), STONE2, jcf * CFrame.new(0, 0.9, 0), true)
+		end
 	end
 	brickRing(hs, 32 + 0.55, 0.35, 1, 0.8, true) -- brick course band on the inner wall face (doorway open)
 	brickRing(hs, 46 + 0.55, 0.35, 1, 0.8, true) -- brick course band on the outer wall face (doorway open)
 	print("[Garden][Struct] ring walls closed (10% overlap, snug doorways, gate-column jambs) done")
 
-	-- [SEAMBRIDGE2] GUARANTEE the filler overlaps both bordering walls (no crack). For each gap: the two NEAREST
-	-- distinct ring-wall parts; each wall's END FACE nearest the gap (centre +/- half its LENGTH along its run axis);
-	-- then a filler spanning face-to-face PLUS 1 stud INTO each wall (length = gap distance + 2). If the two already
-	-- touch (gap < 0.5), just cover the joint with a 3-stud segment. Height/thickness/colour/material/coursing copied
-	-- from the walls; centred on the midpoint; bottom on floor; Anchored; in hs; named SEAMFILL_1..4.
-	do
-		local floorY = base.Position.Y -- same floor the walls rest on (~240.8)
-		local seamCoords = {
-			Vector3.new(-53.69, 244.00,   6.40),
-			Vector3.new(-67.42, 244.85,   0.86),
-			Vector3.new(-67.42, 244.85, -17.27),
-			Vector3.new(-53.70, 243.99, -23.57),
-		}
-		-- per-gap nudge (studs, world axes), added to the final bridge centre. ONLY gaps 3 & 4 (near the planters)
-		-- need it -- pushed toward the wall line; gaps 1 & 2 (near the dial) are correct and stay at zero.
-		local SEAM_NUDGE = {
-			[1] = Vector3.new(0, 0, 0),
-			[2] = Vector3.new(0, 0, 0),
-			[3] = Vector3.new(-1.5, 0, 0),
-			[4] = Vector3.new(-1.5, 0, 0),
-		}
-		local walls, capColor, wallThick, wallH = {}, STONE2, 0.9, 1.5
-		for _, p in ipairs(hs:GetChildren()) do
-			if p:IsA("BasePart") then
-				if p.Name == "OuterWall" or p.Name == "InnerWall" then
-					walls[#walls + 1] = p
-					wallThick = math.min(p.Size.X, p.Size.Z); wallH = p.Size.Y
-				elseif p.Name == "OuterWallCap" or p.Name == "InnerWallCap" then capColor = p.Color end
-			end
-		end
-		-- world RUN direction (the longer horizontal axis) + its length, for a wall part
-		local function runOf(W)
-			if W.Size.Z >= W.Size.X then return W.CFrame:VectorToWorldSpace(Vector3.new(0, 0, 1)), W.Size.Z
-			else return W.CFrame.RightVector, W.Size.X end
-		end
-		-- the END FACE of W (centre +/- half its LENGTH along its run axis) nearest point p
-		local function nearEndFace(W, p)
-			local dir, len = runOf(W)
-			local e1 = W.Position + dir * (len * 0.5)
-			local e2 = W.Position - dir * (len * 0.5)
-			return ((e1 - p).Magnitude <= (e2 - p).Magnitude) and e1 or e2
-		end
-		for i, c in ipairs(seamCoords) do
-			if i > 2 then continue end -- ONLY build fillers for gaps 1 & 2 (near the dial); gaps 3 & 4 are removed
-			-- the two NEAREST DISTINCT wall parts bordering this gap
-			local wA, dA, wB, dB
-			for _, w in ipairs(walls) do
-				local dist = (w.Position - c).Magnitude
-				if not dA or dist < dA then wB, dB = wA, dA; wA, dA = w, dist
-				elseif not dB or dist < dB then wB, dB = w, dist end
-			end
-			if wA and wB then
-				-- each wall's END FACE nearest the gap, then bridge face-to-face + 1 stud INTO each wall
-				local faceA = nearEndFace(wA, c)
-				local faceB = nearEndFace(wB, c)
-				local delta = faceB - faceA; delta = Vector3.new(delta.X, 0, delta.Z) -- horizontal line faceA -> faceB
-				local gapDist = delta.Magnitude
-				local u, length
-				if gapDist < 0.5 then                  -- walls already touch -> just cover the joint
-					local rd = runOf(wA); rd = Vector3.new(rd.X, 0, rd.Z)
-					u = (rd.Magnitude > 0.01) and rd.Unit or Vector3.new(1, 0, 0)
-					length = 3
-				else
-					u = delta.Unit
-					length = gapDist + 2               -- 1 stud overlap INTO each wall -> guaranteed no crack
-				end
-				local mid = (faceA + faceB) * 0.5
-				local nudge = SEAM_NUDGE[i] or Vector3.new(0, 0, 0)
-				local center = Vector3.new(mid.X, floorY + wallH * 0.5, mid.Z) + nudge -- bottom on floor + per-gap nudge (only 3 & 4)
-				local cf = CFrame.lookAt(center, center + u, Vector3.new(0, 1, 0)) -- length runs along local Z (= u)
-				local size = Vector3.new(wallThick, wallH, length)
-				local f = hpart("SEAMFILL_" .. i, BLK, size, wA.Color, cf, true)
-				f.Material = wA.Material
-				-- matching darker capstone (like the wall caps)
-				hpart("SEAMFILL_" .. i .. "Cap", BLK, Vector3.new(wallThick + 0.3, 0.3, length + 0.1), capColor, cf * CFrame.new(0, wallH * 0.5 + 0.15, 0), true)
-				-- two-tone brick coursing on BOTH long faces (+/- X), along the length (Z)
-				local bn = math.max(2, math.floor(length / 2.6))
-				for _, sgn in ipairs({ 1, -1 }) do
-					for b = 0, bn - 1 do
-						local bcol = (b % 2 == 0) and STONE or STONE_B
-						hpart("SEAMFILL_" .. i .. "Brick", BLK, Vector3.new(0.2, wallH * 0.62, length / bn - 0.12), bcol,
-							cf * CFrame.new(sgn * (wallThick * 0.5), 0, -length * 0.5 + (b + 0.5) * (length / bn)), false)
-					end
-				end
-				print(string.format("[SEAMBRIDGE2] gap %d: wallA %s face=%s, wallB %s face=%s, gap distance=%.2f, filler center=%s length=%.2f",
-					i, wA.Name, tostring(faceA), wB.Name, tostring(faceB), gapDist, tostring(f.Position), length))
-				print(string.format("[SEAMBRIDGE3] gap %d final center=%s (nudge applied=%s)", i, tostring(f.Position), tostring(nudge)))
-			else
-				print(string.format("[SEAMBRIDGE2] gap %d: could not find two distinct walls", i))
-			end
-		end
-		print("[SEAMBRIDGE2] done")
-	end
+	-- [SEAMBRIDGE2] DISABLED: the seam-filler builder (which generated SEAMFILL_1/_2 + their Caps + Bricks bridging the
+	-- inner/outer wall ends near the doorway -- the blue/purple-marked row) is turned OFF. Generation is removed so those
+	-- parts never build and can't return on rebuild. (The CLEANUP pass near INIT also destroys any SEAMFILL_* that linger
+	-- from an older build.)
 
 	-- 4) RING PILLARS on the inner wall (r32): up to 6 finished stone COLUMNS (base/shaft/capital/matching gold cap),
 	-- at fixed base-local angles; any that would land in the doorway is skipped so the entrance stays clear.
@@ -1128,6 +1492,32 @@ local function buildHardscape()
 		end
 	end
 	print("[Garden][Struct] pillars done")
+
+	-- 4a) COLONNADE ARCHES: clean segmental stone arches springing between ADJACENT ring pillars (skipping the doorway),
+	-- turning the ring of standalone columns into a framed garden colonnade. Same voussoir style + gold keystone as the
+	-- gates, so the whole plaza reads as one cohesive designed structure.
+	do
+		local function ringAngle(i) return math.rad(30) + i * (2 * math.pi / 6) end
+		local function ringPresent(i)
+			local a = ringAngle(i)
+			local da = math.abs(((a - openAngle + math.pi) % (2 * math.pi)) - math.pi)
+			return da > (openHalf + 0.28) -- same skip test the pillar loop uses -> arches only between pillars that exist
+		end
+		local function ringTop(i)
+			local a = ringAngle(i)
+			return (base * CFrame.new(math.cos(a) * 32, 0, math.sin(a) * 32)).Position
+		end
+		local springY = base.Position.Y + 6.1 -- ~the ring pillars' capital height (shaft top 5.3 + capital)
+		local archN = 0
+		for i = 0, 5 do
+			local j = (i + 1) % 6
+			if ringPresent(i) and ringPresent(j) then
+				local ok = pcall(buildArch, "ColonnadeArch", ringTop(i), ringTop(j), springY, 5.0, 1.8, 2.2, 13, false)
+				if ok then archN = archN + 1 end
+			end
+		end
+		print("[Garden][Struct] colonnade arches built: " .. archN)
+	end
 
 	-- ===== SIGNAGE & PROPS ============================================================================
 	-- Every piece below is placed via `base * offsetCFrame` (the SAME rotated origin as the dais/walls/pillars),
@@ -1312,34 +1702,49 @@ local function buildHardscape()
 	tryProp("Sign_BL", function() buildSign("Sign_BL", openAngle + math.rad(135), "GLOBAL COLLABORATION", "BUILT BY PLAYERS FOR EVERYONE", nil, nil, false) end) -- back -> faces center (unchanged)
 	tryProp("Sign_BR", function() buildSign("Sign_BR", openAngle - math.rad(135), "SEASON 1", "THANK YOU!", nil, nil, false) end) -- back -> faces center (unchanged)
 
-	-- 2) LANTERNS: real lanterns -- a chunky tapered iron post on a square base + a brass box-cage head (corner bars,
-	-- top cap, stepped pointed roof, finial) around a warm Neon glow with a warm PointLight. 6 spots, doorway skipped.
+	-- 2) GARDEN LAMP POSTS: a polished low-poly lamp -- a ROUNDED stepped base, a clean banded/tapered iron post (brass
+	-- band collars at the joints), a brass lantern head caging a warm GLOWING BULB (Neon + PointLight), and a rounded
+	-- DOMED roof topped with a finial. All round shapes (cylinders/balls) for a smooth, gap-free read. Doorway skipped.
 	local function buildLamp(a)
 		local m = Instance.new("Model"); m.Name = "LampPost"; m.Parent = props
 		local f = base * CFrame.new(math.cos(a) * 44.5, 0.7, math.sin(a) * 44.5) -- OUTER edge of the path, on the walkway (+0.7), against the wall -> path centre stays clear
-		-- stepped square iron base
-		prop("LampBase", BLK, Vector3.new(1.7, 0.5, 1.7), IRON, f * CFrame.new(0, 0.25, 0), m)
-		prop("LampBase", BLK, Vector3.new(1.2, 0.45, 1.2), IRON, f * CFrame.new(0, 0.7, 0), m)
-		-- chunky tapered iron post
-		prop("LampPostLo", CYL, Vector3.new(3.4, 0.9, 0.9), IRON, f * CFrame.new(0, 2.6, 0) * CFrame.Angles(0, 0, math.rad(90)), m)
-		prop("LampPostHi", CYL, Vector3.new(1.8, 0.65, 0.65), IRON, f * CFrame.new(0, 5.3, 0) * CFrame.Angles(0, 0, math.rad(90)), m) -- taper
-		-- small iron crossbar/bracket where the head meets the post
-		prop("LampBracket", BLK, Vector3.new(2.1, 0.25, 0.25), IRON, f * CFrame.new(0, 6.2, 0), m)
-		prop("LampBracket", BLK, Vector3.new(0.25, 0.25, 2.1), IRON, f * CFrame.new(0, 6.2, 0), m)
-		-- brass lantern HEAD: cage floor + 4 corner bars + warm glow + top frame
-		prop("LanternFloor", BLK, Vector3.new(1.9, 0.3, 1.9), GOLDB, f * CFrame.new(0, 6.7, 0), m)
-		for _, c in ipairs({ { -0.8, -0.8 }, { 0.8, -0.8 }, { -0.8, 0.8 }, { 0.8, 0.8 } }) do
-			prop("LanternBar", BLK, Vector3.new(0.2, 1.8, 0.2), GOLDB, f * CFrame.new(c[1], 7.6, c[2]), m) -- 4 corner cage bars
+		local function brass(name, shape, size, cf) local p = prop(name, shape, size, GOLDB, cf, m); p.Material = Enum.Material.SmoothPlastic; p.Reflectance = 0.25; return p end -- unified warm-gold sheen (0.25 everywhere)
+		-- ROUNDED STEPPED BASE: a wide round footing -> a step -> a domed collar the post rises out of
+		prop("LampBase",     CYL, Vector3.new(0.6, 2.6, 2.6), IRON, f * CFrame.new(0, 0.3,  0) * CFrame.Angles(0, 0, math.rad(90)), m) -- wide round foot
+		prop("LampBase",     CYL, Vector3.new(0.5, 1.9, 1.9), IRON, f * CFrame.new(0, 0.75, 0) * CFrame.Angles(0, 0, math.rad(90)), m) -- step
+		prop("LampBaseDome", BAL, Vector3.new(1.5, 1.0, 1.5), IRON, f * CFrame.new(0, 1.15, 0), m)                                     -- rounded (domed) collar
+		-- SEGMENTED, SLIGHTLY TAPERED IRON POST (round) with brass band collars at the base, joint, mid + under the head
+		brass("LampBand",  CYL, Vector3.new(0.32, 1.08, 1.08),      f * CFrame.new(0, 1.7, 0) * CFrame.Angles(0, 0, math.rad(90)))      -- base collar (segment 1)
+		prop("LampPostLo", CYL, Vector3.new(3.0, 0.85, 0.85), IRON, f * CFrame.new(0, 2.9, 0) * CFrame.Angles(0, 0, math.rad(90)), m)  -- lower shaft  (1.4..4.4)
+		brass("LampBand",  CYL, Vector3.new(0.28, 1.0, 1.0),        f * CFrame.new(0, 2.9, 0) * CFrame.Angles(0, 0, math.rad(90)))      -- mid band collar
+		brass("LampBand",  CYL, Vector3.new(0.26, 0.74, 0.74),      f * CFrame.new(0, 4.4, 0) * CFrame.Angles(0, 0, math.rad(90)))      -- joint band
+		prop("LampPostHi", CYL, Vector3.new(2.4, 0.6, 0.6),   IRON, f * CFrame.new(0, 5.6, 0) * CFrame.Angles(0, 0, math.rad(90)), m)  -- upper shaft (4.4..6.8, tapered)
+		brass("LampBand",  CYL, Vector3.new(0.3, 0.78, 0.78),       f * CFrame.new(0, 6.7, 0) * CFrame.Angles(0, 0, math.rad(90)))      -- collar under the head
+		-- BRASS LANTERN HEAD: an ogee bracket -> a flared base plate -> a glazed bulb caged by 4 bars -> eave + roof + finial
+		brass("LanternBracket", CYL, Vector3.new(0.5, 1.5, 1.5),  f * CFrame.new(0, 6.85, 0) * CFrame.Angles(0, 0, math.rad(90)))      -- flared ogee bracket (refined neck->head silhouette)
+		brass("LanternBase",    CYL, Vector3.new(0.4, 2.05, 2.05), f * CFrame.new(0, 7.05, 0) * CFrame.Angles(0, 0, math.rad(90)))     -- flared brass base plate
+		for _, c in ipairs({ { -0.72, -0.72 }, { 0.72, -0.72 }, { -0.72, 0.72 }, { 0.72, 0.72 } }) do
+			brass("LanternBar", BLK, Vector3.new(0.16, 1.95, 0.16), f * CFrame.new(c[1], 8.1, c[2]))                                   -- 4 slim corner cage bars (crisper)
 		end
-		local glow = prop("LanternGlow", BLK, Vector3.new(1.25, 1.5, 1.25), LGLOW, f * CFrame.new(0, 7.6, 0), m) -- warm glow inside the cage
-		glow.Material = Enum.Material.Neon
-		prop("LanternTopFrame", BLK, Vector3.new(2.0, 0.3, 2.0), GOLDB, f * CFrame.new(0, 8.6, 0), m)
-		-- small tapered roof + finial
-		prop("LanternRoof", BLK, Vector3.new(1.5, 0.4, 1.5), GOLDB, f * CFrame.new(0, 8.95, 0), m)
-		prop("LanternRoof", BLK, Vector3.new(0.9, 0.4, 0.9), GOLDB, f * CFrame.new(0, 9.3, 0), m)
-		prop("LanternFinial", BLK, Vector3.new(0.25, 0.6, 0.25), GOLDB, f * CFrame.new(0, 9.7, 0), m)
-		-- the ONLY lit part: a warm PointLight in the glow
-		local light = Instance.new("PointLight"); light.Range = 16; light.Brightness = 1.5; light.Color = LLIGHT; light.Parent = glow
+		-- 4 CLEAR warm-tinted glass panes filling the cage faces -> reads as a real glazed lantern, not an open cage
+		local function pane(sx, sz, ox, oz)
+			local g = prop("LanternGlass", BLK, Vector3.new(sx, 1.75, sz), Color3.fromRGB(255, 246, 220), f * CFrame.new(ox, 8.1, oz), m)
+			g.Material = Enum.Material.Glass; g.Transparency = 0.4; g.Reflectance = 0.08 -- clearer + brighter warm glass
+		end
+		pane(0.06, 1.4, 0.72, 0); pane(0.06, 1.4, -0.72, 0)
+		pane(1.4, 0.06, 0, 0.72); pane(1.4, 0.06, 0, -0.72)
+		-- the warm GLOWING BULB (the lit core): a rounded Neon ball + a warmer, brighter PointLight
+		local bulb = prop("LanternBulb", BAL, Vector3.new(1.3, 1.65, 1.3), LGLOW, f * CFrame.new(0, 8.1, 0), m)
+		bulb.Material = Enum.Material.Neon
+		local light = Instance.new("PointLight"); light.Range = 27; light.Brightness = 3.2; light.Color = LLIGHT; light.Parent = bulb -- warmer + brighter glow
+		brass("LanternTop",  CYL, Vector3.new(0.4, 2.1, 2.1),   f * CFrame.new(0, 9.1,  0) * CFrame.Angles(0, 0, math.rad(90)))        -- top brass plate
+		brass("LanternEave", CYL, Vector3.new(0.22, 2.45, 2.45), f * CFrame.new(0, 9.35, 0) * CFrame.Angles(0, 0, math.rad(90)))       -- crisp eave overhang -> a clean roofline
+		-- ROUNDED DOMED ROOF (stacked shrinking round slabs -> a smooth dome) + a finial cap
+		brass("LanternRoof", CYL, Vector3.new(0.5,  1.7, 1.7), f * CFrame.new(0, 9.55,  0) * CFrame.Angles(0, 0, math.rad(90)))
+		brass("LanternRoof", CYL, Vector3.new(0.45, 1.1, 1.1), f * CFrame.new(0, 9.9,  0) * CFrame.Angles(0, 0, math.rad(90)))
+		brass("LanternRoof",    BAL, Vector3.new(0.7, 0.55, 0.7), f * CFrame.new(0, 10.25, 0))                                          -- rounded crown
+		brass("LanternFinial",  BAL, Vector3.new(0.42, 0.42, 0.42), f * CFrame.new(0, 10.6, 0))                                         -- finial ball
+		brass("LanternFinialTip", CYL, Vector3.new(0.45, 0.16, 0.16), f * CFrame.new(0, 10.95, 0) * CFrame.Angles(0, 0, math.rad(90))) -- tiny top spike
 		return m
 	end
 	local lampCount = 0
@@ -1360,7 +1765,7 @@ local function buildHardscape()
 	tryProp("RewardChest", function()
 		local m = Instance.new("Model"); m.Name = "RewardChest"; m.Parent = props
 		local DWOOD = Color3.fromRGB(90, 55, 30) -- dark chest wood
-		local f = base * CFrame.new(math.cos(openAngle) * 50, 0, math.sin(openAngle) * 50) * CFrame.Angles(0, -openAngle, 0) * CFrame.new(0, 0, 7) -- +X depth, Z width; -X faces the path/player
+		local f = base * CFrame.new(math.cos(openAngle) * 50, 0, math.sin(openAngle) * 50) * CFrame.Angles(0, -openAngle, 0) * CFrame.new(0, 0, 7) * CFrame.Angles(0, math.pi, 0) * CFrame.new(0, 0, -1.2) -- +X depth, Z width; FLIPPED 180deg about Y so the latch/-X faces the gate approach; then MOVED to the PLAYER'S LEFT (+LookVector = local -Z) -- now 1.2 studs total (0.2 further this pass) -- pure translation, height/grounding unchanged
 		local function part(name, size, color, cf) return prop(name, BLK, size, color, cf, m) end
 		local function gold(name, shape, size, cf) local p = prop(name, shape, size, GOLDB, cf, m); p.Material = Enum.Material.SmoothPlastic; p.Reflectance = 0.25; return p end
 		-- STONE PLINTH: 2 stacked tan slabs (raised pedestal)
@@ -1386,9 +1791,22 @@ local function buildHardscape()
 		for _, zc in ipairs({ 1.45, -1.45 }) do
 			gold("ChestLidStrap", BLK, Vector3.new(0.42, 1.2, 0.42), f * CFrame.new(0, 3.75, zc))
 		end
+		print(string.format("[CHEST] moved 0.2 stud player-left, new pos=%s", tostring(f.Position)))
+		-- E-PROMPT: hold E to open the Garden Reward HUD (client builds the HUD on PromptTriggered; claim is server-authoritative)
+		local promptHost = m:FindFirstChild("ChestBody") or m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")
+		if promptHost then
+			local pp = Instance.new("ProximityPrompt")
+			pp.Name = "RewardChestPrompt"
+			pp.ActionText = "Open"; pp.ObjectText = "Garden Reward"
+			pp.KeyboardKeyCode = Enum.KeyCode.E
+			pp.HoldDuration = 0.4; pp.MaxActivationDistance = 12; pp.RequiresLineOfSight = false
+			pp.Parent = promptHost
+			print("[CHEST] prompt added (E to open)")
+		end
 		return m
 	end)
 	print("[Garden][Prop] RewardChest (detailed) built")
+	print("[RewardChest] rotated 180deg to face the gate approach.")
 
 	-- 3b) GARDENER NPC: the FULL CHARACTER asset 9469438753 (its own body + clothing baked in), loaded via InsertService
 	-- and used AS the gardener. If the asset can't load it FALLS BACK to a colour-dressed R15 rig, so he's never missing.
@@ -1728,9 +2146,17 @@ local function buildHardscape()
 	local function buildPlanter(name, a)
 		local m = Instance.new("Model"); m.Name = name; m.Parent = props
 		local f = base * CFrame.new(math.cos(a) * 51, 0, math.sin(a) * 51) * CFrame.Angles(0, -a, 0)
+		prop("BoxBase", BLK, Vector3.new(4.4, 0.5, 6.4), WOOD2, f * CFrame.new(0, 0.25, 0), m) -- slightly wider darker base trim (grounded plinth)
 		prop("Box", BLK, Vector3.new(4, 3, 6), WOOD, f * CFrame.new(0, 1.5, 0), m)            -- low wooden box
+		prop("BoxBand", BLK, Vector3.new(4.15, 0.4, 6.15), WOOD2, f * CFrame.new(0, 1.6, 0), m) -- darker mid trim band (matches the fence post band)
 		prop("BoxRim", BLK, Vector3.new(4.3, 0.6, 6.3), WOOD2, f * CFrame.new(0, 3.0, 0), m)  -- darker wood rim at the top edge
 		prop("SoilTop", BLK, Vector3.new(3.4, 0.6, 5.4), SOIL, f * CFrame.new(0, 3.2, 0), m)  -- dark soil fill
+		-- 4 corner posts capped with small GOLD finials -> tidy framing + ties the wood planter to the plaza gold accents
+		for _, c in ipairs({ { 1.9, 2.9 }, { -1.9, 2.9 }, { 1.9, -2.9 }, { -1.9, -2.9 } }) do
+			prop("BoxCornerPost", BLK, Vector3.new(0.55, 3.4, 0.55), WOOD2, f * CFrame.new(c[1], 1.7, c[2]), m)             -- corner post
+			local cap = prop("BoxCornerCap", BAL, Vector3.new(0.5, 0.5, 0.5), GOLDB, f * CFrame.new(c[1], 3.55, c[2]), m)   -- gold corner finial
+			cap.Material = Enum.Material.SmoothPlastic; cap.Reflectance = 0.25
+		end
 		local top = f * CFrame.new(0, 3.4, 0)
 		pcall(buildBush, m, top * CFrame.new(0, 0, -1.6), 0.7, 4)            -- a few of the existing bushes/flowers on top
 		pcall(buildSmallFlower, m, top * CFrame.new(0.6, 0, 0.8), 0.8, 4, nil)
@@ -1755,14 +2181,28 @@ local function buildHardscape()
 			if present(i) then
 				local a = i * (2 * math.pi / N)
 				local cf = base * CFrame.new(math.cos(a) * fr, 0, math.sin(a) * fr) * CFrame.Angles(0, -a, 0) -- X radial, Z tangent
-				prop("FenceFoot", BLK, Vector3.new(0.95, 0.7, 0.95), WOOD, cf * CFrame.new(0, 0.05, 0), m)          -- footing flush on the ground (slightly sunk)
-				prop("FencePost", BLK, Vector3.new(0.7, postH, 0.7), WOOD, cf * CFrame.new(0, postH * 0.5 + 0.4, 0), m) -- chunky post, same height all round
-				prop("FencePostCap", BLK, Vector3.new(0.95, 0.3, 0.95), WOOD2, cf * CFrame.new(0, postH + 0.55, 0), m)  -- small cap on each post
-				if present((i + 1) % N) then -- rails toward the NEXT post only if it exists (no dangling rail at the opening)
+				-- ROUNDED footing flush on the ground (slightly sunk) -> grounded, never floating
+				prop("FenceFoot", CYL, Vector3.new(0.55, 1.35, 1.35), WOOD2, cf * CFrame.new(0, 0.18, 0) * CFrame.Angles(0, 0, math.rad(90)), m)
+				-- chunky post with a darker mid band (same height all round)
+				prop("FencePost",     BLK, Vector3.new(0.72, postH, 0.72), WOOD,  cf * CFrame.new(0, postH * 0.5 + 0.35, 0), m) -- 0.35..3.35
+				prop("FencePostBand", BLK, Vector3.new(0.84, 0.3,   0.84),  WOOD2, cf * CFrame.new(0, 1.95, 0), m)              -- darker banded detail
+				-- beveled cap -> a ROUNDED ball finial -> a small GOLD tip (ties the wood border to the lamps/arches gold)
+				prop("FencePostCap", BLK, Vector3.new(0.98, 0.28, 0.98), WOOD2, cf * CFrame.new(0, postH + 0.5, 0), m)          -- 3.36..3.64
+				prop("FenceFinial",  BAL, Vector3.new(0.6,  0.62, 0.6),  WOOD2, cf * CFrame.new(0, postH + 0.9, 0), m)          -- rounded finial
+				local tip = prop("FenceFinialTip", BAL, Vector3.new(0.34, 0.34, 0.34), GOLDB, cf * CFrame.new(0, postH + 1.25, 0), m)
+				tip.Material = Enum.Material.SmoothPlastic; tip.Reflectance = 0.25
+				if present((i + 1) % N) then -- rails + pickets toward the NEXT post only if it exists (clean opening at the entrance)
 					local mid = (i + 0.5) * (2 * math.pi / N)
 					local rcf = base * CFrame.new(math.cos(mid) * fr, 0, math.sin(mid) * fr) * CFrame.Angles(0, -mid, 0)
-					prop("FenceRail", BLK, Vector3.new(0.3, 0.35, railLen), WOOD, rcf * CFrame.new(0, 2.5, 0), m)  -- upper rail
-					prop("FenceRail", BLK, Vector3.new(0.3, 0.35, railLen), WOOD, rcf * CFrame.new(0, 1.3, 0), m)  -- lower rail
+					prop("FenceRail", BLK, Vector3.new(0.34, 0.4, railLen), WOOD, rcf * CFrame.new(0, 2.55, 0), m)  -- upper rail
+					prop("FenceRail", BLK, Vector3.new(0.34, 0.4, railLen), WOOD, rcf * CFrame.new(0, 1.25, 0), m)  -- lower rail
+					-- vertical PICKETS between the rails (rounded tops peeking above the top rail) -> a tidy, detailed border
+					local pk = 3
+					for j = 1, pk do
+						local off = -railLen * 0.5 + j * (railLen / (pk + 1))
+						prop("FencePicket",    BLK, Vector3.new(0.2,  1.7,  0.42), WOOD,  rcf * CFrame.new(0, 1.95, off), m) -- slat (crosses both rails)
+						prop("FencePicketCap", BAL, Vector3.new(0.34, 0.34, 0.5),  WOOD2, rcf * CFrame.new(0, 2.9,  off), m) -- rounded picket top
+					end
 				end
 			end
 		end
@@ -1964,35 +2404,9 @@ local function buildHardscape()
 		print("[CONNECT] done")
 	end
 
-	-- [PILLARCONNECT] two connector wall pieces joining the two short wall ends to the central monument pillar. Each
-	-- runs from its wall END FACE to the nearest point on the pillar BASE footprint (+1 stud overlap INTO both the wall
-	-- and the pillar -> no gap at either join), angled via CFrame.lookAt to meet the pillar face flush. Wall style
-	-- (h1.5 / thick0.9 / tan STONE + STONE2 cap). Built every build -> survives rebuilds; parented into GardenHardscape.
-	do
-		local centerY = 241.586                 -- bottom on floor Y=240.836 (centre = floorY + h/2)
-		local fpX1, fpX2 = -54.05, -49.65       -- pillar base (4.4 wide) footprint X range
-		local fpZ1, fpZ2 = -18.96, -14.56       -- pillar base footprint Z range
-		local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
-		local sides = {
-			{ id = "A", wallEnd = Vector3.new(-58.670, centerY, -32.679) }, -- OuterWall end
-			{ id = "B", wallEnd = Vector3.new(-70.733, centerY, -25.693) }, -- InnerWall end
-		}
-		for _, s in ipairs(sides) do
-			local we = s.wallEnd
-			local contact = Vector3.new(clamp(we.X, fpX1, fpX2), centerY, clamp(we.Z, fpZ1, fpZ2)) -- nearest point on the pillar footprint
-			local flat = Vector3.new(contact.X - we.X, 0, contact.Z - we.Z)
-			local D = flat.Magnitude
-			local dir = (D > 0.01) and flat.Unit or Vector3.new(1, 0, 0)
-			local length = D + 2                 -- 1 stud overlap into the wall + 1 into the pillar
-			local center = Vector3.new((we.X + contact.X) * 0.5, centerY, (we.Z + contact.Z) * 0.5)
-			local cf = CFrame.lookAt(center, center + dir, Vector3.new(0, 1, 0)) -- length runs along local Z, pointing at the pillar
-			local body = hpart("PILLARCONNECT_" .. s.id, BLK, Vector3.new(0.9, 1.5, length), STONE, cf, true)
-			hpart("PILLARCONNECT_" .. s.id .. "Cap", BLK, Vector3.new(1.2, 0.3, length + 0.1), STONE2, cf * CFrame.new(0, 0.75, 0), true)
-			print(string.format("[PILLARCONNECT] side %s: wallEnd=%s pillarContact=%s length=%.2f center=%s",
-				s.id, tostring(we), tostring(contact), length, tostring(body.Position)))
-		end
-		print("[PILLARCONNECT] done")
-	end
+	-- [PILLARCONNECT] REMOVED: the two front V-connector pieces (PILLARCONNECT_A/B + their caps) that joined the short
+	-- wall ends to the central pillar were stray/unwanted -> their generation is deleted, so they never build and can't
+	-- come back on rebuild. (The CLEANUP pass near INIT also safety-net-destroys any that linger from an older build.)
 
 	return hs
 end
@@ -2157,7 +2571,7 @@ GardenWaterEvent.OnServerEvent:Connect(function(player, action)
 		if not hrp or (hrp.Position - waterSpotPos).Magnitude > WATER_RANGE then return end
 	end
 	waterReadyAt[player.UserId] = os.time() + COOLDOWN_SECONDS
-	addProgress(WATER_AMOUNT)
+	globalContribute(WATER_AMOUNT) -- STAGE 4: atomic GLOBAL +WATER_AMOUNT (+ publish); falls back to local addProgress if the backend is down
 	print("[Garden] " .. player.Name .. " watered (+" .. WATER_AMOUNT .. ") -> " .. getProgress())
 	pcall(function() GardenWaterEvent:FireClient(player, { kind = "cooldown", secs = COOLDOWN_SECONDS }) end)
 	pcall(function() GardenWaterEvent:FireAllClients({ kind = "splash", x = fieldCenter.X, y = fieldCenter.Y, z = fieldCenter.Z, sound = WATER_SOUND_ID }) end)
@@ -2175,6 +2589,57 @@ task.spawn(function()
 	currentStage = -1
 	pcall(onProgressChanged) -- initial render of the sign + starting stage
 	print("[Garden] ready, progress=" .. getProgress() .. "/" .. GOAL)
+	pcall(function() if startGlobalGarden then startGlobalGarden() end end) -- STAGE 4: subscribe + load shared global progress + start reconcile/reset loops (live-only)
+	-- [COLLISION] after the async hardscape/props/sunflower settle, make the whole garden SOLID (walls, pillars, arch,
+	-- gate columns, steps, dais, floor, fence, planters, signs, lamps, RewardChest, GrowthDial, sunflower, gnomes,
+	-- GLOBAL GARDEN arch sign, ...). Field plants + invisible hosts stay walk-through. (Pig + cow solidity is set in
+	-- their own scripts.) One settle-sweep here prints the count; renderStage re-solidifies on later stage rebuilds.
+	task.spawn(function()
+		task.wait(8) -- let the UnionAsync props + sunflower finish before the authoritative sweep
+		local okSweep, n = pcall(setGardenSolid)
+		if not okSweep then n = 0 end
+		print(string.format("[COLLISION] garden parts set solid=%d, pig solid=y, cow solid=y.", n))
+	end)
+end)
+
+--======================================================================
+-- \xF0\x9F\xA7\xB9 CLEANUP: DELETE every SEAMFILL_* part (the blue/purple seam-bridge row) and REVERT the diagnostic recolour
+-- on the remaining tagged stone parts back to tan. The SEAMBRIDGE2 generator is disabled at the source above, so the
+-- SEAMFILL parts won't regenerate; this pass also destroys any that linger from an older build. Runs once after settle.
+--======================================================================
+task.spawn(function()
+	local waited = 0
+	while not gardenBuild and waited < 60 do task.wait(0.5); waited = waited + 0.5 end
+	if not gardenBuild then warn("[CLEANUP] gardenBuild not found -- skipped"); return end
+	task.wait(6) -- let the async build settle
+
+	local STONE  = Color3.fromRGB(196, 170, 130) -- main tan stone (Curb / WallJamb / the wider PillarBase footing)
+	local STONE2 = Color3.fromRGB(168, 142, 104) -- darker coursing (the *Cap parts + the shorter darker PillarBase step)
+
+	-- 1) DELETE all SEAMFILL_* parts (block + Cap + Brick). Generation is disabled at source so they won't return.
+	local removedSeam = 0
+	for _, p in ipairs(gardenBuild:GetDescendants()) do
+		if p:IsA("BasePart") and p.Name:match("^SEAMFILL") then pcall(function() p:Destroy() end); removedSeam = removedSeam + 1 end
+	end
+
+	-- 2) REVERT the diagnostic colours on the remaining tagged stone parts back to tan (matte Plastic). Caps -> STONE2;
+	-- the shorter darker PillarBase step (size.Y < 0.65) -> STONE2; the rest of these names -> STONE.
+	local reverted = 0
+	for _, p in ipairs(gardenBuild:GetDescendants()) do
+		if p:IsA("BasePart") then
+			local n = p.Name
+			local target
+			if n == "CurbCap" or n == "WallJambCap" then target = STONE2
+			elseif n == "Curb" or n == "WallJamb" then target = STONE
+			elseif n == "PillarBase" then target = (p.Size.Y < 0.65) and STONE2 or STONE end
+			if target then
+				pcall(function() p.Color = target; p.Material = Enum.Material.Plastic end)
+				reverted = reverted + 1
+			end
+		end
+	end
+
+	print(string.format("[CLEANUP] removed SEAMFILL=%d, seam gen disabled=yes, reverted=%d", removedSeam, reverted))
 end)
 
 --======================================================================
@@ -2189,12 +2654,12 @@ local function hookGardenChat(plr)
 		if string.sub(lower, 1, 12) == "/watergarden" then
 			if not (_G.isAllowedTestUser and _G.isAllowedTestUser(plr)) then return end
 			local n = tonumber(string.match(msg, "%-?%d+")) or 200
-			addProgress(n)
+			globalContribute(n) -- STAGE 4: test the GLOBAL path (atomic + publish); local fallback if backend is down
 			print("[Garden] /watergarden by " .. plr.Name .. " (+" .. n .. ") -> " .. getProgress() .. " (TEST - REMOVE BEFORE LAUNCH)")
 		elseif lower == "/resetgarden" then
 			if not (_G.isAllowedTestUser and _G.isAllowedTestUser(plr)) then return end
 			waterReadyAt[plr.UserId] = nil
-			setProgress(0)
+			performResetGlobal("force") -- STAGE 4: force a GLOBAL reset + broadcast (local fallback if backend is down)
 			pcall(function() GardenWaterEvent:FireClient(plr, { kind = "cooldown", secs = 0 }) end) -- re-enable the caller's prompt
 			print("[Garden] /resetgarden (TEST - REMOVE BEFORE LAUNCH) by " .. plr.Name)
 		elseif lower == "/forceharvest" then

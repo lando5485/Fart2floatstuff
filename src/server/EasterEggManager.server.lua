@@ -174,6 +174,15 @@ local function buildCow(rootCF)
 	-- moo sound (placeholder) on the body
 	local moo = Instance.new("Sound"); moo.Name = "MooSound"; moo.SoundId = MOO_SOUND_ID -- \xE2\x9A\xA0 REPLACE WITH MOO SOUND
 	moo.Volume = 0.6; moo.RollOffMinDistance = 12; moo.RollOffMaxDistance = 130; moo.Parent = rig.body
+
+	-- [COLLISION] make the cow's body SOLID so players bump into it instead of passing through. The whole cow is
+	-- ANCHORED + CFrame-driven (no Humanoid, no unanchored physics body), so making its parts collidable can't break
+	-- movement -- driveCow/applyPose re-set every part's CFrame each frame regardless of any collision resolution.
+	local cowSolid = 0
+	for _, p in ipairs(cow:GetDescendants()) do
+		if p:IsA("BasePart") then p.CanCollide = true; cowSolid = cowSolid + 1 end
+	end
+	print("[COLLISION] cow body parts set solid=" .. cowSolid .. " (CanCollide=true; anchored + CFrame-driven, movement unaffected)")
 	return rig
 end
 
