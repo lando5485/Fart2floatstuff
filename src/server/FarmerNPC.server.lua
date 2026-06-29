@@ -21,6 +21,16 @@ local FARMER_YAW           = -47 -- degrees about Y — his facing (Studio orien
 local PROMPT_DISTANCE      = 12  -- how close the player must be for the prompt to appear
 local STANDS_READY_TIMEOUT = 30  -- seconds to wait for stand setup before giving up
 
+-- INTRO / WELCOME lines cycled in the Farmer's overhead speech bubble (same style/timing as the Gardener:
+-- the bubble text is swapped on a ~4s loop). Keep each line BRIEF so it doesn't crowd the screen. Easy to edit.
+local FARMER_LINES = {
+	"Howdy! Welcome to Fart to Float!",
+	"Stock up on beans here \xE2\x80\x94 they're what get you airborne!",
+	"Once you're fueled up, go explore the islands above!",
+	"And don't be a stranger \xE2\x80\x94 our farm friends in the garden love visitors!",
+}
+local FARMER_LINE_SECS = 4 -- seconds each line shows (matches the Gardener's cycle)
+
 -- BOTH farmers (Farmer + Farmer2) are shifted by this SAME world-space offset, so they keep their exact
 -- arrangement relative to each other. It's applied to each farmer's target position BEFORE the ground
 -- raycast, so they stay grounded and keep their facing/prompts. It REPLACES (does not stack on) any prior
@@ -30,7 +40,12 @@ local STANDS_READY_TIMEOUT = 30  -- seconds to wait for stand setup before givin
 -- ★ EASY TO ADJUST: if it still moves the wrong way on screen, just flip a sign here. ★
 local FARMER_NUDGE = Vector3.new(10, 0, 5)  -- horizontal +X 10 studs, depth +Z 5 studs
 
+-- REMOVED BY REQUEST: the two NPCs by the food stand (the talking Farmer + the Farmer2 scarecrow) are
+-- disabled — neither is spawned. Set this back to true to bring them back.
+local SPAWN_TUTORIAL_FARMERS = false
+
 task.spawn(function()
+	if not SPAWN_TUTORIAL_FARMERS then return end -- food-stand NPCs removed
 	-- 1) Locate the talking Farmer rig by EXACT name ("FarmerNPC"/"Farmer"), falling back to any Model with
 	--    a Humanoid EXCEPT "Farmer2" (the scarecrow), so the two rigs can never be mixed up.
 	local source = ServerStorage:FindFirstChild("FarmerNPC") or ServerStorage:FindFirstChild("Farmer")
@@ -155,9 +170,19 @@ task.spawn(function()
 		local label = Instance.new("TextLabel")
 		label.BackgroundTransparency = 1; label.Size = UDim2.fromOffset(214, 54); label.Position = UDim2.new(0, 8, 0, 5)
 		label.Font = Enum.Font.GothamBold; label.TextScaled = false; label.TextSize = 18; label.AutomaticSize = Enum.AutomaticSize.None; label.TextColor3 = Color3.fromRGB(34, 34, 40)
-		label.TextWrapped = true; label.Text = "\xC2\xA1Hola! Press E to talk"; label.Parent = frame
+		label.TextWrapped = true; label.Text = FARMER_LINES[1]; label.Parent = frame -- default = the welcome line
 		print(string.format("[BUBBLE TEXT] farmer TextScaled=false->%s TextSize=%d sizeUsesScale=n", tostring(label.TextScaled), label.TextSize))
-		print("[BUBBLE AUDIT] FarmerTalkBubble was=offset now=offset"); print(string.format("[BUBBLE DIAG] FarmerTalkBubble SizeOffset=%s StudsOffsetWorldSpace=%s hasUIScale=%s", tostring(bb.SizeOffset), tostring(bb.StudsOffsetWorldSpace), (bb:FindFirstChildWhichIsA("UIScale", true) or bb:FindFirstChildWhichIsA("UISizeConstraint", true)) and "y" or "n")); print("[BUBBLE SPEAK] farmer method=reuses spawn bubble (static text, never re-spoken)") -- bean-stand Farmer: ONE static BillboardGui
+		print("[BUBBLE AUDIT] FarmerTalkBubble was=offset now=offset"); print(string.format("[BUBBLE DIAG] FarmerTalkBubble SizeOffset=%s StudsOffsetWorldSpace=%s hasUIScale=%s", tostring(bb.SizeOffset), tostring(bb.StudsOffsetWorldSpace), (bb:FindFirstChildWhichIsA("UIScale", true) or bb:FindFirstChildWhichIsA("UISizeConstraint", true)) and "y" or "n")); print("[BUBBLE SPEAK] farmer method=reuses spawn bubble (cycling welcome lines, same as the Gardener)")
+		-- CYCLE the welcome lines in his bubble the same way the Gardener does (swap the text on a timer), then
+		-- settle on line 1 (the welcome) as the resting default. Stops if the bubble is ever removed.
+		task.spawn(function()
+			for _, line in ipairs(FARMER_LINES) do
+				if not label.Parent then return end
+				label.Text = line
+				task.wait(FARMER_LINE_SECS)
+			end
+			if label.Parent then label.Text = FARMER_LINES[1] end -- settle on the welcome line
+		end)
 	end
 
 	print("FARMER: tutorial NPC placed (anchored, in Workspace.TutorialNPCs, with talk prompt).")
@@ -169,6 +194,7 @@ end)
 -- anchored + frozen, scale preserved by Clone. Placed at island 1's REAL stand position with NO offset
 -- and NO rotation (yet), feet snapped to the actual ground via a downward raycast.
 task.spawn(function()
+	if not SPAWN_TUTORIAL_FARMERS then return end -- food-stand NPCs removed
 	-- Find ONLY the rig named exactly "Farmer2".
 	local source = ServerStorage:FindFirstChild("Farmer2")
 	if not (source and source:IsA("Model") and source:FindFirstChildWhichIsA("Humanoid")) then

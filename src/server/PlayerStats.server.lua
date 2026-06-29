@@ -34,6 +34,10 @@ local WelcomeEvent      = getOrCreate(RS, "RemoteEvent", "WelcomeEvent") -- pers
 local RequestPlayerState = getOrCreate(RS, "RemoteEvent", "RequestPlayerState")
 local SelectIslandEvent = getOrCreate(RS, "RemoteEvent", "SelectIslandEvent") -- client picks a spawn island from the loading-screen menu
 local GoToIsland1Event  = getOrCreate(RS, "RemoteEvent", "GoToIsland1Event") -- rocket-event "Go to Island 1" teleport button
+-- ONE-TIME GARDEN INTRO CINEMATIC: server tells the client to PLAY the cutscene (fired when a player who
+-- hasn't SeenGardenIntro selects island 1); the client fires _Done back when it finishes so we set+save the flag.
+local GardenIntroEvent     = getOrCreate(RS, "RemoteEvent", "GardenIntroEvent")     -- server -> client: play the cinematic now
+local GardenIntroDoneEvent = getOrCreate(RS, "RemoteEvent", "GardenIntroDoneEvent") -- client -> server: cinematic finished, set the seen flag
 
 local ISLAND_DISPLAY_NAMES = {
 	"Bean Farm","Broccoli Bluff","Cabbage Cliffs","Turnip Tranquil",
@@ -269,6 +273,13 @@ local joinRestoreMeter = {}       -- [player] = saved meter to RESTORE after fir
 _G.playerOwnedPets = _G.playerOwnedPets or {}
 -- Equipped-pet choice (cosmetic, additive). Persisted under saved.equippedPet; shared with PetSystem.
 _G.playerEquippedPet = _G.playerEquippedPet or {}
+-- GUT SKINS (cosmetic, additive). owned = { Default=true, ... }; equipped = skin id. Shared with GutSkinService;
+-- PlayerStats just persists them (saved.ownedGutSkins / saved.equippedGutSkin).
+_G.playerOwnedGutSkins = _G.playerOwnedGutSkins or {}
+_G.playerEquippedGutSkin = _G.playerEquippedGutSkin or {}
+-- TOTAL cumulative playtime in SECONDS (all sessions). GutSkinService increments + auto-grants playtime skins;
+-- PlayerStats just persists it (saved.playtimeSeconds). Single source of truth lives on the server.
+_G.playerPlaytimeSec = _G.playerPlaytimeSec or {}
 -- Discovered pet QUESTS (cosmetic, additive). Persisted under saved.discoveredQuests; shared with PetSystem.
 _G.playerDiscoveredQuests = _G.playerDiscoveredQuests or {}
 -- PERMANENT "ever completed pet quest X" flags (additive). Persisted under saved.everCompletedQuests; shared
@@ -394,6 +405,10 @@ local function savePlayerData(player, trigger)
 		equippedPet      = _G.playerEquippedPet[player],      -- cosmetic: which pet is currently equipped (additive)
 		discoveredQuests = _G.playerDiscoveredQuests[player] or {}, -- cosmetic: which pet quests are discovered (additive)
 		everCompletedQuests = _G.playerEverCompletedQuests[player] or {}, -- PERMANENT first-completion flags (gates the one-time rare roll; additive)
+		seenGardenIntro  = player:GetAttribute("SeenGardenIntro") == true, -- one-time Community Garden cinematic: true once the player has watched it
+		ownedGutSkins    = _G.playerOwnedGutSkins[player] or { Default = true },  -- cosmetic gut skins owned (always includes Default)
+		equippedGutSkin  = _G.playerEquippedGutSkin[player] or "Default",         -- currently equipped gut skin id
+		playtimeSeconds  = _G.playerPlaytimeSec[player] or 0,                     -- total cumulative playtime (drives skin unlocks)
 	}
 	print(string.format("[SAVE METER] player=%s meter=%d", player.Name, meterToSave))
 	local key = tostring(player.UserId)
@@ -535,9 +550,13 @@ end
 -- Real Stand part positions per island, [islandNum] = {x,y,z}. Module scope so the
 -- home-base respawn/catch system below can read the authoritative positions.
 local standData = {}
+-- Optional per-island EXACT player-spawn override from a placed SpawnLocation (separate from standData so the
+-- Farmer/rocket/return still use the real stand). placeOnStand prefers this when present.
+local spawnData = {}
 task.spawn(function()
 	task.wait(8)
 	standData = {}
+	spawnData = {}
 	for islandNum = 1, 14 do
 		local island = findIslandModel(islandNum)
 		local partPos = nil
@@ -546,6 +565,22 @@ task.spawn(function()
 		print("SEARCHING ISLAND", islandNum, "MODEL FOUND:", island ~= nil)
 
 		if island then
+			-- SPAWN-POINT OVERRIDE: if a SpawnLocation is placed in the island, remember it as the EXACT player
+			-- spawn spot (stored SEPARATELY in spawnData so the stand below still drives the Farmer/rocket/return).
+			-- placeOnStand prefers this for islands that have one — e.g. the Bean Farm / island-1 spawn.
+			for _, obj in ipairs(island:GetDescendants()) do
+				if obj:IsA("SpawnLocation") then
+					local top = obj.Position + Vector3.new(0, obj.Size.Y / 2, 0) -- pad top surface
+					local lk = obj.CFrame.LookVector
+					local fx, fz = 0, 1
+					local h = Vector3.new(lk.X, 0, lk.Z)
+					if h.Magnitude > 0.05 then h = h.Unit; fx, fz = h.X, h.Z end
+					spawnData[islandNum] = {x=top.X, y=top.Y, z=top.Z, fx=fx, fz=fz, exact=true}
+					print("STAND["..islandNum.."]: SpawnLocation '"..obj.Name.."' -> exact player spawn at", top)
+					break
+				end
+			end
+
 			-- Method 1: search ALL descendants for Stand_N model (handles nested hierarchy)
 			local standName = "Stand_"..islandNum
 			local standModel = nil
@@ -624,7 +659,7 @@ task.spawn(function()
 			if h.Magnitude > 0.05 then h = h.Unit; sfx, sfz = h.X, h.Z end
 		end
 		standData[islandNum] = {x=partPos.X, y=partPos.Y, z=partPos.Z, fx=sfx, fz=sfz}
-		print("STAND["..islandNum.."]: READY Y="..partPos.Y)
+		print("STAND["..islandNum.."]: READY Y="..partPos.Y..(spawnData[islandNum] and " (+SpawnLocation override)" or ""))
 	end
 	local count = 0; for _ in pairs(standData) do count = count + 1 end
 	print("STAND DATA COUNT:", count)
@@ -735,11 +770,23 @@ Players.PlayerAdded:Connect(function(player)
 	print("LOAD ISLAND: "..player.Name.." restored highestIsland="..restoredIsland..", teleporting to stand "..restoredIsland)
 	dataLoaded[player] = true
 	playerCoinAccum[player] = 0
+	-- ONE-TIME GARDEN INTRO: restore the "has watched the cinematic" flag as a player attribute (replicates to
+	-- the client; the SelectIslandEvent hook reads it to decide whether to play). \xE2\x9A\xA0 TEST: lando5485 is treated as a
+	-- brand-new player every join -- force the flag FALSE so the intro replays for testing. REMOVE BEFORE LAUNCH.
+	local isIntroTester = (player.UserId == TEST_ACCOUNT_USERID) or (string.lower(player.Name) == "lando5485")
+	local seenIntro = (not isIntroTester) and (saved.seenGardenIntro == true)
+	player:SetAttribute("SeenGardenIntro", seenIntro)
+	print("LOAD GARDEN INTRO: "..player.Name.." SeenGardenIntro="..tostring(seenIntro)..(isIntroTester and " (TEST: forced replay)" or ""))
 	-- PETS: restore cosmetic pet ownership from the save (fresh/test/synthetic saves have no ownedPets
 	-- field -> {} -> no pet, which respects FRESH_PLAYER_TEST / SPAWN_AT_PIZZA_PALMS_TEST). Then let
 	-- PetSystem react (spawn an owned pet + send the client its state). Guarded so load never depends on it.
 	_G.playerOwnedPets[player] = saved.ownedPets or {}
 	_G.playerEquippedPet[player] = saved.equippedPet -- cosmetic equipped choice (nil if none / legacy save)
+	-- GUT SKINS: new players (and legacy saves) start owning ONLY Default, equipped Default. GutSkinService reads these.
+	_G.playerOwnedGutSkins[player] = saved.ownedGutSkins or { Default = true }
+	_G.playerOwnedGutSkins[player].Default = true -- safety: everyone always owns Default
+	_G.playerEquippedGutSkin[player] = saved.equippedGutSkin or "Default"
+	_G.playerPlaytimeSec[player] = tonumber(saved.playtimeSeconds) or 0 -- restore total playtime (new players = 0)
 	_G.playerDiscoveredQuests[player] = saved.discoveredQuests or {} -- cosmetic discovered-quest set (empty / legacy save)
 	_G.playerEverCompletedQuests[player] = saved.everCompletedQuests or {} -- PERMANENT first-completion flags (empty / legacy save -> never completed)
 	if _G.petsApplyOnJoin then pcall(function() _G.petsApplyOnJoin(player) end) end
@@ -906,6 +953,9 @@ CoinEvent.OnServerEvent:Connect(function(player, amount)
 	local tce   = ls:FindFirstChild("TotalCoinsEarned")
 	if not coins or not tce then return end
 	local amt = tonumber(amount) or 0; if amt <= 0 then return end
+	-- FRIEND/GROUP COIN BOOST: scale earned FLIGHT coins by this player's bonus multiplier (1 = none). Set by
+	-- RewardsService (friend-in-server +25%, MLR group +10%, stackable). Flat rewards (codes) are granted directly, unaffected.
+	amt = amt * ((_G.coinBonusMult and _G.coinBonusMult[player]) or 1)
 	playerCoinAccum[player] = (playerCoinAccum[player] or 0) + amt
 	local toAdd = math.floor(playerCoinAccum[player])
 	if toAdd > 0 then
@@ -952,6 +1002,7 @@ local RunService = game:GetService("RunService")
 local CATCH_MARGIN  = 50          -- studs below the home Stand before the Return prompt shows
 local STAND_OFFSET_Y = 10         -- place the player this far above the Stand part center
 local SPAWN_FRONT_DIST = 14       -- studs IN FRONT of the stand to drop the player (so the booth is ahead of them)
+local EXACT_SPAWN_OFFSET_Y = 4    -- when spawning ON a SpawnLocation, lift the player this far above its top surface
 
 -- Which island (if any) is the character physically standing on right now? Must work for
 -- ALL 14 stands regardless of their geometry/parenting.
@@ -995,6 +1046,17 @@ end
 local function teleportToHome(char, sd)
 	local hrp = char:FindFirstChild("HumanoidRootPart")
 	if not hrp then return end
+	-- EXACT SPAWN (SpawnLocation): place the player ON the pad at that precise spot, facing its orientation —
+	-- NOT stepped out in front of a stand. sd.y is already the pad's top surface; lift by the character offset.
+	if sd.exact then
+		local front = Vector3.new(sd.fx or 0, 0, sd.fz or 1)
+		if front.Magnitude < 0.05 then front = Vector3.new(0, 0, 1) end
+		front = front.Unit
+		local pos = Vector3.new(sd.x, sd.y + EXACT_SPAWN_OFFSET_Y, sd.z)
+		hrp.CFrame = CFrame.lookAt(pos, pos + front)
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		return
+	end
 	local standCenter = Vector3.new(sd.x, sd.y + STAND_OFFSET_Y, sd.z)
 	-- Step out along the booth's front-facing direction, then look back at the booth. If a stand had
 	-- no usable orientation, fx/fz default to +Z. (Flip SPAWN_FRONT_DIST's sign if a stand template
@@ -1018,13 +1080,46 @@ end
 local hasChosenIsland = {} -- [player] = picked their spawn island this session
 local spawnIsland = {}     -- [player] = island to place the NEXT character spawn on
 
+-- Position of the Community Garden (the gardener if present, else the build's centre) — used to make the
+-- island-1 spawn FACE the garden so the player's character + camera look at it.
+local function findGardenPos()
+	local build = workspace:FindFirstChild("CommunityGardenBuild", true)
+	if not build then return nil end
+	local props = build:FindFirstChild("GardenProps")
+	local g = props and props:FindFirstChild("Gardener")
+	if not g then
+		for _, d in ipairs(build:GetDescendants()) do
+			if d:IsA("Model") and d:GetAttribute("GardenerNPC") then g = d; break end
+		end
+	end
+	local ok, p = pcall(function() return (g or build):GetPivot().Position end)
+	return ok and p or nil
+end
+
 local function placeOnStand(char, islandNum)
 	local hrp = char:WaitForChild("HumanoidRootPart", 10)
 	if not hrp then return end
 	local sd = standData[islandNum]
 	local tries = 0
 	while not sd and tries < 50 do task.wait(0.2); sd = standData[islandNum]; tries = tries + 1 end
-	if sd then task.wait(0.05); teleportToHome(char, sd) end
+	-- prefer a placed SpawnLocation (exact spawn) over the stand-front spot, when one exists for this island
+	local spot = spawnData[islandNum] or sd
+	-- ISLAND 1: spawn FACING the Community Garden, so the on-spawn camera resets behind the player already
+	-- looking at it (and the body faces it too). Override the facing with the direction toward the garden, in a
+	-- FRESH copy so the saved spawn data is untouched. Brief poll in case the garden is still building.
+	if spot and spot.exact and islandNum == 1 then -- only the exact SpawnLocation spawn (facing-only; never shifts position)
+		local gp = findGardenPos()
+		local pt = 0
+		while not gp and pt < 2 do task.wait(0.25); pt = pt + 0.25; gp = findGardenPos() end
+		if gp then
+			local dx, dz = gp.X - spot.x, gp.Z - spot.z
+			local mag = math.sqrt(dx * dx + dz * dz)
+			if mag > 0.1 then
+				spot = {x = spot.x, y = spot.y, z = spot.z, fx = dx / mag, fz = dz / mag, exact = true}
+			end
+		end
+	end
+	if spot then task.wait(0.05); teleportToHome(char, spot) end
 end
 
 local function onCharacterAdded(player, char)
@@ -1066,6 +1161,15 @@ SelectIslandEvent.OnServerEvent:Connect(function(player, islandNum)
 	spawnIsland[player] = islandNum
 	player:LoadCharacter() -- spawn the held player; onCharacterAdded teleports to the chosen stand
 	print("ISLAND SELECT: "..player.Name.." spawning on island "..islandNum)
+	-- ONE-TIME GARDEN INTRO: a brand-new player (hasn't SeenGardenIntro) who picks island 1 gets the cinematic.
+	-- Server-authoritative: gated on the saved/restored flag (attribute), so it never replays for returning players.
+	-- The client runs the cutscene and fires GardenIntroDoneEvent back, which sets+saves the flag.
+	if islandNum == 1 and player:GetAttribute("SeenGardenIntro") ~= true then
+		print("GARDEN INTRO: "..player.Name.." selected island 1 for the first time -> playing cinematic")
+		-- Fire immediately as the authoritative fallback. The client also self-starts on click (for the instant
+		-- black overlay); GardenIntro's `playing` guard makes this a no-op if the client already began.
+		pcall(function() GardenIntroEvent:FireClient(player) end)
+	end
 	-- FART METER RESTORE (after-spawn): the spawn's own onLand fires LandingEvent(0), which zeros the
 	-- decrease-only CurrentPower — so we must re-apply the saved meter SERVER-SIDE once the spawn has
 	-- settled, then replicate it to the client's gas meter via RegenEvent. This runs AFTER the
@@ -1094,6 +1198,16 @@ SelectIslandEvent.OnServerEvent:Connect(function(player, islandNum)
 		pcall(function() RegenEvent:FireClient(player, 0, applied, gutMax) end) -- replicate to the client's gas meter UI
 		print(string.format("[LOAD METER] player=%s saved=%s applied_to_live=%d%s", player.Name, tostring(want), applied, infiniteGut and " (INFINITE GUT: full)" or ""))
 	end)
+end)
+
+-- ONE-TIME GARDEN INTRO: the client fires this the moment the cinematic finishes. We mark the flag on the
+-- player (so it persists in the next save) and save immediately so a leave right after watching still counts.
+-- (lando5485 is force-reset to FALSE on each load, so the intro still replays for him next join despite this.)
+GardenIntroDoneEvent.OnServerEvent:Connect(function(player)
+	if player:GetAttribute("SeenGardenIntro") == true then return end
+	player:SetAttribute("SeenGardenIntro", true)
+	print("GARDEN INTRO: "..player.Name.." finished the cinematic -> SeenGardenIntro=true (saving)")
+	task.spawn(function() savePlayerData(player, "garden-intro-seen") end)
 end)
 
 Players.PlayerAdded:Connect(function(player)
@@ -1355,6 +1469,29 @@ local function triggerSkipIsland(player)
 	end
 end
 
+-- TEST: jump straight to ANY island (chat "goisland<N>", N=1..14). Mirrors triggerSkipIsland's bookkeeping but
+-- to an arbitrary island: raises home base (highestIslandReached) + HighestIsland attr + Island stat to at least N
+-- so respawn/return/shop follow, then teleports onto that island's home stand. Server-authoritative; test users only.
+local function goToIsland(player, n)
+	if not player then return end
+	n = math.clamp(math.floor(tonumber(n) or 0), 1, 14)
+	if (highestIslandReached[player] or 1) < n then
+		highestIslandReached[player] = n
+		player:SetAttribute("HighestIsland", n)
+	end
+	local ls = player:FindFirstChild("leaderstats")
+	local island = ls and ls:FindFirstChild("Island")
+	if island and island.Value < n then island.Value = n end
+	local sd = standData[n]
+	local char = player.Character
+	if sd and char then
+		print("[GOISLAND] " .. player.Name .. " -> island " .. n)
+		pcall(function() teleportToHome(char, sd) end)
+	else
+		print("[GOISLAND] " .. player.Name .. " island " .. n .. " not ready (stand=" .. tostring(sd ~= nil) .. ", char=" .. tostring(char ~= nil) .. ")")
+	end
+end
+
 -- Real Skip Island product (hotbar): teleport to the next island + move home base.
 SkipIslandEvent.OnServerEvent:Connect(function(player) triggerSkipIsland(player) end)
 
@@ -1504,6 +1641,26 @@ local function fireThunderstormNow()
 		pcall(function() ServerEventNotify:FireAllClients("END", "", 0, "", Color3.new(1,1,1)) end)
 	end)
 end
+-- \xE2\x9A\xA0 TEST: quick "get<tier>gut" chat commands to grab any gut tier instantly (for belly/flight testing).
+-- REMOVE BEFORE LAUNCH. Example: type  gettinygut  (or /gettinygut) in chat.
+local GUT_CMDS = {
+	gettinygut = "Tiny Gut", getsmallgut = "Small Gut", getmediumgut = "Medium Gut",
+	getlargegut = "Large Gut", getxlgut = "XL Gut", getirongut = "Iron Gut", getinfinitegut = "Infinite Gut",
+}
+local function giveGut(player, gutName)
+	local tier; for _, t in ipairs(stomachTiers) do if t.name == gutName then tier = t; break end end
+	if not tier then return end
+	local ls = player:FindFirstChild("leaderstats"); if not ls then return end
+	local sm = ls:FindFirstChild("StomachMax"); if not sm then return end
+	sm.Value = tier.maxPower
+	local cp = ls:FindFirstChild("CurrentPower")
+	if cp then cp.Value = math.min(cp.Value, tier.maxPower) end -- carry/clamp current gas to the new tank
+	if tier.maxPower >= INFINITE_GUT_MAX then player:SetAttribute("HasInfiniteGut", true) end
+	pcall(function() StomachUpdateEvent:FireClient(player, tier.maxPower, tier.name) end)
+	pcall(function() RegenEvent:FireClient(player, 0, cp and cp.Value or 0, tier.maxPower) end)
+	print("[TEST] gave "..player.Name.." "..tier.name.." (maxPower "..tier.maxPower..")")
+end
+
 local function hookTestStormChat(player) -- \xE2\x9A\xA0 TEST: /thunderstorm chat trigger. REMOVE BEFORE LAUNCH.
 	-- \xE2\x9A\xA0 TEST: on lando5485's join, print their userId so it can be hardcoded by id later. REMOVE BEFORE LAUNCH.
 	if string.lower(player.Name) == "lando5485" then
@@ -1523,6 +1680,15 @@ local function hookTestStormChat(player) -- \xE2\x9A\xA0 TEST: /thunderstorm cha
 			if not isAllowedTestUser(player) then return end
 			if _G.petsGrantRare then pcall(function() _G.petsGrantRare(player) end) end -- grant all pets RARE + pre-maxed so all 5 rare looks are visible
 			print("[TEST] /rarepets used by " .. player.Name .. " - granted all RARE pets. REMOVE BEFORE LAUNCH.")
+		elseif cmd:match("^/?goisland%s*%d+$") then -- \xE2\x9A\xA0 TEST: "goisland1".."goisland14" -> teleport to that island (slash optional). REMOVE BEFORE LAUNCH.
+			if not isAllowedTestUser(player) then return end
+			goToIsland(player, cmd:match("(%d+)"))
+		else -- \xE2\x9A\xA0 TEST: instant gut tiers — "gettinygut", "getsmallgut", ... (slash optional). REMOVE BEFORE LAUNCH.
+			local gutName = GUT_CMDS[cmd] or GUT_CMDS[(cmd:gsub("^/", ""))]
+			if gutName then
+				if not isAllowedTestUser(player) then return end
+				giveGut(player, gutName)
+			end
 		end
 	end)
 end

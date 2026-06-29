@@ -4,6 +4,12 @@
     "$className": "DataModel",
     "ServerScriptService": {
       "$className": "ServerScriptService",
+      "IslandStreaming": {
+        "$path": "src/server/IslandStreaming.server.lua"
+      },
+      "BellySystem": {
+        "$path": "src/server/BellySystem.server.lua"
+      },
       "PlayerStats": {
         "$path": "src/server/PlayerStats.server.lua"
       },
@@ -81,10 +87,61 @@
       },
       "GardenBird": {
         "$path": "src/server/GardenBird.server.lua"
+      },
+      "PlayerState": {
+        "$path": "src/server/PlayerState.luau"
+      },
+      "CrateService": {
+        "$path": "src/server/CrateService.server.luau"
+      },
+      "DevCommands": {
+        "$path": "src/server/DevCommands.server.luau"
+      },
+      "RewardsService": {
+        "$path": "src/server/RewardsService.server.lua"
+      },
+      "GutSkinService": {
+        "$path": "src/server/GutSkinService.server.lua"
+      },
+      "GardenFeeding": {
+        "$path": "src/server/GardenFeeding.server.lua"
+      },
+      "SecretTreeDoor": {
+        "$path": "src/server/SecretTreeDoor.server.lua"
+      },
+      "PopcornTrees": {
+        "$path": "src/server/PopcornTrees.server.lua"
+      },
+      "MeatballShooter": {
+        "$path": "src/server/MeatballShooter.server.lua"
+      },
+      "MilkCap": {
+        "$path": "src/server/MilkCap.server.lua"
+      },
+      "SecurityGuard": {
+        "$path": "src/server/SecurityGuard.server.lua"
       }
     },
     "ReplicatedStorage": {
       "$className": "ReplicatedStorage",
+      "Shared": {
+        "$className": "Folder",
+        "Constants": {
+          "$path": "src/shared/Constants.luau"
+        },
+        "CosmeticConfig": {
+          "$path": "src/shared/CosmeticConfig.luau"
+        },
+        "CosmeticIcon": {
+          "$path": "src/shared/CosmeticIcon.luau"
+        },
+        "Remotes": {
+          "$path": "src/shared/Remotes.luau"
+        },
+        "GutSkins": {
+          "$path": "src/shared/GutSkins.luau"
+        }
+      },
       "BuyFoodEvent": {
         "$className": "RemoteEvent"
       },
@@ -227,6 +284,24 @@
         },
         "GardenChestClient": {
           "$path": "src/client/GardenChestClient.client.lua"
+        },
+        "CrateClient": {
+          "$path": "src/client/CrateClient.client.luau"
+        },
+        "GardenIntro": {
+          "$path": "src/client/GardenIntro.client.lua"
+        },
+        "GardenGuideTrail": {
+          "$path": "src/client/GardenGuideTrail.client.luau"
+        },
+        "BellyPuff": {
+          "$path": "src/client/BellyPuff.client.lua"
+        },
+        "RewardsClient": {
+          "$path": "src/client/RewardsClient.client.lua"
+        },
+        "GutSkinClient": {
+          "$path": "src/client/GutSkinClient.client.lua"
         }
       }
     }

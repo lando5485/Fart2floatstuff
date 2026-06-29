@@ -304,14 +304,16 @@ _G.GUT_IMAGE   = "rbxassetid://108585083746103"                       -- stomach
 -- and shop-list card shows ITS OWN emoji from here — EXCEPT XL Gut, which shows an ImageLabel
 -- (_G.GUT_IMAGE) instead of an emoji, so its entry below is kept only as an UNUSED fallback. The
 -- STOMACH shop-OPEN button also keeps _G.GUT_IMAGE and is intentionally NOT in this map.
+-- Theme: a growing APPETITE -> strength -> endless. Each gut is its own creature/icon (not the old baby->child->
+-- man aging line). Tiny stays a baby + Infinite stays a whale; Iron is a weightlifter (a gut of iron).
 _G.GUT_EMOJI = {
-	["Tiny Gut"]     = "\xF0\x9F\x91\xB6", -- 👶 baby
-	["Small Gut"]    = "\xF0\x9F\xA7\x92", -- 🧒 child
-	["Medium Gut"]   = "\xF0\x9F\xA7\x91", -- 🧑 person
-	["Large Gut"]    = "\xF0\x9F\xA7\x94", -- 🧔 bearded adult
-	["XL Gut"]       = "\xF0\x9F\xA4\xB0", -- 🤰 pregnant person (fallback for 🫃)
-	["Iron Gut"]     = "\xF0\x9F\xA6\x9B", -- 🦛 hippo
-	["Infinite Gut"] = "\xF0\x9F\x90\x8B", -- 🐋 whale
+	["Tiny Gut"]     = "\xF0\x9F\x91\xB6",             -- 👶 baby (tiny tummy)
+	["Small Gut"]    = "\xF0\x9F\x90\xB9",             -- 🐹 hamster (stuffs its cheeks)
+	["Medium Gut"]   = "\xF0\x9F\x90\xB7",             -- 🐷 pig (greedy eater)
+	["Large Gut"]    = "\xF0\x9F\x90\x98",             -- 🐘 elephant (big belly)
+	["XL Gut"]       = "\xF0\x9F\xA6\x9B",             -- 🦛 hippo (huge belly) -- XL shows GUT_IMAGE; this is the fallback
+	["Iron Gut"]     = "\xF0\x9F\x8F\x8B\xEF\xB8\x8F", -- 🏋️ weightlifter (a gut of iron)
+	["Infinite Gut"] = "\xF0\x9F\x90\x8B",             -- 🐋 whale (endless appetite)
 }
 _G.CHECK_IMAGE = "rbxasset://textures/ui/LuaApp/icons/ic-check.png"   -- claimed checkmark (built-in)
 -- Coin counter icon: a real coin IMAGE to the LEFT of the number (replaces the old "G" text).
@@ -438,6 +440,40 @@ heightLabel.TextXAlignment = Enum.TextXAlignment.Left; heightLabel.Parent = stat
 -- Farts stat REMOVED from the stats display (was the last row at y=116; "Max Height" above is now
 -- the bottom stat, so the remaining rows stay contiguous with no gap). The TotalFartPower leaderstat
 -- it read is untouched — it's still tracked server-side and used by flight/power.
+
+-- ===== SPACE REALM PROGRESS (bottom of the STATS section) =====
+-- A bar + percentage showing how close the player is to the FINAL island / the Space Realm (the black hole above
+-- Pizza Palms = island 14). Driven by the server's authoritative "HighestIsland" player attribute (set on landing /
+-- island-skip / load), so it climbs live as new islands are reached -- the "99% to space" progress big games show.
+local SPACE_TOTAL_ISLANDS = 14
+local spaceRealmTitle = Instance.new("TextLabel")
+spaceRealmTitle.Size = UDim2.new(1,0,0,22); spaceRealmTitle.Position = UDim2.new(0,0,0,116)
+spaceRealmTitle.BackgroundTransparency = 1; spaceRealmTitle.Text = "\xF0\x9F\x9A\x80 TO SPACE REALM"
+spaceRealmTitle.Font = Enum.Font.GothamBold; spaceRealmTitle.TextSize = 16; spaceRealmTitle.TextColor3 = Color3.fromRGB(190,210,255)
+spaceRealmTitle.TextScaled = true; spaceRealmTitle.RichText = false
+spaceRealmTitle.TextXAlignment = Enum.TextXAlignment.Left; spaceRealmTitle.Parent = statsSection
+local spaceBarBG = Instance.new("Frame")
+spaceBarBG.Size = UDim2.new(1,-2,0,22); spaceBarBG.Position = UDim2.new(0,0,0,142)
+spaceBarBG.BackgroundColor3 = Color3.fromRGB(10,14,36); spaceBarBG.BorderSizePixel = 0; spaceBarBG.ZIndex = 4; spaceBarBG.Parent = statsSection
+mkCorner(spaceBarBG, 9); mkStroke(spaceBarBG, Color3.fromRGB(8,10,28), 1)
+local spaceFill = Instance.new("Frame")
+spaceFill.Size = UDim2.new(0,0,1,0); spaceFill.BackgroundColor3 = Color3.fromRGB(90,200,120); spaceFill.BorderSizePixel = 0; spaceFill.ZIndex = 4; spaceFill.Parent = spaceBarBG
+mkCorner(spaceFill, 9)
+local spacePctLabel = Instance.new("TextLabel")
+spacePctLabel.Size = UDim2.new(1,-8,1,0); spacePctLabel.Position = UDim2.new(0,4,0,0); spacePctLabel.BackgroundTransparency = 1
+spacePctLabel.Font = Enum.Font.GothamBold; spacePctLabel.TextSize = 13; spacePctLabel.TextColor3 = Color3.new(1,1,1)
+spacePctLabel.TextScaled = true; spacePctLabel.RichText = false; spacePctLabel.ZIndex = 5; spacePctLabel.Parent = spaceBarBG
+mkStroke(spacePctLabel, Color3.new(0,0,0), 1)
+local function updateSpaceRealmProgress()
+	local hi = math.clamp(math.floor(tonumber(player:GetAttribute("HighestIsland")) or 1), 1, SPACE_TOTAL_ISLANDS)
+	local frac = hi / SPACE_TOTAL_ISLANDS
+	spaceFill.Size = UDim2.new(frac, 0, 1, 0)
+	-- green up the islands, then space-purple once the top (island 14 -> the realm gate) is reached
+	spaceFill.BackgroundColor3 = (hi >= SPACE_TOTAL_ISLANDS) and Color3.fromRGB(170,110,255) or Color3.fromRGB(90,200,120)
+	spacePctLabel.Text = "Island " .. hi .. "/" .. SPACE_TOTAL_ISLANDS .. "  -  " .. math.floor(frac * 100 + 0.5) .. "%"
+end
+updateSpaceRealmProgress()
+player:GetAttributeChangedSignal("HighestIsland"):Connect(updateSpaceRealmProgress) -- climbs live as new islands are reached
 
 -- lbIsland/lbMaxHeight/lbEarned/statsPanel aliases removed; use originals directly
 
@@ -618,9 +654,16 @@ local setMoreOpen, openLocker  -- MORE+ popup toggler + Locker opener (assigned 
 local moreOpenState = false    -- is the MORE+ popup currently open?
 local shopSideFrame,shopSideClick=mkSideBtn(-90*scale,Color3.fromRGB(50,180,50),"\xF0\x9F\x9b\x92","SHOP")
 local inviteSideFrame,inviteSideClick=mkSideBtn(0,Color3.fromRGB(100,80,200),"\xF0\x9F\x91\xa5","INVITE")
--- Repurposed: the former DAILY button is now the PET INVENTORY button (paw icon). Var name kept so the
--- existing HUD layout/restyle code still references it.
-local dailySideFrame,dailySideClick=mkSideBtn(90*scale,Color3.fromRGB(80,170,70),"\xF0\x9F\x90\xBE","PETS")
+-- SWAP: the STOMACH button now lives here on the main screen, in the PETS button's OLD slot (same anchor/position/
+-- size/styling). It keeps its OWN icon (GUT_IMAGE), label ("Stomach"), and click action (opens the stomach shop).
+-- Var names dailySideFrame/dailySideClick are kept so the existing HUD layout + restyle code still target this slot.
+local dailySideFrame,dailySideClick=mkSideBtn(90*scale,Color3.fromRGB(80,170,70),"","Stomach")
+do -- the stomach's own icon is an IMAGE (GUT_IMAGE), so overlay it in the side button's icon area
+	local gutIcon=Instance.new("ImageLabel")
+	gutIcon.Name="Icon"; gutIcon.BackgroundTransparency=1; gutIcon.Image=_G.GUT_IMAGE; gutIcon.ScaleType=Enum.ScaleType.Fit
+	gutIcon.Size=UDim2.new(0,math.floor(40*scale),0,math.floor(40*scale)); gutIcon.Position=UDim2.new(0.5,0,0,6); gutIcon.AnchorPoint=Vector2.new(0.5,0)
+	gutIcon.ZIndex=3; gutIcon.Parent=dailySideFrame
+end
 -- MORE+ side button (REPLACES the old STOMACH button -- Stomach now lives inside the MORE+ popup). Var names are
 -- kept (stomachSideFrame/stomachSideClick) so the existing HUD layout reposition + stomach-label refresh still apply.
 local stomachSideFrame,stomachSideClick=mkSideBtn(180*scale,Color3.fromRGB(225,70,170),"+","MORE")
@@ -634,12 +677,83 @@ inviteSideClick.MouseButton1Click:Connect(function()
 end)
 dailySideClick.MouseButton1Click:Connect(function()
 	playUIClick()
-	print("[MenuMgr] button PetInv clicked while "..tostring(_G.MainMenuManager and _G.MainMenuManager.current).." open") -- diagnostic: confirms the PETS click is received even with another menu open
-	local ev = PlayerGui:FindFirstChild("PetInvToggle"); if ev then ev:Fire() end -- toggle the Pet Inventory panel (built in PetFollow)
+	toggleMainMenu("Stomach", "StomachShopGui") -- SWAP: this main-screen slot now opens the stomach shop (same call the old More+ Stomach entry used)
 end)
 stomachSideClick.MouseButton1Click:Connect(function()
 	playUIClick()
 	setMoreOpen(not moreOpenState) -- MORE+ toggles its popup (Stomach lives inside it now)
+end)
+
+-- ===== HUD NOTICE BANNER =====
+-- MATCHED to the game's other banners (Arrival/Announce): same 500x65 top-center frame that slides
+-- from y=-100 down to y=10. Text-only (no emoji glyphs, which don't render in published games). Used
+-- for "Stomach Upgrade Available" + "Daily Reward Ready". The periodic scheduler below flashes it
+-- every 20s for 4s while a reward is available AND nothing else is on screen.
+local NOTICE_SHOWN  = UDim2.new(0.5, 0, 0, 10)   -- where the Arrival/Announce banners rest
+local NOTICE_HIDDEN = UDim2.new(0.5, 0, 0, -100)
+local noticeGui = Instance.new("ScreenGui")
+noticeGui.Name = "HudNoticeGui"; noticeGui.ResetOnSpawn = false; noticeGui.IgnoreGuiInset = true
+noticeGui.DisplayOrder = 90; noticeGui.Parent = PlayerGui
+local noticeFrame = mkFrame(noticeGui, {
+	Size = UDim2.new(0, 500, 0, 65), AnchorPoint = Vector2.new(0.5, 0), Position = NOTICE_HIDDEN,
+	BackgroundColor3 = Color3.fromRGB(40, 160, 90), Visible = false,
+})
+mkCorner(noticeFrame, 16); mkStroke(noticeFrame, Color3.new(1, 1, 1), 3)
+local noticeLabel = mkLabel(noticeFrame, {
+	Size = UDim2.new(1, -24, 1, 0), Position = UDim2.new(0, 12, 0, 0),
+	Text = "", Font = Enum.Font.GothamBold, TextScaled = true, TextColor3 = Color3.new(1, 1, 1),
+	TextXAlignment = Enum.TextXAlignment.Center,
+})
+mkStroke(noticeLabel, Color3.new(0, 0, 0), 2)
+local noticeSeq = 0
+-- Suppress the banner while ANYTHING else is happening: a server event, an open shop/menu, the crate
+-- reveal, or another banner already on screen -- so it never collides with on-screen activity.
+local function bannerBusy()
+	if _G.serverEventActive then return true end
+	if _G.MainMenuManager and _G.MainMenuManager.current then return true end
+	if noticeFrame.Visible then return true end
+	if _G.gui then
+		if _G.gui.arrivalFrame and _G.gui.arrivalFrame.Visible then return true end
+		if _G.gui.announceFrame and _G.gui.announceFrame.Visible then return true end
+	end
+	local rev = PlayerGui:FindFirstChild("MeteorCrateReveal")
+	if rev and rev.Enabled then return true end
+	local sev = PlayerGui:FindFirstChild("ServerEventGui")
+	if sev then local f = sev:FindFirstChildWhichIsA("Frame"); if f and f.Visible then return true end end
+	return false
+end
+local function showHudBanner(text, color, holdSeconds)
+	noticeSeq = noticeSeq + 1
+	local mySeq = noticeSeq
+	noticeLabel.Text = text
+	noticeFrame.BackgroundColor3 = color or Color3.fromRGB(40, 160, 90)
+	noticeFrame.Position = NOTICE_HIDDEN
+	noticeFrame.Visible = true
+	TweenService:Create(noticeFrame, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{ Position = NOTICE_SHOWN }):Play()
+	task.delay(holdSeconds or 4, function()
+		if noticeSeq ~= mySeq then return end -- a newer banner replaced this one
+		TweenService:Create(noticeFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+			{ Position = NOTICE_HIDDEN }):Play()
+		task.wait(0.35)
+		if noticeSeq == mySeq then noticeFrame.Visible = false end
+	end)
+end
+_G.showHudBanner = showHudBanner
+-- Periodic reminder: every 20s, if a reward is available and nothing else is on screen, flash the
+-- banner for 4s. Crate takes priority over the gut upgrade. Stops on its own once claimed/bought (the
+-- _G flags flip false). [crate = _G.crateIsClaimable() from CrateClient; gut = _G.gutUpgradeAffordable]
+task.spawn(function()
+	while true do
+		task.wait(20)
+		if not bannerBusy() then
+			if _G.crateIsClaimable and _G.crateIsClaimable() then
+				showHudBanner("Daily Reward Ready!  Tap MORE+", Color3.fromRGB(255, 196, 60), 4)
+			elseif _G.gutUpgradeAffordable then
+				showHudBanner("Stomach Upgrade Available!", Color3.fromRGB(60, 180, 90), 4)
+			end
+		end
+	end
 end)
 
 -- ===== MORE+ POPUP MENU + SEASONAL LOCKER ==============================================================
@@ -828,7 +942,7 @@ do
 	local moreGui = Instance.new("ScreenGui"); moreGui.Name = "MoreMenuGui"; moreGui.ResetOnSpawn = false
 	moreGui.DisplayOrder = 8; moreGui.Parent = PlayerGui
 	local catcher = mkButton(moreGui, { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "", ZIndex = 1, Visible = false }) -- tap-outside-to-close
-	local panel = mkFrame(moreGui, { Size = UDim2.new(0, 196, 0, 206), BackgroundColor3 = Color3.fromRGB(225, 70, 170), Visible = false, ZIndex = 2 }) -- FIXED size (mirrors LockerGui's fixed lockPanel) so the inner scroll has a real bounded window; 206 == the old 3-entry height
+	local panel = mkFrame(moreGui, { Size = UDim2.new(0, 196, 0, 206), BackgroundColor3 = Color3.fromRGB(225, 70, 170), Visible = false, ZIndex = 2 }) -- FIXED window (~3 entries tall); the EntryList ScrollingFrame scrolls because the 5 entries overflow it
 	mkCorner(panel, 14); mkStroke(panel, Color3.new(1, 1, 1), 2)
 	local pad = Instance.new("UIPadding", panel); pad.PaddingTop = UDim.new(0, 8); pad.PaddingBottom = UDim.new(0, 8); pad.PaddingLeft = UDim.new(0, 8); pad.PaddingRight = UDim.new(0, 8)
 	local hdr = mkFrame(panel, { Size = UDim2.new(1, 0, 0, 28), Position = UDim2.new(0, 0, 0, 0), BackgroundTransparency = 1, ZIndex = 2 }) -- header pinned at top; panel no longer uses a UIListLayout (mirrors Locker's manual layout) so the scroll's canvas can compute
@@ -836,30 +950,64 @@ do
 	local moreX = mkButton(hdr, { Size = UDim2.new(0, 26, 0, 26), Position = UDim2.new(1, -26, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5), BackgroundColor3 = Color3.fromRGB(210, 60, 55), Text = "X", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = Color3.new(1, 1, 1), ZIndex = 3 })
 	mkCorner(moreX, 8)
 
-	-- Entry-list scroll -- COPIED from LockerGui's working scroll (lines ~717-721): manual Position + SCALE-based
-	-- Size inside a FIXED panel, CanvasSize 0 + AutomaticCanvasSize Y, with a UIListLayout that drives the canvas.
+	-- Entry-list scroll: a real ScrollingFrame whose canvas Roblox auto-measures from the UIListLayout's children.
+	-- The entry buttons are parented DIRECTLY into this ScrollingFrame (no intermediate Frame), so the layout +
+	-- AutomaticCanvasSize can measure them and the list scrolls once the content is taller than the window.
 	local entryScroll = Instance.new("ScrollingFrame")
 	entryScroll.Name = "EntryList"
 	entryScroll.BackgroundTransparency = 1 -- seamless: the panel's pink shows through, so the menu looks identical
 	entryScroll.BorderSizePixel = 0
 	entryScroll.Position = UDim2.new(0, 0, 0, 36) -- below the 28px header + 8px gap (within the panel's 8px UIPadding)
-	entryScroll.Size = UDim2.new(1, 0, 1, -36) -- SCALE height off the FIXED panel (like Locker's 1,-146) -> a real bounded window
+	entryScroll.Size = UDim2.new(1, 0, 1, -36) -- SCALE height off the FIXED panel -> a real bounded window
+	entryScroll.ScrollingEnabled = true
 	entryScroll.ScrollingDirection = Enum.ScrollingDirection.Y
 	entryScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-	entryScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y -- canvas grows with the entries so overflow scrolls
-	entryScroll.ScrollBarThickness = 6
+	entryScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y          -- Roblox measures the canvas from the children
+	entryScroll.ScrollBarThickness = 6                              -- match PetInventoryUI scroll
+	entryScroll.ScrollBarImageColor3 = Color3.fromRGB(255, 215, 0)  -- gold, same as PetInventoryUI
 	entryScroll.ClipsDescendants = true
 	entryScroll.ZIndex = 2
 	entryScroll.Parent = panel
-	local entryListLayout = Instance.new("UIListLayout", entryScroll); entryListLayout.SortOrder = Enum.SortOrder.LayoutOrder; entryListLayout.Padding = UDim.new(0, 8)
+	local entryListLayout = Instance.new("UIListLayout"); entryListLayout.SortOrder = Enum.SortOrder.LayoutOrder; entryListLayout.Padding = UDim.new(0, 8); entryListLayout.Parent = entryScroll
+
+	-- CRATE (Daily Rewards) ready "!" dot infrastructure. The crate snapshot lives in CrateClient,
+	-- which exposes _G.crateIsClaimable; we poll it to toggle a red dot on the ready row + MORE button.
+	local crateReadyDots = {}
+	local function mkCrateDot(parent)
+		local dot = Instance.new("Frame")
+		dot.Name = "CrateReadyDot"
+		dot.Size = UDim2.fromOffset(18, 18)
+		dot.AnchorPoint = Vector2.new(1, 0)
+		dot.Position = UDim2.new(1, -2, 0, -2)
+		dot.BackgroundColor3 = Color3.fromRGB(225, 50, 50)
+		dot.ZIndex = 8
+		dot.Visible = false
+		dot.Parent = parent
+		local dc = Instance.new("UICorner"); dc.CornerRadius = UDim.new(1, 0); dc.Parent = dot
+		local bang = Instance.new("TextLabel")
+		bang.BackgroundTransparency = 1; bang.Size = UDim2.fromScale(1, 1)
+		bang.Font = Enum.Font.GothamBlack; bang.Text = "!"; bang.TextSize = 13
+		bang.TextColor3 = Color3.new(1, 1, 1); bang.ZIndex = 9; bang.Parent = dot
+		crateReadyDots[#crateReadyDots + 1] = dot
+		return dot
+	end
 
 	local MORE_ENTRIES = { -- ADD MORE HERE later (each: label + an image OR emoji icon + an action)
-		{ label = "Stomach", image = _G.GUT_IMAGE, action = function() toggleMainMenu("Stomach", "StomachShopGui") end },
+		{ label = "Daily Rewards", emoji = "\xF0\x9F\x8E\x81", readyDot = true, action = function() -- opens the Mystery Meteor Crate (CrateClient listens on OpenMeteorCrate)
+			local ev = RSx:FindFirstChild("OpenMeteorCrate")
+			if not ev then ev = Instance.new("BindableEvent"); ev.Name = "OpenMeteorCrate"; ev.Parent = RSx end
+			ev:Fire()
+		end },
+		{ label = "Pets", emoji = "\xF0\x9F\x90\xBE", action = function() print("[MenuMgr] button PetInv clicked while "..tostring(_G.MainMenuManager and _G.MainMenuManager.current).." open"); local ev = PlayerGui:FindFirstChild("PetInvToggle"); if ev then ev:Fire() end end }, -- SWAP: the PETS button now lives in the More+ menu, in the Stomach entry's OLD slot (keeps the paw icon, label + pet-inventory action)
 		{ label = "Seasonal Pets",  emoji = "\xF0\x9F\x90\xBE", action = function() if openLocker then openLocker() end end },
+		{ label = "Codes",          emoji = "\xF0\x9F\x8E\xAB", action = function() if _G.openCodesGui then _G.openCodesGui() end end },  -- redeem codes (RewardsClient builds CodesGui)
+		-- (the "MLR Group" entry was removed from the HUD; non-members are now nudged by a periodic banner that
+		--  opens the group window when tapped -- see RewardsClient)
 	}
 	for i, e in ipairs(MORE_ENTRIES) do
 		local row = mkButton(entryScroll, { Size = UDim2.new(1, 0, 0, 46), BackgroundColor3 = e.color or Color3.fromRGB(248, 240, 250), Text = "", ZIndex = 2, LayoutOrder = i })
 		mkCorner(row, 10)
+			if e.readyDot then mkCrateDot(row) end
 		if e.image then
 			local im = Instance.new("ImageLabel"); im.BackgroundTransparency = 1; im.Image = e.image; im.ScaleType = Enum.ScaleType.Fit
 			im.Size = UDim2.new(0, 30, 0, 30); im.Position = UDim2.new(0, 8, 0.5, 0); im.AnchorPoint = Vector2.new(0, 0.5); im.ZIndex = 3; im.Parent = row
@@ -869,7 +1017,37 @@ do
 		mkLabel(row, { Text = e.label, Font = Enum.Font.GothamBold, TextSize = 18, TextColor3 = Color3.fromRGB(70, 40, 65), Size = UDim2.new(1, -50, 1, 0), Position = UDim2.new(0, 46, 0, 0), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3 })
 		row.MouseButton1Click:Connect(function() playUIClick(); setMoreOpen(false); pcall(e.action) end)
 	end
-	task.defer(function() print(string.format("[MOREMENU] copied Locker scroll: canvasY=%d, frameY=%d, entries=%d", math.floor(entryScroll.AbsoluteCanvasSize.Y), math.floor(entryScroll.AbsoluteSize.Y), #MORE_ENTRIES)) end) -- read after a layout pass; scrolls when canvasY > frameY
+		mkCrateDot(stomachSideFrame) -- "!" dot on the MORE button itself
+		-- Wiggle the WHOLE MORE+ button whenever the daily-rewards crate is claimable (same ±8° rotation
+		-- oscillation as the gut button). Driven by the same readiness poll below.
+		local moreWiggling, moreWiggleTween = false, nil
+		local function stopMoreWiggle()
+			if not moreWiggling then return end
+			moreWiggling = false
+			if moreWiggleTween then pcall(function() moreWiggleTween:Cancel() end); moreWiggleTween = nil end
+			stomachSideFrame.Rotation = 0
+		end
+		local function startMoreWiggle()
+			if moreWiggling then return end
+			moreWiggling = true
+			stomachSideFrame.Rotation = -8
+			local info = TweenInfo.new(0.32, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+			moreWiggleTween = TweenService:Create(stomachSideFrame, info, { Rotation = 8 })
+			moreWiggleTween:Play()
+		end
+		task.spawn(function() -- poll crate readiness every 1s; toggles the row dot + MORE-button dot + wiggle
+			while true do
+				local ready = (_G.crateIsClaimable and _G.crateIsClaimable()) == true
+				for _, d in ipairs(crateReadyDots) do d.Visible = ready end
+				if ready then startMoreWiggle() else stopMoreWiggle() end
+				task.wait(1)
+			end
+		end)
+	task.spawn(function() -- print AFTER the layout has measured (frameY vs contentY); scrolls when contentY > frameY
+		task.wait(0.3)
+		print(string.format("[MOREMENU] scroll: frameY=%d contentY=%d canvasY=%d entries=%d (scrolls if contentY>frameY)",
+			math.floor(entryScroll.AbsoluteSize.Y), math.floor(entryListLayout.AbsoluteContentSize.Y), math.floor(entryScroll.AbsoluteCanvasSize.Y), #MORE_ENTRIES))
+	end)
 
 	setMoreOpen = function(open)
 		moreOpenState = open and true or false
@@ -884,6 +1062,7 @@ do
 	catcher.MouseButton1Click:Connect(function() setMoreOpen(false) end)
 	moreX.MouseButton1Click:Connect(function() playUIClick(); setMoreOpen(false) end)
 end
+print("[MOREMENU SWAP] stomach -> main screen (pets old slot), pets -> more menu (stomach old slot).")
 
 -- ===== BOTTOM-CENTER STACK: Tiny Gut pill + GAS METER + fart button =====
 -- ONE vertically-stacked, horizontally-CENTERED group anchored bottom-center. A UIListLayout keeps
@@ -1427,7 +1606,7 @@ task.spawn(function()
 	local stomachShopGui=Instance.new("ScreenGui"); stomachShopGui.Name="StomachShopGui"; stomachShopGui.ResetOnSpawn=false; stomachShopGui.Enabled=false; stomachShopGui.DisplayOrder=100; stomachShopGui.Parent=PlayerGui -- DisplayOrder 100 = definitively above the HUD (<=5) so the shop covers it
 	local currentStomachLabel; local scrollFrame; local ttlIcon; local ttlIconImg
 	do
-		local stomachPanel=Instance.new("Frame"); stomachPanel.Size=UDim2.new(0,700,0,520) -- matches the FOOD SHOP panel size (700x520)
+		local stomachPanel=Instance.new("Frame"); stomachPanel.Name="Panel"; stomachPanel.Size=UDim2.new(0,700,0,520) -- matches the FOOD SHOP panel size (700x520) -- Name="Panel" so GutSkinClient can inject the Skins tab
 		stomachPanel.Position=UDim2.new(0.5,0,0.5,-45); stomachPanel.AnchorPoint=Vector2.new(0.5,0.5) -- nudged UP 45px to match the food shop's on-screen position
 		stomachPanel.BackgroundColor3=Color3.fromRGB(30,120,220); stomachPanel.BorderSizePixel=0; stomachPanel.Active=true; stomachPanel.Parent=stomachShopGui -- Active=true so panel clicks don't leak to the HUD behind it
 		mkCorner(stomachPanel,20); mkStroke(stomachPanel,Color3.fromRGB(20,60,160),3)
@@ -1453,8 +1632,9 @@ task.spawn(function()
 			sc.MouseButton1Click:Connect(function() playUIClick(); stomachShopGui.Enabled=false; _G.MainMenuManager.notifyClosed("Stomach") end)
 		end
 		currentStomachLabel=mkLabel(stomachPanel,{Size=UDim2.new(1,-20,0,35),Position=UDim2.new(0,10,0,62),BackgroundColor3=Color3.fromRGB(20,80,180),BackgroundTransparency=0,Text="Current: Tiny Gut (100 max power)",Font=Enum.Font.FredokaOne,TextScaled=true,TextColor3=Color3.fromRGB(255,255,255),BorderSizePixel=0})
+		currentStomachLabel.Name="CurrentLabel" -- GutSkinClient repositions this when it injects the Skins tab
 		mkCorner(currentStomachLabel,10); mkStroke(currentStomachLabel,Color3.fromRGB(255,255,255),2)
-		scrollFrame=Instance.new("ScrollingFrame"); scrollFrame.Size=UDim2.new(1,-20,1,-110)
+		scrollFrame=Instance.new("ScrollingFrame"); scrollFrame.Name="TierList"; scrollFrame.Size=UDim2.new(1,-20,1,-110) -- Name="TierList" so the Skins tab can show/hide it
 		scrollFrame.Position=UDim2.new(0,10,0,105); scrollFrame.BackgroundTransparency=1
 		scrollFrame.ScrollBarThickness=6; scrollFrame.CanvasSize=UDim2.new(0,0,0,0)
 		scrollFrame.AutomaticCanvasSize=Enum.AutomaticSize.Y; scrollFrame.BorderSizePixel=0; scrollFrame.Parent=stomachPanel
@@ -1475,6 +1655,63 @@ task.spawn(function()
 	}
 	local BuyStomachEvent=RS:WaitForChild("BuyStomachEvent",30)
 	local StomachUpdateEvent=RS:WaitForChild("StomachUpdateEvent",30)
+
+	-- ===== GUT-UPGRADE-AFFORDABLE WIGGLE =====
+	-- Wiggle the bottom-HUD gut icon whenever the player can AFFORD the next (un-owned) coin gut tier:
+	-- a continuous subtle rotation oscillation (-8deg <-> +8deg). Starts when coins >= next gut cost and
+	-- that tier isn't already owned; stops when they can't afford it. Re-checked on coin changes + on
+	-- gut purchase (StomachMax change). Purely visual; touches no gameplay.
+	-- the WHOLE LEFT "Stomach" side button wiggles (rotating the button rotates its icon + label + bg)
+	local gutSideIcon = dailySideFrame
+	local gutWiggling = false
+	local gutWiggleTween = nil
+	local function stopGutWiggle()
+		if not gutWiggling then return end
+		gutWiggling = false
+		if gutWiggleTween then pcall(function() gutWiggleTween:Cancel() end); gutWiggleTween = nil end
+		if gutSideIcon then gutSideIcon.Rotation = 0 end
+	end
+	local function startGutWiggle()
+		if not gutSideIcon then warn("[wiggle] Stomach side button not found — cannot wiggle"); return end
+		if gutWiggling then return end
+		print("[wiggle] startGutWiggle -> wiggling " .. gutSideIcon:GetFullName())
+		gutWiggling = true
+		gutSideIcon.Rotation = -8
+		local info = TweenInfo.new(0.32, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true) -- loop + reverse
+		gutWiggleTween = TweenService:Create(gutSideIcon, info, { Rotation = 8 })
+		gutWiggleTween:Play()
+	end
+	-- the next UN-OWNED coin gut tier = lowest maxPower above the current StomachMax (Robux/free excluded)
+	local function nextCoinGutTier(curMax)
+		local best = nil
+		for _, t in ipairs(tierDefs) do
+			if (not t.robux) and t.cost > 0 and t.maxPower > curMax then
+				if (not best) or t.maxPower < best.maxPower then best = t end
+			end
+		end
+		return best
+	end
+	local function checkGutAfford()
+		local ls = player:FindFirstChild("leaderstats")
+		if not ls then stopGutWiggle(); _G.gutUpgradeAffordable = false; return end
+		local sm = ls:FindFirstChild("StomachMax"); local c = ls:FindFirstChild("Coins")
+		if not (sm and c) then stopGutWiggle(); _G.gutUpgradeAffordable = false; return end
+		local nextTier = nextCoinGutTier(sm.Value)                       -- nil once every coin tier is owned
+		local affordable = (nextTier ~= nil) and (c.Value >= nextTier.cost)
+		if affordable then startGutWiggle() else stopGutWiggle() end
+		_G.gutUpgradeAffordable = affordable  -- read by the periodic banner scheduler
+	end
+	_G.forceGutWiggle = startGutWiggle  -- exposed for the /wiggle dev command (force the wiggle on)
+	_G.checkGutAfford = checkGutAfford  -- exposed so other handlers can re-check
+	-- Re-check on coin changes AND on gut purchase (StomachMax change), plus one pass once stats exist.
+	task.spawn(function()
+		local ls = player:WaitForChild("leaderstats", 30); if not ls then return end
+		local coins = ls:WaitForChild("Coins", 30)
+		local smv = ls:WaitForChild("StomachMax", 30)
+		if coins then coins:GetPropertyChangedSignal("Value"):Connect(checkGutAfford) end
+		if smv then smv:GetPropertyChangedSignal("Value"):Connect(checkGutAfford) end
+		checkGutAfford()
+	end)
 
 	for i,tier in ipairs(tierDefs) do
 		do
@@ -1566,6 +1803,7 @@ task.spawn(function()
 				local maxStr = stomachMax >= 9999 and "\xe2\x88\x9e" or tostring(stomachMax)
 				currentStomachLabel.Text = "Current: " .. stomachName .. " (" .. maxStr .. " max power)"
 				if updateStomachDisplay then updateStomachDisplay() end
+				checkGutAfford() -- gut just changed (purchase) -> re-evaluate the affordability wiggle
 				-- keep the shop-title icon in sync: XL Gut -> image, the other six -> their emoji
 				if ttlIcon then
 					if stomachName == "XL Gut" then
@@ -1599,6 +1837,26 @@ task.spawn(function()
 	end)
 end)
 
+-- [REMOVE BEFORE LAUNCH] /wiggle DEV COMMAND: force the gut-icon affordability wiggle on, for testing.
+-- NOTE: with the modern TextChatService, Player.Chatted does NOT fire on the CLIENT — so we hook
+-- TextChatService.SendingMessage (fires client-side when the local player sends a message). We keep
+-- Player.Chatted too for the legacy chat system. Either path routes to the same handler.
+local function onDevChat(text)
+	local cmd = string.lower((string.gsub(text or "", "^%s*(.-)%s*$", "%1")))
+	if cmd == "/wiggle" then
+		print("[wiggle] /wiggle received (forceGutWiggle ready=" .. tostring(_G.forceGutWiggle ~= nil) .. ", showHudBanner ready=" .. tostring(_G.showHudBanner ~= nil) .. ")")
+		if _G.forceGutWiggle then _G.forceGutWiggle() end -- wiggle the gut button
+		if _G.showHudBanner then _G.showHudBanner("Stomach Upgrade Available!", Color3.fromRGB(60, 180, 90), 4) end -- + its banner (for testing)
+	elseif cmd == "/banner" then -- [REMOVE BEFORE LAUNCH] force-show the crate notice banner for testing
+		print("[banner] /banner received (showHudBanner ready=" .. tostring(_G.showHudBanner ~= nil) .. ")")
+		if _G.showHudBanner then _G.showHudBanner("Daily Reward Ready!  Tap MORE+", Color3.fromRGB(255, 196, 60), 4) end
+	end
+end
+pcall(function()
+	game:GetService("TextChatService").SendingMessage:Connect(function(m) onDevChat(m.Text) end)
+end)
+pcall(function() player.Chatted:Connect(onDevChat) end)
+
 -- ===== CORE FUNCTIONS =====
 local function updateMeter()
 	-- Display stays in the NORMAL range even when the 2x pass overfills the real tank: the bar is
@@ -1609,6 +1867,7 @@ local function updateMeter()
 	_G.gui.gasGradient.Offset=Vector2.new(-(1-fill),0)
 	_G.gui.gasPowerText.Text=math.floor(math.min(currentPower, stomachMax)).."/"..stomachMax
 	_G.cosmeticGas=currentPower
+	_G.gasFill01=fill -- 0..1 gas charge, read by the belly puff (BellyPuff.client)
 end
 _G.updateMeter=updateMeter
 

@@ -30,20 +30,28 @@ pcall(function() PhysicsService:CollisionGroupSetCollidable(NPC_COLLISION_GROUP,
 -- ===== TUNABLES ===== (calm, cow-paced amble)
 local WALK_SPEED   = 4                 -- studs/sec -- matches the cow (COW_SPEED=4): slow + deliberate, never darts
 local EDGE_MARGIN  = 1.5               -- keep targets this far inside the bounds
-local NEAR_MIN, NEAR_MAX = 7, 16       -- pick NEARBY points (studs from current spot) -> it ambles, not long dashes
-local IDLE_MIN, IDLE_MAX = 2, 6        -- varied idle pause (sec) between moves
-local MOVE_TIMEOUT = 8                 -- give up on a target after this long (then re-pick)
+local NEAR_MIN, NEAR_MAX = 10, 26      -- amble distance per leg (studs) -> longer legs so it actually roams the whole field
+local IDLE_MIN, IDLE_MAX = 1, 4        -- short idle pause (sec) between moves -- kept under CAMP_LIMIT so it's always roaming
+local MOVE_TIMEOUT = 12                -- give up on a target after this long (then re-pick); longer legs need more time
+-- Anti-camp: the pig must never linger in one spot. If it hasn't displaced CAMP_RADIUS studs within CAMP_LIMIT
+-- seconds (whether idling OR stuck mid-move), we bail out of whatever it's doing and force a fresh move.
+local CAMP_LIMIT  = 6                  -- hard cap (sec) on standing in the same spot -> always moving around
+local CAMP_RADIUS = 4                  -- counts as "moved" once it's this many studs from the remembered spot
+-- Obstacle avoidance (so the pig never walks its body into garden props/fences/walls -- it steers/turns away).
+local AVOID_LOOKAHEAD = 5              -- studs of clear space it keeps ahead; something nearer -> stop + turn away
+local AVOID_HALFWIDTH = 2              -- side-ray offset (~half the pig's body width) so its shoulders clear too
+local AVOID_RAYHEIGHT = 0.9           -- cast at body height (sees fences/walls/props; the flat floor isn't hit)
+local AVOID_TRIES     = 18            -- random directions tested for a fully-clear path before it gives up + waits
+local NOSE_BUFFER     = 3             -- require the path clear this far PAST the target too, so the snout never pokes into an object
 local FALL_BELOW   = 25                -- studs below the floor -> treat as "fell", respawn
 local TALK_MIN, TALK_MAX = 12, 18      -- random line every 12-18s
 local TALK_RANGE   = 20                -- only speak when a player is within 20 studs (same gate as the bubble MaxDistance)
 
+-- short cosmetic one-liners cycled in the pig's overhead bubble (easy to edit; keep them brief)
 local PIG_LINES = {
-	"Oink oink.",
-	"Is it slop time yet?",
-	"Mud bath later?",
-	"Snort... smells like food.",
-	"I'm not fat, I'm fluffy.",
-	"Wheeee!",
+	"Oink! Welcome to the farm!",
+	"Got any snacks?",
+	"Oink oink!",
 }
 
 --======================================================================
@@ -232,8 +240,10 @@ local function buildPig(rootCF)
 	hum.NameDisplayDistance = 0; hum.HealthDisplayDistance = 0
 	pcall(function() hum.BreakJointsOnDeath = false end)
 	hum.Parent = model
-	hrp.Anchored = false
-	pcall(function() hrp:SetNetworkOwner(nil) end) -- server simulates it (no client jitter / handoff)
+	-- CFRAME-DRIVEN (cow-exact): the HRP stays ANCHORED; the wander loop sets its CFrame directly each step (see driveTo).
+	-- The Humanoid is kept only as an inert holder (no MoveTo/physics) -- movement is 100% CFrame, exactly like the cow, so
+	-- the solid collidable body below can never fight a walker and the pig can't wedge/stop.
+	hrp.Anchored = true
 
 	-- applyPose COPIED FROM THE COW: ONE base per frame; the upper body bobs/waddles, the legs swing about the hip on
 	-- the NON-bobbing base (feet planted). phase advanced by DISTANCE moved; amp lerps in/out. Same SWING_ANGLE(26),
@@ -276,14 +286,13 @@ local function buildPig(rootCF)
 	print(string.format("[PIG] belly enlarged slightly overhang=ok feetTouchFloor=%s", feetTouch and "y" or "n"))
 	if not bodyOk then print("[PIG] body UnionAsync error: " .. tostring(bodyErr)) end
 
-	-- [COLLISION] make the VISIBLE pig body SOLID so players bump into it instead of passing through. The HRP is an
-	-- unanchored physics mover wrapped in ANCHORED cosmetic parts -- if those just became CanCollide, the HRP would shove
-	-- against its own body and stick. So every pig part (HRP + cosmetic) joins NPC_COLLISION_GROUP (which doesn't
-	-- self-collide), and the cosmetic parts get CanCollide=true. Result: players bump the body, the HRP slides through its
-	-- own shell, and MoveTo/wander is unaffected. HumanoidRootPart handling is otherwise unchanged.
-	pcall(function() hrp.CollisionGroup = NPC_COLLISION_GROUP end) -- keep HRP CanCollide as-is; just group it so the body can't push it
+	-- [COLLISION] make the VISIBLE pig body SOLID so players bump into it instead of walking through (cow-exact). Now that
+	-- the pig is ANCHORED + CFrame-driven (no Humanoid physics), making its parts collidable CANNOT break movement -- driveTo
+	-- re-sets every part's CFrame each step regardless of any collision resolution, exactly as the cow's note explains. Every
+	-- pig part joins NPC_COLLISION_GROUP (doesn't self-collide) so the parts never shove each other; players/world still bump them.
+	pcall(function() hrp.CollisionGroup = NPC_COLLISION_GROUP end)
 	local pigSolid = 0
-	for _, e in ipairs(statics) do -- every cosmetic body part (PigBody union, snout, ears, eyes, tail, etc.)
+	for _, e in ipairs(statics) do -- every cosmetic body part (PigBody union, snout, ears, eyes, head anchor, etc.)
 		if e.part and e.part:IsA("BasePart") then pcall(function() e.part.CanCollide = true; e.part.CollisionGroup = NPC_COLLISION_GROUP end); pigSolid = pigSolid + 1 end
 	end
 	for _, lg in ipairs(legs) do -- the four animated legs + hooves
@@ -291,7 +300,7 @@ local function buildPig(rootCF)
 			if lp and lp:IsA("BasePart") then pcall(function() lp.CanCollide = true; lp.CollisionGroup = NPC_COLLISION_GROUP end); pigSolid = pigSolid + 1 end
 		end
 	end
-	print("[COLLISION] pig body parts set solid=" .. pigSolid .. " (CanCollide=true, NPCBody group so the HRP doesn't stick)")
+	print("[COLLISION] pig body parts set solid=" .. pigSolid .. " (CanCollide=true; anchored + CFrame-driven, movement unaffected)")
 
 	return { model = model, hrp = hrp, head = head, hum = hum, legs = legs }
 end
@@ -357,17 +366,23 @@ end
 local function runTalk(rig, stop)
 	local bubble = attachTalkBubble(rig)
 	if not bubble then return end
+	-- register for the GardenFeeding mini-feature (find the pig's body + make it speak, reusing THIS bubble)
+	_G.gardenAnimals = _G.gardenAnimals or {}
+	_G.gardenAnimals.pig = { body = bubble.gui.Adornee, say = function(m) bubbleSay(bubble, m, 4) end }
+	local i = 1 -- CYCLE the short lines in order (loop), starting on line 1
 	while rig.model.Parent and not stop() do
 		interruptibleWait(math.random(TALK_MIN, TALK_MAX), function() return stop() or not rig.model.Parent end)
 		if stop() or not rig.model.Parent then break end
 		if isPlayerNear(rig, TALK_RANGE) then
-			local line = PIG_LINES[math.random(1, #PIG_LINES)]
+			local line = PIG_LINES[i]
+			i = (i % #PIG_LINES) + 1
 			bubbleSay(bubble, line, 4.5)
 			print("[PIG] said (player near): " .. line)
 		else
 			print("[PIG] skipped (no one near)")
 		end
 	end
+	if _G.gardenAnimals then _G.gardenAnimals.pig = nil end -- pig despawned -> deregister for feeding
 end
 
 --======================================================================
@@ -376,51 +391,116 @@ end
 -- fidgets (a brief look-around turn or a tiny hop), mirroring how the cow idles. Targets are clamped inside the
 -- bounds so it always stays in the field.
 --======================================================================
--- a nearby point within [NEAR_MIN,NEAR_MAX] studs of `from`, clamped inside the bounds
-local function nearbyPoint(field, from, near)
+-- a point a random [minD,maxD] studs from `from`, clamped inside the bounds (defaults to the normal leg range)
+local function nearbyPoint(field, from, minD, maxD)
+	local lo, hi = minD or NEAR_MIN, maxD or NEAR_MAX
 	local ang = math.random() * 2 * math.pi
-	local d = NEAR_MIN + math.random() * ((near or NEAR_MAX) - NEAR_MIN)
+	local d = lo + math.random() * (hi - lo)
 	local x = math.clamp(from.X + math.cos(ang) * d, field.minX + EDGE_MARGIN, field.maxX - EDGE_MARGIN)
 	local z = math.clamp(from.Z + math.sin(ang) * d, field.minZ + EDGE_MARGIN, field.maxZ - EDGE_MARGIN)
 	return Vector3.new(x, field.groundY, z)
 end
 
--- a varied idle pause with occasional lifelike fidgets (look-around turn / tiny hop)
-local function idle(rig, field, stop)
-	local pause = math.random(IDLE_MIN, IDLE_MAX)
-	local elapsed = 0
-	while elapsed < pause do
-		if stop() or not rig.model.Parent then return end
-		local r = math.random()
-		if r < 0.22 then
-			rig.hum.Jump = true -- tiny hop
-		elseif r < 0.48 then
-			-- brief look-around: a TINY step (~1.5-3 studs) toward a random nearby spot -> AutoRotate turns it to "look" that way
-			local p = rig.hrp.Position
-			local a, dd = math.random() * 2 * math.pi, 1.5 + math.random() * 1.5
-			local lx = math.clamp(p.X + math.cos(a) * dd, field.minX + EDGE_MARGIN, field.maxX - EDGE_MARGIN)
-			local lz = math.clamp(p.Z + math.sin(a) * dd, field.minZ + EDGE_MARGIN, field.maxZ - EDGE_MARGIN)
-			rig.hum:MoveTo(Vector3.new(lx, field.groundY, lz))
-		end
-		local slice = math.min(pause - elapsed, 0.8 + math.random() * 0.8) -- 0.8-1.6s slices
-		interruptibleWait(slice, function() return stop() or not rig.model.Parent end)
-		elapsed = elapsed + slice
+-- ===== OBSTACLE AVOIDANCE ===== (horizontal raycasts so the pig steers around the objects in its field).
+-- The pig's own parts + the boundary markers are all CanQuery=false, so rays only hit REAL obstacles.
+-- RaycastParams that also ignore the pig model + every player character (never treat those as walls).
+local function avoidParams(rig)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.IgnoreWater = true
+	local list = { rig.model }
+	for _, pl in ipairs(Players:GetPlayers()) do
+		if pl.Character then table.insert(list, pl.Character) end
 	end
+	params.FilterDescendantsInstances = list
+	return params
 end
 
-local function wander(rig, field, stop)
-	local hum, hrp = rig.hum, rig.hrp
-	while rig.model.Parent and not stop() do
-		local target = nearbyPoint(field, hrp.Position)
-		hum:MoveTo(target) -- AutoRotate smoothly turns toward the target as it walks
-		-- walk until close enough or timeout
-		local t0 = os.clock()
-		while rig.model.Parent and not stop() and (os.clock() - t0) < MOVE_TIMEOUT do
-			local p = hrp.Position
-			if (Vector3.new(p.X, 0, p.Z) - Vector3.new(target.X, 0, target.Z)).Magnitude < 2 then break end
-			task.wait(0.15)
+-- true if a body-width path from `fromPos` to `toPos` is clear (3 parallel rays: centre + both shoulders).
+local function pathClear(fromPos, toPos, params)
+	local dir = Vector3.new(toPos.X - fromPos.X, 0, toPos.Z - fromPos.Z)
+	if dir.Magnitude < 0.05 then return true end
+	local origin = Vector3.new(fromPos.X, fromPos.Y + AVOID_RAYHEIGHT, fromPos.Z)
+	local right = Vector3.new(-dir.Unit.Z, 0, dir.Unit.X)
+	for _, off in ipairs({ -AVOID_HALFWIDTH, 0, AVOID_HALFWIDTH }) do
+		if workspace:Raycast(origin + right * off, dir, params) then return false end
+	end
+	return true
+end
+
+-- true if something solid is within AVOID_LOOKAHEAD studs straight ahead (pig front = HRP LookVector).
+local function forwardBlocked(rig, params)
+	local hrp = rig.hrp
+	local fwd = hrp.CFrame.LookVector
+	fwd = Vector3.new(fwd.X, 0, fwd.Z)
+	if fwd.Magnitude < 0.05 then return false end
+	fwd = fwd.Unit
+	local origin = hrp.Position + Vector3.new(0, AVOID_RAYHEIGHT, 0)
+	local right = Vector3.new(-fwd.Z, 0, fwd.X)
+	for _, off in ipairs({ -AVOID_HALFWIDTH, 0, AVOID_HALFWIDTH }) do
+		if workspace:Raycast(origin + right * off, fwd * AVOID_LOOKAHEAD, params) then return true end
+	end
+	return false
+end
+
+-- pick a target whose ENTIRE straight path is clear of obstacles (plus a nose buffer past the endpoint so the snout
+-- never ends up inside something). Two passes: normal legs first, then short steps -> it can still slip down a gap when
+-- mostly boxed in. nil only when no clear direction exists at all (caller just waits + retries -- it never clips through).
+local function pickClearTarget(field, fromPos, params)
+	for _, span in ipairs({ { NEAR_MIN, NEAR_MAX }, { 3, 9 } }) do
+		for _ = 1, AVOID_TRIES do
+			local cand = nearbyPoint(field, fromPos, span[1], span[2])
+			local dir = Vector3.new(cand.X - fromPos.X, 0, cand.Z - fromPos.Z)
+			-- check the whole way to the target AND NOSE_BUFFER studs beyond it -> the pig stops short, body fully clear
+			local checkTo = (dir.Magnitude > 0.05) and (cand + dir.Unit * NOSE_BUFFER) or cand
+			if pathClear(fromPos, checkTo, params) then return cand end
 		end
-		idle(rig, field, stop) -- varied pause + lifelike fidget between moves
+	end
+	return nil
+end
+
+-- ===== CFRAME DRIVER (cow-exact) ===== The pig is ANCHORED + CFrame-driven, EXACTLY like the cow's driveCow/walkTo:
+-- we lerp the HumanoidRootPart.CFrame ourselves each step, and the Heartbeat applyPose (built in buildPig) reads that
+-- CFrame to swing the legs + bob from the per-frame displacement. No Humanoid physics -> the solid collidable shell can
+-- never fight a walker, so the pig is both bump-solid AND can never wedge/stop.
+local STEP = 1 / 30
+-- glide the rig's root from its current CFrame to toCF over `duration` secs (ease-in/out, same curve the cow uses).
+local function driveTo(rig, toCF, duration, stop)
+	local hrp = rig.hrp
+	local fromCF = hrp.CFrame
+	local t = 0
+	while t < duration do
+		if stop() or not rig.model.Parent then return end
+		t = math.min(duration, t + STEP)
+		local a = t / duration
+		hrp.CFrame = fromCF:Lerp(toCF, (math.sin((a - 0.5) * math.pi) + 1) / 2) -- eased -> smooth accel + settle
+		task.wait(STEP)
+	end
+	if rig.model.Parent and not stop() then hrp.CFrame = toCF end
+end
+
+-- WANDER: pick a clear nearby point, FACE it (front = -Z), glide there, brief pause, then immediately pick a NEW
+-- direction. Each leg is short (capped ~5s) so the pig changes heading + position roughly every few seconds (always
+-- under ~6s), and it's always either walking or in a <1s settle -- never parked. Mirrors the cow's walk/graze loop.
+local function wander(rig, field, stop)
+	local baseY = rig.hrp.Position.Y -- the (constant) root-centre height; targets stay on this plane so feet stay grounded
+	while rig.model.Parent and not stop() do
+		local params = avoidParams(rig) -- ignores the pig + players; refreshed per leg
+		-- ONLY ever head to a point whose whole path is clear -> the pig gets close to props but never walks inside one.
+		local target = pickClearTarget(field, rig.hrp.Position, params)
+		if not target then
+			-- fully boxed in this instant: don't clip through anything -- wait a beat and re-scan for a clear opening
+			interruptibleWait(0.4 + math.random() * 0.4, function() return stop() or not rig.model.Parent end)
+		else
+			local fromPos = rig.hrp.Position
+			local toPos = Vector3.new(target.X, baseY, target.Z)
+			local dir = toPos - Vector3.new(fromPos.X, baseY, fromPos.Z)
+			if dir.Magnitude > 0.1 then
+				local toCF = CFrame.lookAt(toPos, toPos + dir) -- front (-Z) faces the travel direction, like the cow
+				driveTo(rig, toCF, math.clamp(dir.Magnitude / WALK_SPEED, 0.8, 5), stop) -- leg time tied to distance, capped
+			end
+			interruptibleWait(0.3 + math.random() * 0.6, function() return stop() or not rig.model.Parent end) -- brief settle, then a new heading
+		end
 	end
 end
 

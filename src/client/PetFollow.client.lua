@@ -3820,9 +3820,12 @@ do
 	end)
 end
 
--- one OWNED pet card (icon/name/level/equip/upgrade/robux) into the PETS grid
-local function buildPetCard(petId, p, order)
-	local card = Instance.new("Frame"); card.Name = petId; card.LayoutOrder = order
+-- one OWNED pet card (icon/name/level/equip/upgrade/robux) into the PETS grid. `key` is the STORAGE KEY (the unit of
+-- equip/trade -- petId or petId#R); the SPECIES (for icons/templates/tier) is p.petId. A normal + a rare of one species
+-- arrive as two separate keys -> two separate cards.
+local function buildPetCard(key, p, order)
+	local petId = p.petId or key -- SPECIES id (templates/icons/tier key on this); `key` is the per-variant identity
+	local card = Instance.new("Frame"); card.Name = key; card.LayoutOrder = order
 	card.BackgroundColor3 = p.rare and Color3.fromRGB(46,28,86) or Color3.fromRGB(20,70,160); card.Parent = petsScroll
 	uicorner(card, 12)
 	local tierName, tierColor, isVariant, flashy = petTier(p.level, p.rare, petId)
@@ -3841,6 +3844,13 @@ local function buildPetCard(petId, p, order)
 		uicorner(tag, 5)
 		-- thin CLEAN border (not a thick text halo) so the Exotic/Mythical text stays readable
 		local ts = Instance.new("UIStroke"); ts.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; ts.Color = Color3.fromRGB(255,255,255); ts.Thickness = 1; ts.Transparency = 0.2; ts.Parent = tag
+	end
+	if (p.count or 1) > 1 then -- STACK badge: how many of this exact pet (same variant) you have, top-LEFT corner
+		local cnt = Instance.new("TextLabel"); cnt.AutomaticSize = Enum.AutomaticSize.X; cnt.Size = UDim2.new(0,0,0,18); cnt.Position = UDim2.new(0,6,0,8)
+		cnt.BackgroundColor3 = Color3.fromRGB(255,170,40); cnt.Font = Enum.Font.GothamBold; cnt.TextSize = 12; cnt.TextColor3 = Color3.new(1,1,1); cnt.Text = "x" .. (p.count or 1); cnt.Parent = card
+		local cpad = Instance.new("UIPadding", cnt); cpad.PaddingLeft = UDim.new(0,5); cpad.PaddingRight = UDim.new(0,5)
+		uicorner(cnt, 5)
+		local cs = Instance.new("UIStroke"); cs.Color = Color3.fromRGB(0,0,0); cs.Thickness = 1; cs.Transparency = 0.2; cs.Parent = cnt
 	end
 	local cap = p.maxLevel or 25
 	local maxed = (p.level >= cap)
@@ -3870,7 +3880,7 @@ local function buildPetCard(petId, p, order)
 	uicorner(eq, 8); uistroke(eq, Color3.new(0,0,0), 1)
 	eq.MouseButton1Click:Connect(function()
 		if p.equipped then pcall(function() PetEquipEvent:FireServer(false) end)
-		else pcall(function() PetEquipEvent:FireServer(petId) end) end
+		else pcall(function() PetEquipEvent:FireServer(key) end) end -- equip THIS exact variant (storage key)
 	end)
 	-- TIER SKIP (Robux): jump the WHOLE next tier at once (lands on its first level). Button shows the next
 	-- tier + price; at the top tier (Legendary) there's nothing to skip. The SERVER validates + applies the jump.
@@ -3884,7 +3894,7 @@ local function buildPetCard(petId, p, order)
 	else
 		sk.Text = "Skip to " .. skipStep.to .. "  R$" .. skipStep.price; sk.BackgroundColor3 = Color3.fromRGB(50,170,90)
 		sk.MouseButton1Click:Connect(function()
-			pcall(function() PetPendingUpgrade:FireServer(petId) end) -- declare the pet (testers tier-skip instantly here)
+			pcall(function() PetPendingUpgrade:FireServer(key) end) -- declare the pet (testers tier-skip instantly here)
 			task.wait(0.15)
 			pcall(function() game:GetService("MarketplaceService"):PromptProductPurchase(player, skipStep.id) end)
 		end)
@@ -3931,19 +3941,21 @@ local function rebuildInventory(payload)
 		-- then by LEVEL (high->low). The Cosmic Duck (Mythical, rank 7) ranks ABOVE the 1/99 Exotics (rank 6).
 		-- All locals here are function-scoped (no new module-scope locals).
 		local rank = { Mythical = 7, Exotic = 6, Legendary = 5, Epic = 4, Rare = 3, Uncommon = 2, Common = 1 }
+		-- `owned` is keyed by STORAGE KEY (petId or petId#R) -> a species can have two cards (normal + rare). Sort by
+		-- the SPECIES tier (p.petId), never the raw key, so the "#R" suffix never confuses petTier.
 		local ids = {}
-		for petId in pairs(owned) do ids[#ids + 1] = petId end
+		for skey in pairs(owned) do ids[#ids + 1] = skey end
 		table.sort(ids, function(a, b)
 			local pa, pb = owned[a], owned[b]
-			local ra = rank[petTier(pa.level or 1, pa.rare, a)] or 0 -- petTier's 1st return value = tier name
-			local rb = rank[petTier(pb.level or 1, pb.rare, b)] or 0
+			local ra = rank[petTier(pa.level or 1, pa.rare, pa.petId)] or 0 -- petTier's 1st return value = tier name
+			local rb = rank[petTier(pb.level or 1, pb.rare, pb.petId)] or 0
 			if ra ~= rb then return ra > rb end                       -- higher tier first (Mythical leads)
 			return (pa.level or 0) > (pb.level or 0)                  -- same tier: higher level first
 		end)
-		for _, petId in ipairs(ids) do
+		for _, skey in ipairs(ids) do
 			ownedCount = ownedCount + 1; order = order + 1
-			local okc, ec = pcall(buildPetCard, petId, owned[petId], order) -- per-card: a bad icon can't abort the rest
-			if not okc then warn("[PetInv] card build failed for " .. tostring(petId) .. ": " .. tostring(ec)) end
+			local okc, ec = pcall(buildPetCard, skey, owned[skey], order) -- per-card: a bad icon can't abort the rest
+			if not okc then warn("[PetInv] card build failed for " .. tostring(skey) .. ": " .. tostring(ec)) end
 		end
 		-- ONLY owned pets are shown (NO empty/locked placeholder slots). When the player owns zero, a
 		-- "No Pets Unlocked" message is shown instead. This message Frame is a child of petsScroll, so the
@@ -4067,15 +4079,16 @@ end
 local function showPicker() pickerView.Visible = true; windowView.Visible = false; ovTitle.Text = "Trade \xE2\x80\x94 pick a player"; refreshPicker() end
 local function renderTradeWindow(state)
 	pickerView.Visible = false; windowView.Visible = true; ovTitle.Text = "Trading with " .. tostring(state.withName)
-	clearScroll(yourOfferScroll); for i, b in ipairs(state.mine or {}) do makeOfferCard(yourOfferScroll, b, i, function() pcall(function() PetTradeOffer:FireServer(b.petId, false) end) end) end
+	clearScroll(yourOfferScroll); for i, b in ipairs(state.mine or {}) do makeOfferCard(yourOfferScroll, b, i, function() pcall(function() PetTradeOffer:FireServer(b.key or b.petId, false) end) end) end -- remove BY storage key
 	yourOfferScroll.CanvasSize = UDim2.new(0,0,0, #(state.mine or {}) * 80 + 4)
 	clearScroll(theirOfferScroll); for i, b in ipairs(state.theirs or {}) do makeOfferCard(theirOfferScroll, b, i, nil) end
 	theirOfferScroll.CanvasSize = UDim2.new(0,0,0, #(state.theirs or {}) * 80 + 4)
-	local offered = {}; for _, b in ipairs(state.mine or {}) do offered[b.petId] = true end
+	local offered = {}; for _, b in ipairs(state.mine or {}) do offered[b.key or b.petId] = true end -- dedup the picker BY storage key
 	clearScroll(addScroll); local idx = 0
-	for petId, p in pairs(latestInv.owned or {}) do
-		if not offered[petId] then idx = idx + 1
-			makeOfferRow(addScroll, { petId = petId, name = (p.rare and p.rareName) or p.displayName, level = p.level, rare = p.rare }, idx, function() pcall(function() PetTradeOffer:FireServer(petId, true) end) end)
+	for skey, p in pairs(latestInv.owned or {}) do -- `owned` is keyed by storage key; each variant offers independently
+		if not offered[skey] then idx = idx + 1
+			local rowName = ((p.rare and p.rareName) or p.displayName) .. (((p.count or 1) > 1) and ("  x" .. p.count) or "") -- show the stack size so duplicates are obvious
+			makeOfferRow(addScroll, { petId = p.petId, name = rowName, level = p.level, rare = p.rare }, idx, function() pcall(function() PetTradeOffer:FireServer(skey, true) end) end)
 		end
 	end
 	addScroll.CanvasSize = UDim2.new(0,0,0, idx * 30 + 4)

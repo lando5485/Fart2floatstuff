@@ -107,7 +107,18 @@
       "Bash(grep -nE \"drum\\\\\\(\\\\\"OuterPath\\\\\"|PathTile|ipairs\\\\\\(\\\\{ 24, 28, 32 \\\\}\\\\\\)\" src/server/CommunityGarden.server.lua)",
       "Bash(grep -nE \"wall\\\\\\(\\\\\"OuterWall\\\\\"|WallJamb|ipairs\\\\\\(\\\\{ 24, 28, 32 \\\\}\\\\\\)\" src/server/CommunityGarden.server.lua)",
       "Bash(git commit *)",
-      "PowerShell(try { Get-Content \"C:\\\\Users\\\\lando\\\\Downloads\\\\Fart2floatstuff\\\\default.project.json\" -Raw | ConvertFrom-Json | Out-Null; \"JSON OK\" } catch { \"JSON ERROR: $_\" })"
+      "PowerShell(try { Get-Content \"C:\\\\Users\\\\lando\\\\Downloads\\\\Fart2floatstuff\\\\default.project.json\" -Raw | ConvertFrom-Json | Out-Null; \"JSON OK\" } catch { \"JSON ERROR: $_\" })",
+      "Bash(luac -p src/server/GardenBird.server.lua)",
+      "Bash(command -v rojo selene luau-analyze stylua)",
+      "Bash(command -v luau luau-analyze lua lua5.1 lua5.4 luac selene stylua node)",
+      "Read(//c/Users/lando/AppData/Roaming/npm/**)",
+      "Read(//c/Users/lando/.rokit/bin/**)",
+      "Read(//c/Users/lando/.aftman/**)",
+      "Bash(grep -nE 'Panel=mkFrame|Panel = mkFrame|mkFrame\\\\\\(sg,\\\\{Size=UDim2.new\\\\\\(0\\\\.|AnchorPoint=Vector2.new\\\\\\(0.5,0.5\\\\\\)' src/client/ShopClient.client.lua)",
+      "Bash(wc -l src/client/CrateClient.client.luau src/server/CrateService.server.luau src/server/PlayerState.luau src/shared/*)",
+      "Bash(ls -la src/shared/)",
+      "Bash(python3 \"C:/Users/lando/AppData/Local/Temp/claude/C--Users-lando-Downloads-Fart2floatstuff/444ea4d2-e5eb-44ef-9d58-f20d17818e88/scratchpad/undo_raptor.py\")",
+      "Bash(grep -v \"^$\")"
     ]
   }
 }

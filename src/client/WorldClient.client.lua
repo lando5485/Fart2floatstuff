@@ -334,8 +334,11 @@ local function mkLabel(p,props) local l=Instance.new("TextLabel"); l.BackgroundT
 local function mkFrame(p,props) local f=Instance.new("Frame"); for k,v in pairs(props) do f[k]=v end; f.Parent=p; return f end
 
 local navSg=Instance.new("ScreenGui"); navSg.Name="NavGui"; navSg.ResetOnSpawn=false; navSg.Parent=player.PlayerGui
-local navFrame=mkFrame(navSg,{Size=UDim2.new(0,44,0,44),Position=UDim2.new(0.5,0,0.5,0),AnchorPoint=Vector2.new(0.5,0.5),BackgroundColor3=Color3.fromRGB(255,200,0),BackgroundTransparency=0.2,Visible=false}); mkCorner(navFrame,22); mkStroke(navFrame,Color3.fromRGB(200,140,0),2)
-local navArrow=mkLabel(navFrame,{Text="\xe2\x86\x91",Font=Enum.Font.GothamBold,TextSize=26,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,0,1,0),TextXAlignment=Enum.TextXAlignment.Center}); mkStroke(navArrow,Color3.new(0,0,0),1.5)
+-- NEXT-ISLAND POINTER: a big, bold, no-background WHITE up-arrow with a thick black outline. It tracks the next
+-- island (the loop below rotates it toward the target). navFrame is just the transparent host that gets positioned.
+local navFrame=mkFrame(navSg,{Size=UDim2.new(0,54,0,54),Position=UDim2.new(0.5,0,0.5,0),AnchorPoint=Vector2.new(0.5,0.5),BackgroundTransparency=1,Visible=false})
+local navArrow=mkLabel(navFrame,{Text="\xe2\x86\x91",Font=Enum.Font.GothamBold,TextSize=48,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,0,1,0),TextXAlignment=Enum.TextXAlignment.Center})
+local navArrowStroke=mkStroke(navArrow,Color3.new(0,0,0),5); navArrowStroke.LineJoinMode=Enum.LineJoinMode.Round -- thick black outline
 local navName=mkLabel(navSg,{Text="",Font=Enum.Font.Gotham,TextSize=11,TextColor3=Color3.new(1,1,1),Size=UDim2.new(0,120,0,16),AnchorPoint=Vector2.new(0.5,0),TextXAlignment=Enum.TextXAlignment.Center,Visible=false}); mkStroke(navName,Color3.new(0,0,0),1)
 
 -- Spawn world objects
@@ -523,17 +526,16 @@ task.spawn(function()
 			-- "HighestIsland" is a per-player, server-authoritative attribute (replicated to the owning
 			-- client and updated the instant the player reaches/skips to a new island). We read it via
 			-- the LocalPlayer, so each player sees names based on THEIR OWN progress only. This loop
-			-- polls every 0.1s, so the label flips from "???" to the real name live the moment their
-			-- HighestIsland increases — no respawn or rejoin needed.
+			-- polls every 0.1s, so the label flips on the moment their HighestIsland increases.
 			local highest = player:GetAttribute("HighestIsland") or 0
 			if nextIsland <= highest then
 				-- Visited (island number <= highest reached): show the real island name.
 				navName.Text=_G.ISLAND_DISPLAY_NAMES[nextIsland] or ("Island "..nextIsland)
+				navName.Visible=true
 			else
-				-- Not yet visited (island number > highest reached): hide the name.
-				navName.Text="???"
+				-- Not yet visited: NO "???" -- just the pointer, no mystery label.
+				navName.Visible=false
 			end
-			navName.Visible=true
 		end)
 	end
 end)

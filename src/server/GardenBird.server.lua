@@ -22,17 +22,26 @@ local SMOOTH   = Enum.SurfaceType.Smooth
 -- ===== TUNABLES =====
 local FLY_SPEED   = 13                 -- studs/sec along the arc (duration = dist/FLY_SPEED, clamped)
 local FLY_MIN, FLY_MAX = 1.4, 4.2      -- clamp flight duration (sec)
-local FLAP_FREQ   = 16                 -- base wing-beat rate (modulated by takeoff/climb EFFORT in flyTo)
-local WING_FOLD   = math.rad(-6)       -- wings tucked along the sides at rest (folded look)
-local WING_SPREAD = math.rad(14)       -- wings held out (glide pose) during flight
-local WING_BEAT   = math.rad(46)       -- flap-beat amplitude, scaled by effort (fast on takeoff/climb, glides between)
-local REST_H      = 0.5                 -- bird body sits this high above a perch's top surface
+-- WING FLAP (made clearly VISIBLE): each wing is a wide blade hinged at the shoulder ROOT; the flap swings it WIDE
+-- up/down about the body's forward axis so the wingtip travels a big arc. Folded down at rest; in flight it beats
+-- around just-above-horizontal with a large amplitude + faster/stronger beats on takeoff/climb, easing to a relaxed
+-- cadence (with brief glides) while cruising.
+local WING_FOLD    = math.rad(-50)     -- at rest: wings hang folded down along the flanks
+local FLAP_CENTER  = math.rad(8)       -- flight beat centred just above horizontal
+local FLAP_AMP_MIN = math.rad(40)      -- relaxed cruise beat amplitude (one-sided)
+local FLAP_AMP_MAX = math.rad(62)      -- takeoff/climb amplitude -> tip swings from well ABOVE the body to BELOW horizontal
+local FLAP_HZ_MIN  = 3.2               -- cruise beats per second
+local FLAP_HZ_MAX  = 6.5               -- takeoff/climb beats per second
 local PERCH_MIN, PERCH_MAX = 2.6, 5.6  -- idle time at a GARDEN perch (sec)
 local SHOULDER_REST = 10                -- [TWEAK] seconds resting on the shoulder before flying off again
 local RETURN_CHANCE = 0.40             -- chance to fly back to the shoulder (instead of another object)
 -- [TWEAK] OPPOSITE shoulder: -X mirrors the old +0.85 to the gardener's LEFT side of the torso
 local SHOULDER_OFFSET = CFrame.new(-0.85, 1.7, -0.1)
 local SHOULDER_SIDE   = (SHOULDER_OFFSET.X < 0) and "left" or "right"
+-- [PERCH FIX] distance from the bird's body ORIGIN down to its lowest point (feet bottom) -- the SAME body-above-feet
+-- offset the shoulder pose uses. A perch landing origin = object_top + FOOT_DROP puts the feet ON the surface and the
+-- body above it (no sinking). Recomputed from the actual model after buildBird; this default matches the current rig.
+local FOOT_DROP = 0.88
 
 local rng = Random.new()
 
@@ -71,13 +80,14 @@ local gardenCenter = Vector3.new(0, 0, 0)
 pcall(function() local bb = build:GetBoundingBox(); gardenCenter = bb.Position end)
 
 --======================================================================
--- GATHER perch points from garden objects: the TOP of each matching part/model + a little rest height.
+-- GATHER perch points from garden objects: the exact TOP FACE of each matching part/model (position.Y + half its
+-- height). The bird's foot-drop is added at landing (perchCFrame) so its feet rest ON the surface, body above.
 -- (Dedup near-duplicates so clustered parts -- e.g. a pillar's stacked capitals -- give ONE perch.)
 --======================================================================
 local function topOfPart(p)
 	local sz, cf = p.Size, p.CFrame
 	local halfH = 0.5 * (math.abs(cf.RightVector.Y) * sz.X + math.abs(cf.UpVector.Y) * sz.Y + math.abs(cf.LookVector.Y) * sz.Z)
-	return Vector3.new(p.Position.X, p.Position.Y + halfH + REST_H, p.Position.Z)
+	return Vector3.new(p.Position.X, p.Position.Y + halfH, p.Position.Z) -- [PERCH FIX] the TOP face (foot-drop added at landing)
 end
 
 local function gatherPerches()
@@ -97,7 +107,7 @@ local function gatherPerches()
 			local n = d.Name
 			if n == "GardenGnome" or n == "RewardChest" or n == "SunflowerCenterpiece" then
 				local ok, cf, size = pcall(function() return d:GetBoundingBox() end)
-				if ok then tryAdd(Vector3.new(cf.Position.X, cf.Position.Y + size.Y * 0.5 + REST_H, cf.Position.Z), n, d) end
+				if ok then tryAdd(Vector3.new(cf.Position.X, cf.Position.Y + size.Y * 0.5, cf.Position.Z), n, d) end -- [PERCH FIX] top face (foot-drop added at landing)
 			end
 		end
 	end
@@ -133,54 +143,107 @@ local function newBirdPart(parent, name, shape, size, color, isWedge)
 	return p
 end
 
--- A more believable little songbird: fuller rounded body with a pale belly + orange breast, a distinct small head
--- (with a short pointed beak) on its own animated frame so it can turn, a wider fanned tail on a hinge so it can
--- flick, thin folded wing-blades along the sides that pivot at the shoulder, and small legs + feet for the perch.
--- FRONT = -Z. Built at the origin; `applyBird` poses it each frame off one root CFrame (rigid, physics-free).
+-- Fuse a group of rounded source parts into ONE smooth solid via UnionAsync (Studio API access is on). Colours +
+-- materials of each source are PRESERVED (UsePartColor = false) so a single union can carry the two-tone robin
+-- coats. The union inherits the BASE part's CFrame, so building the base at the rig's local origin keeps `off`
+-- identity. Returns the configured UnionOperation, or nil if the union call fails (caller then keeps loose parts).
+local function fuseParts(name, base, others)
+	local ok, union = pcall(function() return base:UnionAsync(others) end)
+	if not ok or not union then return nil end
+	union.Name = name
+	union.UsePartColor = false                       -- keep each source part's own colour -> blended two-tone coat
+	union.Material = Enum.Material.SmoothPlastic      -- smooth, no studs/notches
+	union.Anchored = true; union.CanCollide = false; union.CanQuery = false; union.CanTouch = false
+	union.CastShadow = false; union.Massless = true
+	pcall(function() union.CollisionFidelity = Enum.CollisionFidelity.Box end)
+	pcall(function() union.RenderFidelity   = Enum.RenderFidelity.Precise end) -- crisp curved silhouette
+	union.Parent = base.Parent
+	base:Destroy()
+	for _, p in ipairs(others) do p:Destroy() end
+	return union
+end
+
+-- A believable little songbird built from SMOOTH CURVED forms. The plump body (back/breast/belly/rump) is fused
+-- with UnionAsync into ONE soft teardrop solid; the rounded head (head + crown + nape-blend + cone beak + eyes) is
+-- a SECOND union on its own animated frame so it can still turn while overlapping the body with no hard neck seam.
+-- Curved folded wing-blades hinge at the shoulder, a smooth fanned tail hinges at the rump, thin legs + feet perch.
+-- FRONT = -Z. Built at the origin; `applyBird` poses it each frame off one root CFrame (rigid, physics-free). If a
+-- union fails the same source parts are kept loose (still smooth + correct) so the bird always works -- `unionOK`
+-- records which path was taken.
 local function buildBird()
 	local model = Instance.new("Model"); model.Name = "GardenBird"; model.Parent = Workspace
-	local rig = { model = model, body = {}, headParts = {}, wings = {}, cf = CFrame.new() }
+	local rig = { model = model, body = {}, headParts = {}, wings = {}, cf = CFrame.new(), unionOK = true }
 	local BACK   = Color3.fromRGB(120, 104, 86)  -- warm brown-grey back / head / wings / tail
 	local BREAST = Color3.fromRGB(208, 84, 46)   -- warm orange-red breast
 	local BELLY  = Color3.fromRGB(228, 216, 196) -- pale cream belly (slightly lighter)
 	local BEAK_C = Color3.fromRGB(54, 44, 34)    -- short dark beak
 	local LEG_C  = Color3.fromRGB(150, 110, 80)  -- legs / feet
 	local EYE_C  = Color3.fromRGB(16, 14, 12)    -- eye dot
-	local function add(list, name, shape, size, color, off, isWedge)
-		list[#list + 1] = { part = newBirdPart(model, name, shape, size, color, isWedge), off = off }
+
+	-- Build a group of rounded source parts (positioned around the rig origin), then fuse them into ONE smooth
+	-- solid appended to `targetList`. On union failure the loose parts are kept (each already smooth) so the rig
+	-- still poses correctly. Each spec = { name, shape, size, color, off, isWedge }; spec[1] is the union base.
+	local function buildFused(unionName, specs, targetList)
+		local parts = {}
+		for _, s in ipairs(specs) do
+			local p = newBirdPart(model, s[1], s[2], s[3], s[4], s[6])
+			p.CFrame = s[5]                              -- place each source at its build offset for the fuse
+			parts[#parts + 1] = p
+		end
+		local others = {}
+		for i = 2, #parts do others[#others + 1] = parts[i] end
+		local union = fuseParts(unionName, parts[1], others)
+		if union then
+			targetList[#targetList + 1] = { part = union, off = specs[1][5] } -- union inherits the base's CFrame
+			return true
+		end
+		for i, p in ipairs(parts) do targetList[#targetList + 1] = { part = p, off = specs[i][5] } end -- fallback: loose
+		return false
 	end
 
-	-- BODY: rounder + fuller -> main ball, a lower PALE belly, the warm BREAST up front, a rounded rump
-	add(rig.body, "Body",   BAL, Vector3.new(1.12, 1.04, 1.42), BACK,   CFrame.new(0,  0.00,  0.05))
-	add(rig.body, "Belly",  BAL, Vector3.new(1.02, 0.80, 1.20), BELLY,  CFrame.new(0, -0.30,  0.04))
-	add(rig.body, "Breast", BAL, Vector3.new(0.98, 0.92, 0.80), BREAST, CFrame.new(0, -0.05, -0.52))
-	add(rig.body, "Rump",   BAL, Vector3.new(0.80, 0.76, 0.72), BACK,   CFrame.new(0,  0.10,  0.64))
-	-- LEGS + small forward FEET (perch look)
-	for _, sx in ipairs({ -0.24, 0.24 }) do
-		add(rig.body, "Leg",  BLK, Vector3.new(0.12, 0.34, 0.12), LEG_C, CFrame.new(sx, -0.66, 0.04))
-		add(rig.body, "Foot", BLK, Vector3.new(0.24, 0.08, 0.34), LEG_C, CFrame.new(sx, -0.84, -0.04))
+	-- BODY: overlapping balls -> ONE smooth teardrop. Brown back/saddle, orange breast up front, pale belly under,
+	-- a small rump that tapers toward the tail. Fused so the seams flow together into a single plump form.
+	local bodyOK = buildFused("BodyMesh", {
+		{ "BodyCore", BAL, Vector3.new(1.18, 1.10, 1.46), BACK,   CFrame.new(0,  0.00,  0.00), false }, -- base (union origin)
+		{ "Saddle",   BAL, Vector3.new(0.94, 0.76, 1.04), BACK,   CFrame.new(0,  0.22,  0.16), false }, -- brown back / top
+		{ "Breast",   BAL, Vector3.new(1.00, 0.96, 0.84), BREAST, CFrame.new(0, -0.06, -0.54), false }, -- warm orange front
+		{ "Belly",    BAL, Vector3.new(1.02, 0.78, 1.14), BELLY,  CFrame.new(0, -0.34,  0.00), false }, -- pale underside
+		{ "Rump",     BAL, Vector3.new(0.72, 0.66, 0.76), BACK,   CFrame.new(0,  0.14,  0.66), false }, -- taper to the tail
+	}, rig.body)
+
+	-- LEGS + small forward FEET (perch look) -- kept as slim separate parts
+	for _, sx in ipairs({ -0.22, 0.22 }) do
+		rig.body[#rig.body + 1] = { part = newBirdPart(model, "Leg",  BLK, Vector3.new(0.10, 0.34, 0.10), LEG_C), off = CFrame.new(sx, -0.66, 0.04) }
+		rig.body[#rig.body + 1] = { part = newBirdPart(model, "Foot", BLK, Vector3.new(0.22, 0.07, 0.32), LEG_C), off = CFrame.new(sx, -0.84, -0.05) }
 	end
 
-	-- HEAD on its OWN frame (so it can turn): distinct head + slight crown + short pointed beak + two eyes
-	rig.headBase = CFrame.new(0, 0.52, -0.66)
-	add(rig.headParts, "Head",  BAL, Vector3.new(0.86, 0.82, 0.82), BACK,   CFrame.new(0,  0.00,  0.00))
-	add(rig.headParts, "Crown", BAL, Vector3.new(0.66, 0.42, 0.62), BACK,   CFrame.new(0,  0.22,  0.06))
-	add(rig.headParts, "Beak",  nil, Vector3.new(0.26, 0.20, 0.42), BEAK_C, CFrame.new(0, -0.04, -0.48) * CFrame.Angles(0, math.rad(180), 0), true) -- short pointed beak
-	add(rig.headParts, "Eye",   BAL, Vector3.new(0.16, 0.16, 0.16), EYE_C,  CFrame.new(-0.28, 0.06, -0.30))
-	add(rig.headParts, "Eye",   BAL, Vector3.new(0.16, 0.16, 0.16), EYE_C,  CFrame.new( 0.28, 0.06, -0.30))
+	-- HEAD on its OWN frame (so it can still turn): head + crown + a NAPE ball that blends down/back into the body
+	-- (hiding the neck seam) + a small smooth cone-style beak + two rounded eyes -- all fused into one smooth dome.
+	rig.headBase = CFrame.new(0, 0.50, -0.62)
+	local headOK = buildFused("HeadMesh", {
+		{ "HeadBall", BAL, Vector3.new(0.86, 0.82, 0.86), BACK,   CFrame.new(0,  0.00,  0.00), false }, -- base (head pivot)
+		{ "Crown",    BAL, Vector3.new(0.60, 0.46, 0.60), BACK,   CFrame.new(0,  0.22,  0.06), false }, -- gentle crown
+		{ "Nape",     BAL, Vector3.new(0.74, 0.66, 0.80), BACK,   CFrame.new(0, -0.18,  0.30), false }, -- blend into body (no neck seam)
+		{ "Beak",     nil, Vector3.new(0.24, 0.20, 0.44), BEAK_C, CFrame.new(0, -0.06, -0.50) * CFrame.Angles(0, math.rad(180), 0), true }, -- small smooth cone beak
+		{ "Eye",      BAL, Vector3.new(0.16, 0.16, 0.16), EYE_C,  CFrame.new(-0.27, 0.07, -0.30), false },
+		{ "Eye",      BAL, Vector3.new(0.16, 0.16, 0.16), EYE_C,  CFrame.new( 0.27, 0.07, -0.30), false },
+	}, rig.headParts)
 
-	-- TAIL: a wider, flatter FAN on a hinge at the rump (animated pitch -> flick / fan)
+	rig.unionOK = bodyOK and headOK
+
+	-- TAIL: a wide, flat, smooth FAN on a hinge at the rump (animated pitch -> flick / fan)
 	rig.tailBase = CFrame.new(0, 0.16, 0.92)
-	rig.tail = { part = newBirdPart(model, "Tail", BLK, Vector3.new(0.92, 0.10, 0.98), BACK), off = CFrame.new(0, 0.02, 0.42) * CFrame.Angles(math.rad(16), 0, 0) }
+	rig.tail = { part = newBirdPart(model, "Tail", BLK, Vector3.new(1.00, 0.08, 1.06), BACK), off = CFrame.new(0, 0.02, 0.42) * CFrame.Angles(math.rad(16), 0, 0) }
 
-	-- WINGS: thin flat blades that lie folded along the flanks; each pivots at the shoulder, flapping about the
-	-- body's forward (Z) axis (symmetric: side = +1 left / -1 right).
+	-- WINGS: smooth folded blades that sit flush along the flanks, each hinged at the shoulder ROOT (pivot). The flap
+	-- rotates the whole blade up/down about the body's forward (Z) axis, so the far WINGTIP travels a big vertical arc
+	-- (mirrored L/R: side +1 left / -1 right). Built lying out horizontally; the flap angle is driven each frame.
 	for _, side in ipairs({ 1, -1 }) do
 		rig.wings[#rig.wings + 1] = {
-			part   = newBirdPart(model, side == 1 and "WingL" or "WingR", BLK, Vector3.new(0.12, 0.30, 1.05), BACK),
+			part   = newBirdPart(model, side == 1 and "WingL" or "WingR", BLK, Vector3.new(1.15, 0.09, 0.52), BACK),
 			side   = side,
-			pivot  = CFrame.new(side * 0.34, 0.20, -0.18), -- shoulder hinge (out / up / forward)
-			armOff = CFrame.new(side * 0.16, -0.16, 0.30), -- blade lies down + back along the flank (folded)
+			pivot  = CFrame.new(side * 0.30, 0.16, -0.05), -- shoulder hinge = the WING ROOT (the rotation pivot)
+			armOff = CFrame.new(side * 0.58, 0, 0.05),     -- blade centre sits OUT along the span -> wingtip ~1.1 from the root
 		}
 	end
 	return rig
@@ -213,9 +276,11 @@ local function shoulderCF()
 end
 
 local function perchCFrame(p)
-	local toC = Vector3.new(gardenCenter.X - p.pos.X, 0, gardenCenter.Z - p.pos.Z) -- face inward toward the garden
+	-- [PERCH FIX] sit the body FOOT_DROP above the object's top face -> feet rest ON the surface, body above (matches shoulder)
+	local landPos = Vector3.new(p.pos.X, p.pos.Y + FOOT_DROP, p.pos.Z)
+	local toC = Vector3.new(gardenCenter.X - landPos.X, 0, gardenCenter.Z - landPos.Z) -- face inward toward the garden
 	if toC.Magnitude < 1 then toC = Vector3.new(0, 0, -1) end
-	return CFrame.lookAt(p.pos, p.pos + toC.Unit)
+	return CFrame.lookAt(landPos, landPos + toC.Unit)
 end
 
 local function randomPerch()
@@ -252,10 +317,10 @@ local function flyTo(rig, fromCF, toCF)
 		local ahead = bez(startP, ctrl, goalP, math.min(1, s + 0.04))
 		pos = pos + Vector3.new(0, math.sin(t * math.pi * 3) * 0.22, 0)     -- soft up/down bob along the arc
 		local dir = ahead - pos
-		-- EFFORT: strong flap on takeoff (early t) + while climbing; eases toward a GLIDE when descending/cruising
+		-- EFFORT 0 (relaxed cruise / glide) .. 1 (hard takeoff/climb): strong early in the flight + while climbing
 		local climb   = (pos.Y - prevPos.Y) / math.max(dt, 1 / 120)
-		local takeoff = math.max(0, 1 - t * 3)                             -- big for the first ~1/3 of the flight
-		local effort  = math.clamp(0.22 + takeoff * 1.1 + math.max(0, climb) * 0.5, 0.12, 1.5)
+		local takeoff = math.max(0, 1 - t * 2.5)                            -- strong through the first ~40% of the flight
+		local effort  = math.clamp(takeoff + math.clamp(climb / 5, 0, 1), 0, 1)
 		-- BANK into the turn (eased): roll proportional to how fast the heading is rotating
 		local hd = Vector3.new(dir.X, 0, dir.Z)
 		if hd.Magnitude > 0.01 then
@@ -264,8 +329,12 @@ local function flyTo(rig, fromCF, toCF)
 			lean = lean + (targetLean - lean) * math.min(dt * 6, 1)
 			prevHd = hd
 		end
-		flapPhase = flapPhase + dt * FLAP_FREQ * (0.6 + effort)            -- beats FASTER on takeoff/climb
-		local wing = WING_SPREAD + math.sin(flapPhase) * WING_BEAT * effort -- glide (effort low) -> wings held near spread
+		-- WIDE flap: amplitude AND beat rate both grow with effort; cruise = relaxed wide beat with brief glides
+		local amp   = FLAP_AMP_MIN + (FLAP_AMP_MAX - FLAP_AMP_MIN) * effort
+		local hz    = FLAP_HZ_MIN + (FLAP_HZ_MAX - FLAP_HZ_MIN) * effort
+		local glide = (effort < 0.2) and (0.45 + 0.55 * (0.5 + 0.5 * math.sin(t * math.pi * 2.2))) or 1 -- brief relaxed glides while cruising
+		flapPhase = flapPhase + dt * hz * (2 * math.pi)                     -- hz = beats/sec; FASTER on takeoff/climb
+		local wing = FLAP_CENTER + math.sin(flapPhase) * amp * glide        -- wings swing WIDE up/down about the shoulder root
 		local cf = (dir.Magnitude > 0.01) and CFrame.lookAt(pos, pos + dir) or (CFrame.new(pos) * toCF.Rotation) -- always face travel
 		applyBird(rig, cf, { wing = wing, lean = lean, tail = math.rad(6) * effort })
 		prevPos = pos
@@ -278,7 +347,7 @@ local function flyTo(rig, fromCF, toCF)
 		st = st + dt
 		local u = math.min(1, st / 0.42)
 		local bob  = math.sin(u * math.pi) * -0.16                         -- small settle dip
-		local wing = WING_SPREAD + (WING_FOLD - WING_SPREAD) * u           -- fold wings in as it lands
+		local wing = FLAP_CENTER + (WING_FOLD - FLAP_CENTER) * u           -- fold the wings down as it lands
 		applyBird(rig, toCF * CFrame.new(0, bob, 0), { wing = wing, lean = (1 - u) * lean, tail = math.rad(10) * (1 - u) })
 	end
 	applyBird(rig, toCF, { wing = WING_FOLD })
@@ -327,13 +396,24 @@ end
 -- SPAWN on the (now OPPOSITE) shoulder + run the loop forever.
 --======================================================================
 rig = buildBird()
+do -- [PERCH FIX] measure the model's real foot-drop (origin -> lowest body point) so perch landings match the shoulder's body-above-feet pose
+	local lowest = 0
+	for _, e in ipairs(rig.body) do lowest = math.min(lowest, e.off.Position.Y - e.part.Size.Y * 0.5) end
+	if lowest < 0 then FOOT_DROP = -lowest end
+end
 local curCF = shoulderCF()
 applyBird(rig, curCF, { wing = WING_FOLD })
+do -- report the rebuilt smooth model
+	local partCount = 0
+	for _, d in ipairs(rig.model:GetDescendants()) do if d:IsA("BasePart") then partCount += 1 end end
+	print(string.format("[BIRD COMPANION] model rebuilt smooth (union ok=%s), parts=%d.", rig.unionOK and "y" or "n", partCount))
+end
 print("[BIRD COMPANION] spawned on gardener's " .. SHOULDER_SIDE .. " shoulder, perch points=" .. #perches .. ".")
 print("[BIRD COMPANION] shoulder=" .. SHOULDER_SIDE .. ", shoulder rest=10s, realism pass applied.")
+print(string.format("[BIRD COMPANION] wing flap amplitude=%ddeg, beats/sec flying=%.1f, visible flap=yes.", math.floor(math.deg(FLAP_AMP_MAX) + 0.5), FLAP_HZ_MIN))
 
 task.spawn(function()
-	local atShoulder = true
+	local atShoulder, perchFixLogged = true, false
 	while rig.model.Parent do
 		-- rest where we are: 10s on the shoulder, a shorter idle on a garden perch
 		perchIdle(rig, curCF, atShoulder and SHOULDER_REST or rng:NextNumber(PERCH_MIN, PERCH_MAX))
@@ -357,6 +437,10 @@ task.spawn(function()
 			print("[BIRD COMPANION] flying to " .. tostring(name))
 		end
 		flyTo(rig, rig.cf, targetCF) -- start from the bird's ACTUAL current pose
+		if name ~= "shoulder" and not perchFixLogged then
+			perchFixLogged = true
+			print("[BIRD COMPANION] perch offset fixed -> sits on top of " .. tostring(name) .. ", feet-on-surface.")
+		end
 		curCF = targetCF
 		atShoulder = (name == "shoulder")
 	end

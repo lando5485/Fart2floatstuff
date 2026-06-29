@@ -243,25 +243,65 @@ local function getIslandModels()
 	return islands
 end
 
--- Pick a random island impact point (top surface) or a safe fallback.
+-- A spot's raycast hit is "clear ground" (path/grass/bare island) rather than the TOP of a tall object (tree, food
+-- stand, building, prop) if its Y is within this many studs of the island's bare-ground level. Anything taller than
+-- this sticks up enough that a crater there would visibly float -> we avoid it.
+local GROUND_TOLERANCE = 3
+
+-- Per-island bare-GROUND Y, computed once (islands don't move after setup) and cached. We sample many points and
+-- take the Y bucket the MOST samples cluster on: the bare ground is the bulk of the island's surface, while
+-- trees/stands/props are sparse higher outliers -- so the dominant bucket is the true ground level.
+local groundYCache = {}
+local function islandGroundY(idx, model)
+	if groundYCache[idx] then return groundYCache[idx] end
+	local ok, cf, size = pcall(function() return model:GetBoundingBox() end)
+	if not (ok and cf and size) then return nil end
+	local fromY = cf.Position.Y + size.Y / 2 + 50
+	local counts, best, bestN = {}, nil, 0
+	for _ = 1, 50 do
+		local sx = cf.Position.X + (math.random() - 0.5) * size.X * 0.7
+		local sz = cf.Position.Z + (math.random() - 0.5) * size.Z * 0.7
+		local y = snapToGround(sx, sz, fromY)
+		if y then
+			local bucket = math.floor(y / 2 + 0.5) * 2 -- 2-stud resolution
+			counts[bucket] = (counts[bucket] or 0) + 1
+			if counts[bucket] > bestN then bestN, best = counts[bucket], bucket end
+		end
+	end
+	groundYCache[idx] = best -- nil if every sample missed -> treated as "not cached" so it retries next time
+	return best
+end
+
+-- Pick a random island impact point that lands on CLEAR island GROUND (never on top of a tree/stand/prop, which
+-- would make the crater float in the air). It retries spots until the downward ray hits bare ground, and ALWAYS
+-- snaps the impact to ground level so the crater touches the island even in the worst case.
 local function pickTarget()
 	local islands = getIslandModels()
 	if #islands > 0 then
 		local pick = islands[math.random(1, #islands)]
 		local ok, cf, size = pcall(function() return pick.model:GetBoundingBox() end)
 		if ok and cf and size then
-			-- Random point within the central area of the island (not just dead
-			-- center) so impacts vary across the island surface.
-			local jitterX = (math.random() - 0.5) * size.X * 0.5
-			local jitterZ = (math.random() - 0.5) * size.Z * 0.5
-			local cx = cf.Position.X + jitterX
-			local cz = cf.Position.Z + jitterZ
-			local gy = snapToGround(cx, cz, cf.Position.Y + size.Y / 2 + 50)
-			if gy then
-				return Vector3.new(cx, gy, cz)
+			local fromY = cf.Position.Y + size.Y / 2 + 50
+			local groundY = islandGroundY(pick.index, pick.model) -- the bare-ground reference level
+			local lastX, lastZ, lastGy
+			-- Try several spots; take the FIRST one whose ray hits clear ground (no tall object there).
+			for _ = 1, 24 do
+				local cx = cf.Position.X + (math.random() - 0.5) * size.X * 0.5
+				local cz = cf.Position.Z + (math.random() - 0.5) * size.Z * 0.5
+				local gy = snapToGround(cx, cz, fromY)
+				if gy then
+					lastX, lastZ, lastGy = cx, cz, gy
+					-- clear ground = the ray hit is at (near) the bare-ground level, not perched on an object
+					if (not groundY) or math.abs(gy - groundY) <= GROUND_TOLERANCE then
+						return Vector3.new(cx, gy, cz)
+					end
+				end
 			end
-			-- Raycast missed: use the model center Y as a fallback.
-			return Vector3.new(cx, cf.Position.Y, cz)
+			-- Dense island, no clearly-open spot found: still place the impact at the GROUND level (never floating
+			-- on an object's top) so the crater sits on the island surface.
+			if groundY then return Vector3.new(lastX or cf.Position.X, groundY, lastZ or cf.Position.Z) end
+			if lastGy then return Vector3.new(lastX, lastGy, lastZ) end
+			return Vector3.new(cf.Position.X, cf.Position.Y, cf.Position.Z)
 		end
 	end
 	-- Full fallback: a configured island center, snapped to ground if possible.
@@ -364,5 +404,17 @@ end
 _G.BigEvents = _G.BigEvents or {}
 _G.BigEvents.meteor = { start = startEvent, isRunning = function() return eventRunning end }
 
--- (Pre-launch cleanup: the "/meteor" chat command + _G.startMeteorStorm manual test trigger were removed.
--- The event still fires on its own via the BigEventScheduler using the registration above.)
+-- (The event also fires on its own via the BigEventScheduler using the registration above.)
+
+-- \xE2\x9A\xA0 TEST: "/meteor" chat command -> fire a meteor shower NOW (so you don't have to wait for the scheduler).
+-- REMOVE BEFORE LAUNCH.
+local function hookMeteorCmd(plr)
+	plr.Chatted:Connect(function(msg)
+		if msg:lower():gsub("%s+", "") == "/meteor" then
+			print("[MeteorStorm] /meteor: manual start by " .. plr.Name)
+			startEvent()
+		end
+	end)
+end
+Players.PlayerAdded:Connect(hookMeteorCmd)
+for _, p in ipairs(Players:GetPlayers()) do hookMeteorCmd(p) end

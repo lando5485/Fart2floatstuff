@@ -121,7 +121,7 @@ end
 local teleportBtn = Instance.new("TextButton")
 teleportBtn.Name = "GoToIsland1Btn"
 teleportBtn.AnchorPoint = Vector2.new(0.5, 0)
-teleportBtn.Position = UDim2.new(0.5, 0, 0.20, 0)  -- horizontally centered, near top (below the banner)
+teleportBtn.Position = UDim2.new(0.5, 0, 0, 12)  -- SAME top-center placement as the event countdown pills (Y=12)
 teleportBtn.Size = UDim2.new(0, 210, 0, 50)
 teleportBtn.BackgroundColor3 = Color3.fromRGB(55, 170, 90)
 teleportBtn.AutoButtonColor = true

@@ -425,17 +425,23 @@ local function runEggTalk(rig, cfg)
 	local bubble = attachTalkBubble(rig)
 	if not bubble then return end
 	print("[COW TALK] bubble wired"); print("[BUBBLE SPEAK] cow method=reuses spawn bubble")
+	-- register for the GardenFeeding mini-feature: lets it find the cow's body + make it speak (reusing THIS bubble)
+	_G.gardenAnimals = _G.gardenAnimals or {}
+	_G.gardenAnimals.cow = { body = bubble.gui.Adornee, say = function(m) bubbleSay(bubble, m, 4) end }
+	local i = 1 -- CYCLE the short lines in order (loop), starting on line 1
 	while rig.model.Parent do
 		interruptibleWait(math.random(cfg.talkMin or 12, cfg.talkMax or 18), function() return not rig.model.Parent end)
 		if not rig.model.Parent then break end
 		if isPlayerNear(rig, COW_TALK_RANGE) then
-			local line = lines[math.random(1, #lines)]
+			local line = lines[i]
+			i = (i % #lines) + 1
 			bubbleSay(bubble, line, 4.5)
 			print("[COW TALK] said (player near): " .. line)
 		else
 			print("[COW TALK] skipped (no one near)")
 		end
 	end
+	if _G.gardenAnimals then _G.gardenAnimals.cow = nil end -- cow despawned (abduction) -> deregister for feeding
 end
 
 --======================================================================
@@ -511,15 +517,10 @@ local EGGS = {
 		returnMin    = 30,  returnMax  = 45, -- a new cow appears 30-45s after an abduction
 		mooMin       = 15,  mooMax     = 40, -- moo every 15-40s
 		talkMin      = 12,  talkMax    = 18, -- overhead chat bubble shows a random line every 12-18s
-		talkLines    = {                     -- random cosmetic one-liners for the overhead bubble
-			"Moo.",
-			"Nice day for floating, huh?",
-			"I've been abducted before, you know.",
-			"Got any snacks?",
-			"Mooove along, nothing to see here.",
-			"The sky calls to me.",
-			"Ever tried flying on a full stomach?",
-			"Baa\xE2\x80\x94 wait, wrong animal.",
+		talkLines    = {                     -- short cosmetic one-liners cycled in the overhead bubble (easy to edit)
+			"Moo! Welcome!",
+			"Got any hay?",
+			"Moo moo!",
 		},
 	},
 }

@@ -111,11 +111,11 @@ local glowRight  = mkFrame(glowSg,{Size=UDim2.new(0,4,1,0),Position=UDim2.new(1,
 local glowEdges  = {glowLeft,glowRight}
 
 -- ===== COUNTDOWN PILL (top-middle) =====
--- Horizontally centered, just below the top edge. Y=80 keeps it clear of the top-center announcement
--- banner (which slides to Y=10, ~65px tall -> ends ~Y=75) so they never stack, and the coin counter is
--- top-RIGHT so there is no conflict there either. Size/style/text/show-hide timing are unchanged.
+-- Horizontally centered at the very top, out of the player's way. It now appears ONLY AFTER the announcement
+-- banner has slid away (see showCountPillAfterBanner), so it can sit in the SAME prime top-center spot the banner
+-- used (Y=12) without ever overlapping it. The coin counter is top-RIGHT, so there's no conflict there either.
 local countSg=Instance.new("ScreenGui"); countSg.Name="EventCountGui"; countSg.ResetOnSpawn=false; countSg.ZIndexBehavior=Enum.ZIndexBehavior.Global; countSg.Parent=PlayerGui
-local countPill=mkFrame(countSg,{Size=UDim2.new(0,280,0,44),Position=UDim2.new(0.5,0,0,80),AnchorPoint=Vector2.new(0.5,0),BackgroundColor3=Color3.fromRGB(180,60,220),Visible=false,ZIndex=14,BorderSizePixel=0})
+local countPill=mkFrame(countSg,{Size=UDim2.new(0,280,0,44),Position=UDim2.new(0.5,0,0,12),AnchorPoint=Vector2.new(0.5,0),BackgroundColor3=Color3.fromRGB(180,60,220),Visible=false,ZIndex=14,BorderSizePixel=0})
 mkCorner(countPill,20); mkStroke(countPill,Color3.fromRGB(120,20,160),3)
 local countLabel=mkLabel(countPill,{Text="",Font=Enum.Font.FredokaOne,TextScaled=true,TextColor3=Color3.fromRGB(255,255,255),Size=UDim2.new(1,-10,1,0),Position=UDim2.new(0,5,0,0),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=15})
 mkStroke(countLabel,Color3.fromRGB(0,0,0),2)
@@ -846,6 +846,24 @@ local function showEventBanner(dispName,msg,color)
 	end)
 end
 
+-- The announcement banner owns the top-center for ~5.35s (0.4s slide-in + 5s hold + 0.3s slide-out + 0.35s to hidden).
+-- The countdown pill must NOT appear until the banner has fully vanished, so they share that one top spot cleanly.
+local BANNER_GONE_AFTER = 5.45
+local pillToken = 0
+-- Reveal the (top-centered) countdown pill, but ONLY after the banner has cleared the screen AND only if the event
+-- is still running by then. `pillToken` cancels a pending reveal the moment a newer event/pill cycle begins, and
+-- short events that finish before the banner clears simply never pop a pill (stillActive() is false by then).
+local function showCountPillAfterBanner(stillActive)
+	pillToken = pillToken + 1
+	local myToken = pillToken
+	countPill.Visible = false -- stay hidden while the announcement banner is on screen
+	task.delay(BANNER_GONE_AFTER, function()
+		if myToken == pillToken and (not stillActive or stillActive()) then
+			countPill.Visible = true
+		end
+	end)
+end
+
 local activeEventSgs={}
 local function addEventSg(sg2) table.insert(activeEventSgs,sg2) end
 
@@ -1237,7 +1255,7 @@ local function startThunderstorm(dur)
 	_G.thunderWindVec=Vector3.new(0,0,0) -- STRONG storm wind ON (the loop evolves it; CoreClient adds it to flight)
 	startGlowPulse(Color3.fromRGB(50,50,80))
 	showEventBanner("\xe2\x9b\x88 THUNDERSTORM","\xe2\x9b\x88\xef\xb8\x8f Hold on tight!",Color3.fromRGB(50,50,80))
-	countPill.BackgroundColor3=Color3.fromRGB(50,50,80); countPill.Visible=true
+	countPill.BackgroundColor3=Color3.fromRGB(50,50,80); showCountPillAfterBanner(function() return _G.thunderstormActive end)
 	local endT=tick()+(dur or 25)
 	task.spawn(function()
 		local lightTimer=math.random(40,100)*0.1
@@ -1292,7 +1310,7 @@ local function startWindstorm()
 	_G.windstormDir=Vector3.new(rx,0,rz).Unit
 	startGlowPulse(Color3.fromRGB(0,200,220))
 	showEventBanner("\xF0\x9F\x8C\xAA WINDSTORM","\xF0\x9F\x8C\xAA The wind is insane!",Color3.fromRGB(0,200,220))
-	countPill.BackgroundColor3=Color3.fromRGB(0,200,220); countPill.Visible=true
+	countPill.BackgroundColor3=Color3.fromRGB(0,200,220); showCountPillAfterBanner(function() return _G.windstormActive end)
 	local endT=tick()+20
 	task.spawn(function()
 		local dirChangeTimer=0; local streakTimer=0
@@ -1337,7 +1355,7 @@ if ServerEventNotify then
 
 			showEventBanner(dispName,msg,eventColor)
 			startGlowPulse(eventColor)
-			countPill.BackgroundColor3=eventColor; countPill.Visible=true
+			countPill.BackgroundColor3=eventColor; showCountPillAfterBanner(function() return _G.serverEventActive end)
 
 			if eventName=="FART_STORM" then
 				_G.serverEventSpeedMult=1.3

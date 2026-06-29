@@ -807,9 +807,26 @@ task.spawn(function()
 end)
 
 -- ===== STATE HELPERS =====
-local function ownsPet(player, petId)
+-- ownsPet checks a STORAGE KEY exactly (the unit of equip/level/trade). A key is either a species id ("ButterDuck",
+-- the NORMAL variant) or a species id + the rare suffix ("ButterDuck#R", the RARE variant). Normal pets keep key==petId
+-- so all existing single-pet code is unchanged; rares get the suffix so a normal AND a rare of one species can coexist.
+local function ownsPet(player, key)
 	local op = _G.playerOwnedPets[player]
-	return op ~= nil and op[petId] ~= nil -- value may be `true` (legacy) or a {level,height,time} table
+	return op ~= nil and op[key] ~= nil -- value may be `true` (legacy) or a {level,height,time,count,rare} table
+end
+local RARE_SUFFIX = "#R"
+local function variantKey(petId, rare) return rare and (petId .. RARE_SUFFIX) or petId end -- (species,variant) -> storage key
+local function speciesOf(key) if type(key) ~= "string" then return key end return (key:gsub(RARE_SUFFIX .. "$", "")) end -- storage key -> species id
+-- owns ANY variant (normal OR rare) of a species -- used by quest gates / "do you have this pet at all" checks.
+local function ownsSpecies(player, petId)
+	return ownsPet(player, petId) or ownsPet(player, petId .. RARE_SUFFIX)
+end
+-- the storage keys a player owns for a species (0..2: the normal slot and/or the rare slot)
+local function ownedKeysOf(player, petId)
+	local t = {}
+	if ownsPet(player, petId) then t[#t + 1] = petId end
+	if ownsPet(player, petId .. RARE_SUFFIX) then t[#t + 1] = petId .. RARE_SUFFIX end
+	return t
 end
 
 local function foundCount(player, petId)
@@ -822,7 +839,7 @@ end
 -- (e.g. they traded their only one away). Owning >=1 keeps it completed/locked -> no farming duplicates.
 -- everCompleted is a PERMANENT flag used ONLY to gate the rare roll (see PetClaimEvent); it does NOT lock the quest.
 local function questAvailable(player, petId)
-	local owns = ownsPet(player, petId)
+	local owns = ownsSpecies(player, petId) -- owning ANY variant (normal or rare) locks the quest
 	local ever = (_G.playerEverCompletedQuests[player] or {})[petId] == true
 	local available = not owns
 	print(string.format("[PetQuest] %s quest %s availability: ownsCount=%d, everCompleted=%s -> available=%s",
@@ -888,6 +905,7 @@ local function getPetData(player, petId)
 	local v = op[petId]; if v == nil then return nil end
 	if type(v) ~= "table" then v = {}; op[petId] = v end
 	v.level = v.level or 1; v.xp = v.xp or 0; v.height = v.height or 0; v.time = v.time or 0
+	v.count = math.max(1, math.floor(tonumber(v.count) or 1)) -- how many of THIS variant the player has stacked (legacy saves -> 1)
 	if v.level > PET_MAX_LEVEL then v.level = PET_MAX_LEVEL; v.xp = 0 end -- clamp legacy saves to the new 25 cap
 	return v
 end
@@ -911,14 +929,19 @@ end
 -- Build the full state for one player across all pets and send it to that client.
 local function sendState(player)
 	local state = {}
-	local equipped = _G.playerEquippedPet[player]
+	local eq = _G.playerEquippedPet[player]                       -- a STORAGE KEY (petId or petId#R)
+	local eqSpecies = eq and speciesOf(eq) or nil
 	for petId, def in pairs(PETS) do
-		local owns = ownsPet(player, petId)
+		local owns = ownsSpecies(player, petId)
+		local isEquipped = owns and (eqSpecies == petId) or false  -- the client only spawns the EQUIPPED follower
+		-- follower look comes from the EQUIPPED stack if this species is equipped, else any owned stack (normal first)
+		local d = isEquipped and getPetData(player, eq)
+			or (owns and (getPetData(player, petId) or getPetData(player, variantKey(petId, true))))
 		state[petId] = {
 			found = foundCount(player, petId), total = #def.pieceMarkers, owns = owns,
-			equipped = owns and (equipped == petId) or false, -- the client only spawns the EQUIPPED follower
-			level = owns and getPetData(player, petId).level or 1,
-			rare = owns and getPetData(player, petId).rare or false, -- rare variant flag (client applies pre-maxed + rare look)
+			equipped = isEquipped,
+			level = (d and d.level) or 1,
+			rare = (d and d.rare) or false, -- rare variant flag (client applies pre-maxed + rare look)
 		}
 	end
 	pcall(function() PetStateEvent:FireClient(player, state) end)
@@ -926,7 +949,7 @@ end
 
 -- True if this player has DISCOVERED a pet's quest (landed on its island, or owns the pet).
 local function questDiscovered(player, petId)
-	if ownsPet(player, petId) then return true end
+	if ownsSpecies(player, petId) then return true end
 	local dq = _G.playerDiscoveredQuests[player]
 	return dq ~= nil and dq[petId] == true
 end
@@ -940,24 +963,27 @@ local function sendInventory(player)
 	local payload = { owned = {}, quests = {}, totalPets = 0 }
 	for petId, def in pairs(PETS) do
 		payload.totalPets = payload.totalPets + 1
-		local owns = ownsPet(player, petId)
-		if owns then
-			local d = getPetData(player, petId)
-			local nl, th = nextTier(player, petId)
-			payload.owned[petId] = {
+		-- ONE card per OWNED STACK: a species can have up to two (a normal stack and/or a separate rare stack). Each
+		-- entry is keyed by its STORAGE KEY (petId or petId#R) and carries petId=the SPECIES (the client keys icons/
+		-- templates/equip on that) so normal + rare show as separate cards and each can be equipped/traded on its own.
+		for _, skey in ipairs(ownedKeysOf(player, petId)) do
+			local d = getPetData(player, skey)
+			payload.owned[skey] = {
+				petId = petId,
 				displayName = def.displayName or petId,
 				level = d.level, maxLevel = PET_MAX_LEVEL,
 				xp = math.floor(d.xp), xpNeed = (d.level >= PET_MAX_LEVEL) and 0 or xpNeeded(d.level),
 				milestone = nextMilestoneHint(d.level), tierVisual = tierVisual(d.level),
-				equipped = (equipped == petId),
+				equipped = (equipped == skey),
 				height = math.floor(d.height), time = math.floor(d.time),
 				rare = d.rare and true or false, rareName = d.rare and RARE_NAMES[petId] or nil, -- RARE badge + variant name
+				count = d.count or 1, -- how many of this exact variant are stacked (shows as "xN")
 			}
 		end
 		if questDiscovered(player, petId) and def.questType ~= "seasonal" then -- seasonal pets are garden rewards, not island quests
 			local found = foundCount(player, petId)
 			local total = #def.pieceMarkers
-			local status = owns and "done" or (found > 0 and "inprogress" or "available")
+			local status = ownsSpecies(player, petId) and "done" or (found > 0 and "inprogress" or "available")
 			payload.quests[petId] = {
 				islandName = def.islandName or petId,
 				desc = def.questDesc or "",
@@ -976,14 +1002,13 @@ end
 -- (PetFollow) works -- it's an extra fire-and-forget message. No server-side pet models / CSG here.
 -- ============================================================================================
 local function buildEquipPayload(player)
-	local petId = _G.playerEquippedPet[player]
-	local level, isRare, variant = 1, false, nil
-	if petId and ownsPet(player, petId) then
-		local d = getPetData(player, petId)
+	local skey = _G.playerEquippedPet[player]
+	local petId, level, isRare, variant = nil, 1, false, nil
+	if skey and ownsPet(player, skey) then
+		local d = getPetData(player, skey)
+		petId = speciesOf(skey) -- remote clients render by SPECIES (+ the rare flag/variant below)
 		if d then level = d.level or 1; isRare = d.rare and true or false end
 		if isRare then variant = RARE_NAMES[petId] end
-	else
-		petId = nil -- nothing equipped -> remote clients remove this player's pet
 	end
 	return { userId = player.UserId, petId = petId, level = level, isRare = isRare, variant = variant }
 end
@@ -1062,6 +1087,64 @@ _G.petOnFlightTick = function(player)        awardXP(player, XP_PER_FLIGHT_TICK,
 _G.petOnGas        = function(player, gas)   awardXP(player, (tonumber(gas) or 0) * XP_PER_GAS, "gas") end
 _G.petOnIsland     = function(player)        awardXP(player, XP_PER_ISLAND, "island") end
 
+-- ===== METEOR CRATE HOOKS (pet-level reward) =====
+-- The Mystery Meteor Crate grants LEVELS to a player-chosen owned pet. These funnel through the
+-- same levelUp() path (re-syncs follower + GUI + remote broadcast each step), and the owned-pets
+-- table they mutate is exactly what PlayerStats persists on autosave/leave -- so grants survive.
+
+-- List the player's OWNED pets for the crate picker: { {petId, displayName, level, maxed}, ... },
+-- sorted by petId for a deterministic order (server picker fallback + stable client list).
+_G.petListOwned = function(player)
+	local list = {}
+	local op = _G.playerOwnedPets[player]; if not op then return list end
+	for petId in pairs(op) do
+		if ownsPet(player, petId) then
+			local def = PETS[petId]; local d = getPetData(player, petId)
+			if def and d then
+				local maxed = d.level >= PET_MAX_LEVEL
+				local need = maxed and 0 or xpNeeded(d.level)
+				local pct = maxed and 100 or (need > 0 and math.clamp((d.xp / need) * 100, 0, 100) or 0)
+				table.insert(list, {
+					petId = petId,
+					displayName = def.displayName or petId,
+					level = d.level,
+					maxed = maxed,
+					xp = math.floor(d.xp),
+					xpNeed = need,        -- XP required for the next level (0 when maxed)
+					xpPct = pct,          -- 0..100 progress to the next level (100 when maxed)
+				})
+			end
+		end
+	end
+	table.sort(list, function(a, b) return a.petId < b.petId end)
+	return list
+end
+
+-- True if the player owns at least one pet that is NOT yet at the level cap.
+_G.petHasUnmaxed = function(player)
+	for _, p in ipairs(_G.petListOwned(player)) do
+		if not p.maxed then return true end
+	end
+	return false
+end
+
+-- Grant N levels to a specific owned pet (crate reward). Validates ownership, clamps at
+-- PET_MAX_LEVEL, and re-syncs via levelUp() per step. Returns oldLevel, newLevel, levelsAdded
+-- (levelsAdded == 0 if the pet was already maxed; nil on invalid pet / not owned).
+_G.petGrantLevels = function(player, petId, n)
+	n = math.floor(tonumber(n) or 0)
+	if n <= 0 then return nil end
+	if not ownsPet(player, petId) then return nil end
+	local d = getPetData(player, petId); if not d then return nil end
+	local oldLevel = d.level
+	if oldLevel >= PET_MAX_LEVEL then return oldLevel, oldLevel, 0 end
+	local target = math.min(PET_MAX_LEVEL, oldLevel + n)
+	while d.level < target do
+		if not levelUp(player, petId, "crate") then break end
+	end
+	return oldLevel, d.level, (d.level - oldLevel)
+end
+
 -- SKIP: instantly FILL the current level's remaining XP -> the pet levels up once (Robux product OR test path).
 local function petSkip(player, petId, via)
 	if not ownsPet(player, petId) then return false end
@@ -1127,12 +1210,12 @@ _G.petsGrantRare = function(player)
 	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
 	local granted = 0
 	for petId in pairs(PETS) do
-		_G.playerOwnedPets[player][petId] = { level = PET_MAX_LEVEL, xp = 0, height = 0, time = 0, rare = true } -- RARE + pre-maxed
+		_G.playerOwnedPets[player][variantKey(petId, true)] = { level = PET_MAX_LEVEL, xp = 0, height = 0, time = 0, rare = true } -- RARE + pre-maxed (own rare slot)
 		_G.playerDiscoveredQuests[player][petId] = true
 		granted = granted + 1
 		print(string.format("[PetRare] rare %s displayed pre-maxed + rare effect %s", petId, RARE_NAMES[petId] or petId))
 	end
-	if not _G.playerEquippedPet[player] then for petId in pairs(PETS) do _G.playerEquippedPet[player] = petId; break end end
+	if not _G.playerEquippedPet[player] then for petId in pairs(PETS) do _G.playerEquippedPet[player] = variantKey(petId, true); break end end
 	sendState(player); sendInventory(player)
 	broadcastEquip(player, "rare") -- let other clients render the (test-)equipped rare pet
 	return granted
@@ -1149,7 +1232,7 @@ _G.grantSeasonalPet = function(player, season)
 	local petId = SEASON_TO_PET[key]
 	if not petId then warn("[Pet] grantSeasonalPet: unknown season '"..season.."'"); return false end
 	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
-	if ownsPet(player, petId) then return true end -- already owned -> nothing to do
+	if ownsSpecies(player, petId) then return true end -- already owned -> nothing to do
 	_G.playerOwnedPets[player][petId] = { level = 1, height = 0, time = 0 } -- same table a normal claim writes (persists)
 	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
 	_G.playerDiscoveredQuests[player][petId] = true
@@ -1343,19 +1426,32 @@ end
 _G.petsApplyOnJoin = function(player)
 	piecesFound[player] = piecesFound[player] or {}
 	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
-	-- normalize any legacy `true` ownership into the {level,height,time} table; owning a pet implies its quest
-	-- was discovered (so the quests panel shows it as Done even on a fresh session).
-	for petId in pairs(PETS) do
-		if ownsPet(player, petId) then getPetData(player, petId); _G.playerDiscoveredQuests[player][petId] = true end
+	-- MIGRATION (one-time per save): legacy saves stored a rare under its PLAIN species key. Re-key it to the rare
+	-- slot (petId#R) so a normal of the same species can now coexist as a separate entry. Keeps the equip pointer valid.
+	local op = _G.playerOwnedPets[player]
+	if op then
+		for petId in pairs(PETS) do
+			local v = op[petId]
+			if type(v) == "table" and v.rare and op[variantKey(petId, true)] == nil then
+				op[variantKey(petId, true)] = v; op[petId] = nil
+				if _G.playerEquippedPet[player] == petId then _G.playerEquippedPet[player] = variantKey(petId, true) end
+			end
+		end
+		for skey in pairs(op) do getPetData(player, skey) end -- normalize legacy `true`/missing level/xp/count on every stack
 	end
-	-- default-equip an owned pet if none is equipped (legacy saves / first pet) so it still follows
-	if not _G.playerEquippedPet[player] then
-		for petId in pairs(PETS) do if ownsPet(player, petId) then _G.playerEquippedPet[player] = petId; break end end
+	-- owning a pet implies its quest was discovered (so the quests panel shows Done even on a fresh session).
+	for petId in pairs(PETS) do
+		if ownsSpecies(player, petId) then _G.playerDiscoveredQuests[player][petId] = true end
+	end
+	-- default-equip an owned stack if none is equipped (or the saved one is no longer valid) so a pet still follows
+	if not (_G.playerEquippedPet[player] and ownsPet(player, _G.playerEquippedPet[player])) then
+		_G.playerEquippedPet[player] = nil
+		for petId in pairs(PETS) do local ks = ownedKeysOf(player, petId); if ks[1] then _G.playerEquippedPet[player] = ks[1]; break end end
 	end
 	sendState(player)     -- tells the client what they own + which is equipped (spawns that follower)
 	sendInventory(player) -- fills the Pet Inventory GUI
 	for petId in pairs(PETS) do
-		if ownsPet(player, petId) then print("[Pet] "..petId.." owned by "..player.Name.." (equipped="..tostring(_G.playerEquippedPet[player] == petId)..")") end
+		for _, skey in ipairs(ownedKeysOf(player, petId)) do print("[Pet] "..skey.." owned by "..player.Name.." (equipped="..tostring(_G.playerEquippedPet[player] == skey)..")") end
 	end
 	broadcastEquip(player, "join")  -- tell everyone what this (now-loaded) player has equipped
 	sendAllEquipsTo(player)         -- and tell THIS player what everyone already here has equipped (late-join catch-up)
@@ -1386,7 +1482,7 @@ PetCollectEvent.OnServerEvent:Connect(function(player, petId, pieceIndex)
 	local def = PETS[petId]; if not def then return end
 	pieceIndex = tonumber(pieceIndex)
 	if not pieceIndex or pieceIndex < 1 or pieceIndex > #def.pieceMarkers then return end
-	if ownsPet(player, petId) then return end -- already have the pet; ignore
+	if ownsSpecies(player, petId) then return end -- already have the pet (any variant); ignore
 	piecesFound[player] = piecesFound[player] or {}
 	piecesFound[player][petId] = piecesFound[player][petId] or {}
 	local set = piecesFound[player][petId]
@@ -1409,7 +1505,7 @@ end)
 
 PetClaimEvent.OnServerEvent:Connect(function(player, petId)
 	local def = PETS[petId]; if not def then return end
-	if ownsPet(player, petId) then return end                 -- already owned
+	if ownsSpecies(player, petId) then return end             -- already own this species (any variant)
 	if def.questType == "fishing" then
 		-- fishing has no pieces: the SERVER-rolled egg flag is the anti-cheat gate (client can't fake a catch)
 		if not fishEggReady[player] then print("[Pet] "..player.Name.." tried to claim "..petId.." without catching the egg"); return end
@@ -1444,14 +1540,15 @@ PetClaimEvent.OnServerEvent:Connect(function(player, petId)
 		player.Name, petId, firstTime and "y" or "n", firstTime and "done" or "skipped",
 		isRare and ((RARE_NAMES[petId] or petId).." (rare)") or "normal"))
 	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
-	_G.playerOwnedPets[player][petId] = data -- now a table (PlayerStats saves it, incl. the rare flag)
-	if not _G.playerEquippedPet[player] then _G.playerEquippedPet[player] = petId end -- auto-equip your first pet
-	print("[Pet] "..player.Name.." claimed "..petId)
-	print("[Pet] "..petId.." following "..player.Name)
+	local skey = variantKey(petId, isRare)         -- a rare goes in its own slot so a normal can coexist later
+	_G.playerOwnedPets[player][skey] = data         -- now a table (PlayerStats saves it, incl. the rare flag)
+	if not _G.playerEquippedPet[player] then _G.playerEquippedPet[player] = skey end -- auto-equip your first pet
+	print("[Pet] "..player.Name.." claimed "..skey)
+	print("[Pet] "..skey.." following "..player.Name)
 	if isRare then pcall(function() PetRareEvent:FireClient(player, petId, RARE_NAMES[petId] or petId) end) end -- hatch fanfare
 	sendState(player)     -- client hides egg/pieces and spawns the equipped follower
 	sendInventory(player) -- the new pet shows up in the inventory GUI
-	if _G.playerEquippedPet[player] == petId then broadcastEquip(player, isRare and "rare" or "equip") end -- auto-equipped first pet -> show to others
+	if _G.playerEquippedPet[player] == skey then broadcastEquip(player, isRare and "rare" or "equip") end -- auto-equipped first pet -> show to others
 end)
 
 -- ===== FISHING CATCH ROLL (SERVER-AUTHORITATIVE): the client invokes this after a successful reel-in. The
@@ -1461,7 +1558,7 @@ end)
 local FISH_JUNK = { "an old boot", "a butter blob", "a rubber duck", "a soggy sock", "a rusty tin can",
                     "a clump of swamp weed", "a lost flip-flop", "a message in a bottle" }
 PetFishRoll.OnServerInvoke = function(player)
-	if ownsPet(player, "ButterDuck") then return { egg = true, already = true } end -- already have the duck
+	if ownsSpecies(player, "ButterDuck") then return { egg = true, already = true } end -- already have the duck (any variant)
 	fishCatches[player] = (fishCatches[player] or 0) + 1
 	local n = fishCatches[player]
 	local eggChance = math.min(1, 0.25 + (n - 1) * 0.11) -- 0.25 at catch 1 -> ramps to 1.0 by catch ~8
@@ -1482,7 +1579,7 @@ end
 -- purely client-side cosmetic and never call this -- only the real buried egg does. =====
 PetDigEvent.OnServerEvent:Connect(function(player, petId)
 	local def = PETS[petId]; if not def or def.questType ~= "dig" then return end
-	if ownsPet(player, petId) then return end
+	if ownsSpecies(player, petId) then return end
 	digEggReady[player] = true
 	print("[Pet] "..player.Name.." dug BuriedEggSpot -> EGG (claim unlocked)")
 end)
@@ -1584,13 +1681,13 @@ local incomingReq = {} -- [targetPlayer] = requesterPlayer (one pending incoming
 
 local function keyList(set) local t = {}; for k in pairs(set) do t[#t+1] = k end; return table.concat(t, ",") end
 local function ownedKeyList(player) local t = {}; for k in pairs(_G.playerOwnedPets[player] or {}) do t[#t+1] = k end; return table.concat(t, ",") end
--- compact display payload for an offered pet (reuses the level/rare data so the client shows name/level/tier)
-local function petBrief(player, petId)
-	local d = getPetData(player, petId); local def = PETS[petId]; if not d then return nil end
-	return { petId = petId, name = (d.rare and RARE_NAMES[petId]) or (def and def.displayName) or petId, level = d.level, rare = d.rare and true or false }
+-- compact display payload for an offered pet (skey = the storage key being offered; petId = its SPECIES for the icon)
+local function petBrief(player, skey)
+	local d = getPetData(player, skey); local sp = speciesOf(skey); local def = PETS[sp]; if not d then return nil end
+	return { key = skey, petId = sp, name = (d.rare and RARE_NAMES[sp]) or (def and def.displayName) or sp, level = d.level, rare = d.rare and true or false }
 end
 local function offerList(owner, offerSet)
-	local list = {}; for petId in pairs(offerSet) do local b = petBrief(owner, petId); if b then list[#list+1] = b end end; return list
+	local list = {}; for skey in pairs(offerSet) do local b = petBrief(owner, skey); if b then list[#list+1] = b end end; return list
 end
 local function tradeStatus(myC, theirC)
 	if myC and theirC then return "trading" elseif myC then return "waiting_them" elseif theirC then return "waiting_you" else return "open" end
@@ -1618,33 +1715,40 @@ local function executeTrade(session)
 	-- SECURITY re-check at execution: both must still OWN everything they're offering (not just when added).
 	for petId in pairs(session.offerA) do if not ownsPet(A, petId) then closeTrade(session, A.Name.." no longer owns "..petId); return end end
 	for petId in pairs(session.offerB) do if not ownsPet(B, petId) then closeTrade(session, B.Name.." no longer owns "..petId); return end end
-	-- OPEN TRADING: ANY pet for ANY pet (cross-species, normal<->rare, any combination) is allowed -- there is
-	-- NO same-species / matching restriction. The ONLY guard kept is DATA-INTEGRITY: ownership stores one entry
-	-- per species, so a receiver can't take in a species they'd still KEEP a copy of -- that would overwrite and
-	-- DESTROY their existing pet (including a rare). Such a trade is rejected (never silently overwritten); offer
-	-- the duplicate too to make it a swap. This guard is part of protecting rares, not a species restriction.
-	local keptA, keptB = {}, {}
-	for petId in pairs(_G.playerOwnedPets[A] or {}) do if not session.offerA[petId] then keptA[petId] = true end end
-	for petId in pairs(_G.playerOwnedPets[B] or {}) do if not session.offerB[petId] then keptB[petId] = true end end
-	for petId in pairs(session.offerA) do if keptB[petId] then closeTrade(session, B.Name.." would overwrite their existing "..petId.." (one per species)"); return end end
-	for petId in pairs(session.offerB) do if keptA[petId] then closeTrade(session, A.Name.." would overwrite their existing "..petId.." (one per species)"); return end end
-	-- diagnostics: log the cross-species pairings (trading is fully open, any for any)
-	for pa in pairs(session.offerA) do for pb in pairs(session.offerB) do
-		if pa ~= pb then print(string.format("[Trade] cross-species trade allowed: %s <-> %s", pa, pb)) end
-	end end
-	print(string.format("[Trade] EXECUTING %s[%s] <-> %s[%s] - validated ownership both sides", A.Name, keyList(session.offerA), B.Name, keyList(session.offerB)))
-	-- snapshot the offered DATA TABLES (carry level/xp/rare/variant), then remove, then add -- all in one step.
+	-- OPEN TRADING with STACKING + VARIANTS: ANY pet for ANY pet. Offers are STORAGE KEYS (petId or petId#R), so a
+	-- normal and a rare of one species are independent units. Receiving a key you already own STACKS it (count++,
+	-- shared at the higher level); receiving a DIFFERENT variant key just lands as its own separate entry. Nothing to
+	-- reject -- different variants can't overwrite each other because they live under different keys.
+	local op = _G.playerOwnedPets
+	print(string.format("[Trade] EXECUTING %s[%s] <-> %s[%s] - validated ownership both sides (stacking+variants on)", A.Name, keyList(session.offerA), B.Name, keyList(session.offerB)))
+	-- snapshot the UNIT each side gives (level/xp/rare), remove ONE from each giver (count--, or drop the stack at 0),
+	-- then add ONE to each receiver: STACK if they already own that exact key (count++, keep the higher level) else new.
 	local giveA, giveB = {}, {}
-	for petId in pairs(session.offerA) do giveA[petId] = _G.playerOwnedPets[A][petId] end
-	for petId in pairs(session.offerB) do giveB[petId] = _G.playerOwnedPets[B][petId] end
-	for petId in pairs(session.offerA) do _G.playerOwnedPets[A][petId] = nil end
-	for petId in pairs(session.offerB) do _G.playerOwnedPets[B][petId] = nil end
-	for petId, data in pairs(giveA) do _G.playerOwnedPets[B][petId] = data end -- A's pet (with its data) -> B
-	for petId, data in pairs(giveB) do _G.playerOwnedPets[A][petId] = data end -- B's pet (with its data) -> A
-	-- RE-DOABLE QUESTS: whoever traded away their LAST of a species (now owns zero) gets that quest reset so they
-	-- can earn it again. A re-completion grants a GUARANTEED NORMAL (rare roll is first-time-only -- see PetClaimEvent).
-	for petId in pairs(giveA) do if not ownsPet(A, petId) then resetQuestProgress(A, petId); questAvailable(A, petId) end end
-	for petId in pairs(giveB) do if not ownsPet(B, petId) then resetQuestProgress(B, petId); questAvailable(B, petId) end end
+	for skey in pairs(session.offerA) do local d = getPetData(A, skey); giveA[skey] = d and { level = d.level, xp = d.xp, height = d.height, time = d.time, rare = d.rare } end
+	for skey in pairs(session.offerB) do local d = getPetData(B, skey); giveB[skey] = d and { level = d.level, xp = d.xp, height = d.height, time = d.time, rare = d.rare } end
+	local function removeOne(owner, skey)
+		local d = op[owner][skey]; if not d then return end
+		local c = (d.count or 1) - 1
+		if c <= 0 then op[owner][skey] = nil else d.count = c end
+	end
+	local function addOne(owner, skey, unit)
+		if not unit then return end
+		local d = op[owner][skey]
+		if d then -- same exact key -> stack, keeping the higher level so no progress is lost
+			d.count = (d.count or 1) + 1
+			if (unit.level or 1) > (d.level or 1) then d.level = unit.level; d.xp = unit.xp or 0 end
+		else
+			op[owner][skey] = { level = unit.level or 1, xp = unit.xp or 0, height = unit.height or 0, time = unit.time or 0, rare = unit.rare or nil, count = 1 }
+		end
+	end
+	for skey in pairs(session.offerA) do removeOne(A, skey) end
+	for skey in pairs(session.offerB) do removeOne(B, skey) end
+	for skey, unit in pairs(giveA) do addOne(B, skey, unit) end -- A's unit -> B (stacks onto B's matching key)
+	for skey, unit in pairs(giveB) do addOne(A, skey, unit) end -- B's unit -> A (stacks onto A's matching key)
+	-- RE-DOABLE QUESTS: whoever traded away their LAST of a SPECIES (owns neither variant now) gets that quest reset
+	-- so they can earn it again. A re-completion grants a GUARANTEED NORMAL (rare roll is first-time-only).
+	for skey in pairs(giveA) do local sp = speciesOf(skey); if not ownsSpecies(A, sp) then resetQuestProgress(A, sp); questAvailable(A, sp) end end
+	for skey in pairs(giveB) do local sp = speciesOf(skey); if not ownsSpecies(B, sp) then resetQuestProgress(B, sp); questAvailable(B, sp) end end
 	-- clear equipped if it was traded away (keep equip state sane)
 	if _G.playerEquippedPet[A] and not ownsPet(A, _G.playerEquippedPet[A]) then _G.playerEquippedPet[A] = nil end
 	if _G.playerEquippedPet[B] and not ownsPet(B, _G.playerEquippedPet[B]) then _G.playerEquippedPet[B] = nil end

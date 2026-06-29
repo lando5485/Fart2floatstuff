@@ -196,6 +196,7 @@ pctPillLabel.TextScaled = true
 pctPillLabel.ZIndex = 10
 pctPillLabel.Parent = pctPill
 pctPill.Parent = barWrap
+pctPill.Visible = false -- REMOVED: the circular "%" pill at the bar's end is hidden ("100% LOADED" text below the bar still shows)
 
 -- ===== "<n>% LOADED" text (with 💥 on each side) =====
 local loadedLabel = Instance.new("TextLabel")
@@ -345,6 +346,13 @@ local function chooseIsland(n)
 	choiceMade = true
 	if SelectIslandEvent then SelectIslandEvent:FireServer(n) end
 	print("ISLAND MENU: selected island " .. n)
+	-- FIRST-TIME ISLAND 1: start the garden cinematic ON CLICK so its black overlay appears immediately,
+	-- covering the menu close + camera move. The server also fires its own trigger; GardenIntro's `playing`
+	-- guard prevents a double. (Returning players have SeenGardenIntro=true, so this never fires for them.)
+	if n == 1 and player:GetAttribute("SeenGardenIntro") ~= true and type(_G.startGardenIntro) == "function" then
+		print("ISLAND MENU: first-time island 1 -> starting garden cinematic (black transition) immediately")
+		task.spawn(_G.startGardenIntro)
+	end
 	-- Fade the whole screen out into the game; the server teleports + releases the hold meanwhile.
 	TweenService:Create(root, TweenInfo.new(0.45, Enum.EasingStyle.Quad), {GroupTransparency = 1}):Play()
 	TweenService:Create(bg, TweenInfo.new(0.45, Enum.EasingStyle.Quad), {ImageTransparency = 1}):Play()       -- loading bg (outside CanvasGroup)
@@ -459,8 +467,8 @@ local function revealPlay(reason)
 	playStroke.Transparency = 0
 	playLabel.TextTransparency = 0
 	playLabelStroke.Transparency = 0
-	playShadow.ImageTransparency = 0.5
-	playShadow.Visible = true
+	playShadow.ImageTransparency = 1  -- keep the drop-shadow hidden (it read as a grey box behind PLAY)
+	playShadow.Visible = false
 	playBtn.Visible = true
 	playBtn.Active = true
 	-- pop-in from small
@@ -474,11 +482,18 @@ playBtn.MouseLeave:Connect(function() if playBtn.Active then scalePlay(1) end en
 playBtn.MouseButton1Down:Connect(function() if playBtn.Active then scalePlay(0.95) end end)
 playBtn.MouseButton1Up:Connect(function() if playBtn.Active then scalePlay(1.06) end end)
 
-playBtn.Activated:Connect(function()
-	playUIClick()
+-- PLAY press -> open the island-select menu (picking one spawns + releases the player). Guard so the multiple
+-- bound input paths (Activated + MouseButton1Click + TouchTap all fire on one click) only run it ONCE.
+local function onPlayPressed()
+	if not playBtn.Active then return end -- not ready yet, or already consumed this press
 	playBtn.Active = false
-	showMenu() -- PLAY now opens the island-select menu (picking one spawns + releases the player)
-end)
+	print("[LOADINGSCREEN] PLAY pressed -> opening island-select menu")
+	playUIClick()
+	showMenu()
+end
+playBtn.Activated:Connect(onPlayPressed)
+playBtn.MouseButton1Click:Connect(onPlayPressed) -- redundant safety in case Activated is swallowed on a device
+playBtn.TouchTap:Connect(onPlayPressed)
 
 -- ===== TIMING + PRELOAD =====
 -- 10-SECOND MINIMUM fill. PLAY appears only once BOTH (a) 10s have elapsed AND (b) the real asset
