@@ -4812,6 +4812,20 @@ do
 		if open then open:Destroy() else _G.PetHub.showMilestones() end -- toggle
 	end)
 end
+
+-- PET WHEEL button in the Pet Hub header -> opens the Robux spin wheel (PetWheel.client owns the panel via
+-- _G.togglePetWheel). Wrapped in a do-block so it needs NO module-scope local (this file is near Luau's
+-- 200-locals-per-scope ceiling). Sits just left of REWARDS, same header-button style.
+do
+	local wheelBtn = Instance.new("TextButton"); wheelBtn.Size = UDim2.new(0,110,0,34); wheelBtn.Position = UDim2.new(1,-482,0,13)
+	wheelBtn.BackgroundColor3 = Color3.fromRGB(255,170,60); wheelBtn.Font = Enum.Font.GothamBold
+	wheelBtn.TextSize = 14; wheelBtn.TextColor3 = Color3.new(1,1,1); wheelBtn.Text = "\xF0\x9F\x8E\xA1 WHEEL"
+	wheelBtn.Parent = header; uicorner(wheelBtn, 8); uistroke(wheelBtn, Color3.new(0,0,0), 2)
+	wheelBtn.MouseButton1Click:Connect(function()
+		openPanel(false) -- close the pet hub, then open the wheel (both are DisplayOrder 100 -> avoid overlap)
+		if _G.togglePetWheel then _G.togglePetWheel() end
+	end)
+end
 qoBack.MouseButton1Click:Connect(function() questsOverlay.Visible = false end)
 
 -- live trade state from the server

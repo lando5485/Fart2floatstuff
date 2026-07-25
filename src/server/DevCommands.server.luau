@@ -27,9 +27,11 @@ local TEST_USER_IDS = {
 }
 local TEST_USER_NAMES = {
 	["lando5485"] = true,
+	["itsmaddmax1"] = true,
 }
 local function isTestUser(player)
-	return TEST_USER_IDS[player.UserId] == true or TEST_USER_NAMES[player.Name] == true
+	-- names compared lower-cased so capitalisation of the account can't cause a miss
+	return TEST_USER_IDS[player.UserId] == true or TEST_USER_NAMES[string.lower(player.Name)] == true
 end
 
 -- ====================== TEST SKIN COMMANDS - REMOVE BEFORE LAUNCH ======================
@@ -59,6 +61,23 @@ local function onChatted(player, message)
 		if _G.grantGutSkin and _G.grantGutSkin(player, skinId, true) then -- grant + equip + apply to the current gut
 			print("[DevCommands] " .. cmd .. " -> granted + equipped '" .. skinId .. "' for " .. player.Name)
 		end
+	-- PET WHEEL TEST COMMANDS - REMOVE BEFORE LAUNCH ------------------------------------------------------
+	-- /givespins <n>  : grant n Pet Wheel spin credits (default 1) without a Robux purchase, so the wheel can
+	--                   be tested end-to-end. /forcemythical : force the NEXT spin to hit the 0.1% jackpot.
+	elseif string.match(cmd, "^/givespins") then
+		if not isTestUser(player) then return end
+		local n = tonumber(string.match(cmd, "^/givespins%s+(%-?%d+)")) or 1 -- "/givespins 5" -> 5; bare "/givespins" -> 1
+		if _G.wheelGiveSpins then
+			_G.wheelGiveSpins(player, n)
+			print("[DevCommands] /givespins " .. tostring(n) .. " for " .. player.Name)
+		end
+	elseif cmd == "/forcemythical" then
+		if not isTestUser(player) then return end
+		if _G.wheelForceMythical then
+			_G.wheelForceMythical(player)
+			print("[DevCommands] /forcemythical armed for " .. player.Name)
+		end
+	-- END PET WHEEL TEST COMMANDS -------------------------------------------------------------------------
 	end
 end
 

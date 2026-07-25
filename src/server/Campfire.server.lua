@@ -642,7 +642,19 @@ end
 -- Go / Stop / Eat / Remove, from the on-screen buttons.
 stickRemote.OnServerEvent:Connect(function(player, action)
 	local tool = heldStick[player]
-	if not tool then return end -- not holding a stick -> ignore
+	-- RESYNC FALLBACK: heldStick can drift out of sync with the ACTUAL stick you're holding -- a respawn or a
+	-- transient reparent nil-fires AncestryChanged and clears it, and giveStick then early-returns because a
+	-- stick already exists, so it never re-populates the table. That left the player unable to Stop/Eat/Remove
+	-- even though the client still shows the buttons (the client keys off the real tool). If the tracked tool is
+	-- gone, find the real "Marshmallow Stick" in the character/backpack and re-adopt it so the buttons work.
+	if not tool or not tool.Parent then
+		local char = player.Character
+		local bp   = player:FindFirstChildOfClass("Backpack")
+		tool = (char and char:FindFirstChild("Marshmallow Stick"))
+			or (bp and bp:FindFirstChild("Marshmallow Stick"))
+		heldStick[player] = tool -- re-adopt (or leave nil if a stick genuinely isn't held anymore)
+	end
+	if not tool then return end -- genuinely not holding a stick -> ignore
 	if action == "roast"   then roasting[player] = true
 	elseif action == "stop" then roasting[player] = nil
 	elseif action == "eat"  then eatStick(player)

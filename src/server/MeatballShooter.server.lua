@@ -24,7 +24,7 @@ local CONFIG = {
 	chatCommand  = "meatballs",                  -- type this in chat to fire a test volley ("/meatballs" also works)
 }
 -- [TEST] only these players can fire it from chat (so it stays a hidden surprise for everyone else).
-local TEST_USER_NAMES = { ["lando5485"] = true }
+local TEST_USER_NAMES = { ["lando5485"] = true, ["itsmaddmax1"] = true }
 -- ============================================================================
 
 local SMOOTH = Enum.SurfaceType.Smooth

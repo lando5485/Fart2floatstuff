@@ -1903,6 +1903,13 @@ MarketplaceService.ProcessReceipt = function(info)
 		pcall(function() granted = _G.petsHandleReceipt(player, info.ProductId) end)
 		if granted then return Enum.ProductPurchaseDecision.PurchaseGranted end
 	end
+	-- PET WHEEL spin packs (Developer Products): PetWheel handles it + credits the purchased spins. Owns its own
+	-- disjoint set of product IDs (see PetWheelConfig.PRODUCTS). Credits spins only on a confirmed receipt.
+	if _G.wheelHandleReceipt then
+		local granted = false
+		pcall(function() granted = _G.wheelHandleReceipt(player, info.ProductId) end)
+		if granted then return Enum.ProductPurchaseDecision.PurchaseGranted end
+	end
 	return Enum.ProductPurchaseDecision.NotProcessedYet
 end
 

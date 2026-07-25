@@ -19,7 +19,7 @@ local CONFIG = {
 	chatCommand  = "milkcap",                    -- "/milkcap" (or "milkcap") to test
 }
 -- [TEST] only these players can fire it from chat (keeps it a hidden surprise for everyone else).
-local TEST_USER_NAMES = { ["lando5485"] = true }
+local TEST_USER_NAMES = { ["lando5485"] = true, ["itsmaddmax1"] = true }
 -- ============================================================================
 
 local MILK  = Color3.fromRGB(255, 255, 252)

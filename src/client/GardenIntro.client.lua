@@ -404,10 +404,32 @@ local function playIntro()
 				camera.CFrame = CFrame.lookAt(hrp.Position + back * 12 + Vector3.new(0, 3, 0), hrp.Position + Vector3.new(0, 2, 0))
 			end
 		end
-		camera.CameraType = prevCamType
+		-- Force the normal player-controlled camera. We must NOT restore prevCamType here: the loading screen leaves
+		-- the camera Scriptable, so prevCamType (captured at intro start) is often Scriptable -- restoring it left the
+		-- camera locked so the mouse/camera wouldn't rotate until the player clicked something. Custom = free look.
+		camera.CameraType = Enum.CameraType.Custom
 		camera.CameraSubject = hum or prevCamSubject
 		if controls then pcall(function() controls:Enable() end) end
 		if hrp and wasAnchored ~= nil then hrp.Anchored = wasAnchored end
+		-- HARD control restore: the intro disabled the controls AND used a Modal skip button, which can leave the
+		-- game GUI-focused / the mouse unlocked -- so movement + camera don't respond until the player clicks
+		-- something. Clear the modal focus and release the mouse so the player can move and turn the INSTANT the
+		-- intro ends, without having to click a button first.
+		pcall(function()
+			local UIS = game:GetService("UserInputService")
+			UIS.ModalEnabled = false                                   -- drop any lingering modal-input capture
+			UIS.MouseBehavior = Enum.MouseBehavior.Default             -- re-release the mouse to the camera
+			game:GetService("GuiService").SelectedObject = nil         -- clear gamepad/GUI selection focus
+			-- END THE MODAL SKIP BUTTON NOW: while a Modal GuiButton is VISIBLE, Roblox force-UNLOCKS the mouse,
+			-- which kills mouse-look camera ROTATION until that button is gone. On skip the button only fades out
+			-- (staying visible + Modal for a beat) before cleanup destroys it -- so clear Modal + hide it right here
+			-- so the player can turn the camera the INSTANT the intro ends, without having to click a GUI first.
+			if skipGui then
+				for _, d in ipairs(skipGui:GetDescendants()) do
+					if d:IsA("GuiButton") then d.Modal = false; d.Visible = false end
+				end
+			end
+		end)
 		-- restore every guarded ScreenGui to the state it WANTED (HUD/banners -> on; shops/popups left off)
 		for _, rec in ipairs(guiGuards) do
 			if rec.conn then pcall(function() rec.conn:Disconnect() end) end
@@ -453,50 +475,39 @@ local function playIntro()
 	skipBtn.Modal = true
 	skipBtn.Active = true
 	skipBtn.Selectable = true
-	skipBtn.BackgroundColor3 = Color3.fromRGB(72, 92, 70)   -- muted green while counting down (brightens when ready)
+	skipBtn.BackgroundColor3 = Color3.fromRGB(54, 116, 50)  -- bright ready green (skip is live immediately)
 	skipBtn.Font = Enum.Font.FredokaOne                     -- game's bold rounded font
-	skipBtn.Text = "SKIP in " .. SKIP_AFTER                 -- starts as a countdown so players know skip is coming
+	skipBtn.Text = "SKIP  \xE2\x9E\x9C"                     -- "SKIP ➜" -- clickable from the very first frame (no countdown)
 	skipBtn.TextColor3 = Color3.fromRGB(255, 247, 230)      -- cream
 	skipBtn.TextScaled = true
-	skipBtn.BackgroundTransparency = 0.3                    -- visible (dimmed) during the countdown
-	skipBtn.TextTransparency = 0.1
+	skipBtn.BackgroundTransparency = 0.05                   -- fully visible (skip is active right away)
+	skipBtn.TextTransparency = 0
 	skipBtn.ZIndex = 2
 	skipBtn.Parent = skipGui
-	print("[GARDEN INTRO] SKIP button shown (counting down " .. SKIP_AFTER .. "s, then clickable)")
+	print("[GARDEN INTRO] SKIP button shown (active immediately)")
 	local skCorner = Instance.new("UICorner"); skCorner.CornerRadius = UDim.new(0, 12); skCorner.Parent = skipBtn
 	local skBorder = Instance.new("UIStroke"); skBorder.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	skBorder.Color = Color3.fromRGB(255, 247, 230); skBorder.Thickness = 2.5; skBorder.Transparency = 0.35; skBorder.Parent = skipBtn
 	local skPad = Instance.new("UIPadding")
 	skPad.PaddingTop = UDim.new(0, 8); skPad.PaddingBottom = UDim.new(0, 8)
 	skPad.PaddingLeft = UDim.new(0, 14); skPad.PaddingRight = UDim.new(0, 14); skPad.Parent = skipBtn
-	local skipReady = false -- the button only cancels the cinematic AFTER the countdown finishes
+	local skipReady = true -- skip is available IMMEDIATELY (no countdown gate)
 	local function doSkip()
 		print("[GARDEN INTRO] SKIP button CLICKED (skipReady=" .. tostring(skipReady) .. ", skipped=" .. tostring(skipped) .. ")")
 		if not skipReady then return end -- still counting down ("SKIP in N") -> not clickable yet
 		if not skipped then skipped = true; print("[GARDEN INTRO] SKIP handler FIRING -> ending cinematic early") end
+		-- drop the Modal + hide the button the instant it's tapped, so the mouse re-locks and the camera can be
+		-- rotated right away (restoreWorld also does this, but this is the earliest possible point).
+		pcall(function() skipBtn.Modal = false; skipBtn.Visible = false end)
 	end
 	-- bind several input paths so a tap/click always registers (Activated covers mouse+touch; the extras are
 	-- redundant safety in case one path is swallowed on a given device)
 	skipBtn.Activated:Connect(doSkip)
 	skipBtn.MouseButton1Click:Connect(doSkip)
 	skipBtn.TouchTap:Connect(doSkip)
-	-- COUNTDOWN: show "SKIP in 5..4..3..2..1" so players know skipping is coming (no boredom-quitting), then the
-	-- button becomes a live, brighter "SKIP ➜". Runs on the cinematic's own clock; bails if it ends early.
-	task.spawn(function()
-		for i = SKIP_AFTER, 1, -1 do
-			if cleaned or skipped or not (skipGui and skipGui.Parent) then return end
-			skipBtn.Text = "SKIP in " .. i
-			task.wait(1)
-		end
-		if cleaned or skipped or not (skipGui and skipGui.Parent) then return end
-		skipReady = true
-		skipBtn.Text = "SKIP  \xE2\x9E\x9C" -- "SKIP ➜"
-		print("[GARDEN INTRO] SKIP button now available (" .. SKIP_AFTER .. "s countdown done)")
-		pcall(function()
-			TweenService:Create(skipBtn, TweenInfo.new(0.3), {BackgroundTransparency = 0.05, TextTransparency = 0, BackgroundColor3 = Color3.fromRGB(54, 116, 50)}):Play()
-			TweenService:Create(skBorder, TweenInfo.new(0.3), {Transparency = 0}):Play()
-		end)
-	end)
+	-- SKIP is available IMMEDIATELY -- the button is styled ready above and skipReady starts true, so a player can
+	-- bail out of the intro the instant they join (no countdown). skBorder brightened up front to match.
+	pcall(function() skBorder.Transparency = 0 end)
 
 	-- ---- one subject segment: pan in, auto-advance ALL the NPC's lines across `window` seconds total ----
 	-- `window` (seconds) is divided EVENLY across this NPC's lines, so the whole set fills the 8-10s window

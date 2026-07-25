@@ -2064,6 +2064,35 @@ PetClaimEvent.OnServerEvent:Connect(function(player, petId)
 	checkCollectionMilestones(player) -- a new species may have just completed a milestone (title / the secret pet)
 end)
 
+-- ===== MYTHICAL WHEEL JACKPOT GRANT (server-authoritative). PetWheel.server.lua calls this when the 0.1%
+-- MYTHICAL PET wedge is rolled. Grants `petId` as its RARE/"Mythical" variant, pre-maxed to level 25 -- the
+-- exact same variant + look the rare hatch produces (see the `if isRare then` branch in PetClaimEvent above).
+-- Reuses the file-local variantKey / sendState / sendInventory / broadcastEquip / PetRareEvent so the pet
+-- renders, PERSISTS (PlayerStats serialises _G.playerOwnedPets), and broadcasts to other players identically to
+-- a genuine rare hatch. Returns the pet's display name on success, or nil if petId is invalid. Idempotent:
+-- re-granting a mythical the player already owns is a harmless no-op that still returns the name.
+_G.petGrantMythicalVariant = function(player, petId)
+	if not player then return nil end
+	local def = PETS[petId]; if not def then return nil end
+	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
+	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
+	_G.playerEverCompletedQuests[player] = _G.playerEverCompletedQuests[player] or {}
+	local skey = variantKey(petId, true)                              -- the rare gets its OWN slot (a normal can coexist)
+	local already = _G.playerOwnedPets[player][skey] ~= nil
+	_G.playerOwnedPets[player][skey] = { level = PET_MAX_LEVEL, xp = 0, height = 0, time = 0, rare = true } -- pre-maxed rare
+	_G.playerDiscoveredQuests[player][petId] = true                   -- show it as discovered in the Pet Hub index
+	_G.playerEverCompletedQuests[player][petId] = true               -- permanent, mirrors the hatch path
+	if not _G.playerEquippedPet[player] then _G.playerEquippedPet[player] = skey end -- auto-equip if it's their first pet
+	local name = RARE_NAMES[petId] or petId
+	print(string.format("[PetWheel] %s won MYTHICAL %s%s", player.Name, name, already and " (already owned)" or ""))
+	pcall(function() PetRareEvent:FireClient(player, petId, name) end) -- same rare-hatch fanfare
+	sendState(player); sendInventory(player)
+	if _G.playerEquippedPet[player] == skey then broadcastEquip(player, "rare") end -- show the equipped rare to others
+	checkCollectionMilestones(player)                                 -- a new species may complete a collection milestone
+	pcall(function() if _G.savePlayerData then _G.savePlayerData(player, "petwheel_mythical") end end) -- persist at once
+	return name
+end
+
 -- ===== FISHING CATCH ROLL (SERVER-AUTHORITATIVE): the client invokes this after a successful reel-in. The
 -- server owns the roll + the per-player pity counter so the client can NEVER decide what it catches. Egg chance
 -- starts ~25% and ramps each catch, GUARANTEED by catch 8 (no endless bad luck -- it's an easy pet). A miss =
