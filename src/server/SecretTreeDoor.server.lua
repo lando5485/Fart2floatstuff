@@ -409,10 +409,10 @@ task.spawn(function()
 				claimedAt[player] = os.time(); task.spawn(saveClaim, player)
 				grantReward(player)
 				sparkle:Emit(22)
-				bubbleSay(bubble, pick(CONFIG.giveLines), 3)
+				bubbleSay(bubble, pick(CONFIG.giveLines), 5)
 				print(("[SecretDoor] %s received the reward from the little gnome"):format(player.Name))
 			else
-				bubbleSay(bubble, pick(CONFIG.emptyLines), 3) -- already claimed / on cooldown -> no grant
+				bubbleSay(bubble, pick(CONFIG.emptyLines), 5) -- already claimed / on cooldown -> no grant
 			end
 			task.wait(CONFIG.holdTime)
 			waveGnome(); task.wait(0.3)

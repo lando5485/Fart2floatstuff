@@ -109,22 +109,38 @@ end
 local SND_TAP        = 101638558691673 -- tap/open attempt; button presses -- STANDARD UI click (NOT the food-eat sound)
 local SND_SHAKE      = 9116367700       -- meteor shake begins (vol 0.5)
 local SND_CRACK      = 199578212        -- cracks form (vol 0.6)
-local SND_BURST      = 1837709104       -- burst, non-Legendary (vol 0.85)
-local SND_BURST_LEG  = 1839687588       -- burst, Legendary, larger (vol 0.85)
+local SND_BURST      = 4612378364       -- burst, non-Legendary (vol 0.85)
+local SND_BURST_LEG  = 4612378364       -- burst, Legendary, larger (vol 0.85)
 
 -- Reward-card REVEAL payoff sound (the moment the reward pops in). Persistent + reused each open; routed to the
 -- SFXGroup so the Settings "Sound Effects" toggle mutes it like the other SFX.
 local revealSound = Instance.new("Sound")
 revealSound.Name = "CrateRevealSound"
-revealSound.SoundId = "rbxassetid://4612378086"
+revealSound.SoundId = "rbxassetid://4612378364"
 revealSound.Volume = 0.5
 revealSound.Parent = SoundService
 task.spawn(function()
 	local sfx = SoundService:FindFirstChild("SFXGroup") or SoundService:WaitForChild("SFXGroup", 30)
 	if sfx and sfx:IsA("SoundGroup") then revealSound.SoundGroup = sfx end
 end)
+local REVEAL_SOUND_ID = "rbxassetid://4612378364"
 local function playReveal()
-	pcall(function() revealSound.TimePosition = 0; revealSound:Play() end) -- restart so back-to-back opens each ring out
+	print("[CrateClient] playReveal fired (" .. REVEAL_SOUND_ID .. ")")
+	-- Persistent instance restart (fast path).
+	pcall(function() revealSound.TimePosition = 0; revealSound:Play() end)
+	-- ROBUST fallback: a FRESH Sound each reveal, so a failed INITIAL preload of the persistent one (Studio's asset
+	-- streaming is flaky and sometimes reports Failure on first fetch) can't silence the payoff. Cleans itself up.
+	task.spawn(function()
+		local s = Instance.new("Sound")
+		s.Name = "CrateRevealSoundOneShot"
+		s.SoundId = REVEAL_SOUND_ID
+		s.Volume = 0.6
+		local sfx = SoundService:FindFirstChild("SFXGroup")
+		if sfx and sfx:IsA("SoundGroup") then s.SoundGroup = sfx end
+		s.Parent = SoundService
+		pcall(function() s:Play() end)
+		game:GetService("Debris"):AddItem(s, 5)
+	end)
 end
 
 -- [DIAG] Report whether each crate sound actually LOADS for this experience. "Success" = usable; "Failure" =
@@ -133,7 +149,7 @@ end
 task.spawn(function()
 	local ContentProvider = game:GetService("ContentProvider")
 	local tmp = {}
-	for _, id in ipairs({ SND_SHAKE, SND_CRACK, SND_BURST, SND_BURST_LEG, 4612378086 }) do
+	for _, id in ipairs({ SND_SHAKE, SND_CRACK, SND_BURST, SND_BURST_LEG, 4612378364 }) do
 		local s = Instance.new("Sound"); s.SoundId = "rbxassetid://" .. tostring(id); s.Parent = SoundService; tmp[#tmp + 1] = s
 	end
 	pcall(function()
@@ -166,46 +182,20 @@ dim.Parent = revealGui
 local revealing = false
 local opening = false -- declared here (above freshReveal) so the reveal teardown can clear it
 
--- showMessage(text): brief TOP-CENTER banner (used for the no-pets case "Unlock A Pet To Receive
--- Levels"). Independent of the reveal flow; auto-dismisses. Never consumes the crate timer. Sits at the
--- top-middle of the screen (out of the player's way), like the other event banners.
+-- showMessage(text): brief notice (used for the no-pets case "Unlock A Pet To Receive Levels").
+-- Routed through NotifyCenter's HERO lane instead of building its own ScreenGui at
+-- UDim2.new(0.5,0,0,12) -- which is inside the same top-centre slot the arrival, purchase, event and
+-- reward banners all used, with nothing arbitrating between them. Never consumes the crate timer.
 local function showMessage(text)
 	if revealing then return end
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "MeteorCrateMessage"
-	gui.ResetOnSpawn = false
-	gui.IgnoreGuiInset = true
-	gui.DisplayOrder = 60
-	gui.Parent = playerGui
-	local frame = Instance.new("Frame")
-	frame.AnchorPoint = Vector2.new(0.5, 0)
-	frame.Position = UDim2.new(0.5, 0, 0, 12) -- top-middle, just below the top edge (out of the player's way)
-	frame.Size = UDim2.fromOffset(360, 70)
-	frame.BackgroundColor3 = Color3.fromRGB(26, 28, 42)
-	frame.BackgroundTransparency = 1
-	frame.Parent = gui
-	local fc = Instance.new("UICorner"); fc.CornerRadius = UDim.new(0, 16); fc.Parent = frame
-	local fs = Instance.new("UIStroke"); fs.Color = Color3.fromRGB(255, 200, 60); fs.Thickness = 2; fs.Transparency = 1; fs.Parent = frame
-	local label = Instance.new("TextLabel")
-	label.BackgroundTransparency = 1
-	label.Size = UDim2.fromScale(1, 1)
-	label.Font = Enum.Font.GothamBold
-	label.TextSize = 20
-	label.TextWrapped = true
-	label.TextColor3 = Color3.fromRGB(255, 255, 255)
-	label.TextTransparency = 1
-	label.Text = text
-	label.Parent = frame
-	local lp = Instance.new("UIPadding"); lp.PaddingLeft = UDim.new(0, 14); lp.PaddingRight = UDim.new(0, 14); lp.Parent = label
-	TweenService:Create(frame, TweenInfo.new(0.2), { BackgroundTransparency = 0.1 }):Play()
-	TweenService:Create(fs, TweenInfo.new(0.2), { Transparency = 0 }):Play()
-	TweenService:Create(label, TweenInfo.new(0.2), { TextTransparency = 0 }):Play()
-	task.delay(1.9, function()
-		TweenService:Create(frame, TweenInfo.new(0.3), { BackgroundTransparency = 1 }):Play()
-		TweenService:Create(fs, TweenInfo.new(0.3), { Transparency = 1 }):Play()
-		TweenService:Create(label, TweenInfo.new(0.3), { TextTransparency = 1 }):Play()
-		Debris:AddItem(gui, 0.5)
-	end)
+	local NC = _G.NotifyCenter
+	if not NC then return end
+	NC.push({
+		text     = text,
+		color    = Color3.fromRGB(26, 28, 42),
+		priority = NC.PRIORITY.REWARD,
+		duration = 2.2,
+	})
 end
 
 -- Build + animate the burst (flash + shards + rings; bigger for Legendary).
@@ -552,46 +542,100 @@ end
 -- playMeteor(big, onDone): the OPENING animation — meteor shake -> cracks -> burst — then onDone().
 -- `big` = larger Mythical-style burst + the heavier burst sound.
 local function playMeteor(big, onDone)
+	-- The meteor: a circular, cratered rock with a hot core that swells as it shakes harder and harder,
+	-- then splits with radial cracks before the burst. (Ported from the Space Realm MeteorBreak look.)
 	local meteor = Instance.new("Frame")
+	meteor.Name = "Meteor"
 	meteor.AnchorPoint = Vector2.new(0.5, 0.5)
 	meteor.Position = UDim2.fromScale(0.5, 0.5)
-	meteor.Size = UDim2.fromOffset(170, 170)
-	meteor.BackgroundColor3 = Color3.fromRGB(70, 64, 58)
+	meteor.Size = UDim2.fromOffset(180, 180)
+	meteor.BackgroundColor3 = Color3.fromRGB(96, 86, 78)
+	meteor.BorderSizePixel = 0
 	meteor.ZIndex = 4
 	meteor.Parent = revealGui
-	local mc = Instance.new("UICorner"); mc.CornerRadius = UDim.new(0, 28); mc.Parent = meteor
-	local ms = Instance.new("UIStroke"); ms.Color = Color3.fromRGB(40, 36, 32); ms.Thickness = 4; ms.Parent = meteor
+	local mc = Instance.new("UICorner"); mc.CornerRadius = UDim.new(1, 0); mc.Parent = meteor
+	local ms = Instance.new("UIStroke"); ms.Color = Color3.fromRGB(255, 170, 60); ms.Thickness = 4; ms.Transparency = 0.1; ms.Parent = meteor
+
+	-- a few craters for texture
+	for _ = 1, 5 do
+		local crater = Instance.new("Frame")
+		crater.AnchorPoint = Vector2.new(0.5, 0.5)
+		crater.Position = UDim2.new(math.random(25, 75) / 100, 0, math.random(25, 75) / 100, 0)
+		crater.Size = UDim2.fromOffset(math.random(16, 34), math.random(16, 34))
+		crater.BackgroundColor3 = Color3.fromRGB(70, 62, 56)
+		crater.BorderSizePixel = 0
+		crater.ZIndex = 5
+		crater.Parent = meteor
+		local cc = Instance.new("UICorner"); cc.CornerRadius = UDim.new(1, 0); cc.Parent = crater
+	end
+
+	-- hot inner glow (the crack-to-come), swells during the shake
+	local innerGlow = Instance.new("Frame")
+	innerGlow.AnchorPoint = Vector2.new(0.5, 0.5)
+	innerGlow.Position = UDim2.fromScale(0.5, 0.5)
+	innerGlow.Size = UDim2.fromOffset(10, 10)
+	innerGlow.BackgroundColor3 = Color3.fromRGB(255, 200, 120)
+	innerGlow.BackgroundTransparency = 0.2
+	innerGlow.BorderSizePixel = 0
+	innerGlow.ZIndex = 6
+	innerGlow.Parent = meteor
+	local ig = Instance.new("UICorner"); ig.CornerRadius = UDim.new(1, 0); ig.Parent = innerGlow
+
+	-- title hint above the meteor
+	local titleHint = Instance.new("TextLabel")
+	titleHint.BackgroundTransparency = 1
+	titleHint.Text = "MYSTERY CRATE"
+	titleHint.Font = Enum.Font.FredokaOne
+	titleHint.TextColor3 = Color3.fromRGB(255, 214, 92)
+	titleHint.TextScaled = true
+	titleHint.TextXAlignment = Enum.TextXAlignment.Center
+	titleHint.Size = UDim2.fromOffset(460, 40)
+	titleHint.Position = UDim2.fromScale(0.5, 0.24)
+	titleHint.AnchorPoint = Vector2.new(0.5, 0.5)
+	titleHint.ZIndex = 6
+	titleHint.Parent = revealGui
+	local ts = Instance.new("UIStroke"); ts.Color = Color3.new(0, 0, 0); ts.Thickness = 2; ts.Parent = titleHint
+	local tsc = Instance.new("UITextSizeConstraint"); tsc.MaxTextSize = 34; tsc.Parent = titleHint
 
 	task.spawn(function()
-		-- 1) meteor shake
+		-- 1) shake: escalating jitter + the inner glow swelling
 		playSound(SND_SHAKE, 0.5)
 		local base = meteor.Position
-		for _ = 1, 16 do
-			meteor.Position = base + UDim2.fromOffset(math.random(-7, 7), math.random(-7, 7))
+		for i = 1, 16 do
+			local mag = math.floor(2 + i * 0.9)
+			meteor.Position = base + UDim2.fromOffset(math.random(-mag, mag), math.random(-mag, mag))
+			innerGlow.Size = UDim2.fromOffset(10 + i * 4, 10 + i * 4)
+			innerGlow.BackgroundTransparency = math.max(0, 0.2 - i * 0.01)
 			task.wait(0.045)
 		end
 		meteor.Position = base
 
-		-- 2) cracks form
+		-- 2) cracks form, radiating from the centre
 		playSound(SND_CRACK, 0.6)
-		for i = 1, 4 do
+		for i = 1, 6 do
 			local crack = Instance.new("Frame")
 			crack.AnchorPoint = Vector2.new(0.5, 0.5)
 			crack.Position = UDim2.fromScale(0.5, 0.5)
-			crack.Size = UDim2.fromOffset(6, 0)
-			crack.Rotation = i * 40 - 80
-			crack.BackgroundColor3 = Color3.fromRGB(255, 220, 120)
-			crack.ZIndex = 5
+			crack.Size = UDim2.fromOffset(4, 0)
+			crack.BackgroundColor3 = Color3.fromRGB(255, 220, 140)
+			crack.BorderSizePixel = 0
+			crack.Rotation = (360 / 6) * i + math.random(-15, 15)
+			crack.ZIndex = 6
 			crack.Parent = meteor
-			TweenService:Create(crack, TweenInfo.new(0.2), { Size = UDim2.fromOffset(6, 170) }):Play()
-			task.wait(0.12)
+			TweenService:Create(crack, TweenInfo.new(0.18, Enum.EasingStyle.Quad), { Size = UDim2.fromOffset(4, 150) }):Play()
+			task.wait(0.05)
 		end
-		task.wait(0.15)
+		task.wait(0.12)
 
-		-- 3) burst
+		-- 3) burst — fire the sound ~0.3s BEFORE the visual so its load/start latency lands with the
+		-- flash instead of trailing it (stops the boom from feeling laggy).
 		if big then playSound(SND_BURST_LEG, 0.85) else playSound(SND_BURST, 0.85) end
+		task.wait(0.3)
 		playBurst(big)
 		meteor:Destroy()
+		TweenService:Create(titleHint, TweenInfo.new(0.25), { TextTransparency = 1 }):Play()
+		TweenService:Create(ts, TweenInfo.new(0.25), { Transparency = 1 }):Play()
+		game:GetService("Debris"):AddItem(titleHint, 0.3)
 
 		-- 4) hand off to whatever shows next (picker / claim / result card)
 		task.wait(0.25)
@@ -608,6 +652,7 @@ local function showResultCard(result, closeReveal)
 	revealGui.Enabled = true -- the reward popup lives here; make sure the layer is on
 	local okCard, err = pcall(buildCard, result, closeReveal)
 	if okCard then
+		playReveal() -- rbxassetid://4612378364: reward-reveal payoff, the moment the "+N Levels" card pops in
 		print("[CrateClient] reward popup built (kind=" .. tostring(result.kind) .. ")")
 	else
 		warn("[CrateClient] reward popup FAILED to build: " .. tostring(err))

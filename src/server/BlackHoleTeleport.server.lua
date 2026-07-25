@@ -23,7 +23,7 @@ local SPACE_REALM_PLACE_ID = 125063266868039 -- Space Realm place (within the Ft
 -- ⚠ TESTER LOCK -- flip to false to open Space Realm to everyone; REMOVE/OPEN BEFORE PUBLIC LAUNCH. ⚠
 local SPACE_REALM_TESTERS_ONLY = true
 local TESTER_IDS   = { [1086836724] = true, [1418148401] = true }                                 -- lando5485, Broskie310111
-local TESTER_NAMES = { ["lando5485"] = true, ["Broskie310111"] = true, ["itsmaddmax2"] = true }   -- itsmaddmax2 (no UserId provided)
+local TESTER_NAMES = { ["lando5485"] = true, ["Broskie310111"] = true }
 local function isTester(plr) return TESTER_IDS[plr.UserId] == true or TESTER_NAMES[plr.Name] == true end
 local function allowed(plr) return (not SPACE_REALM_TESTERS_ONLY) or isTester(plr) end
 
@@ -52,7 +52,15 @@ enterEvent.OnServerEvent:Connect(function(player)
 	if not player.Parent then teleporting[player] = nil; return end -- player left during the pause
 	print("[BlackHole] teleporting " .. player.Name .. " to SpaceRealm (placeId " .. SPACE_REALM_PLACE_ID .. ")")
 	local ok, err = pcall(function()
-		TeleportService:TeleportAsync(SPACE_REALM_PLACE_ID, { player }) -- server-side teleport (secure)
+		-- Carry the player's COLLECTED PETS into the Space Realm. TeleportData is set server-side here and
+			-- read on the other side via player:GetJoinData().TeleportData -> the Space Realm rebuilds them.
+			local options = Instance.new("TeleportOptions")
+			options:SetTeleportData({
+				fromFartToFloat = true,
+				ownedPets   = (_G.playerOwnedPets   and _G.playerOwnedPets[player])   or {},  -- { [petKey] = {level,height,time,rare,xp} }
+				equippedPet = (_G.playerEquippedPet and _G.playerEquippedPet[player]) or nil, -- the pet that should follow them in Space Realm
+			})
+			TeleportService:TeleportAsync(SPACE_REALM_PLACE_ID, { player }, options) -- server-side teleport (secure) + pet payload
 	end)
 	print(string.format("[BlackHole] teleport %s -> SpaceRealm (placeId %d) result: %s",
 		player.Name, SPACE_REALM_PLACE_ID, ok and "ok" or ("err: " .. tostring(err))))

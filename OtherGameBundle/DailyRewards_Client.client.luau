@@ -142,6 +142,21 @@ local SND_CRACK      = 199578212        -- cracks form (vol 0.6)
 local SND_BURST      = 1837709104       -- burst, non-Legendary (vol 0.85)
 local SND_BURST_LEG  = 1839687588       -- burst, Legendary, larger (vol 0.85)
 
+-- Reward-card REVEAL payoff sound (the moment the reward pops in). Persistent + reused each open; routed to the
+-- SFXGroup so the Settings "Sound Effects" toggle mutes it like the other SFX.
+local revealSound = Instance.new("Sound")
+revealSound.Name = "CrateRevealSound"
+revealSound.SoundId = "rbxassetid://4612378086"
+revealSound.Volume = 0.5
+revealSound.Parent = SoundService
+task.spawn(function()
+	local sfx = SoundService:FindFirstChild("SFXGroup") or SoundService:WaitForChild("SFXGroup", 30)
+	if sfx and sfx:IsA("SoundGroup") then revealSound.SoundGroup = sfx end
+end)
+local function playReveal()
+	pcall(function() revealSound.TimePosition = 0; revealSound:Play() end) -- restart so back-to-back opens each ring out
+end
+
 
 ----------------------------------------------------------------------------------------
 -- Reveal flow
@@ -483,7 +498,8 @@ local function buildCard(result, closeFn)
 		end)
 	end
 
-	-- Pop-in.
+	-- Pop-in (the reward reveal -> play the payoff sound).
+	playReveal()
 	card.Size = UDim2.fromOffset(0, 0)
 	TweenService:Create(card, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = UDim2.fromOffset(320, 420) }):Play()
 end

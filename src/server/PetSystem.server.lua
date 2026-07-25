@@ -126,6 +126,31 @@ local PETS = {
 			[3] = { height = 37000, time = 650 },
 		},
 	},
+	-- ===== STARTER PET (retention): BEAN BUDDY. NO quest -- it is GRANTED FREE the first time a player ever joins
+	-- (PlayerStats detects a brand-new save and calls _G.grantStarterPet below), then auto-equipped so a pet is
+	-- following them within seconds of spawning. questType="starter" + no islandPrefix -> the island marker scan
+	-- skips it and it never shows in the quests panel; pieceMarkers={} keeps the generic state/inventory happy.
+	-- Deliberately its OWN species (not one of the 5 quest pets) so giving it away devalues no existing quest.
+	BeanBuddy = {
+		displayName  = "Bean Buddy", islandName = "Bean Farm", questType = "starter",
+		questDesc    = "Your very first pet - a gift for showing up",
+		pieceMarkers = {},
+		maxLevel     = 3, tiers = { [2] = { height = 800, time = 60 }, [3] = { height = 4000, time = 240 } },
+	},
+	-- ===== SECRET PET (collection reward): PIZZA DRAGON. The ONLY way to get it is to collect all 10 other pets.
+	-- Not questable, not buyable, not obtainable any other way -- that exclusivity IS the reward. Deliberately its
+	-- own SPECIES with a silhouette nothing else in the game has (wings, horns, a spiked tail): a recolour of an
+	-- existing pet would be worthless as a trophy, since every pet already turns gold and shimmers at level 25.
+	-- Themed on Pizza Palms, the final island -- the capstone food for the capstone reward.
+	-- questType="collection" -> excluded from the island marker scan, from the quests panel, AND (critically) from
+	-- the collection COUNT itself: it is the prize for completing the set, so it can't be part of the set. See
+	-- collectableCount() / collectedCount() below -- both skip it.
+	PizzaDragon = {
+		displayName  = "Pizza Dragon", islandName = "Collection Reward", questType = "collection",
+		questDesc    = "Collect all 10 other pets",
+		pieceMarkers = {},
+		maxLevel     = 3, tiers = { [2] = { height = 1500, time = 120 }, [3] = { height = 7000, time = 400 } },
+	},
 	-- ===== SEASONAL PETS (Community Garden rewards) -- NO island quest: they are GRANTED by the garden harvest
 	-- (Summer->Sunflower Bee, Autumn->Maple Fox, Winter->Frost Penguin, Spring->Blossom Bunny). questType="seasonal"
 	-- + no islandPrefix -> the island marker scan skips them; pieceMarkers={} keeps the generic state/inventory happy.
@@ -149,6 +174,22 @@ local PETS = {
 		questDesc = "Earned from the Spring Community Garden harvest", pieceMarkers = {},
 		maxLevel = 3, tiers = { [2] = { height = 1500, time = 120 }, [3] = { height = 7000, time = 400 } },
 	},
+}
+
+-- FLAVOUR TEXT for each pet's "VIEW MORE" detail card in the Pet Hub. Kept in one table (rather than inline in
+-- PETS) so all ten read as a set and are easy to rewrite in one pass. Purely cosmetic copy -- nothing reads it
+-- except the detail card. A pet with no entry just shows no blurb; nothing breaks.
+local PET_LORE = {
+	BeanBuddy        = "Sprouted in the Bean Farm soil and decided to follow you home. It has never been more than a few feet from you since.",
+	BroccoliPet      = "A bunny that grew up in the broccoli patch and started to look like it. Chews constantly. Nobody knows what.",
+	CoconutCrab      = "Spent its whole life cracking coconuts on the beach. Its claws are stronger than most rocks, and it knows it.",
+	PopcornSheep     = "Its wool pops in the heat. The theatre on Popcorn Pinnacle has never had to buy a snack machine.",
+	ButterDuck       = "Floats in the butter swamp like it was made for it. Possibly was. Extremely slippery. Do not attempt to hold.",
+	BurritoArmadillo = "Rolls into a perfect burrito when startled. Buries things and forgets where. Digs constantly to find them again.",
+	SunflowerBee     = "Arrived the summer the garden first bloomed. Carries a little of that sunshine everywhere it goes.",
+	MapleFox         = "Turned the colour of autumn leaves and stayed that way. Naps in the warm patches of the garden.",
+	FrostPenguin     = "Waddled out of the winter garden and refused to leave. Its feet have never once been cold.",
+	BlossomBunny     = "Woke up with the first spring blossom and wears the flowers to prove it. Hops everywhere. Walking is for others.",
 }
 
 local function getOrCreateRemote(name)
@@ -181,6 +222,8 @@ local PetQuestDiscovered = getOrCreateRemote("PetQuestDiscoveredEvent") -- c->s:
 local PetFishRoll = getOrCreateRF("PetFishRollEvent")                 -- c->s RF: () player reeled in -> SERVER rolls the catch (pity)
 local PetDigEvent = getOrCreateRemote("PetDigEvent")                  -- c->s: (petId) player dug the REAL buried-egg spot -> server unlocks the claim
 local PetRareEvent = getOrCreateRemote("PetRareEvent")                -- s->c: (petId, rareName) a RARE hatched -> client plays the fanfare
+local PetMilestoneEvent = getOrCreateRemote("PetMilestoneEvent")      -- s->c: (milestone) a COLLECTION milestone was reached -> celebration card
+local StarterPetEvent = getOrCreateRemote("StarterPetEvent")          -- s->c: (petId, displayName) the free first-join pet was granted -> client plays the welcome card
 local PetEquipBroadcast = getOrCreateRemote("PetEquipBroadcast")      -- s->c (ALL): a player's equipped-pet info {userId,petId,level,isRare,variant} -> RemotePets renders OTHER players' followers
 -- ===== STAGE 3 TRADE remotes (client sends INTENTS only; the server owns + validates everything) =====
 local PetTradeRequest = getOrCreateRemote("PetTradeRequestEvent")     -- c->s: (targetUserId) ask to trade
@@ -198,6 +241,11 @@ local digEggReady  = {}  -- [player] = true once the player DUG the real buried 
 _G.playerDiscoveredQuests = _G.playerDiscoveredQuests or {}           -- [player] = { [petId]=true } (persisted by PlayerStats)
 _G.playerEverCompletedQuests = _G.playerEverCompletedQuests or {}     -- [player] = { [petId]=true } PERMANENT "ever completed quest X" (persisted) -- gates the first-time-only rare roll, separate from ownership
 _G.playerEquippedPet = _G.playerEquippedPet or {}                      -- [player] = petId (persisted by PlayerStats)
+-- COLLECTION MILESTONES: which reward tiers this player has already been paid out for. Keys are STRINGS
+-- (tostring(need)) because DataStore JSON-encodes tables and a mixed/numeric-keyed table does not round-trip
+-- reliably -- string keys always do. Persisted by PlayerStats as saved.petMilestones.
+_G.playerPetMilestones = _G.playerPetMilestones or {}                  -- [player] = { ["3"]=true, ["5"]=true, ... }
+_G.playerTitle = _G.playerTitle or {}                                  -- [player] = "Beastmaster" (persisted; mirrored to the "Title" attribute)
 local pendingRobuxPet = {}                                             -- [userId] = petId awaiting a Robux receipt
 local upgradeReady    = {}                                            -- [player][petId] = last canUpgrade (to avoid resend spam)
 -- \xE2\x9A\xA0 REPLACE BEFORE LAUNCH: placeholder pet-skip Developer Product ID. The Robux "Skip" fills the current
@@ -769,9 +817,123 @@ local function buildBlossomBunnyT()
 	return m, err
 end
 
+-- STARTER: BEAN BUDDY -- the free first-join pet. A chubby sprouting bean: bright bean-green rounded-cube body,
+-- a stem with two leaves sprouting from its head, a paler bean-belly, little feet + stubby arms, big standard eyes
+-- and a smile. Same rounded-cube union style/scale as every other pet so it reads as part of the same set.
+local function buildBeanBuddyT()
+	local s = PSS * 0.9  -- a touch smaller -> reads as the cute little "first" pet
+	local m = Instance.new("Model"); m.Name = "BeanBuddyTemplate"; m.Parent = Workspace
+	local function P(n,sh,sx,sy,sz,c,x,y,z,r) return mkPart(m,n,sh,sx*s,sy*s,sz*s,c,x*s,y*s,z*s,r) end
+	newRoot(m)
+	local BEAN, LEAF, BELLY, STEM = Color3.fromRGB(126,200,86), Color3.fromRGB(88,168,64), Color3.fromRGB(196,232,158), Color3.fromRGB(96,150,60)
+	local src = {}; roundedCubeInto(src, P, 0,0,0, PSW,PSH,PSD, PSR, BEAN); local body, err = fuse(m, src, "BodyUnion", BEAN)
+	-- BELLY: a pale patch on the LOWER front. Two rules keep the face readable, and both matter:
+	--   (1) It must be decisively PROUD of the body's flat front face (which sits at x = PSD/2 = 1.70). A shallow
+	--       ellipsoid whose front pole lands ON that plane is near-COPLANAR with it -> z-fighting, and the pale
+	--       belly then flickers over / overdraws the face. Front pole here = 1.50 + 0.36 = 1.86 (0.16 proud).
+	--   (2) Its top must stay BELOW the mouth (-0.39) and nowhere near the eyes (0.14..0.96), so it can never
+	--       paint over either. Top here = -1.10 + 0.60 = -0.50, and the bottom (-1.70) stays inside the body (-1.80).
+	weldTo(P("Belly", BAL, 0.72, 1.2, 1.9, BELLY, 1.5, -1.10, 0), body)
+	-- SPROUT: a short stem out the top of the head carrying two leaves that splay out to either side.
+	weldTo(P("Stem", CYL, 1.15, 0.28, 0.28, STEM, -0.1, 2.3, 0, CFrame.Angles(0,0,math.rad(90))), body)
+	for _, sgn in ipairs({ 1, -1 }) do
+		weldTo(P("Ear", BAL, 0.34, 0.72, 1.5, LEAF, -0.1, 2.95, 0.72*sgn, CFrame.Angles(math.rad(20*sgn),0,0)), body) -- leaf (role "ear" -> the animator wiggles it)
+	end
+	for _, sgn in ipairs({ 1, -1 }) do
+		P("Arm", BAL, 0.5, 0.5, 0.95, BEAN, 0.55, -0.5, 1.65*sgn, CFrame.Angles(math.rad(18*sgn),0,0)) -- stubby side arms
+	end
+	P("Foot", BLK, 0.85,0.75,0.85, STEM, 0.9,-1.6,0.72); P("Foot", BLK, 0.85,0.75,0.85, STEM, 0.9,-1.6,-0.72)
+	-- FACE: standard eyes (disc backs into the body face at x1.7, front proud -> always visible) + a mouth raised
+	-- to y-0.30 so its lower edge (-0.39) sits just ABOVE the belly top (-0.40) instead of inside it.
+	eyes(P, 1.72, 0.55, 0.62); mouth(P, 1.74, -0.30, 0.42)
+	-- VERIFY the face can't be overdrawn: the belly must clear the body's front plane (no z-fight) AND stay below
+	-- the mouth. Both numbers must be POSITIVE or the face will flicker/disappear at some camera angles.
+	do
+		local bodyFaceX  = PSD * 0.5                       -- 1.70: the flat front plane of the fused body
+		local bellyProud = (1.5 + 0.72 * 0.5) - bodyFaceX  -- how far the belly's front pole clears that plane
+		local mouthGap   = (-0.30 - 0.09) - (-1.10 + 1.2 * 0.5) -- mouth bottom minus belly top
+		print(string.format("[Pet] bean buddy face: belly proud of body face by %.2f studs (>0 = no z-fight), mouth clears belly by %.2f studs (>0 = not overdrawn), eyes proud by %.2f",
+			bellyProud * s, mouthGap * s, ((1.72 + 0.22 * 0.5) - bodyFaceX) * s))
+	end
+	return m, err
+end
+
+-- SECRET: PIZZA DRAGON -- the 10/10 collection trophy, and a BRAND-NEW species (not a recolour of anything: every
+-- pet already goes gold + shimmers at level 25, so a gold re-skin would be a worthless trophy). Themed on Pizza
+-- Palms, the final island. Its silhouette is unlike any other pet in the game -- WINGS out the back, HORNS, and a
+-- SPIKED TAIL -- so a player can tell one is following you from across the map.
+--   crust-orange body + a melted-cheese belly + pepperoni spots (fused into the body so they read as toppings),
+--   membrane wings (role "wing" -> the animator FLAPS them, like the duck's),
+--   two horns, a row of back spikes, and a tail that tapers to a spike (role "tail" -> wiggles).
+local function buildPizzaDragonT()
+	local s = PSS
+	local m = Instance.new("Model"); m.Name = "PizzaDragonTemplate"; m.Parent = Workspace
+	local function P(n,sh,sx,sy,sz,c,x,y,z,r) return mkPart(m,n,sh,sx*s,sy*s,sz*s,c,x*s,y*s,z*s,r) end
+	newRoot(m)
+	local CRUST, CHEESE, PEP, HORN, WING = Color3.fromRGB(226,150,68), Color3.fromRGB(252,206,84),
+		Color3.fromRGB(198,48,44), Color3.fromRGB(248,236,206), Color3.fromRGB(232,120,60)
+	local src = {}
+	roundedCubeInto(src, P, 0,0,0, PSW,PSH,PSD, PSR, CRUST)
+	-- pepperoni + cheese are FUSED into the body so they're toppings ON the crust, not stuck-on lumps. (They
+	-- inherit the union's single colour, so the visible topping colour comes from the separate discs below.)
+	local body, err = fuse(m, src, "BodyUnion", CRUST)
+	if body then body.Material = Enum.Material.Sand end -- slightly rough, like a baked crust (not shiny plastic)
+	-- MELTED CHEESE belly: a wide flat patch on the lower front, decisively PROUD of the body's front plane
+	-- (front pole 1.5+0.36 = 1.86 vs the plane at 1.70) so it can never z-fight -- same rule as the Bean Buddy.
+	weldTo(P("Belly", BAL, 0.72, 1.5, 2.1, CHEESE, 1.5, -0.95, 0), body)
+	-- PEPPERONI: flat discs pressed onto the cheese + the shoulders. Cylinders face +X, so they read as circles.
+	for _, d in ipairs({ {1.80,-0.55,0.55}, {1.80,-1.35,-0.5}, {1.80,-1.25,0.62}, {1.62,0.25,-1.15} }) do
+		weldTo(P("Dot", CYL, 0.16, 0.5, 0.5, PEP, d[1], d[2], d[3]), body)
+	end
+	-- WINGS: big membrane slabs off the upper back, swept out and back. Role "wing" -> the animator flaps them.
+	for _, sgn in ipairs({ 1, -1 }) do
+		P("Wing", BLK, 1.9, 1.5, 0.22, WING, -0.85, 1.0, 1.5*sgn, CFrame.Angles(math.rad(24*sgn), 0, math.rad(18)))
+	end
+	-- HORNS: two tapering cones swept back off the top of the head.
+	for _, sgn in ipairs({ 1, -1 }) do
+		weldTo(P("Horn", BLK, 0.36, 1.15, 0.36, HORN, -0.15, 2.25, 0.62*sgn, CFrame.Angles(math.rad(16*sgn), 0, math.rad(-22))), body)
+	end
+	-- BACK SPIKES: a shrinking row down the spine.
+	for i, sz in ipairs({ 0.62, 0.52, 0.4 }) do
+		weldTo(P("Spike", BLK, sz*0.55, sz, sz*0.55, HORN, -0.35 - (i-1)*0.55, 1.95, 0, CFrame.Angles(0,0,math.rad(-16))), body)
+	end
+	-- TAIL: three shrinking segments out the back, ending in a spike. Role "tail" -> wiggles as one.
+	P("Tail", BAL, 1.4,0.75,0.75, CRUST, -2.0,-0.5,0, CFrame.Angles(0,0,math.rad(-10)))
+	P("Tail", BAL, 0.9,0.5,0.5, CRUST, -2.75,-0.25,0)
+	P("Tail", BLK, 0.5,0.55,0.35, HORN, -3.25,0.0,0, CFrame.Angles(0,0,math.rad(-30)))
+	P("Foot", BLK, 0.9,0.8,0.9, CRUST, 0.95,-1.6,0.78); P("Foot", BLK, 0.9,0.8,0.9, CRUST, 0.95,-1.6,-0.78)
+	-- FACE: the standard eyes (same geometry as every other pet -- disc backs into the body face at x1.7, front
+	-- proud, so it can never be overdrawn) sitting well ABOVE the cheese belly (which tops out at -0.20).
+	eyes(P, 1.72, 0.75, 0.62); mouth(P, 1.74, 0.05, 0.46)
+	return m, err
+end
+
 -- Build ALL fused pet templates at startup, apply a slight toy gloss, and store each in ReplicatedStorage
 -- (the client clones them). Each logs its own union result. (buildPetTemplate above is legacy/unused.)
+-- ===== REBIRTH MILESTONE PETS: exclusive pets earned at rebirth counts. Recolour-CLONES of existing templates
+-- (no new geometry). questType="rebirth" keeps them out of island quests AND the collection count. =====
+PETS.MoltenBean = { displayName = "Molten Bean",  questType = "rebirth", rebirthReq = 3,  maxLevel = 3, tiers = { [2] = { height = 3000, time = 150 }, [3] = { height = 12000, time = 500 } } }
+PETS.VoidDragon = { displayName = "Void Dragon",  questType = "rebirth", rebirthReq = 6,  maxLevel = 3, tiers = { [2] = { height = 3000, time = 150 }, [3] = { height = 12000, time = 500 } } }
+PETS.PrismFox   = { displayName = "Prism Fox",    questType = "rebirth", rebirthReq = 10, maxLevel = 3, tiers = { [2] = { height = 3000, time = 150 }, [3] = { height = 12000, time = 500 } } }
+-- exposed so the RebirthSystem (grant) + the Rebirth menu (display) share ONE source of truth
+_G.REBIRTH_PET_MILESTONES = { { req = 3, id = "MoltenBean", name = "Molten Bean" }, { req = 6, id = "VoidDragon", name = "Void Dragon" }, { req = 10, id = "PrismFox", name = "Prism Fox" } }
+
+-- clone a finished template, tint every part toward `tint`, rename to <newId>Template (the client keys the clone
+-- on that name via its PET_TEMPLATE map). Returns the model (the builder loop below parents it to RS).
+local function buildRecolorClone(newId, baseTemplateName, tint)
+	local base = RS:FindFirstChild(baseTemplateName)
+	if not base then return nil, "base template '" .. baseTemplateName .. "' not ready" end
+	local m = base:Clone(); m.Name = newId .. "Template"
+	for _, d in ipairs(m:GetDescendants()) do if d:IsA("BasePart") then d.Color = d.Color:Lerp(tint, 0.6) end end
+	return m
+end
+local function buildMoltenBeanT() return buildRecolorClone("MoltenBean", "BeanBuddyTemplate",   Color3.fromRGB(255, 90, 30)) end   -- fiery
+local function buildVoidDragonT() return buildRecolorClone("VoidDragon", "PizzaDragonTemplate", Color3.fromRGB(120, 60, 200)) end   -- void purple
+local function buildPrismFoxT()   return buildRecolorClone("PrismFox",   "MapleFoxTemplate",    Color3.fromRGB(255, 215, 90)) end   -- gold
+
 local PET_TEMPLATE_BUILDERS = {
+	{ id = "BeanBuddy",        fn = buildBeanBuddyT,        name = "Bean Buddy" }, -- free first-join starter pet
+	{ id = "PizzaDragon",      fn = buildPizzaDragonT,      name = "Pizza Dragon" }, -- SECRET 10/10 collection reward
 	{ id = "BroccoliPet",      fn = buildBroccoliBunny },
 	{ id = "CoconutCrab",      fn = buildCoconutCrabT },
 	{ id = "PopcornSheep",     fn = buildPopcornSheepT },
@@ -781,6 +943,10 @@ local PET_TEMPLATE_BUILDERS = {
 	{ id = "MapleFox",         fn = buildMapleFoxT,         seasonal = true, name = "Maple Fox" },
 	{ id = "FrostPenguin",     fn = buildFrostPenguinT,     seasonal = true, name = "Frost Penguin" },
 	{ id = "BlossomBunny",     fn = buildBlossomBunnyT,     seasonal = true, name = "Blossom Bunny" },
+	-- rebirth clones LAST so their base templates are already built + in RS when they clone
+	{ id = "MoltenBean",       fn = buildMoltenBeanT,       name = "Molten Bean" },
+	{ id = "VoidDragon",       fn = buildVoidDragonT,       name = "Void Dragon" },
+	{ id = "PrismFox",         fn = buildPrismFoxT,         name = "Prism Fox" },
 }
 task.spawn(function()
 	local totalSmoothed = 0
@@ -891,13 +1057,61 @@ local function nextMilestoneHint(level)
 	else return "Lvl 3: accessory #1" end
 end
 local function isMilestone(level) return level==3 or level==8 or level==13 or level==18 or level==23 or level==25 end
--- ===== RARE HATCH VARIANTS (Stage 2): ~1% (1/99) chance on hatch, EXCEPT Butter Duck (ultra-rare 1/500). A
--- rare is a FLAG on the owned pet (additive: data.rare=true), comes PRE-MAXED + a unique rare look. Cosmetic.
+-- ===== RARE HATCH VARIANTS (Stage 2): a rare is a FLAG on the owned pet (additive: data.rare=true), comes
+-- PRE-MAXED + a unique rare look. Cosmetic. Exotic = 1 in 750; the Cosmic Duck (Mythical) = 1 in 10,000.
 local RARE_NAMES = {
 	BroccoliPet = "Emerald Bunny", CoconutCrab = "Golden Crab", PopcornSheep = "Cloud Sheep",
 	BurritoArmadillo = "Crystal Armadillo", ButterDuck = "Cosmic Duck",
 }
-local function rareOdds(petId) return (petId == "ButterDuck") and 500 or 99 end
+-- The Cosmic Duck is the single rarest thing in the game: 1 in 10,000. Every other pet's rare (Exotic) is 1 in 750.
+local function rareOdds(petId) return (petId == "ButterDuck") and 10000 or 750 end
+
+-- ===== HATCH TIER ROLL ==================================================================================
+-- A hatch no longer always gives a Level-1 Common. It ROLLS a starting tier, so a lucky egg can come out of the
+-- shell already Rare, Epic or even Legendary -- every tier is a real pull with real odds, which is what the Pet
+-- Hub's tier ladder now advertises. The starting LEVEL is the first level of the tier that was rolled, so the pet
+-- still levels normally from there (a Legendary pull starts at 21 and grinds 21->25 like anyone else).
+--
+-- Weights are out of 10000. Tuned so the whole ladder escalates cleanly and every step up feels genuinely scarce:
+--
+--     Common     1 in 1.2      Uncommon   1 in 8       Rare       1 in 25
+--     Epic       1 in 125      Exotic     1 in 750     Legendary  1 in 1000     Mythical  1 in 10,000
+--
+-- The two VARIANT tiers (Exotic/Mythical, rolled separately in rareOdds) interleave with the level tiers rather
+-- than sitting on top of them: an Exotic (1/750) is rarer than an Epic but more common than a Legendary. That is
+-- deliberate -- an Exotic is a different *look*, a Legendary is a huge *head start*. The Cosmic Duck (Mythical,
+-- 1/10,000) remains the single rarest thing in the game.
+--
+-- ODDS SHOWN TO PLAYERS come from this exact table (HATCH_ODDS_TEXT below is derived from these weights, so the
+-- ladder can never drift from the real probabilities -- change a weight and the displayed odds change with it).
+local HATCH_TIERS = {
+	{ tier = "Common",    level = 1,  weight = 8260 }, -- 82.6%   = 1 in 1.2
+	{ tier = "Uncommon",  level = 6,  weight = 1250 }, -- 12.5%   = 1 in 8
+	{ tier = "Rare",      level = 11, weight = 400  }, -- 4%      = 1 in 25
+	{ tier = "Epic",      level = 16, weight = 80   }, -- 0.8%    = 1 in 125
+	{ tier = "Legendary", level = 21, weight = 10   }, -- 0.1%    = 1 in 1000
+}
+local HATCH_TOTAL = 0
+for _, t in ipairs(HATCH_TIERS) do HATCH_TOTAL = HATCH_TOTAL + t.weight end
+-- "1 in N" strings, computed FROM the weights above so the UI and the roll can never disagree.
+local HATCH_ODDS_TEXT = {}
+for _, t in ipairs(HATCH_TIERS) do
+	local n = HATCH_TOTAL / t.weight
+	-- whole numbers print clean ("1 in 5", not "1 in 5.0"); only a genuinely fractional ratio keeps a decimal,
+	-- which in practice is just Common ("1 in 1.4").
+	local whole = math.floor(n + 0.5)
+	HATCH_ODDS_TEXT[t.tier] = (math.abs(n - whole) < 0.05) and ("1 in " .. whole) or string.format("1 in %.1f", n)
+end
+-- Roll a starting tier. Returns startingLevel, tierName.
+local function rollHatchTier()
+	local r = math.random(1, HATCH_TOTAL)
+	local acc = 0
+	for _, t in ipairs(HATCH_TIERS) do
+		acc = acc + t.weight
+		if r <= acc then return t.level, t.tier end
+	end
+	return 1, "Common" -- unreachable (weights sum to HATCH_TOTAL); a safe floor rather than a nil level
+end
 -- Normalize an owned entry to a {level,xp,height,time} table (legacy saves stored `true`; xp is ADDITIVE --
 -- missing pets/fields default to level 1, 0 XP so existing saves are never broken).
 local function getPetData(player, petId)
@@ -938,7 +1152,7 @@ local function sendState(player)
 		local d = isEquipped and getPetData(player, eq)
 			or (owns and (getPetData(player, petId) or getPetData(player, variantKey(petId, true))))
 		state[petId] = {
-			found = foundCount(player, petId), total = #def.pieceMarkers, owns = owns,
+			found = foundCount(player, petId), total = def.pieceMarkers and #def.pieceMarkers or 0, owns = owns,
 			equipped = isEquipped,
 			level = (d and d.level) or 1,
 			rare = (d and d.rare) or false, -- rare variant flag (client applies pre-maxed + rare look)
@@ -954,15 +1168,130 @@ local function questDiscovered(player, petId)
 	return dq ~= nil and dq[petId] == true
 end
 
--- Build + send the TWO-SECTION inventory payload to the GUI:
+-- ===== EXTRA FACTS for the VIEW MORE detail card (cosmetic read-outs; nothing here affects balance) =====
+-- The levels at which a pet gains an accessory (bowtie/glasses/hat/backpack/...). Mirrors the client's real
+-- accessory schedule in PET_THEME.accs, so "3 / 7 unlocked" is the truth, not the older 3/8/13/18/23 hint.
+local ACC_LEVELS = { 3, 7, 10, 13, 17, 20, 23 }
+local function accessoryCount(level)
+	local n = 0
+	for _, L in ipairs(ACC_LEVELS) do if (level or 1) >= L then n = n + 1 end end
+	return n
+end
+-- LIFETIME XP: everything banked into every level so far, plus progress into the current one. This is the number
+-- that shows how much a pet has actually been flown -- the per-level `xp` alone resets every level-up and hides it.
+local function totalXpEarned(level, xp)
+	local t = xp or 0
+	for L = 1, (level or 1) - 1 do t = t + xpNeeded(L) end
+	return math.floor(t)
+end
+-- A human label for how a pet is earned, used on the detail card ("Quest type" fact).
+local QUEST_LABEL = {
+	find = "Hidden pieces", crack = "Coconut cracking", ["film-reels"] = "Film reel hunt",
+	fishing = "Fishing", dig = "Buried treasure", seasonal = "Garden harvest", starter = "Free gift",
+}
+
+-- One line telling a player HOW to get a pet they don't own yet -- shown on the LOCKED card in the pet index.
+-- Kept generic (island + what to do), never a step-by-step spoiler: it says where to go, not where things hide.
+local function unlockHint(def)
+	if def.questType == "starter" then return "A free gift for new players" end
+	if def.questType == "collection" then return "SECRET \xE2\x80\x94 collect every other pet to earn it" end
+	if def.questType == "seasonal" then
+		return "Grow the Community Garden to full bloom in " .. (def.season or "season")
+	end
+	if def.questType == "rebirth" then return "\xF0\x9F\x94\x84 Reach Rebirth " .. (def.rebirthReq or "?") end
+	return def.questDesc or ("Complete the quest on " .. (def.islandName or "its island"))
+end
+
+-- ============================================================================================================
+-- COLLECTION MILESTONES (definitions + counting). Declared HERE, above sendInventory, because the payload needs
+-- them; the AWARDING logic (checkCollectionMilestones) lives further down, where sendState/sendInventory exist.
+--
+-- No coins anywhere. The rewards are TITLES (a floating nametag every other player can see -- see
+-- TitleTags.client.luau) and, at 10/10, the SECRET PIZZA DRAGON, which exists nowhere else in the game.
+--
+-- THE COUNTING RULE, and it matters: the Pizza Dragon is questType="collection", and BOTH counts below skip it.
+-- It is the prize for completing the set, so it cannot be part of the set -- if it counted, "collect them all"
+-- would require owning the very thing you get FOR collecting them all, which is unwinnable. So the target is 10,
+-- not 11, and a finished player shows 10/10 while actually owning 11 pets.
+-- ============================================================================================================
+local COLLECTION_MILESTONES = {
+	{ need = 3,  kind = "title", id = "Pet Keeper",    name = "Title: Pet Keeper",    desc = "A nametag above your head" },
+	{ need = 5,  kind = "title", id = "Pet Collector", name = "Title: Pet Collector", desc = "A rarer nametag above your head" },
+	{ need = 7,  kind = "title", id = "Beastmaster",   name = "Title: Beastmaster",   desc = "The top nametag in the game" },
+	{ need = 10, kind = "pet",   id = "PizzaDragon",   name = "SECRET PET: Pizza Dragon",
+		desc = "A brand-new pet that cannot be earned any other way" },
+}
+-- how many pets COUNT toward the collection (everything except the collection reward itself)
+local function collectableCount()
+	local n = 0
+	for _, def in pairs(PETS) do if def.questType ~= "collection" and def.questType ~= "rebirth" then n = n + 1 end end
+	return n
+end
+-- how many of those this player owns (any variant -- a rare still counts as its species, exactly once)
+local function collectedCount(player)
+	local n = 0
+	for petId, def in pairs(PETS) do
+		if def.questType ~= "collection" and def.questType ~= "rebirth" and ownsSpecies(player, petId) then n = n + 1 end
+	end
+	return n
+end
+-- Exposed for OTHER systems (the global PETS COLLECTED leaderboard; offline earnings). Both counts already
+-- exclude the secret Pizza Dragon, so anything reading these sees the same 10-pet target the Pet Hub shows.
+_G.petsCollectedCount = collectedCount
+_G.petsCollectableCount = collectableCount
+-- Total LEVELS across every pet a player owns -- the offline-earnings rate scales off this, so a big, well-
+-- levelled collection earns a little more than a single Lv1 pet. Read-only; never mutates pet data.
+_G.petsTotalLevels = function(player)
+	local op = _G.playerOwnedPets[player]
+	if type(op) ~= "table" then return 0 end
+	local total = 0
+	for skey in pairs(op) do
+		local d = getPetData(player, skey)
+		if d and type(d.level) == "number" then total = total + d.level end
+	end
+	return total
+end
+
+-- Build + send the inventory payload to the GUI:
 --   owned     = full cards (level/equip/upgrade) per OWNED pet
 --   quests    = discovered quests (island/status/desc/progress) -- only once landed/owned
---   totalPets = how many pets exist in the catalog (so the client can show LOCKED "?" slots for the rest)
+--   catalog   = EVERY pet in the game + whether this player owns it + how to unlock it. This is what lets the
+--               Pet Hub render a LOCKED silhouette card for pets the player hasn't got yet (the pet index), so
+--               they can see the whole collection and what they're missing instead of only what they own.
+--   totalPets = how many pets exist in the catalog (the "N / total collected" counter)
 local function sendInventory(player)
 	local equipped = _G.playerEquippedPet[player]
-	local payload = { owned = {}, quests = {}, totalPets = 0 }
+	local payload = { owned = {}, quests = {}, catalog = {} }
+	-- The REAL per-hatch odds for each tier, derived from HATCH_TIERS. The Pet Hub's tier ladder prints these
+	-- verbatim, so what a player is told is exactly what rollHatchTier() does -- they can never drift apart.
+	payload.hatchOdds = HATCH_ODDS_TEXT
+	-- COLLECTION PROGRESS. totalPets is the COLLECTABLE count (10), NOT #PETS (11) -- the Pizza Dragon is the prize
+	-- for finishing, not part of what you finish. See the counting rule above.
+	payload.totalPets = collectableCount()
+	payload.collected = collectedCount(player)
+	payload.title     = _G.playerTitle[player] -- the title they're currently wearing (nil if none yet)
+	payload.milestones = {}
+	do
+		local claimed = _G.playerPetMilestones[player] or {}
+		for i, ms in ipairs(COLLECTION_MILESTONES) do
+			payload.milestones[i] = {
+				need = ms.need, kind = ms.kind, name = ms.name, desc = ms.desc,
+				claimed = claimed[tostring(ms.need)] == true,
+			}
+		end
+	end
 	for petId, def in pairs(PETS) do
-		payload.totalPets = payload.totalPets + 1
+		payload.catalog[#payload.catalog + 1] = {
+			petId       = petId,
+			displayName = def.displayName or petId,
+			owned       = ownsSpecies(player, petId), -- ANY variant (normal or rare) counts as collected
+			islandName  = def.islandName,
+			questType   = def.questType,
+			unlock      = unlockHint(def),
+			lore        = PET_LORE[petId], -- the detail card works for locked pets too (see it before you earn it)
+			questLabel  = QUEST_LABEL[def.questType] or def.questType,
+			rareOdds    = rareOdds(petId), -- "Rare chance: 1 in 750" -- a reason to care which pet you go for
+		}
 		-- ONE card per OWNED STACK: a species can have up to two (a normal stack and/or a separate rare stack). Each
 		-- entry is keyed by its STORAGE KEY (petId or petId#R) and carries petId=the SPECIES (the client keys icons/
 		-- templates/equip on that) so normal + rare show as separate cards and each can be equipped/traded on its own.
@@ -978,9 +1307,18 @@ local function sendInventory(player)
 				height = math.floor(d.height), time = math.floor(d.time),
 				rare = d.rare and true or false, rareName = d.rare and RARE_NAMES[petId] or nil, -- RARE badge + variant name
 				count = d.count or 1, -- how many of this exact variant are stacked (shows as "xN")
+				-- ===== VIEW MORE detail-card facts (display only) =====
+				lore = PET_LORE[petId], islandName = def.islandName,
+				totalXp = totalXpEarned(d.level, d.xp),                  -- lifetime XP, not just this level's
+				accessories = accessoryCount(d.level), accessoriesMax = #ACC_LEVELS,
+				rareOdds = rareOdds(petId),                              -- 750, or 10000 for the duck -> "1 in 750"
+				questLabel = QUEST_LABEL[def.questType] or def.questType,
 			}
 		end
-		if questDiscovered(player, petId) and def.questType ~= "seasonal" then -- seasonal pets are garden rewards, not island quests
+		-- seasonal (garden), starter (free gift) and collection (the secret 10/10 pet) pets are all GRANTED, not
+		-- quested -- none belongs in the quests panel (they still get an OWNED inventory card from the loop above).
+		if questDiscovered(player, petId) and def.questType ~= "seasonal" and def.questType ~= "starter"
+			and def.questType ~= "collection" and def.questType ~= "rebirth" then
 			local found = foundCount(player, petId)
 			local total = #def.pieceMarkers
 			local status = ownsSpecies(player, petId) and "done" or (found > 0 and "inprogress" or "available")
@@ -1041,6 +1379,22 @@ local function levelUp(player, petId, via)
 	sendInventory(player) -- the card shows the new level + reset XP bar
 	if _G.playerEquippedPet[player] == petId then broadcastEquip(player, "levelup") end -- remote viewers see the new level look
 	return true
+end
+
+-- EXTERNAL: add N levels to a pet (used by reward systems -- e.g. SocialRewards). Goes through levelUp so the
+-- follower + inventory refresh and remote viewers see it. `key` may be a storage key OR a species id; returns
+-- the levels actually added (0 if the pet isn't owned or is already maxed).
+_G.petAddLevels = function(player, key, n)
+	if not (player and key) then return 0 end
+	local resolved = (getPetData(player, key) and key)
+		or (getPetData(player, variantKey(key, true)) and variantKey(key, true))
+	if not resolved then return 0 end
+	local added = 0
+	for _ = 1, (tonumber(n) or 0) do
+		if not levelUp(player, resolved, "reward") then break end
+		added = added + 1
+	end
+	return added
 end
 
 -- Throttle the XP-bar inventory resend (coins/flight feed XP fast). Always force on level-up.
@@ -1221,6 +1575,126 @@ _G.petsGrantRare = function(player)
 	return granted
 end
 
+-- ============================================================================================================
+-- COLLECTION MILESTONES -- rewards for FILLING the Pet Hub's index. No coins anywhere: the rewards are TITLES
+-- (a floating nametag every other player can see -- see TitleTags.client.luau) and, at 10/10, the SECRET PIZZA
+-- DRAGON, which exists nowhere else in the game.
+--
+-- THE COUNTING RULE, and it matters: the Pizza Dragon is questType="collection", and BOTH counts below skip it.
+-- It is the prize for completing the set, so it cannot be part of the set -- if it counted, "collect all" would
+-- require owning the thing you get FOR collecting all, which is unwinnable. So the target is 10, not 11, and a
+-- player who finishes shows 10/10 while owning 11 pets.
+-- ============================================================================================================
+-- TITLES: a pure brag reward. Stored on the player and mirrored to the "Title" ATTRIBUTE, which Roblox replicates
+-- to every client automatically -- TitleTags.client.luau just watches that attribute, so no remotes are needed and
+-- late joiners see it for free. Titles never affect flight, gas, coins or any stat. Higher milestones overwrite
+-- lower ones (you wear your BEST title), which is why COLLECTION_MILESTONES is walked in ascending order.
+_G.grantTitle = function(player, title)
+	if not (player and type(title) == "string" and title ~= "") then return false end
+	_G.playerTitle[player] = title
+	player:SetAttribute("Title", title) -- replicates -> every client's TitleTags renders it above this player
+	print("[PetTitle] " .. player.Name .. " earned the title '" .. title .. "'")
+	return true
+end
+
+-- Award any milestone the player has reached but not yet been paid for. Safe to call on EVERY ownership change
+-- (claim / seasonal / starter / trade / join): already-claimed tiers are skipped, so it can never double-pay.
+local function checkCollectionMilestones(player)
+	if not player or not player.Parent then return end
+	_G.playerPetMilestones[player] = _G.playerPetMilestones[player] or {}
+	local claimed = _G.playerPetMilestones[player]
+	local have, target = collectedCount(player), collectableCount()
+	local awarded = false
+	for _, ms in ipairs(COLLECTION_MILESTONES) do -- ascending, so the BEST title lands last and wins
+		local mkey = tostring(ms.need) -- STRING key: DataStore JSON round-trips string keys reliably, numbers don't
+		if have >= ms.need and not claimed[mkey] then
+			claimed[mkey] = true
+			if ms.kind == "title" then
+				_G.grantTitle(player, ms.id)
+			elseif ms.kind == "pet" then
+				-- grant the secret pet exactly like any normal claim, so it persists, levels, and is equippable
+				-- through the ordinary pet path. Its hatch tier is rolled like any other pet -- a 10/10 player can
+				-- still get a Legendary Pizza Dragon.
+				_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
+				if not ownsSpecies(player, ms.id) then
+					local lvl, tier = rollHatchTier()
+					_G.playerOwnedPets[player][ms.id] = { level = lvl, xp = 0, height = 0, time = 0 }
+					_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
+					_G.playerDiscoveredQuests[player][ms.id] = true
+					print(string.format("[PetMilestone] %s COMPLETED THE COLLECTION (%d/%d) -> secret %s at %s (Lv %d)",
+						player.Name, have, target, ms.id, tier, lvl))
+				end
+			end
+			awarded = true
+			print(string.format("[PetMilestone] %s reached %d/%d pets -> %s", player.Name, have, target, ms.name))
+			pcall(function()
+				PetMilestoneEvent:FireClient(player, {
+					need = ms.need, have = have, target = target,
+					kind = ms.kind, id = ms.id, name = ms.name, desc = ms.desc,
+				})
+			end)
+		end
+	end
+	if awarded then
+		sendState(player); sendInventory(player) -- the new pet/title shows up immediately, no rejoin
+		if _G.savePlayerData then pcall(_G.savePlayerData, player, "petmilestone") end
+	end
+end
+
+-- \xE2\x9A\xA0 TEST COMMAND /10pets - instantly collect all 10 COLLECTABLE pets so the collection rewards can be tested
+-- end to end. REMOVE BEFORE LAUNCH.
+-- It deliberately does NOT hand over the Pizza Dragon: it grants the 10 pets that COUNT and then runs the normal
+-- milestone check, so every title fires in order and the secret pet is awarded by the real 10/10 code path -- which
+-- is the thing worth testing. (Contrast /allpets, which force-grants every entry in the catalog, dragon included,
+-- and therefore proves nothing about the milestone logic.) Gated by the CALLER to test accounts.
+_G.petsGrantCollection = function(player)
+	if not player then return 0 end
+	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
+	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
+	local granted = 0
+	for petId, def in pairs(PETS) do
+		if def.questType ~= "collection" and not ownsSpecies(player, petId) then
+			_G.playerOwnedPets[player][petId] = { level = 1, xp = 0, height = 0, time = 0 }
+			_G.playerDiscoveredQuests[player][petId] = true
+			granted = granted + 1
+		end
+	end
+	if not _G.playerEquippedPet[player] then
+		for petId in pairs(PETS) do _G.playerEquippedPet[player] = petId; break end
+	end
+	sendState(player); sendInventory(player)
+	broadcastEquip(player, "equip")
+	checkCollectionMilestones(player) -- <- the real path: fires every title, then grants the secret Pizza Dragon
+	print(string.format("[TEST] /10pets granted %d pet(s) to %s -> %d/%d collected",
+		granted, player.Name, collectedCount(player), collectableCount()))
+	return granted
+end
+
+-- ===== STARTER PET ENTITLEMENT (retention): grant the free Bean Buddy. PlayerStats calls this ONCE, only for a
+-- player whose save is brand-new, right after petsApplyOnJoin -- so a first-time player has a pet following them
+-- within seconds of spawning instead of having to earn one. Uses the SAME ownership structure as a normal claim,
+-- so it persists (PlayerStats saved.ownedPets), shows OWNED in the inventory, levels, and is equippable/tradeable
+-- through the normal pet path. Idempotent: a player who already owns it gets nothing. Fires StarterPetEvent so the
+-- client can play the welcome card. Returns true if a pet was actually granted. =====
+_G.grantStarterPet = function(player)
+	if not player then return false end
+	local petId = "BeanBuddy"
+	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
+	if ownsSpecies(player, petId) then return false end -- already has it -> never re-grant
+	_G.playerOwnedPets[player][petId] = { level = 1, xp = 0, height = 0, time = 0 } -- same table a normal claim writes
+	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
+	_G.playerDiscoveredQuests[player][petId] = true
+	-- AUTO-EQUIP: a brand-new player has nothing equipped, so this is what actually puts a pet on screen for them.
+	-- If they somehow already have something equipped (shouldn't happen on a fresh save), leave their choice alone.
+	if not _G.playerEquippedPet[player] then _G.playerEquippedPet[player] = petId end
+	sendState(player); sendInventory(player) -- owned + equipped + following, immediately (no rejoin)
+	if _G.playerEquippedPet[player] == petId then broadcastEquip(player, "equip") end -- other players see it too
+	pcall(function() StarterPetEvent:FireClient(player, petId, PETS[petId].displayName) end) -- welcome card
+	print("[Pet] STARTER "..petId.." granted to "..player.Name.." (free first-join gift, auto-equipped)")
+	checkCollectionMilestones(player) -- the starter counts as 1/10 toward the collection
+	return true
+end
+
 -- ===== SEASONAL PET ENTITLEMENT: grant ONE seasonal pet for a season (called by the Community Garden harvest and by
 -- the /grantpet test command). Adds it with the SAME ownership structure as a normal claim, so it persists (via
 -- PlayerStats saved.ownedPets), shows OWNED in the inventory, and is equippable through the normal pet path. =====
@@ -1233,11 +1707,32 @@ _G.grantSeasonalPet = function(player, season)
 	if not petId then warn("[Pet] grantSeasonalPet: unknown season '"..season.."'"); return false end
 	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
 	if ownsSpecies(player, petId) then return true end -- already owned -> nothing to do
-	_G.playerOwnedPets[player][petId] = { level = 1, height = 0, time = 0 } -- same table a normal claim writes (persists)
+	-- A seasonal harvest pet is a PULL like any other hatch, so it rolls a starting tier too (same odds table).
+	-- The garden can hand you a Legendary Frost Penguin.
+	local lvl, tier = rollHatchTier()
+	_G.playerOwnedPets[player][petId] = { level = lvl, xp = 0, height = 0, time = 0 } -- same table a normal claim writes (persists)
 	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
 	_G.playerDiscoveredQuests[player][petId] = true
 	sendState(player); sendInventory(player) -- now shows OWNED + equippable immediately (no rejoin)
-	print("[Pet] seasonal "..petId.." granted to "..player.Name.." ("..key.." reward)")
+	print(string.format("[Pet] seasonal %s granted to %s (%s reward) at %s (Lv %d, odds %s)",
+		petId, player.Name, key, tier, lvl, HATCH_ODDS_TEXT[tier] or "?"))
+	checkCollectionMilestones(player) -- a garden pet counts toward the collection like any other
+	return true
+end
+
+-- ===== REBIRTH PET ENTITLEMENT: granted by RebirthSystem when a rebirth milestone is reached. Same ownership
+-- path as any hatch, so it persists (ownedPets), shows OWNED in the pet HUD, and equips/trades normally. =====
+_G.grantRebirthPet = function(player, petId)
+	if not (player and petId and PETS[petId]) then return false end
+	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
+	if ownsSpecies(player, petId) then return true end -- already owned -> nothing to do
+	local lvl = rollHatchTier() -- rolls a starting tier like any hatch
+	_G.playerOwnedPets[player][petId] = { level = lvl, xp = 0, height = 0, time = 0 }
+	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
+	_G.playerDiscoveredQuests[player][petId] = true
+	sendState(player); sendInventory(player)
+	if _G.savePlayerData then pcall(_G.savePlayerData, player, "rebirthpet") end
+	print("[Pet] REBIRTH pet " .. petId .. " granted to " .. player.Name)
 	return true
 end
 
@@ -1455,6 +1950,11 @@ _G.petsApplyOnJoin = function(player)
 	end
 	broadcastEquip(player, "join")  -- tell everyone what this (now-loaded) player has equipped
 	sendAllEquipsTo(player)         -- and tell THIS player what everyone already here has equipped (late-join catch-up)
+	-- CATCH-UP: re-run the milestone check on join. This pays out anyone who crossed a threshold before the system
+	-- existed (their pets are already owned, so they'll be granted their titles + the secret pet on next login),
+	-- and re-applies the "Title" attribute, which does NOT survive a rejoin on its own.
+	if _G.playerTitle[player] then player:SetAttribute("Title", _G.playerTitle[player]) end
+	checkCollectionMilestones(player)
 end
 
 -- ADDITIVE lifecycle for cross-player pets: re-broadcast a player's pet when their character (re)spawns so
@@ -1516,7 +2016,7 @@ PetClaimEvent.OnServerEvent:Connect(function(player, petId)
 		if foundCount(player, petId) < #def.pieceMarkers then return end -- must have all pieces (anti-cheat gate)
 	end
 	-- RARE ROLL is FIRST-TIME-ONLY (permanent): the very FIRST ever completion of this quest rolls rare
-	-- (~1/99, 1/500 for the duck, server-authoritative). Every RE-completion (quest redone after trading the
+	-- (1/750, 1/10000 for the duck, server-authoritative). Every RE-completion (quest redone after trading the
 	-- species away) grants a GUARANTEED NORMAL pet -- the rare roll never happens again, so rares can never be
 	-- re-farmed (they only come from that one first roll, or from trading). everCompleted persists across sessions.
 	_G.playerEverCompletedQuests[player] = _G.playerEverCompletedQuests[player] or {}
@@ -1524,6 +2024,8 @@ PetClaimEvent.OnServerEvent:Connect(function(player, petId)
 	local isRare = false
 	if firstTime then
 		local odds = rareOdds(petId)
+		local luck = (_G.rebirthLuck and _G.rebirthLuck[player]) or 1 -- REBIRTH luck: shorten the odds (higher rare chance)
+		odds = math.max(2, math.floor(odds / luck))
 		isRare = (math.random(1, odds) == 1)
 		print(string.format("[PetRare] %s hatched %s - rare roll: %s (odds 1/%d)", player.Name, petId, isRare and "hit" or "miss", odds))
 	else
@@ -1531,14 +2033,24 @@ PetClaimEvent.OnServerEvent:Connect(function(player, petId)
 	end
 	_G.playerEverCompletedQuests[player][petId] = true -- PERMANENT: this quest has now been completed at least once
 	local data = { level = 1, xp = 0, height = 0, time = 0 }
+	local hatchTier = "Common"
 	if isRare then
 		data.rare = true
 		data.level = PET_MAX_LEVEL -- pre-maxed: rares skip the grind, instantly at the full lvl-25 look
+		hatchTier = (petId == "ButterDuck") and "Mythical" or "Exotic"
 		print(string.format("[PetRare] %s got RARE %s!", player.Name, RARE_NAMES[petId] or petId))
+	else
+		-- SECOND, INDEPENDENT ROLL: what TIER does this egg hatch at? Unlike the rare roll (first-completion only)
+		-- this happens on EVERY hatch, so a normal pet can come out of the shell already Uncommon, Rare, Epic or
+		-- even Legendary. It sets the STARTING LEVEL to that tier's first level and the pet levels on normally from
+		-- there. A rare skips this entirely -- it is already pre-maxed, which outranks any tier the roll could give.
+		data.level, hatchTier = rollHatchTier()
+		print(string.format("[PetHatch] %s hatched %s at %s (starting level %d, odds %s)",
+			player.Name, petId, hatchTier, data.level, HATCH_ODDS_TEXT[hatchTier] or "?"))
 	end
-	print(string.format("[PetQuest] %s completed %s quest: firstTime=%s -> rareRoll=%s, granted %s",
+	print(string.format("[PetQuest] %s completed %s quest: firstTime=%s -> rareRoll=%s, granted %s at %s (Lv %d)",
 		player.Name, petId, firstTime and "y" or "n", firstTime and "done" or "skipped",
-		isRare and ((RARE_NAMES[petId] or petId).." (rare)") or "normal"))
+		isRare and ((RARE_NAMES[petId] or petId).." (rare)") or "normal", hatchTier, data.level))
 	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
 	local skey = variantKey(petId, isRare)         -- a rare goes in its own slot so a normal can coexist later
 	_G.playerOwnedPets[player][skey] = data         -- now a table (PlayerStats saves it, incl. the rare flag)
@@ -1549,6 +2061,7 @@ PetClaimEvent.OnServerEvent:Connect(function(player, petId)
 	sendState(player)     -- client hides egg/pieces and spawns the equipped follower
 	sendInventory(player) -- the new pet shows up in the inventory GUI
 	if _G.playerEquippedPet[player] == skey then broadcastEquip(player, isRare and "rare" or "equip") end -- auto-equipped first pet -> show to others
+	checkCollectionMilestones(player) -- a new species may have just completed a milestone (title / the secret pet)
 end)
 
 -- ===== FISHING CATCH ROLL (SERVER-AUTHORITATIVE): the client invokes this after a successful reel-in. The
@@ -1756,6 +2269,11 @@ local function executeTrade(session)
 	print(string.format("[Trade] DONE - %s now owns %s, %s now owns %s", A.Name, ownedKeyList(A), B.Name, ownedKeyList(B)))
 	-- refresh both clients FIRST (the swap is already done in memory), then persist (SetAsync yields).
 	sendState(A); sendInventory(A); sendState(B); sendInventory(B)
+	-- a trade can COMPLETE a collection (you received the species you were missing). It can also drop someone below
+	-- a threshold they'd already been paid for -- milestones are deliberately NOT revoked in that case: the reward
+	-- was earned, and clawing back a title (or the secret pet) because a player traded a duplicate away would be a
+	-- nasty surprise. claimed[] is permanent, so re-crossing the same threshold never re-pays either.
+	checkCollectionMilestones(A); checkCollectionMilestones(B)
 	broadcastEquip(A, "equip"); broadcastEquip(B, "equip") -- a traded-away equipped pet may have changed -> update remote views
 	pcall(function() if A.Parent then PetTradeState:FireClient(A, { active=false, reason="completed" }) end end)
 	pcall(function() if B.Parent then PetTradeState:FireClient(B, { active=false, reason="completed" }) end end)

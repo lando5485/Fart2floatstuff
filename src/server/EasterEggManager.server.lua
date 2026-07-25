@@ -298,6 +298,21 @@ local function randomPoint(center, radius, baseY)
 	local r = radius * math.sqrt(math.random())
 	return Vector3.new(center.X + math.cos(ang) * r, baseY, center.Z + math.sin(ang) * r)
 end
+-- Keep the cow OUT of the hall of fame: if a wander target lands inside the leaderboard footprint
+-- (published by LeaderboardService as _G.hallOfFameZone), shove it out to the zone boundary so the cow
+-- walks AROUND the plaza/boards instead of through them. No-op until the zone exists.
+local function avoidHallOfFame(point, baseY)
+	local z = _G.hallOfFameZone
+	if type(z) ~= "table" or typeof(z.center) ~= "Vector3" then return point end
+	local c = z.center
+	local dx, dz = point.X - c.X, point.Z - c.Z
+	local dist = math.sqrt(dx * dx + dz * dz)
+	local keep = (z.radius or 30) + 3 -- small margin outside the footprint
+	if dist >= keep then return point end
+	if dist < 0.01 then dx, dz, dist = 1, 0, 1 end -- degenerate (dead centre): pick any direction
+	local s = keep / dist
+	return Vector3.new(c.X + dx * s, baseY, c.Z + dz * s)
+end
 local function walkTo(rig, baseY, target, stop)
 	if not rig.model.Parent then return end
 	local fromPos = rig.poseCF.Position
@@ -427,7 +442,7 @@ local function runEggTalk(rig, cfg)
 	print("[COW TALK] bubble wired"); print("[BUBBLE SPEAK] cow method=reuses spawn bubble")
 	-- register for the GardenFeeding mini-feature: lets it find the cow's body + make it speak (reusing THIS bubble)
 	_G.gardenAnimals = _G.gardenAnimals or {}
-	_G.gardenAnimals.cow = { body = bubble.gui.Adornee, say = function(m) bubbleSay(bubble, m, 4) end }
+	_G.gardenAnimals.cow = { body = bubble.gui.Adornee, say = function(m) bubbleSay(bubble, m, 7) end }
 	local i = 1 -- CYCLE the short lines in order (loop), starting on line 1
 	while rig.model.Parent do
 		interruptibleWait(math.random(cfg.talkMin or 12, cfg.talkMax or 18), function() return not rig.model.Parent end)
@@ -435,7 +450,7 @@ local function runEggTalk(rig, cfg)
 		if isPlayerNear(rig, COW_TALK_RANGE) then
 			local line = lines[i]
 			i = (i % #lines) + 1
-			bubbleSay(bubble, line, 4.5)
+			bubbleSay(bubble, line, 7) -- readable pace
 			print("[COW TALK] said (player near): " .. line)
 		else
 			print("[COW TALK] skipped (no one near)")
@@ -486,7 +501,7 @@ local function runEgg(cfg)
 			if math.random() < 0.3 then
 				graze(rig, baseY, stop)
 			else
-				walkTo(rig, baseY, randomPoint(spotPos, cfg.wanderRadius, baseY), stop)
+				walkTo(rig, baseY, avoidHallOfFame(randomPoint(spotPos, cfg.wanderRadius, baseY), baseY), stop)
 			end
 		end
 		forceAbduct[cfg.name] = false

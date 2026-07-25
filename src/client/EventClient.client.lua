@@ -115,7 +115,11 @@ local glowEdges  = {glowLeft,glowRight}
 -- banner has slid away (see showCountPillAfterBanner), so it can sit in the SAME prime top-center spot the banner
 -- used (Y=12) without ever overlapping it. The coin counter is top-RIGHT, so there's no conflict there either.
 local countSg=Instance.new("ScreenGui"); countSg.Name="EventCountGui"; countSg.ResetOnSpawn=false; countSg.ZIndexBehavior=Enum.ZIndexBehavior.Global; countSg.Parent=PlayerGui
-local countPill=mkFrame(countSg,{Size=UDim2.new(0,280,0,44),Position=UDim2.new(0.5,0,0,12),AnchorPoint=Vector2.new(0.5,0),BackgroundColor3=Color3.fromRGB(180,60,220),Visible=false,ZIndex=14,BorderSizePixel=0})
+-- TOP-RIGHT STATUS COLUMN (under the coin pill at y=10), NOT top-centre. It used to sit at
+-- UDim2.new(0.5,0,0,12) -- the identical spot RocketUI's teleport button hard-codes, so an active
+-- rocket event simply covered this countdown. Top-centre is now reserved for transient banners
+-- (NotifyCenter's hero lane) and the objective card; persistent status lives down the right edge.
+local countPill=mkFrame(countSg,{Size=UDim2.new(0,280,0,44),Position=UDim2.new(1,-10,0,66),AnchorPoint=Vector2.new(1,0),BackgroundColor3=Color3.fromRGB(180,60,220),Visible=false,ZIndex=14,BorderSizePixel=0})
 mkCorner(countPill,20); mkStroke(countPill,Color3.fromRGB(120,20,160),3)
 local countLabel=mkLabel(countPill,{Text="",Font=Enum.Font.FredokaOne,TextScaled=true,TextColor3=Color3.fromRGB(255,255,255),Size=UDim2.new(1,-10,1,0),Position=UDim2.new(0,5,0,0),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=15})
 mkStroke(countLabel,Color3.fromRGB(0,0,0),2)
@@ -836,19 +840,27 @@ local function screenFlash(col,transp,dur)
 	TweenService:Create(flashFrame,TweenInfo.new(dur),{BackgroundTransparency=1}):Play()
 end
 
+-- Server events go through NotifyCenter's HERO lane (priority EVENT). The old eventBanner sat at
+-- UDim2.new(0.5,0,0,10) -- the exact pixel the arrival, announce, reward and purchase banners ALSO
+-- used, with nothing arbitrating between them, so a server event firing while you landed an island
+-- drew both banners through each other. The hero lane shows one at a time and lets an island unlock
+-- (higher priority) preempt the event notice rather than collide with it.
 local function showEventBanner(dispName,msg,color)
-	eventBanner.BackgroundColor3=color; eventBannerTitle.Text=tostring(dispName); eventBannerDesc.Text=tostring(msg)
-	eventBanner.AnchorPoint=Vector2.new(0.5,0); eventBanner.Position=UDim2.new(0.5,0,0,-100); eventBanner.Visible=true
-	TweenService:Create(eventBanner,TweenInfo.new(0.4,Enum.EasingStyle.Back),{Position=UDim2.new(0.5,0,0,10)}):Play()
-	task.delay(5,function()
-		TweenService:Create(eventBanner,TweenInfo.new(0.3),{Position=UDim2.new(0.5,0,0,-100)}):Play()
-		task.delay(0.35,function() eventBanner.Visible=false end)
-	end)
+	local NC = _G.NotifyCenter
+	if not NC then return end
+	NC.push({
+		top      = tostring(dispName),
+		text     = tostring(msg),
+		color    = color,
+		priority = NC.PRIORITY.EVENT,
+		duration = 5,
+	})
 end
 
--- The announcement banner owns the top-center for ~5.35s (0.4s slide-in + 5s hold + 0.3s slide-out + 0.35s to hidden).
--- The countdown pill must NOT appear until the banner has fully vanished, so they share that one top spot cleanly.
-local BANNER_GONE_AFTER = 5.45
+-- The pill and the banner no longer share a slot -- the banner goes to the hero lane (top-centre) and
+-- the pill lives in the top-right status column -- so the pill no longer has to wait ~5.45s for the
+-- banner to clear. A short beat is still nice so the two don't pop in on the same frame.
+local BANNER_GONE_AFTER = 0.6
 local pillToken = 0
 -- Reveal the (top-centered) countdown pill, but ONLY after the banner has cleared the screen AND only if the event
 -- is still running by then. `pillToken` cancels a pending reveal the moment a newer event/pill cycle begins, and

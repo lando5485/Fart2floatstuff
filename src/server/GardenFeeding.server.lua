@@ -21,7 +21,7 @@ local BOX_COOLDOWN  = 4    -- seconds between grabs from a food box
 local FEED_COOLDOWN = 45   -- seconds between feeds, PER PLAYER PER ANIMAL (anti-farm)
 local PROMPT_DIST   = 9    -- ProximityPrompt activation distance (studs)
 local BOX_OFFSET    = 7    -- how far from the animal's spawn to drop its food box (studs)
-local DAILY_FOOD_LIMIT = 4 -- max FOOD PICKUPS per player PER DAY (across BOTH animals). Each piece feeds an animal
+local DAILY_FOOD_LIMIT = 1 -- max FOOD PICKUPS per player PER ANIMAL PER DAY. 1 = feed each animal once a day
                           -- once, so this caps feeding at 4/day. After 4 grabs the bins give no more food until the
                           -- next day (UTC midnight). Persisted via DataStore so it survives rejoins.
 local LIMIT_MESSAGE = "That's plenty for today! Come back tomorrow"  -- shown at the bin when they're out for the day
@@ -33,6 +33,8 @@ local ANIMALS = {
 		feedText    = "Feed the Cow",
 		handleColor = Color3.fromRGB(225, 196, 96), handleMaterial = Enum.Material.Grass,
 		boxColor    = Color3.fromRGB(150, 110, 60),  boxLabel = "\xF0\x9F\x90\xAE Hay",
+		boxOffset   = Vector3.new(-7, 0, 10),         -- move the hay box to the cow's FAR side, clear of the hall of fame
+
 		thanks      = { "Moo! Thank you!", "Moo! So tasty, thank you!", "Mooo \xE2\x9D\xA4 yum!" },
 		hungry      = "Moo? Got any hay for me?",
 	},
@@ -110,30 +112,44 @@ local function dropToFloor(pos, ignore)
 	return hit and (hit.Position.Y) or (pos.Y - 2.5)
 end
 
--- ---- DAILY FOOD-PICKUP LIMIT (per player, per UTC day, persisted) ----
--- A player may grab at most DAILY_FOOD_LIMIT pieces of food from the bins per day (across BOTH animals). It
--- counts PICKUPS; since each piece feeds once, feeding is capped at 4/day. Auto-resets at UTC midnight.
+-- ---- DAILY FOOD-PICKUP LIMIT (per player, PER ANIMAL, per UTC day, persisted) ----
+-- ONE piece of food per animal per day. The cap used to be a single shared pool (4 pickups across BOTH
+-- animals), which meant you could take all four from the cow's bin and never visit the pig. It's now tracked
+-- PER ANIMAL: grab the cow's food once and the cow's bin locks for the day, but the pig's is still there.
+--
+-- The limit is enforced at the BIN, on pickup -- so once you've taken your piece, coming back for more gets
+-- you the "come back tomorrow" message instead of a second helping. Auto-resets at UTC midnight.
+--
+-- STORE SHAPE CHANGED: { day, count = N } -> { day, counts = { cow = N, pig = N } }. The loader below treats
+-- any old-shape record as a fresh day rather than trying to migrate it -- a shared count can't be split back
+-- into per-animal counts, and the worst case is a player gets one extra feed on the changeover day.
 local FEED_STORE = DataStoreService:GetDataStore("GardenFeedDaily_v1")
 local function utcDay() return os.date("!%Y-%m-%d") end
-local foodState = {} -- [player] = { day = "YYYY-MM-DD", count = N }
-local function freshState() return { day = utcDay(), count = 0 } end
-local function rollover(s) if s.day ~= utcDay() then s.day = utcDay(); s.count = 0 end return s end -- new day -> reset
+local foodState = {} -- [player] = { day = "YYYY-MM-DD", counts = { [animal] = N } }
+local function freshState() return { day = utcDay(), counts = {} } end
+local function rollover(s)
+	if s.day ~= utcDay() then s.day = utcDay(); s.counts = {} end -- new day -> every animal's bin unlocks again
+	return s
+end
 local function loadFood(p)
 	local ok, v = pcall(function() return FEED_STORE:GetAsync(tostring(p.UserId)) end)
-	foodState[p] = rollover((ok and type(v) == "table" and v.day and type(v.count) == "number") and v or freshState())
+	local valid = ok and type(v) == "table" and v.day and type(v.counts) == "table"
+	foodState[p] = rollover(valid and v or freshState())
 end
 local function saveFood(p)
 	local s = foodState[p]; if not s then return end
-	pcall(function() FEED_STORE:SetAsync(tostring(p.UserId), { day = s.day, count = s.count }) end)
+	pcall(function() FEED_STORE:SetAsync(tostring(p.UserId), { day = s.day, counts = s.counts }) end)
 end
-local function grabsToday(p)
-	local s = foodState[p]; if not s then s = freshState(); foodState[p] = s end
-	return rollover(s).count
+local function stateOf(p)
+	local s = foodState[p]
+	if not s then s = freshState(); foodState[p] = s end
+	return rollover(s)
 end
-local function atFoodLimit(p) return grabsToday(p) >= DAILY_FOOD_LIMIT end
-local function addFoodGrab(p)
-	local s = foodState[p]; if not s then s = freshState(); foodState[p] = s end
-	rollover(s); s.count = s.count + 1
+local function grabsToday(p, animal) return stateOf(p).counts[animal] or 0 end
+local function atFoodLimit(p, animal) return grabsToday(p, animal) >= DAILY_FOOD_LIMIT end
+local function addFoodGrab(p, animal)
+	local s = stateOf(p)
+	s.counts[animal] = (s.counts[animal] or 0) + 1
 	task.spawn(saveFood, p)
 end
 Players.PlayerAdded:Connect(function(p) task.spawn(loadFood, p) end)
@@ -143,14 +159,15 @@ for _, p in ipairs(Players:GetPlayers()) do task.spawn(loadFood, p) end
 local function buildBox(animal, body)
 	local cfg = ANIMALS[animal]
 	local bp = body.Position
-	-- offset to the side of the animal's spawn, then drop onto the floor
-	local floorY = dropToFloor(bp + Vector3.new(BOX_OFFSET, 0, 0), { body.Parent })
+	-- offset to the side of the animal's spawn (per-animal override, else default +X), then drop onto the floor
+	local off = cfg.boxOffset or Vector3.new(BOX_OFFSET, 0, 0)
+	local floorY = dropToFloor(bp + off, { body.Parent })
 	local box = Instance.new("Part")
 	box.Name = "FoodBox_" .. animal
 	box.Anchored = true; box.CanCollide = true
 	box.Size = Vector3.new(2.4, 2.4, 2.4)
 	box.Color = cfg.boxColor; box.Material = Enum.Material.WoodPlanks
-	box.Position = Vector3.new(bp.X + BOX_OFFSET, floorY + 1.2, bp.Z)
+	box.Position = Vector3.new(bp.X + off.X, floorY + 1.2, bp.Z + off.Z)
 	box.Parent = Workspace
 	-- a little label sign so players know what it is
 	local sign = Instance.new("BillboardGui")
@@ -182,14 +199,16 @@ local function buildBox(animal, body)
 
 	local boxCooldownUntil = 0
 	prompt.Triggered:Connect(function(player)
-		if atFoodLimit(player) then flashMsg(LIMIT_MESSAGE); return end -- out of food for the day -> message, no food
+		-- THIS animal's daily allowance only. Locking the cow's bin must not lock the pig's.
+		if atFoodLimit(player, animal) then flashMsg(LIMIT_MESSAGE); return end
 		local now = os.clock()
 		if now < boxCooldownUntil then return end                 -- box on cooldown (anti-spam)
 		boxCooldownUntil = now + BOX_COOLDOWN
 		if findFood(player, animal) then return end               -- already holding this food
 		giveFood(player, animal)
-		addFoodGrab(player)                                       -- count this pickup toward the daily cap
-		print(("[Feeding] %s grabbed %s (%d/%d today)"):format(player.Name, cfg.foodName, grabsToday(player), DAILY_FOOD_LIMIT))
+		addFoodGrab(player, animal)                               -- count this pickup against THIS animal's cap
+		print(("[Feeding] %s grabbed %s (%d/%d for %s today)"):format(
+			player.Name, cfg.foodName, grabsToday(player, animal), DAILY_FOOD_LIMIT, animal))
 	end)
 	print(("[Feeding] %s food box placed near (%.0f, %.0f, %.0f)"):format(animal, box.Position.X, box.Position.Y, box.Position.Z))
 end
@@ -224,6 +243,9 @@ local function buildFeedPrompt(animal, body)
 		grantCoins(player, REWARD_COINS)
 		if entry.say then entry.say(cfg.thanks[math.random(1, #cfg.thanks)]) end
 		heartBurst(entry.body)
+		-- Tick the daily checklist. Task ids are per-animal ("feed_cow" / "feed_pig"), matching DailyTasks'
+		-- TASKS list -- an unknown id there warns loudly rather than silently never ticking.
+		if _G.dailyTaskDone then pcall(function() _G.dailyTaskDone(player, "feed_" .. animal) end) end
 		print(("[Feeding] %s fed the %s -> +%d coin"):format(player.Name, animal, REWARD_COINS))
 	end)
 end

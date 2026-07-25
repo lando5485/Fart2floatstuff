@@ -1,0 +1,5 @@
+# Delivery bundles and their unzipped copies (rebuildable from src/)
+*.zip
+*.zip.bak
+*_extracted/
+CandyRealm_MoreBackends_x/

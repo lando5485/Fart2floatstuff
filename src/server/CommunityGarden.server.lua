@@ -25,6 +25,12 @@ local WATER_AMOUNT      = 25          -- progress added per player water
 local COOLDOWN_SECONDS  = 24 * 3600   -- once per day per player
 local WATER_RANGE       = 28          -- max studs from WaterSpot the server accepts a water from (anti-cheat)
 
+-- Yaw of the WHOLE garden about Y, in degrees. -90 is the long-standing default (the garden reads as rotated
+-- 90deg CW); 0 leaves it square with the island. This ONE value feeds every derived base -- hardscape, planting,
+-- and the final compose/shift pass -- so the walls, beds, doorway, steps and plants all turn together. It used to
+-- be four separate hardcoded copies of the angle, which is why changing one tore the garden apart.
+local GARDEN_YAW_DEG    = -12
+
 -- \xE2\x9A\xA0 PLACEHOLDER SOUND -- REPLACE WITH A WATERING SOUND BEFORE LAUNCH (played client-side on the splash).
 local WATER_SOUND_ID    = "" -- \xE2\x9A\xA0 REPLACE WITH WATERING SOUND
 
@@ -62,6 +68,15 @@ local GARDENER_LINES = {
 	"Every little bit helps it grow!",
 	"Welcome to the Community Garden!",
 }
+-- ONE-OFF LINES. The bubble normally cycles GARDENER_LINES on a loop; gardenerSay() makes him break off and say
+-- something specific (e.g. "come back tomorrow") for a few seconds, then fall back into the loop. Declared up
+-- here because the bubble loop -- built much further down -- has to be able to see the override.
+local gardenerOverrideText  = ""
+local gardenerOverrideUntil = 0
+local function gardenerSay(text, secs)
+	gardenerOverrideText  = text
+	gardenerOverrideUntil = os.clock() + (secs or 6)
+end
 -- PRESET QUESTION MENU (no free typing): the hold-E "Talk" prompt opens a client menu of these questions; the
 -- client asks the server BY KEY ("menu" -> list, "ask" -> answer) so live answers stay accurate. EDIT freely here.
 -- The "close" answer is computed LIVE from getProgress()/GOAL by gardenerLiveAnswer() further down.
@@ -126,11 +141,69 @@ GardenerChatFunction.OnServerInvoke = function(player, action, key)
 	return nil
 end
 
+--======================================================================
+-- \xF0\x9F\x92\x9B GARDEN DONATIONS (tip jar). A SECOND chest beside the RewardChest lets players DONATE Robux to
+-- support the garden. PURE SUPPORT -- NO gameplay advantage of any kind: on a successful purchase the donor gets a
+-- thank-you and EVERYONE sees a "<name> donated <amt> R$!" banner + sparkle. Robux flows through the game's SINGLE
+-- MarketplaceService.ProcessReceipt (in PlayerStats), which calls _G.gardenHandleDonationReceipt (defined below).
+--
+-- \xE2\x9A\xA0 SETUP: create 4 Developer Products in the Creator Dashboard (one per tier, priced to match) and paste
+--    their IDs into DONATION_TIERS.productId below. Until then productId = 0 and the buy prompt is a safe no-op.
+--======================================================================
+local GardenDonationEvent = getOrCreateRemote("GardenDonationEvent")           -- s->c: broadcast { name=, robux= } on a successful donation
+local GardenDonationInfo  = getOrCreateRemoteFunction("GardenDonationInfo")     -- c->s: () -> the tier list (single source of truth for the HUD)
+
+-- The donation tiers shown on the HUD. `robux` is DISPLAY-ONLY (the real price lives on the Developer Product) and
+-- keys the thank-you banner amount. `productId` MUST be a Developer Product whose price equals `robux`.
+local DONATION_TIERS = {
+	{ robux = 25,   productId = 3608150932 },  -- "Donate 25 R$" Developer Product
+	{ robux = 100,  productId = 3608151059 },  -- "Donate 100 R$" Developer Product
+	{ robux = 500,  productId = 3608151160 },  -- "Donate 500 R$" Developer Product
+	{ robux = 1000, productId = 3608151576 },  -- "Donate 1000 R$" Developer Product
+}
+-- productId -> robux lookup for the receipt handler (built from DONATION_TIERS; unset 0 placeholders are ignored)
+local DONATION_BY_PRODUCT = {}
+for _, t in ipairs(DONATION_TIERS) do if t.productId and t.productId > 0 then DONATION_BY_PRODUCT[t.productId] = t.robux end end
+
+GardenDonationInfo.OnServerInvoke = function(_player)
+	local list = {}
+	for _, t in ipairs(DONATION_TIERS) do list[#list + 1] = { robux = t.robux, productId = t.productId } end
+	return list
+end
+
+local recordDonor -- forward-declared; the real body lives in the DONORS module below (counts UNIQUE donors + refreshes the "PLAYERS CONTRIBUTED" sign; deduped/persisted). A Robux donation counts the same as a water.
+
+-- Called by PlayerStats' SINGLE MarketplaceService.ProcessReceipt for a donation Developer Product. Returns true if
+-- this productId is one of ours (-> PurchaseGranted). PURE tip jar: fires the server-wide thank-you banner + counts the
+-- donor on the sign. It NEVER touches coins, stats, pets, flight, gas, or the garden progress -- no in-game advantage.
+_G.gardenHandleDonationReceipt = function(player, productId)
+	local robux = DONATION_BY_PRODUCT[productId]
+	if not robux then return false end
+	print(string.format("[Garden][Donation] %s donated %d R$ -- thank you!", player.Name, robux))
+	pcall(function() GardenDonationEvent:FireAllClients({ name = player.Name, robux = robux }) end)
+	if recordDonor then pcall(function() recordDonor(player) end) end -- count this donor + refresh the sign (same path as watering)
+	return true
+end
+
 -- WATER COOLDOWN (STAGE 1: per-player, IN-MEMORY / session-only -> resets on rejoin. A later stage can
 -- persist this per player). [userId] = os.time() the player may next water.
 local waterReadyAt = {}
 local function cooldownRemaining(player) return math.max(0, (waterReadyAt[player.UserId] or 0) - os.time()) end
 Players.PlayerRemoving:Connect(function(p) waterReadyAt[p.UserId] = nil end)
+
+-- CAN THIS PLAYER STILL TAKE A CAN? Published as a player Attribute so the CLIENT can hide the Gardener's
+-- "Take Watering Can" prompt for that player alone once they've got one (or are on cooldown) -- leaving his
+-- ordinary Talk prompt as the only thing on him, so he goes back to chatting and opening his HUD.
+-- It has to be an attribute, not prompt.Enabled: a ProximityPrompt's Enabled is GLOBAL, so switching it off
+-- server-side would rip the prompt away from everyone else in the server too.
+local CAN_READY_ATTR = "WateringCanReady"
+local function refreshCanReady(player)
+	if not (player and player.Parent) then return end
+	local char     = player.Character
+	local carrying = (char and char:FindFirstChild("Watering Can"))
+		or (player:FindFirstChildOfClass("Backpack") and player:FindFirstChildOfClass("Backpack"):FindFirstChild("Watering Can"))
+	player:SetAttribute(CAN_READY_ATTR, (cooldownRemaining(player) <= 0) and not carrying)
+end
 
 --======================================================================
 -- BUILD HELPERS (game art style: matte Plastic, all surfaces Smooth, rounded, no collide, anchored).
@@ -530,7 +603,7 @@ end
 -- with the garden. (Same formula buildHardscape uses: rotate the field-top CFrame -90deg; doorway faces the sign.)
 local function gardenOrigin()
 	local C = gardenTopCF
-	local b = C * CFrame.Angles(0, math.rad(-90), 0)
+	local b = C * CFrame.Angles(0, math.rad(GARDEN_YAW_DEG), 0)
 	local wsd = signPos and Vector3.new(signPos.X - C.Position.X, 0, signPos.Z - C.Position.Z) or Vector3.new(0, 0, -1)
 	if wsd.Magnitude < 0.05 then wsd = Vector3.new(0, 0, -1) end
 	local lsd = C:VectorToObjectSpace(wsd.Unit)
@@ -573,7 +646,7 @@ local function renderStage(stage)
 		local toSign = signPos and Vector3.new(signPos.X - groundCenter.X, 0, signPos.Z - groundCenter.Z) or Vector3.new(0, 0, -1)
 		if toSign.Magnitude < 0.05 then toSign = Vector3.new(0, 0, -1) end
 		-- face the sign, THEN turn 90deg CW so the centerpiece rotates together with the hardscape (same -90 as `base`)
-		local baseCFrame = CFrame.lookAt(center, center + toSign.Unit, Vector3.new(0, 1, 0)) * CFrame.Angles(0, math.rad(-90), 0)
+		local baseCFrame = CFrame.lookAt(center, center + toSign.Unit, Vector3.new(0, 1, 0)) * CFrame.Angles(0, math.rad(GARDEN_YAW_DEG), 0)
 		task.spawn(function() pcall(buildSunflowerCenterpiece, stage, baseCFrame, gardenBuild); pcall(setGardenSolid) end) -- [COLLISION] re-solidify so the freshly (re)built sunflower centerpiece isn't walk-through
 	end
 	if stage <= 0 then return end -- bare soil (composed scene); the centerpiece shoot is built above
@@ -1097,6 +1170,29 @@ do
 	print("[CHEST REWARD] ready (window=5d, store=" .. (chestStore and "live" or "local-fallback") .. ")")
 end
 
+-- ===== TOTAL CONTRIBUTIONS (global, persisted, counts EVERY one) =====
+-- This used to count DISTINCT players (deduped by UserId, with a per-user "donor_<uid>" flag and a reconcile
+-- pass to correct over-counts). It now counts EVERY contribution -- each watering and each Robux donation adds
+-- one, so the same player watering on ten different days adds ten.
+--
+-- That kills the whole dedupe apparatus: no per-user flags, no `knownDonors` cache, no reconcile. What's left
+-- is a single counter, incremented with IncrementAsync -- which is ALSO more correct than the old
+-- read-modify-write, because two servers contributing at the same moment can no longer clobber each other's
+-- total; the DataStore does the add itself.
+--
+-- The sign was relabelled "TIMES WATERED" to match. Leaving it as "PLAYERS CONTRIBUTED" while counting repeat
+-- waterings would have made the sign state something untrue.
+--
+-- NOTE the key changed to "totalContributions". The old "uniqueDonors" total is deliberately NOT reused: it
+-- means a different thing, and adding repeat waterings on top of a unique-player count would produce a number
+-- that is neither.
+local DonorDataStoreService = game:GetService("DataStoreService")
+local DONORS_STORE_NAME = "CommunityGarden_Donors_v1"
+local DONOR_COUNT_KEY   = "totalContributions"
+local donorStore
+do local okS, s = pcall(function() return DonorDataStoreService:GetDataStore(DONORS_STORE_NAME) end); if okS then donorStore = s end end
+local uniqueDonorCount = 0 -- live running total (loaded at init, bumped on EVERY contribution)
+
 local function updateSign()
 	if not signLabels then return end
 	local p, g = getProgress(), GOAL
@@ -1104,7 +1200,54 @@ local function updateSign()
 	pcall(function()
 		signLabels.fill.Size = UDim2.new(pct, 0, 1, 0)
 		signLabels.pct.Text = math.floor(pct * 100) .. "% grown"
-		signLabels.count.Text = string.format("%d / %d", p, g)
+		signLabels.count.Text = string.format("%d / %d", p, g) -- (restored: the DONOR count lives on the "PLAYERS CONTRIBUTED" sign, not here)
+	end)
+end
+
+-- Refresh the "PLAYERS CONTRIBUTED" sign (Sign_TR) NOW from the live count. Sets `gardenContributors` (which
+-- refreshGrowthDial reads on every future redraw) AND updates its `contributorLabel` immediately.
+local function refreshDonorSign()
+	gardenContributors = uniqueDonorCount
+	if contributorLabel then pcall(function() contributorLabel.Text = tostring(uniqueDonorCount) end) end
+end
+
+-- Load the persisted unique-donor total once (at init) and refresh the sign.
+local function loadDonorCount()
+	if not donorStore then return end
+	task.spawn(function()
+		local ok, v = pcall(function() return donorStore:GetAsync(DONOR_COUNT_KEY) end)
+		if ok and tonumber(v) then
+			uniqueDonorCount = math.floor(tonumber(v))
+			refreshDonorSign()
+		end
+	end)
+end
+
+-- Called on EVERY contribution -- each watering and each Robux donation. No dedupe: the same player watering
+-- again tomorrow adds another. The sign is bumped LIVE in the same frame (so it moves the instant you pour,
+-- with no DataStore round-trip and no flicker), then the global total is incremented in the background.
+--
+-- IncrementAsync, not read-modify-write: two servers pouring at the same moment would otherwise each read the
+-- same old value and write back the same new one, silently losing a contribution. The DataStore does the add.
+recordDonor = function(player) -- assigns the forward-declared upvalue (so the donation receipt handler above can call it)
+	if not player then return end
+	-- LIVE: count + refresh the sign RIGHT NOW (a server property change replicates to every client
+	-- immediately). Works even with no DataStore -- e.g. Studio without API access.
+	uniqueDonorCount = uniqueDonorCount + 1
+	refreshDonorSign()
+	print(string.format("[GARDEN DONORS] %s contributed -- total=%d", player.Name, uniqueDonorCount))
+	if not donorStore then return end
+	task.spawn(function()
+		local authoritative
+		local ok = pcall(function()
+			authoritative = donorStore:IncrementAsync(DONOR_COUNT_KEY, 1)
+		end)
+		-- On a store hiccup we KEEP the optimistic local +1 rather than rolling it back: the player did the
+		-- thing, and a sign that silently un-counts your watering is worse than one that's briefly ahead.
+		if ok and tonumber(authoritative) and tonumber(authoritative) ~= uniqueDonorCount then
+			uniqueDonorCount = math.floor(tonumber(authoritative))
+			refreshDonorSign() -- reconcile against the real global total (other servers have been contributing too)
+		end
 	end)
 end
 
@@ -1148,7 +1291,7 @@ local function buildHardscape()
 	-- ROTATE THE WHOLE GARDEN 90deg CLOCKWISE (about Y, from above): everything below is built relative to `base`
 	-- instead of `C`, so the dais/beds/walls/pillars all turn together as one unit. (-90 = clockwise; flip to +90
 	-- if it turns the wrong way.) The entrance is re-aimed to the sign separately below so it still faces the path.
-	local base = C * CFrame.Angles(0, math.rad(-90), 0)
+	local base = C * CFrame.Angles(0, math.rad(GARDEN_YAW_DEG), 0)
 
 	-- a vertical stone "drum": a Cylinder rotated so its round face points up. bottom at ground + yb, height h.
 	local function drum(name, dia, h, yb, color, collide)
@@ -1697,8 +1840,10 @@ local function buildHardscape()
 		print(("[Garden][Prop] %s pos=%s target=%s lookVec=%s"):format(name, tostring(pos), tostring(target), tostring(board.CFrame.LookVector))) -- lookVec = the TEXT-face direction; should point from pos toward target
 		return m, subL
 	end
-	tryProp("Sign_TL", function() buildSign("Sign_TL", openAngle + math.rad(45),  "TOGETHER WE GROW", "COMMUNITY GARDEN", nil, nil, true) end) -- FRONT -> faces the path
-	tryProp("Sign_TR", function() local _, n = buildSign("Sign_TR", openAngle - math.rad(45), "PLAYERS CONTRIBUTED", tostring(gardenContributors or "\xE2\x80\x94"), GOLD, true, true); contributorLabel = n end) -- FRONT -> faces the path
+	-- Sign_TL ("TOGETHER WE GROW / COMMUNITY GARDEN") removed by request.
+	-- "TIMES WATERED", not "PLAYERS CONTRIBUTED": the counter now tallies EVERY contribution rather than distinct
+	-- players, so the old label would have been stating something false.
+	tryProp("Sign_TR", function() local _, n = buildSign("Sign_TR", openAngle - math.rad(45), "TIMES WATERED", tostring(gardenContributors or "\xE2\x80\x94"), GOLD, true, true); contributorLabel = n end) -- FRONT -> faces the path
 	tryProp("Sign_BL", function() buildSign("Sign_BL", openAngle + math.rad(135), "GLOBAL COLLABORATION", "BUILT BY PLAYERS FOR EVERYONE", nil, nil, false) end) -- back -> faces center (unchanged)
 	tryProp("Sign_BR", function() buildSign("Sign_BR", openAngle - math.rad(135), "SEASON 1", "THANK YOU!", nil, nil, false) end) -- back -> faces center (unchanged)
 
@@ -1758,16 +1903,19 @@ local function buildHardscape()
 	end
 	print("[Garden][Prop] lanterns: " .. lampCount .. " built (" .. lampCount .. " warm PointLights)")
 
-	-- 3) TREASURE CHEST: a detailed gold-trimmed wood chest on a 2-slab stone plinth, out front by the path, facing in.
+	-- 3) TREASURE CHESTS: a detailed gold-trimmed wood chest on a 2-slab stone plinth, out front by the path, facing in.
 	-- Dark wood body RGB(90,55,30) + bright gold trim RGB(235,185,45): gold corner straps that wrap the body AND continue
 	-- over the rounded lid, a gold horizontal band, gold feet, a domed lid (4 decreasing-width slabs faking a curve) with
-	-- gold bands, and a round gold latch (plate + knob) on the front. Position/logic unchanged.
-	tryProp("RewardChest", function()
-		local m = Instance.new("Model"); m.Name = "RewardChest"; m.Parent = props
+	-- gold bands, and a round gold latch (plate + knob) on the front. Built by buildChest() so the REWARD chest and the
+	-- DONATION chest beside it share EXACTLY the same art/style -- only their position, prompt, and purpose differ. The
+	-- lid pieces are grouped under a "Lid" Model (with a "LidHinge" attachment at the back-top edge) so the client can
+	-- hinge the lid OPEN when the player interacts (purely visual, per-client).
+	local function buildChest(chestName, f, promptName, actionText, objectText)
+		local m = Instance.new("Model"); m.Name = chestName; m.Parent = props
 		local DWOOD = Color3.fromRGB(90, 55, 30) -- dark chest wood
-		local f = base * CFrame.new(math.cos(openAngle) * 50, 0, math.sin(openAngle) * 50) * CFrame.Angles(0, -openAngle, 0) * CFrame.new(0, 0, 7) * CFrame.Angles(0, math.pi, 0) * CFrame.new(0, 0, -1.2) -- +X depth, Z width; FLIPPED 180deg about Y so the latch/-X faces the gate approach; then MOVED to the PLAYER'S LEFT (+LookVector = local -Z) -- now 1.2 studs total (0.2 further this pass) -- pure translation, height/grounding unchanged
-		local function part(name, size, color, cf) return prop(name, BLK, size, color, cf, m) end
-		local function gold(name, shape, size, cf) local p = prop(name, shape, size, GOLDB, cf, m); p.Material = Enum.Material.SmoothPlastic; p.Reflectance = 0.25; return p end
+		local lid = Instance.new("Model"); lid.Name = "Lid"; lid.Parent = m -- lid pieces grouped so the client can hinge it open
+		local function part(name, size, color, cf, into) return prop(name, BLK, size, color, cf, into or m) end
+		local function gold(name, shape, size, cf, into) local p = prop(name, shape, size, GOLDB, cf, into or m); p.Material = Enum.Material.SmoothPlastic; p.Reflectance = 0.25; return p end
 		-- STONE PLINTH: 2 stacked tan slabs (raised pedestal)
 		part("ChestPlinth", Vector3.new(3.4, 0.6, 4.2), STONE,  f * CFrame.new(0, 0.3, 0))   -- footing (y0..0.6)
 		part("ChestPlinth", Vector3.new(2.8, 0.5, 3.6), STONE2, f * CFrame.new(0, 0.85, 0))  -- step (y0.6..1.1)
@@ -1781,32 +1929,42 @@ local function buildHardscape()
 		-- round GOLD LATCH on the front (-X): a backing plate + a round knob, where the lid meets the body
 		gold("ChestLatchPlate", BLK, Vector3.new(0.22, 0.9, 0.7), f * CFrame.new(-1.16, 2.75, 0))
 		gold("ChestLatch", CYL, Vector3.new(0.45, 0.95, 0.95), f * CFrame.new(-1.22, 3.0, 0)) -- round face (-X) toward the player
-		-- DOMED LID: 4 stacked decreasing-WIDTH wood slabs (fakes a curved top) + gold bands over each step
+		-- DOMED LID (grouped under `lid` so the client can hinge it open): 4 shrinking wood slabs + gold bands + straps
 		for _, L in ipairs({ { 2.2, 3.30 }, { 1.8, 3.66 }, { 1.3, 3.98 }, { 0.7, 4.25 } }) do
-			part("ChestLid", Vector3.new(L[1], 0.4, 3.0), DWOOD, f * CFrame.new(0, L[2], 0))
-			gold("ChestLidBand", BLK, Vector3.new(L[1] + 0.1, 0.44, 0.42), f * CFrame.new(0, L[2],  1.4))
-			gold("ChestLidBand", BLK, Vector3.new(L[1] + 0.1, 0.44, 0.42), f * CFrame.new(0, L[2], -1.4))
+			part("ChestLid", Vector3.new(L[1], 0.4, 3.0), DWOOD, f * CFrame.new(0, L[2], 0), lid)
+			gold("ChestLidBand", BLK, Vector3.new(L[1] + 0.1, 0.44, 0.42), f * CFrame.new(0, L[2],  1.4), lid)
+			gold("ChestLidBand", BLK, Vector3.new(L[1] + 0.1, 0.44, 0.42), f * CFrame.new(0, L[2], -1.4), lid)
 		end
 		-- gold corner straps CONTINUED up over the front/back edges of the dome -> they read as one strap wrapping body+lid
 		for _, zc in ipairs({ 1.45, -1.45 }) do
-			gold("ChestLidStrap", BLK, Vector3.new(0.42, 1.2, 0.42), f * CFrame.new(0, 3.75, zc))
+			gold("ChestLidStrap", BLK, Vector3.new(0.42, 1.2, 0.42), f * CFrame.new(0, 3.75, zc), lid)
 		end
-		print(string.format("[CHEST] moved 0.2 stud player-left, new pos=%s", tostring(f.Position)))
-		-- E-PROMPT: hold E to open the Garden Reward HUD (client builds the HUD on PromptTriggered; claim is server-authoritative)
-		local promptHost = m:FindFirstChild("ChestBody") or m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")
+		-- LID HINGE: an attachment on the BACK-TOP edge (+X, y~3.1), oriented like `f`, so the client hinges the lid
+		-- about its width axis (Z) to swing the front (-X, latch side) up and open. Cosmetic-only, per-client.
+		local body = m:FindFirstChild("ChestBody")
+		if body then
+			local hinge = Instance.new("Attachment"); hinge.Name = "LidHinge"; hinge.Parent = body
+			hinge.WorldCFrame = f * CFrame.new(1.1, 3.1, 0)
+		end
+		-- E-PROMPT: hold E to open this chest's HUD (the client builds the HUD on PromptTriggered by prompt name)
+		local promptHost = body or m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")
 		if promptHost then
 			local pp = Instance.new("ProximityPrompt")
-			pp.Name = "RewardChestPrompt"
-			pp.ActionText = "Open"; pp.ObjectText = "Garden Reward"
+			pp.Name = promptName
+			pp.ActionText = actionText; pp.ObjectText = objectText
 			pp.KeyboardKeyCode = Enum.KeyCode.E
 			pp.HoldDuration = 0.4; pp.MaxActivationDistance = 12; pp.RequiresLineOfSight = false
 			pp.Parent = promptHost
-			print("[CHEST] prompt added (E to open)")
 		end
 		return m
-	end)
-	print("[Garden][Prop] RewardChest (detailed) built")
-	print("[RewardChest] rotated 180deg to face the gate approach.")
+	end
+
+	-- DONATION chest -- placed in the SPOT where the reward chest used to sit (the reward chest was removed): out front by
+	-- the path, player's LEFT (+X depth, Z width; FLIPPED 180deg about Y so the latch/-X faces the gate approach; then 1.2
+	-- studs to the player's LEFT = local -Z). Tip jar: pay Robux to support the garden -- no gameplay advantage.
+	local donateF = base * CFrame.new(math.cos(openAngle) * 50, 0, math.sin(openAngle) * 50) * CFrame.Angles(0, -openAngle, 0) * CFrame.new(0, 0, 7) * CFrame.Angles(0, math.pi, 0) * CFrame.new(0, 0, -1.2)
+	tryProp("DonationChest", function() return buildChest("DonationChest", donateF, "DonationChestPrompt", "Donate", "Support the Garden \xF0\x9F\x92\x9B") end)
+	print("[Garden][Prop] DonationChest built (in the old reward-chest spot; reward chest removed).")
 
 	-- 3b) GARDENER NPC: the FULL CHARACTER asset 9469438753 (its own body + clothing baked in), loaded via InsertService
 	-- and used AS the gardener. If the asset can't load it FALLS BACK to a colour-dressed R15 rig, so he's never missing.
@@ -1910,9 +2068,20 @@ local function buildHardscape()
 			task.spawn(function()
 				local i = 1
 				while lbl.Parent do
-					lbl.Text = GARDENER_LINES[i]
-					i = (i % #GARDENER_LINES) + 1
-					task.wait(4)
+					if os.clock() < gardenerOverrideUntil then
+						-- gardenerSay() has something specific to tell the player; hold it and don't advance the loop.
+						lbl.Text = gardenerOverrideText
+						task.wait(0.25)
+					else
+						lbl.Text = GARDENER_LINES[i]
+						i = (i % #GARDENER_LINES) + 1
+						-- Sleep in slices rather than one task.wait(7): a plain 7s wait would swallow an override for
+						-- up to 7 seconds, so the player would hold E and the gardener would say nothing back.
+						local t0 = os.clock()
+						while lbl.Parent and (os.clock() - t0) < 7 and os.clock() >= gardenerOverrideUntil do
+							task.wait(0.25)
+						end
+					end
 				end
 			end)
 		end
@@ -2442,7 +2611,12 @@ local function clearPreviousBuild(island, marker)
 	for _, root in ipairs({ marker, island, Workspace }) do
 		if root then
 			for _, d in ipairs(root:GetDescendants()) do
-				if CONTAINERS[d.Name] then pcall(function() d:Destroy() end); cleared = cleared + 1 end
+				if CONTAINERS[d.Name] then pcall(function() d:Destroy() end); cleared = cleared + 1
+				elseif string.lower(d.Name) == "community garden" then
+					-- stray decorative sign named "Community Garden" (with a space) lying flat in the concrete path.
+					-- NOT the field marker "CommunityGarden" (no space) nor the script's "CommunityGardenSign".
+					pcall(function() d:Destroy() end); cleared = cleared + 1
+				end
 			end
 		end
 	end
@@ -2487,7 +2661,7 @@ local function buildGarden(island)
 	local baseOffset = Vector3.new(4, 0, 5)
 	local sgnPos = signM and ((signM:IsA("BasePart") and signM.Position) or select(1, signM:GetBoundingBox()).Position)
 	local C = fcf
-	local b = C * CFrame.Angles(0, math.rad(-90), 0)
+	local b = C * CFrame.Angles(0, math.rad(GARDEN_YAW_DEG), 0)
 	local wsd = sgnPos and Vector3.new(sgnPos.X - C.Position.X, 0, sgnPos.Z - C.Position.Z) or Vector3.new(0, 0, -1)
 	if wsd.Magnitude < 0.05 then wsd = Vector3.new(0, 0, -1) end
 	local lsd = C:VectorToObjectSpace(wsd.Unit)
@@ -2554,27 +2728,278 @@ end
 -- WATERING (server-authoritative). The client sends a "water" intent; the server validates the cooldown
 -- + proximity, adds the progress, and broadcasts the splash so all clients play the effect.
 --======================================================================
+-- WATERING CAN toggle. false = the can is a nicer ALTERNATIVE (the WaterSpot hold-E still works, so nothing
+-- that exists today breaks). true = the can is the ONLY way to water and the WaterSpot prompt is refused.
+-- Declared up here because the remote handler below reads it.
+local CAN_REQUIRED = false
+
+local function holdingCan(player)
+	local char = player.Character
+	return (char and char:FindFirstChild("Watering Can")) ~= nil -- equipped = parented to the character
+end
+
+-- The ONE watering action. Both entry points -- the WaterSpot hold-E prompt (via GardenWaterEvent) and the
+-- Watering Can tool (below) -- funnel through here, so the cooldown + proximity checks can't be bypassed by
+-- using one path instead of the other. Returns false (and tells the caller why) if the water was rejected.
+local function tryWater(player)
+	local remain = cooldownRemaining(player)
+	if remain > 0 then
+		pcall(function() GardenWaterEvent:FireClient(player, { kind = "denied", secs = remain }) end)
+		return false
+	end
+	-- proximity check (anti-cheat): must be near the WaterSpot
+	if waterSpotPos then
+		local char = player.Character; local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if not hrp or (hrp.Position - waterSpotPos).Magnitude > WATER_RANGE then return false end
+	end
+	waterReadyAt[player.UserId] = os.time() + COOLDOWN_SECONDS
+	player:SetAttribute("HasWateredGarden", true) -- unlocks the Gardener's Talk chat (his client hides it until now)
+	refreshCanReady(player) -- on cooldown now -> the Gardener drops the can prompt and goes back to chatting
+	globalContribute(WATER_AMOUNT) -- STAGE 4: atomic GLOBAL +WATER_AMOUNT (+ publish); falls back to local addProgress if the backend is down
+	recordDonor(player) -- +1 to the global TIMES WATERED total (every watering counts) + refresh the sign now
+	if _G.dailyTaskDone then pcall(function() _G.dailyTaskDone(player, "water") end) end -- tick the daily checklist
+	print("[Garden] " .. player.Name .. " watered (+" .. WATER_AMOUNT .. ") -> " .. getProgress())
+	pcall(function() GardenWaterEvent:FireClient(player, { kind = "cooldown", secs = COOLDOWN_SECONDS }) end)
+	pcall(function() GardenWaterEvent:FireAllClients({ kind = "splash", x = fieldCenter.X, y = fieldCenter.Y, z = fieldCenter.Z, sound = WATER_SOUND_ID }) end)
+	return true
+end
+
 GardenWaterEvent.OnServerEvent:Connect(function(player, action)
 	if action == "query" then
 		pcall(function() GardenWaterEvent:FireClient(player, { kind = "cooldown", secs = cooldownRemaining(player) }) end)
 		return
 	end
 	if action ~= "water" then return end
-	local remain = cooldownRemaining(player)
-	if remain > 0 then
-		pcall(function() GardenWaterEvent:FireClient(player, { kind = "denied", secs = remain }) end)
+	-- When the can is REQUIRED, the WaterSpot prompt is refused unless you're actually holding it.
+	if CAN_REQUIRED and not holdingCan(player) then
+		pcall(function() GardenWaterEvent:FireClient(player, { kind = "denied", secs = 0 }) end)
 		return
 	end
-	-- proximity check (anti-cheat): must be near the WaterSpot
-	if waterSpotPos then
-		local char = player.Character; local hrp = char and char:FindFirstChild("HumanoidRootPart")
-		if not hrp or (hrp.Position - waterSpotPos).Magnitude > WATER_RANGE then return end
+	tryWater(player)
+end)
+
+--======================================================================
+-- WATERING CAN. The Gardener hands you a can (hold-E on him); swing it near the WaterSpot to water. This is a
+-- SECOND route into tryWater() above -- the original hold-E on the WaterSpot still works, so nothing that
+-- exists today breaks. Set CAN_REQUIRED = true to make the can the ONLY way to water.
+--
+-- No LocalScript: Tool.Activated fires on the SERVER for an equipped tool, so the whole flow is server-side.
+-- (CAN_REQUIRED is declared up by tryWater, since the remote handler needs to read it too.)
+--======================================================================
+
+-- A REAL watering can, not a box with a stick on it. The shape people actually recognise is: a slightly tapered
+-- galvanised body, a rolled rim and a foot ring, a carry handle arching over the top, a rear grip, and -- the
+-- part that makes it read instantly -- a long spout that rises from LOW on the body and ends in a flared
+-- "rose" (the perforated sprinkler head). The spout has to start low: that's how a real can works, the water
+-- level has to sit above the spout mouth to pour.
+local function buildWateringCan()
+	local tool = Instance.new("Tool")
+	tool.Name            = "Watering Can"
+	tool.ToolTip         = "Swing it at the garden to water it"
+	tool.CanBeDropped    = false
+	tool.RequiresHandle  = true
+	-- Sit it in the hand as if being carried by the top handle, tipped slightly forward to pour.
+	tool.Grip            = CFrame.new(0, -0.1, 0) * CFrame.Angles(math.rad(-10), 0, 0)
+
+	local GALV     = Color3.fromRGB(158, 166, 176)  -- galvanised steel
+	local GALV_DK  = Color3.fromRGB(116, 124, 136)  -- shaded/rolled edges
+	local ROSE_C   = Color3.fromRGB(196, 202, 210)
+
+	-- The Handle IS the carry bar: it's what Roblox welds into the hand, so making it the thing a person would
+	-- actually grab means the can hangs correctly instead of floating off the fingertips.
+	local handle = Instance.new("Part")
+	handle.Name       = "Handle"
+	handle.Size       = Vector3.new(0.28, 0.28, 2.0)
+	handle.Color      = GALV_DK
+	handle.Material   = Enum.Material.Metal
+	handle.CanCollide = false
+	handle.Massless   = true
+	handle.Parent     = tool
+
+	local function piece(name, shape, size, color, offset, material)
+		local p = Instance.new("Part")
+		p.Name        = name
+		p.Shape       = shape
+		p.Size        = size
+		p.Color       = color
+		p.Material    = material or Enum.Material.Metal
+		p.CanCollide  = false
+		p.Massless    = true
+		p.CFrame      = handle.CFrame * offset
+		p.TopSurface    = Enum.SurfaceType.Smooth
+		p.BottomSurface = Enum.SurfaceType.Smooth
+		p.Parent      = tool
+		local w = Instance.new("WeldConstraint")
+		w.Part0 = handle; w.Part1 = p; w.Parent = p
+		return p
 	end
-	waterReadyAt[player.UserId] = os.time() + COOLDOWN_SECONDS
-	globalContribute(WATER_AMOUNT) -- STAGE 4: atomic GLOBAL +WATER_AMOUNT (+ publish); falls back to local addProgress if the backend is down
-	print("[Garden] " .. player.Name .. " watered (+" .. WATER_AMOUNT .. ") -> " .. getProgress())
-	pcall(function() GardenWaterEvent:FireClient(player, { kind = "cooldown", secs = COOLDOWN_SECONDS }) end)
-	pcall(function() GardenWaterEvent:FireAllClients({ kind = "splash", x = fieldCenter.X, y = fieldCenter.Y, z = fieldCenter.Z, sound = WATER_SOUND_ID }) end)
+
+	local BLK, CYL = Enum.PartType.Block, Enum.PartType.Cylinder
+	local UP = CFrame.Angles(0, 0, math.rad(90)) -- Roblox cylinders run along X; stand them upright
+
+	-- BODY: stacked discs, gently tapering inward toward the top. A single cylinder reads as a tin can; the
+	-- taper is what makes it a watering can.
+	local bodyY = -1.55
+	local SEG   = 7
+	for i = 1, SEG do
+		local f = (i - 1) / (SEG - 1)                 -- 0 at the base, 1 at the rim
+		local r = 1.16 - 0.16 * f                     -- 1.16 -> 1.00: subtle, like the real thing
+		piece("Body", CYL, Vector3.new(0.42, r * 2, r * 2), GALV,
+			CFrame.new(0, bodyY + f * 1.9 - 0.95, 0.15) * UP)
+	end
+	piece("Rim",  CYL, Vector3.new(0.16, 2.14, 2.14), GALV_DK, CFrame.new(0, bodyY + 1.0,  0.15) * UP) -- rolled top edge
+	piece("Foot", CYL, Vector3.new(0.20, 2.42, 2.42), GALV_DK, CFrame.new(0, bodyY - 1.02, 0.15) * UP) -- foot ring
+	piece("Band", CYL, Vector3.new(0.10, 2.30, 2.30), GALV_DK, CFrame.new(0, bodyY - 0.10, 0.15) * UP) -- seam band
+
+	-- CARRY HANDLE: two uprights meeting the bar the hand holds, so it arches over the body.
+	for _, sz in ipairs({ -0.82, 0.82 }) do
+		piece("HandleLeg", BLK, Vector3.new(0.2, 0.95, 0.2), GALV_DK, CFrame.new(0, -0.5, 0.15 + sz))
+	end
+
+	-- REAR GRIP: the second handle at the back that you tip the can with.
+	piece("GripPost", BLK, Vector3.new(0.2, 0.85, 0.2), GALV_DK, CFrame.new(0, -0.95, 1.35))
+	piece("GripBar",  BLK, Vector3.new(0.2, 0.2, 0.85), GALV_DK, CFrame.new(0, -1.35, 1.15))
+
+	-- SPOUT: rises from LOW on the body (as it must, to pour) and angles up and forward.
+	local spoutCF = CFrame.new(0, bodyY - 0.35, -1.0) * CFrame.Angles(math.rad(28), 0, 0)
+	piece("SpoutBase", CYL, Vector3.new(0.5, 0.62, 0.62), GALV_DK, spoutCF * CFrame.new(0, 0, 0.35) * CFrame.Angles(0, math.rad(90), 0))
+	piece("Spout",     CYL, Vector3.new(2.6, 0.44, 0.44), GALV,    spoutCF * CFrame.new(0, 0, -1.0) * CFrame.Angles(0, math.rad(90), 0))
+
+	-- ROSE: the flared perforated head. This is THE silhouette cue -- without it, it's a kettle.
+	local roseCF = spoutCF * CFrame.new(0, 0, -2.35)
+	piece("RoseNeck", CYL, Vector3.new(0.25, 0.72, 0.72), GALV_DK, roseCF * CFrame.Angles(0, math.rad(90), 0))
+	local face = piece("RoseFace", CYL, Vector3.new(0.22, 1.30, 1.30), ROSE_C,
+		roseCF * CFrame.new(0, 0, -0.22) * CFrame.Angles(0, math.rad(90), 0))
+	piece("RoseLip",  CYL, Vector3.new(0.10, 1.42, 1.42), GALV_DK,
+		roseCF * CFrame.new(0, 0, -0.32) * CFrame.Angles(0, math.rad(90), 0))
+
+	-- WATER. Off by default; giveCan switches it on for a moment when you actually pour.
+	local spray = Instance.new("ParticleEmitter")
+	spray.Name         = "Spray"
+	spray.Enabled      = false
+	spray.Rate         = 140
+	spray.Lifetime     = NumberRange.new(0.5, 0.9)
+	spray.Speed        = NumberRange.new(7, 11)
+	spray.SpreadAngle  = Vector2.new(11, 11)
+	spray.Acceleration = Vector3.new(0, -42, 0) -- water FALLS; without gravity it reads as a gas jet
+	spray.Size         = NumberSequence.new(0.16)
+	spray.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.2),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	spray.Color        = ColorSequence.new(Color3.fromRGB(150, 205, 235), Color3.fromRGB(205, 235, 250))
+	spray.LightEmission = 0.35
+	spray.Parent       = face
+
+	return tool
+end
+
+local canTemplate = buildWateringCan()
+
+-- CARRY FLAG. The client (CoreClient) reads this attribute and slows the player's climb while they're lugging
+-- the can around -- a full watering can is heavy. Set on grant, cleared the moment they no longer have one.
+local CARRY_ATTR = "CarryingWateringCan"
+
+local function setCarrying(player, on)
+	if player and player.Parent then player:SetAttribute(CARRY_ATTR, on or nil) end
+	refreshCanReady(player) -- picking one up / putting one down both change whether he still offers you a can
+end
+
+local function giveCan(player)
+	local bp   = player:FindFirstChildOfClass("Backpack")
+	local char = player.Character
+	local hum  = char and char:FindFirstChildOfClass("Humanoid")
+	if not (bp and char and hum) then return end
+	if bp:FindFirstChild("Watering Can") or char:FindFirstChild("Watering Can") then return end -- already has one
+
+	-- ONE CAN PER DAY. The water cooldown IS the can cooldown -- otherwise you could take a fresh can every few
+	-- seconds and the daily limit would mean nothing. If they're still on cooldown, the Gardener says so.
+	local remain = cooldownRemaining(player)
+	if remain > 0 then
+		gardenerSay("Come back again tomorrow for another watering can!", 6)
+		return
+	end
+
+	local can = canTemplate:Clone()
+
+	-- Tool.Activated fires server-side for the equipping player, so the swing is validated here, not on a client.
+	-- ONE USE: the can is consumed on a SUCCESSFUL water only. tryWater returns false when the player is on
+	-- cooldown or too far from the WaterSpot -- destroying the can then would punish them for a mis-swing and
+	-- leave them with nothing, so we keep it and let them walk over and try again.
+	local spent = false -- guard: Activated can fire again during the pour animation below
+	can.Activated:Connect(function()
+		if spent then return end
+		if not tryWater(player) then return end
+		spent = true
+		setCarrying(player, false) -- drop the flight penalty the instant it's used, not after the animation
+		gardenerSay("Thanks for the water! Come back again tomorrow.", 6)
+		print("[Garden][Can] " .. player.Name .. " watered -- can used up")
+
+		-- POUR, then vanish. Destroying the can on the same frame as the click would mean the water never
+		-- renders -- you'd press and it would just evaporate out of your hand with nothing to show for it.
+		local spray = can:FindFirstChild("Spray", true)
+		if spray then spray.Enabled = true end
+		task.delay(1.1, function()
+			if spray then spray.Enabled = false end
+			task.delay(0.9, function() -- let the last drops finish falling instead of popping out of existence
+				if can and can.Parent then can:Destroy() end
+			end)
+		end)
+	end)
+
+	-- If the can leaves the world any other way (they die, reset, or the character despawns while holding it),
+	-- the carry flag MUST come off -- otherwise they'd fly slow forever with no can to show for it.
+	can.AncestryChanged:Connect(function(_, parent)
+		if not parent then setCarrying(player, false) end
+	end)
+
+	can.Parent = bp
+	setCarrying(player, true)
+	-- AUTO-EQUIP. CoreClient disables the Backpack CoreGui game-wide (CoreClient.client.lua:313), so there is NO
+	-- hotbar: a tool sitting in the backpack is unreachable and the player can never select it. Putting it
+	-- straight into their hand is the only way they can actually use it.
+	pcall(function() hum:EquipTool(can) end)
+	gardenerSay("Here you go! Go water the garden.", 5)
+end
+
+-- Belt and braces: a fresh character never starts out flagged as carrying a can.
+Players.PlayerAdded:Connect(function(plr)
+	refreshCanReady(plr) -- so the prompt state is right from the moment they load in
+	plr.CharacterAdded:Connect(function() setCarrying(plr, false) end)
+end)
+for _, plr in ipairs(Players:GetPlayers()) do refreshCanReady(plr) end -- players already in (Studio / hot reload)
+
+-- Hang the "take a can" prompt off the Gardener once he exists (he's built async inside the garden init).
+task.spawn(function()
+	local gardener
+	for _ = 1, 120 do
+		for _, d in ipairs(Workspace:GetDescendants()) do
+			if d:IsA("Model") and d:GetAttribute("GardenerNPC") then gardener = d; break end
+		end
+		if gardener then break end
+		task.wait(0.5)
+	end
+	if not gardener then warn("[Garden][Can] Gardener never appeared -- no watering can prompt"); return end
+
+	local anchor = gardener:FindFirstChild("HumanoidRootPart") or gardener:FindFirstChildWhichIsA("BasePart")
+	if not anchor then warn("[Garden][Can] Gardener has no part to hang the prompt on"); return end
+
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.Name             = "TakeWateringCan"
+	prompt.ActionText       = "Take Watering Can"
+	prompt.ObjectText       = "Gardener"
+	-- F, NOT E. The Gardener already carries a hold-E "GardenerTalkPrompt" on his head, and Roblox only fires
+	-- the NEAREST prompt bound to a key -- so a second E prompt on his root was swallowing every press and his
+	-- chat panel could never open. Different key = both live side by side, and Talk keeps E.
+	prompt.KeyboardKeyCode  = Enum.KeyCode.F
+	prompt.HoldDuration     = 0.5
+	prompt.MaxActivationDistance = 12
+	prompt.RequiresLineOfSight   = false
+	prompt.Parent           = anchor
+	prompt.Triggered:Connect(giveCan)
+
+	print("[Garden][Can] watering can ready -- hold F on the Gardener to take one (E still talks to him)" ..
+		(CAN_REQUIRED and " [REQUIRED to water]" or ""))
 end)
 
 --======================================================================
@@ -2588,6 +3013,7 @@ task.spawn(function()
 	if not ok then warn("[Garden] build error -- garden may be incomplete") end
 	currentStage = -1
 	pcall(onProgressChanged) -- initial render of the sign + starting stage
+	pcall(loadDonorCount)    -- load the persisted unique-donor total + refresh the sign with "<count> players donated"
 	print("[Garden] ready, progress=" .. getProgress() .. "/" .. GOAL)
 	pcall(function() if startGlobalGarden then startGlobalGarden() end end) -- STAGE 4: subscribe + load shared global progress + start reconcile/reset loops (live-only)
 	-- [COLLISION] after the async hardscape/props/sunflower settle, make the whole garden SOLID (walls, pillars, arch,

@@ -13,6 +13,12 @@
       "PlayerStats": {
         "$path": "src/server/PlayerStats.server.lua"
       },
+      "BlimpService": {
+        "$path": "src/server/BlimpService.server.lua"
+      },
+      "DailyTasks": {
+        "$path": "src/server/DailyTasks.server.lua"
+      },
       "PetSystem": {
         "$path": "src/server/PetSystem.server.lua"
       },
@@ -73,6 +79,9 @@
       "BlackHoleTeleport": {
         "$path": "src/server/BlackHoleTeleport.server.lua"
       },
+      "PlanetSelectService": {
+        "$path": "src/server/PlanetSelectService.server.lua"
+      },
       "EasterEggManager": {
         "$path": "src/server/EasterEggManager.server.lua"
       },
@@ -88,6 +97,12 @@
       "GardenBird": {
         "$path": "src/server/GardenBird.server.lua"
       },
+      "GardenerWave": {
+        "$path": "src/server/GardenerWave.server.lua"
+      },
+      "GardenGnomes": {
+        "$path": "src/server/GardenGnomes.server.lua"
+      },
       "PlayerState": {
         "$path": "src/server/PlayerState.luau"
       },
@@ -102,6 +117,12 @@
       },
       "GutSkinService": {
         "$path": "src/server/GutSkinService.server.lua"
+      },
+      "LeaderboardService": {
+        "$path": "src/server/LeaderboardService.server.lua"
+      },
+      "ComebackNudge": {
+        "$path": "src/server/ComebackNudge.server.lua"
       },
       "GardenFeeding": {
         "$path": "src/server/GardenFeeding.server.lua"
@@ -120,6 +141,24 @@
       },
       "SecurityGuard": {
         "$path": "src/server/SecurityGuard.server.lua"
+      },
+      "RealmPortals": {
+        "$path": "src/server/RealmPortals.server.lua"
+      },
+      "Campfire": {
+        "$path": "src/server/Campfire.server.lua"
+      },
+      "SocialRewards": {
+        "$path": "src/server/SocialRewards.server.lua"
+      },
+      "SeasonPass": {
+        "$path": "src/server/SeasonPass.server.lua"
+      },
+      "RebirthSystem": {
+        "$path": "src/server/RebirthSystem.server.lua"
+      },
+      "WormholeService": {
+        "$path": "src/server/WormholeService.server.luau"
       }
     },
     "ReplicatedStorage": {
@@ -141,6 +180,9 @@
         "GutSkins": {
           "$path": "src/shared/GutSkins.luau"
         }
+      },
+      "PhoneHUD": {
+        "$path": "src/shared/PhoneHUD.luau"
       },
       "BuyFoodEvent": {
         "$className": "RemoteEvent"
@@ -193,6 +235,15 @@
       "SelectIslandEvent": {
         "$className": "RemoteEvent"
       },
+      "DinoSelectEvent": {
+        "$className": "RemoteEvent"
+      },
+      "PlanetSelect_GetUnlocks": {
+        "$className": "RemoteFunction"
+      },
+      "PlanetSelect_Teleport": {
+        "$className": "RemoteEvent"
+      },
       "RocketEventSync": {
         "$className": "RemoteEvent"
       },
@@ -210,6 +261,15 @@
       },
       "GardenerChatFunction": {
         "$className": "RemoteFunction"
+      },
+      "RealmPortalEvent": {
+        "$className": "RemoteEvent"
+      },
+      "CampfireStick": {
+        "$className": "RemoteEvent"
+      },
+      "RebirthEvent": {
+        "$className": "RemoteEvent"
       }
     },
     "ReplicatedFirst": {
@@ -225,6 +285,12 @@
         "CoreClient": {
           "$path": "src/client/CoreClient.client.lua"
         },
+        "BlackBarKiller": {
+          "$path": "src/client/BlackBarKiller.client.luau"
+        },
+        "RebirthTag": {
+          "$path": "src/client/RebirthTag.client.luau"
+        },
         "ShopClient": {
           "$path": "src/client/ShopClient.client.lua"
         },
@@ -236,6 +302,18 @@
         },
         "FarmerTutorial": {
           "$path": "src/client/FarmerTutorial.client.lua"
+        },
+        "DailyTasks": {
+          "$path": "src/client/DailyTasks.client.luau"
+        },
+        "SkyByAltitude": {
+          "$path": "src/client/SkyByAltitude.client.luau"
+        },
+        "ObjectiveHUD": {
+          "$path": "src/client/ObjectiveHUD.client.luau"
+        },
+        "NotifyCenter": {
+          "$path": "src/client/NotifyCenter.client.luau"
         },
         "RocketUI": {
           "$path": "src/client/RocketUI.client.lua"
@@ -264,9 +342,6 @@
         "RocketSounds": {
           "$path": "src/client/RocketSounds.client.lua"
         },
-        "SettingsMenu": {
-          "$path": "src/client/SettingsMenu.client.lua"
-        },
         "PetFollow": {
           "$path": "src/client/PetFollow.client.lua"
         },
@@ -285,6 +360,9 @@
         "GardenChestClient": {
           "$path": "src/client/GardenChestClient.client.lua"
         },
+        "GardenDonationClient": {
+          "$path": "src/client/GardenDonationClient.client.lua"
+        },
         "CrateClient": {
           "$path": "src/client/CrateClient.client.luau"
         },
@@ -302,6 +380,51 @@
         },
         "GutSkinClient": {
           "$path": "src/client/GutSkinClient.client.lua"
+        },
+        "TitleTags": {
+          "$path": "src/client/TitleTags.client.luau"
+        },
+        "OfflineEarnings": {
+          "$path": "src/client/OfflineEarnings.client.luau"
+        },
+        "NotifyOptIn": {
+          "$path": "src/client/NotifyOptIn.client.luau"
+        },
+        "FlightFeedback": {
+          "$path": "src/client/FlightFeedback.client.luau"
+        },
+        "TopCenterStack": {
+          "$path": "src/client/TopCenterStack.client.luau"
+        },
+        "AmbientWildlife": {
+          "$path": "src/client/AmbientWildlife.client.luau"
+        },
+        "AmbientSmoke": {
+          "$path": "src/client/AmbientSmoke.client.luau"
+        },
+        "LandingImpact": {
+          "$path": "src/client/LandingImpact.client.luau"
+        },
+        "RealmPortals": {
+          "$path": "src/client/RealmPortals.client.luau"
+        },
+        "Campfire": {
+          "$path": "src/client/Campfire.client.luau"
+        },
+        "SocialRewards": {
+          "$path": "src/client/SocialRewards.client.luau"
+        },
+        "SeasonPass": {
+          "$path": "src/client/SeasonPass.client.luau"
+        },
+        "RebirthClient": {
+          "$path": "src/client/RebirthClient.client.luau"
+        },
+        "WormholeClient": {
+          "$path": "src/client/WormholeClient.client.luau"
+        },
+        "WarpEffect": {
+          "$path": "src/client/WarpEffect.luau"
         }
       }
     }

@@ -368,7 +368,7 @@ local function runTalk(rig, stop)
 	if not bubble then return end
 	-- register for the GardenFeeding mini-feature (find the pig's body + make it speak, reusing THIS bubble)
 	_G.gardenAnimals = _G.gardenAnimals or {}
-	_G.gardenAnimals.pig = { body = bubble.gui.Adornee, say = function(m) bubbleSay(bubble, m, 4) end }
+	_G.gardenAnimals.pig = { body = bubble.gui.Adornee, say = function(m) bubbleSay(bubble, m, 7) end }
 	local i = 1 -- CYCLE the short lines in order (loop), starting on line 1
 	while rig.model.Parent and not stop() do
 		interruptibleWait(math.random(TALK_MIN, TALK_MAX), function() return stop() or not rig.model.Parent end)
@@ -376,7 +376,7 @@ local function runTalk(rig, stop)
 		if isPlayerNear(rig, TALK_RANGE) then
 			local line = PIG_LINES[i]
 			i = (i % #PIG_LINES) + 1
-			bubbleSay(bubble, line, 4.5)
+			bubbleSay(bubble, line, 7) -- readable pace
 			print("[PIG] said (player near): " .. line)
 		else
 			print("[PIG] skipped (no one near)")

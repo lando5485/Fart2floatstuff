@@ -33,11 +33,26 @@ local WelcomeEvent      = getOrCreate(RS, "RemoteEvent", "WelcomeEvent") -- pers
 -- restore reliable on slow-loading mobile/console clients (no dependence on join-time push timing).
 local RequestPlayerState = getOrCreate(RS, "RemoteEvent", "RequestPlayerState")
 local SelectIslandEvent = getOrCreate(RS, "RemoteEvent", "SelectIslandEvent") -- client picks a spawn island from the loading-screen menu
+local DinoSelectEvent   = getOrCreate(RS, "RemoteEvent", "DinoSelectEvent")   -- client picks a DINOSAUR island from the "SELECT A DINOSAUR ISLAND" screen; server VALIDATES unlock
 local GoToIsland1Event  = getOrCreate(RS, "RemoteEvent", "GoToIsland1Event") -- rocket-event "Go to Island 1" teleport button
+
+-- DINOSAUR-SELECT: 14 dino islands (mirrors the dino grid in LoadingScreen.client.lua). New players have
+-- only island 1 unlocked; the per-player count lives in the "UnlockedDinos" player attribute (server-set,
+-- so the client can't forge it). DinoSelectEvent re-validates against it before the (placeholder) spawn.
+local DINO_COUNT = 14
+-- ⚠ TEST-UNLOCK TOGGLE for the dino picker -- default OFF, so test accounts see the REAL new-player screen with
+-- dino islands 2-14 locked (🔒). Flip to true only to preview the later cards. Must be false at launch.
+-- The island picker has the matching TEST_UNLOCK_ALL_ISLANDS flag in LoadingScreen.client.lua -- keep them in step.
+local TEST_UNLOCK_ALL_DINOS = false
 -- ONE-TIME GARDEN INTRO CINEMATIC: server tells the client to PLAY the cutscene (fired when a player who
 -- hasn't SeenGardenIntro selects island 1); the client fires _Done back when it finishes so we set+save the flag.
 local GardenIntroEvent     = getOrCreate(RS, "RemoteEvent", "GardenIntroEvent")     -- server -> client: play the cinematic now
 local GardenIntroDoneEvent = getOrCreate(RS, "RemoteEvent", "GardenIntroDoneEvent") -- client -> server: cinematic finished, set the seen flag
+-- OFFLINE PET EARNINGS: server -> client, the OFFER ("your pets earned X coins OR Y pet levels while you were away").
+local OfflineEarningsEvent = getOrCreate(RS, "RemoteEvent", "OfflineEarningsEvent")
+-- client -> server, the player's CHOICE only ("coins" | "levels"). The server owns the amounts -- see the claim
+-- handler: a client can never send a number, only pick which of the two rewards the server already computed.
+local OfflineClaimEvent    = getOrCreate(RS, "RemoteEvent", "OfflineClaimEvent")
 
 local ISLAND_DISPLAY_NAMES = {
 	"Bean Farm","Broccoli Bluff","Cabbage Cliffs","Turnip Tranquil",
@@ -63,6 +78,26 @@ local foods = {
 	{name="Burrito",  price=700,  power=640, island=13},
 	{name="Pizza",    price=518,  power=750, island=14},
 }
+
+-- FOOD STAND -> PET QUEST LOCK. A food stand on an island THAT HAS A PET QUEST stays LOCKED until the player has
+-- completed that quest (owns the pet, normal or rare). Islands with NO pet quest are never gated (open as normal);
+-- island 1 (Beans) is always open. Keyed by island number -> the petId the player must own to unlock that stand.
+-- (These are the 5 quest islands from PetSystem's PETS table: Broccoli Bluff(2), Coconut Cove(5), Popcorn(8),
+-- Butter Swamp(10), Burrito Barrens(13).) Ownership is read live from _G.playerOwnedPets (populated by PetSystem).
+local FOOD_PET_GATE = {
+	[2]  = "BroccoliPet",
+	[5]  = "CoconutCrab",
+	[8]  = "PopcornSheep",
+	[10] = "ButterDuck",
+	[13] = "BurritoArmadillo",
+}
+-- true once the player owns the gating pet for `island` (or the island isn't gated at all).
+local function foodStandUnlocked(player, island)
+	local petId = FOOD_PET_GATE[island]
+	if not petId then return true end -- island has no pet quest -> never locked
+	local owned = _G.playerOwnedPets and _G.playerOwnedPets[player]
+	return (owned ~= nil and (owned[petId] ~= nil or owned[petId .. "#R"] ~= nil)) -- normal OR rare variant counts
+end
 
 -- getMaxHeight(maxPower) = 50 + maxPower*14. Iron is the top of the free path and
 -- reaches island 14; Infinite is a Robux-only premium gut that flies the whole map.
@@ -216,7 +251,7 @@ local TEST_ACCOUNT_USERID = 1086836724  -- lando5485
 -- \xE2\x9A\xA0 TEST: shared allow-list for ALL test/debug features (test chat commands AND the island-select
 -- all-islands-unlock below). Matched by USERNAME (case-insensitive). Defined early so every handler can use
 -- it. REMOVE BEFORE LAUNCH.
-local ALLOWED_TEST_USERS = { ["lando5485"] = true, ["broskie310111"] = true, ["itsmaddmax2"] = true } -- \xE2\x9A\xA0 REMOVE BEFORE LAUNCH
+local ALLOWED_TEST_USERS = { ["lando5485"] = true, ["broskie310111"] = true } -- \xE2\x9A\xA0 REMOVE BEFORE LAUNCH
 local function isAllowedTestUser(player) -- \xE2\x9A\xA0 TEST: shared gate for all test/debug features. REMOVE BEFORE LAUNCH.
 	return ALLOWED_TEST_USERS[string.lower(player.Name)] == true
 end
@@ -248,19 +283,6 @@ local FRESH_PLAYER_USERID = 1418148401  -- Broskie310111 (DataStore PlayerData_v
 -- to the black hole. Saving stays DISABLED for this user (real data preserved), exactly like fresh mode.
 -- To revert: set this false (back to fresh mode) or set BOTH test flags false (back to real state).
 local SPAWN_AT_PIZZA_PALMS_TEST = true  -- \xE2\x9A\xA0 TEST: spawns Broskie310111 on Island 14 to view the black hole. SET false / REMOVE BEFORE LAUNCH.
--- =====================================================================================================
--- \xE2\x9A\xA0 FRESH PLAYER 2 TEST OVERRIDE (itsmaddmax2) -- TEMPORARY, INDEPENDENT of Broskie's overrides above.
--- When FRESH_PLAYER_2_TEST is true AND the joining player is itsmaddmax2 (matched by userId OR name), they
--- load brand-new-player DEFAULTS every join, ALL their gamepasses are VOIDED for the session, and NOTHING
--- is saved for them -- so they always start over and their real data (if any) is preserved. Only affects
--- itsmaddmax2; Broskie's account is matched by its own userId, so the two never interfere.
-local FRESH_PLAYER_2_TEST   = true            -- \xE2\x9A\xA0 TEST: itsmaddmax2 always loads as a fresh new player. REMOVE BEFORE LAUNCH.
-local FRESH_PLAYER_2_USERID = 0               -- \xE2\x9A\xA0 REPLACE with itsmaddmax2's real userId (printed to F9 on their first join)
-local FRESH_PLAYER_2_NAME   = "itsmaddmax2"   -- name fallback so it works before the userId is filled in
--- True if `player` is the itsmaddmax2 fresh-player test account (by userId OR name). Independent of Broskie.
-local function isFreshPlayer2(player)
-	return FRESH_PLAYER_2_TEST and (player.UserId == FRESH_PLAYER_2_USERID or player.Name == FRESH_PLAYER_2_NAME)
-end
 -- FART-METER PERSISTENCE: lastMeter = the player's last-known live meter (snapshotted on meter changes,
 -- so a respawn/cleanup that zeros CurrentPower can't make us SAVE a stale 0). joinRestoreMeter = the
 -- saved meter to re-apply AFTER the player's first spawn settles (the spawn's onLand zeros CurrentPower,
@@ -285,6 +307,11 @@ _G.playerDiscoveredQuests = _G.playerDiscoveredQuests or {}
 -- PERMANENT "ever completed pet quest X" flags (additive). Persisted under saved.everCompletedQuests; shared
 -- with PetSystem. Used ONLY to gate the first-time-only rare roll (separate from current ownership). Missing = never completed.
 _G.playerEverCompletedQuests = _G.playerEverCompletedQuests or {}
+-- COLLECTION MILESTONES already paid out + the earned TITLE (Pet Hub collection rewards; owned by PetSystem, which
+-- awards them). Declared here too because server script load ORDER is not guaranteed -- if PlayerStats' join handler
+-- ran before PetSystem had created these tables, indexing them would error out the whole load path.
+_G.playerPetMilestones = _G.playerPetMilestones or {}  -- [player] = { ["3"]=true, ... } (string keys: JSON-safe)
+_G.playerTitle = _G.playerTitle or {}                  -- [player] = "Beastmaster" (mirrored to the "Title" attribute)
 local DEFAULT_COINS, DEFAULT_STOMACH, DEFAULT_ISLAND = 25, 100, 1 -- new player: 25 coins, Tiny gut (100, base StomachMax), island 1
 print("[RESET] new-player defaults: coins=25, stomach=base, gamepasses=owned-only, islands=locked-to-1, test grants removed.")
 -- SAVE RECORD VERSION. ONE-TIME WIPE: bumped to 4. On load, any record whose saveVersion ~= SAVE_VERSION
@@ -315,6 +342,21 @@ local attemptsPerIsland = {}      -- [player] = { [islandNum] = attempts it took
 -- [BALANCE LOGGING] additional per-session tracking (logging only, no gameplay effect).
 local sessionStartTime = {}       -- [player] = os.clock() at join (for real playtime)
 local islandReachTime = {}        -- [player] = { [islandNum] = playtime(s) when that island was reached }
+local playtimeAtLoad = {}         -- [player] = their SAVED cumulative playtime at the moment they joined
+
+-- LIVE cumulative playtime, in seconds, across every session the player has ever had.
+--
+-- NOT the same as _G.playerPlaytimeSec, which GutSkinService bumps by 60 once a minute -- that is fine for
+-- unlocking skins, but it is only accurate to the nearest minute, and the FASTEST CLIMB leaderboard ranks people
+-- against each other by this number. So it is computed live instead: saved total + real seconds this session.
+-- Exposed on _G because LeaderboardService needs the same number and must not re-derive it differently.
+local function totalPlaytimeSec(p)
+	local base    = playtimeAtLoad[p] or _G.playerPlaytimeSec[p] or 0
+	local session = sessionStartTime[p] and (os.clock() - sessionStartTime[p]) or 0
+	return math.floor(base + session)
+end
+_G.playerTotalPlaytime = totalPlaytimeSec
+_G.playerIslandTimeSec = _G.playerIslandTimeSec or {} -- [player] = playtime(s) at which they reached their HIGHEST island
 local lastIslandReachClock = {}   -- [player] = os.clock() when the previous island was reached (for per-island time)
 local coinsAtLastIsland = {}      -- [player] = TotalCoinsEarned snapshot at the previous island (for per-island earned)
 local islandCoinsEarned = {}      -- [player] = { [islandNum] = coins earned on the way to that island }
@@ -344,6 +386,12 @@ local function fetchPlayerData(player)
 		print("LOAD: "..player.Name.." SKIPPED (DISABLE_SAVE_FOR_TESTING) — starting as a brand-new player (defaults)")
 		return "ok", nil -- "ok" + nil = brand-new player -> defaults applied (25 coins, island 1, Tiny Gut)
 	end
+	-- ⚠ TEST: broskie310111 and lando5485 ALWAYS load as brand-new players, even on a live server (so they
+	-- see the new-player experience -- locked realms, fresh coins, island 1). REMOVE BEFORE LAUNCH.
+	if isAllowedTestUser(player) then
+		print("LOAD: "..player.Name.." forced BRAND-NEW (test account -- always a fresh player)")
+		return "ok", nil
+	end
 	local key = tostring(player.UserId)
 	print("LOAD: "..player.Name.." attempting load (key="..key..", store=PlayerData_v1)")
 	if not playerDataStore then
@@ -366,10 +414,16 @@ end
 -- failed/never-loaded player can't wipe their save. pcall'd.
 local function savePlayerData(player, trigger)
 	trigger = trigger or "?"
-	-- [RESET] per-user save-disable special-casing removed (lando5485 permanent reset, Broskie/itsmaddmax2 fresh-test
+	-- [RESET] per-user save-disable special-casing removed (lando5485 permanent reset, Broskie fresh-test
 	-- skips) -- saving now works normally for EVERY player.
 	if DISABLE_SAVE_FOR_TESTING then
 		print("SAVE ("..trigger.."): "..player.Name.." SKIPPED (DISABLE_SAVE_FOR_TESTING) — test runs are not persisted")
+		return
+	end
+	-- ⚠ TEST: broskie310111 and lando5485 never persist, so their fresh-start session can't overwrite a real
+	-- save and they stay "always new" next join too. REMOVE BEFORE LAUNCH.
+	if isAllowedTestUser(player) then
+		print("SAVE ("..trigger.."): "..player.Name.." SKIPPED (test account -- always a fresh player, never saved)")
 		return
 	end
 	if not playerDataStore then
@@ -409,6 +463,13 @@ local function savePlayerData(player, trigger)
 		ownedGutSkins    = _G.playerOwnedGutSkins[player] or { Default = true },  -- cosmetic gut skins owned (always includes Default)
 		equippedGutSkin  = _G.playerEquippedGutSkin[player] or "Default",         -- currently equipped gut skin id
 		playtimeSeconds  = _G.playerPlaytimeSec[player] or 0,                     -- total cumulative playtime (drives skin unlocks)
+		islandTimeSec    = _G.playerIslandTimeSec[player] or 0,                   -- playtime(s) at which they reached their highest island (FASTEST CLIMB board)
+		petMilestones    = _G.playerPetMilestones[player] or {},                  -- collection milestones already paid out ({"3"=true,...}; string keys = JSON-safe)
+		title            = _G.playerTitle[player],                                -- earned title ("Beastmaster"); nil = none
+		-- OFFLINE EARNINGS: when this save was written. The next join subtracts it from os.time() to work out
+		-- how long the player's pets were left minding the farm. Written on EVERY save (autosave + leave), so a
+		-- crash costs at most one autosave interval of accrual rather than the whole session.
+		lastSeen         = os.time(),
 	}
 	print(string.format("[SAVE METER] player=%s meter=%d", player.Name, meterToSave))
 	local key = tostring(player.UserId)
@@ -419,8 +480,144 @@ local function savePlayerData(player, trigger)
 	else
 		print("SAVE ("..trigger.."): FAILED - "..tostring(err))
 	end
+	-- GLOBAL LEADERBOARDS: push this player's (just-persisted, server-owned) totals to the OrderedDataStores.
+	-- Deliberately AFTER the save and pcall'd -- a leaderboard hiccup must never break the save path.
+	if _G.leaderboardSubmit then pcall(_G.leaderboardSubmit, player) end
 end
 _G.savePlayerData = savePlayerData -- exposed so PetSystem can persist BOTH players immediately after a trade (anti-dupe)
+
+-- ============================================================================================================
+-- OFFLINE PET EARNINGS -- "your pets kept working while you were away", and the player PICKS the reward.
+--
+-- THE PLAYER CHOOSES: COINS, or PET LEVELS on their equipped pet. One or the other, never both. That makes the
+-- return moment a small decision instead of a passive handout, and lets a player who does not need coins put the
+-- time into their collection instead.
+--
+-- DESIGN CONSTRAINT: this must stay a NUDGE, never an income stream. It exists to give a player a reason to come
+-- back tomorrow, not to replace playing. BOTH options are therefore capped hard:
+--
+--   COINS  -- tuned to be worth well under a MINUTE of real play at every stage of the game.
+--             Sanity-checked against the real coin formula (coins = h*0.008 + (h/500)^2 per 0.5s tick):
+--               * Island 2, 3 pets, equipped Lv5:    (3*8 + 5*2) * 1.15 = ~39/hour  -> ~235 for a full 6 hours.
+--               * Island 14, 10 pets, equipped Lv25: (10*8 + 25*2) * 2.95 = ~383/hour -> ~2,300 for 6 hours,
+--                 which is LESS than a SINGLE 0.5s tick of real flight up there (~8,400 coins).
+--             It can never become the optimal way to earn, at any point in the game.
+--
+--   LEVELS -- HARD-capped at OFFLINE_MAX_LEVELS (2). A pet needs ~125,000 XP to reach Lv25, so two free levels is
+--             a nudge, not a shortcut. Because the cap is a flat COUNT, no amount of idling (a week, a month) can
+--             ever yield more than 2. Applies to the EQUIPPED pet only, and is not offered at all if that pet is
+--             already maxed -- offering a reward that would do nothing is a lie.
+--
+-- The island multiplier on coins only exists so the number does not read as insulting late-game; as the figures
+-- above show, it does NOT let offline overtake active play.
+-- ============================================================================================================
+local OFFLINE_PER_PET_HOUR   = 8     -- coins/hour for each pet SPECIES owned
+local OFFLINE_PER_LEVEL_HOUR = 2     -- coins/hour per level of the EQUIPPED pet (rewards levelling one properly)
+local OFFLINE_ISLAND_MULT    = 0.15  -- +15% per island beyond the first (island 14 => 2.95x)
+local OFFLINE_MAX_HOURS      = 6     -- accrual stops here. Idling for a week earns the same as sleeping one night.
+local OFFLINE_MIN_SECONDS    = 300   -- under 5 minutes away => no offer at all (stops rejoin-spam farming)
+local OFFLINE_HARD_CAP       = 5000  -- absolute coin ceiling, whatever the maths says. Backstop against bad tuning.
+local OFFLINE_MAX_LEVELS     = 2     -- HARD cap on the pet-level option. Never more, however long you idle.
+local OFFLINE_LEVEL_1_HOURS  = 1     -- away >= 1h -> 1 level offered
+local OFFLINE_LEVEL_2_HOURS  = 4     -- away >= 4h -> 2 levels offered (the cap)
+
+-- A player's UNCLAIMED offer. Held SERVER-side and cleared the moment it is claimed, so the claim remote cannot be
+-- replayed to grant twice -- the client only ever sends "I pick coins" / "I pick levels", never an amount.
+local pendingOffline = {}  -- [player] = { coins, levels, pets, eqLevel, hours, capped, perHour, test }
+
+-- Work out what a player is owed. `awaySeconds` is a PARAMETER (not read from the save in here) so the /offline
+-- test command can simulate any window. Returns the offer table, or nil if there is nothing to offer.
+local function computeOfflineEarnings(player, awaySeconds)
+	awaySeconds = math.max(0, math.floor(tonumber(awaySeconds) or 0))
+	if awaySeconds < OFFLINE_MIN_SECONDS then return nil end
+
+	local pets = 0
+	if type(_G.petsCollectedCount) == "function" then
+		local ok, n = pcall(_G.petsCollectedCount, player)
+		if ok and type(n) == "number" then pets = n end
+	end
+	if pets <= 0 then return nil end -- no pets => nothing was minding the farm
+
+	-- the EQUIPPED pet: its level drives the coin rate, AND it is the pet the level option would be spent on
+	local eqKey = _G.playerEquippedPet and _G.playerEquippedPet[player]
+	local eqLevel = 0
+	local owned = _G.playerOwnedPets[player]
+	if eqKey and type(owned) == "table" and type(owned[eqKey]) == "table" then
+		eqLevel = tonumber(owned[eqKey].level) or 0
+	end
+
+	local island  = math.max(1, math.floor(player:GetAttribute("HighestIsland") or 1))
+	local mult    = 1 + OFFLINE_ISLAND_MULT * (island - 1)
+	local perHour = (pets * OFFLINE_PER_PET_HOUR + eqLevel * OFFLINE_PER_LEVEL_HOUR) * mult
+	local hours   = math.min(awaySeconds / 3600, OFFLINE_MAX_HOURS)
+	local coins   = math.floor(math.min(perHour * hours, OFFLINE_HARD_CAP))
+
+	-- LEVELS: a flat count by time away, hard-capped, and only if there is an un-maxed equipped pet to spend it on.
+	local awayHours = awaySeconds / 3600
+	local levels = 0
+	if awayHours >= OFFLINE_LEVEL_2_HOURS then levels = 2
+	elseif awayHours >= OFFLINE_LEVEL_1_HOURS then levels = 1 end
+	levels = math.min(levels, OFFLINE_MAX_LEVELS)
+	if (not eqKey) or eqLevel >= 25 then levels = 0 end
+
+	if coins <= 0 and levels <= 0 then return nil end
+	return {
+		coins = coins, levels = levels, pets = pets, eqLevel = eqLevel,
+		hours = hours, capped = (awaySeconds / 3600) > OFFLINE_MAX_HOURS, perHour = math.floor(perHour),
+	}
+end
+
+-- Exposed so ComebackNudge can ask "what would this player be owed if they came back in N hours?" and put that
+-- REAL number in the push notification. It must be the same function that actually pays out -- a notification
+-- promising 240 coins that then hands over 90 is worse than sending nothing at all.
+_G.offlinePreview = computeOfflineEarnings
+
+-- Make the OFFER (grants NOTHING yet) and show the welcome-back card.
+local function offerOfflineEarnings(player, awaySeconds, viaTestCommand)
+	local r = computeOfflineEarnings(player, awaySeconds)
+	if not r then return nil end
+	r.test = viaTestCommand and true or false
+	pendingOffline[player] = r
+	pcall(function() OfflineEarningsEvent:FireClient(player, r) end)
+	print(string.format("[OFFLINE] %s away %ds -> OFFER: %d coins OR %d level(s) (%d pets, eqLv %d, %.2fh%s)%s",
+		player.Name, awaySeconds, r.coins, r.levels, r.pets, r.eqLevel, r.hours,
+		r.capped and ", CAPPED" or "", viaTestCommand and " [TEST /offline]" or ""))
+	return r
+end
+
+-- CLAIM: the client sends only its CHOICE ("coins" | "levels"). The SERVER owns the amounts, and the pending offer
+-- is cleared FIRST -- so a replayed or spammed claim finds nothing and does nothing. A client can never ask for an
+-- amount, only pick which of the two rewards the server already computed.
+OfflineClaimEvent.OnServerEvent:Connect(function(player, choice)
+	local r = pendingOffline[player]
+	if not r then return end        -- nothing pending (already claimed, or never offered)
+	pendingOffline[player] = nil    -- cleared BEFORE granting: a second click can never double-pay
+	if choice ~= "coins" and choice ~= "levels" then choice = "coins" end
+	if choice == "levels" and r.levels <= 0 then choice = "coins" end -- levels were not on the table -> fall back
+
+	if choice == "levels" then
+		local eqKey = _G.playerEquippedPet and _G.playerEquippedPet[player]
+		local before, after
+		if eqKey and type(_G.petGrantLevels) == "function" then
+			local ok, b, a = pcall(_G.petGrantLevels, player, eqKey, r.levels)
+			if ok then before, after = b, a end
+		end
+		print(string.format("[OFFLINE] %s CLAIMED %d pet level(s) on %s (Lv %s -> %s)",
+			player.Name, r.levels, tostring(eqKey), tostring(before), tostring(after)))
+	else
+		local ls = player:FindFirstChild("leaderstats")
+		local coinsStat = ls and ls:FindFirstChild("Coins")
+		local totalStat = ls and ls:FindFirstChild("TotalCoinsEarned")
+		if coinsStat then
+			coinsStat.Value = coinsStat.Value + r.coins
+			if totalStat then totalStat.Value = totalStat.Value + r.coins end -- counts toward the MOST COINS board
+		end
+		print(string.format("[OFFLINE] %s CLAIMED %d coins", player.Name, r.coins))
+	end
+	if _G.savePlayerData then pcall(_G.savePlayerData, player, "offlineclaim") end
+end)
+
+Players.PlayerRemoving:Connect(function(p) pendingOffline[p] = nil end)
 
 -- Autosave loop (~every AUTOSAVE_INTERVAL s).
 task.spawn(function()
@@ -724,6 +921,12 @@ Players.PlayerAdded:Connect(function(player)
 	else -- "nostore"
 		print("LOAD: no DataStore available, using defaults (will NOT persist)")
 	end
+	-- STARTER PET: is this the player's FIRST EVER join? True when there is no usable save record -- no save found
+	-- ("ok" + nil), a wiped old-version save, or no DataStore at all ("nostore", e.g. Studio with API access off).
+	-- Those are exactly the cases that fall through to the defaults below, so this means "running on a fresh slate".
+	-- Captured BEFORE the `saved = saved or {}` line collapses nil into an empty table. Read further down, once the
+	-- pet state has loaded, to hand them their free Bean Buddy. An existing player NEVER re-triggers this.
+	local isBrandNewPlayer = (saved == nil)
 	saved = saved or {} -- new player ("ok" nil) or "nostore" -> defaults below
 
 	local ls = Instance.new("Folder"); ls.Name = "leaderstats"; ls.Parent = player
@@ -767,6 +970,17 @@ Players.PlayerAdded:Connect(function(player)
 	local restoredIsland = math.max(saved.highestIsland or DEFAULT_ISLAND, saved.island or DEFAULT_ISLAND)
 	highestIslandReached[player] = restoredIsland
 	player:SetAttribute("HighestIsland", restoredIsland)
+	-- DINO UNLOCKS: ZERO for a new player -- the Dino Realm is somewhere you REACH, not somewhere you are given.
+	-- The only thing unlocked anywhere in the game at the start is Island 1 of the first realm; every dino card
+	-- shows 🔒 until the player actually gets there. (This used to default to 1, quietly gifting a free dino island
+	-- to an account that had never seen the realm.)
+	--
+	-- This attribute is the ONE authority on dino access: the client paints the cards from it, and DinoSelectEvent
+	-- re-validates against it. So the default has to be fixed HERE -- the picker can only show what this tells it.
+	--
+	-- The test-account "grant all 14" is behind TEST_UNLOCK_ALL_DINOS, defaulted OFF, so a tester sees the real
+	-- new-player screen. Mirrors TEST_UNLOCK_ALL_ISLANDS in LoadingScreen.client.lua.
+	player:SetAttribute("UnlockedDinos", (TEST_UNLOCK_ALL_DINOS and isAllowedTestUser(player)) and DINO_COUNT or 0)
 	print("LOAD ISLAND: "..player.Name.." restored highestIsland="..restoredIsland..", teleporting to stand "..restoredIsland)
 	dataLoaded[player] = true
 	playerCoinAccum[player] = 0
@@ -787,9 +1001,43 @@ Players.PlayerAdded:Connect(function(player)
 	_G.playerOwnedGutSkins[player].Default = true -- safety: everyone always owns Default
 	_G.playerEquippedGutSkin[player] = saved.equippedGutSkin or "Default"
 	_G.playerPlaytimeSec[player] = tonumber(saved.playtimeSeconds) or 0 -- restore total playtime (new players = 0)
+	-- Snapshot the SAVED playtime as this session's baseline. totalPlaytimeSec() adds live session seconds on top,
+	-- so it must know where the session started from -- reading _G.playerPlaytimeSec later would double-count the
+	-- minutes GutSkinService has already added to it.
+	playtimeAtLoad[player]       = _G.playerPlaytimeSec[player]
+	_G.playerIslandTimeSec[player] = tonumber(saved.islandTimeSec) or 0 -- when they reached their highest island
 	_G.playerDiscoveredQuests[player] = saved.discoveredQuests or {} -- cosmetic discovered-quest set (empty / legacy save)
 	_G.playerEverCompletedQuests[player] = saved.everCompletedQuests or {} -- PERMANENT first-completion flags (empty / legacy save -> never completed)
+	-- COLLECTION MILESTONES + TITLE (Pet Hub collection rewards). Keys in petMilestones are STRINGS ("3","5",...)
+	-- because DataStore JSON-encodes tables and numeric keys don't round-trip reliably. A legacy save has neither
+	-- field -> empty/nil -> PetSystem's join-time catch-up re-checks their pets and pays out anything they'd already
+	-- earned, so existing players get their titles (and the secret pet) on their next login rather than never.
+	_G.playerPetMilestones[player] = saved.petMilestones or {}
+	_G.playerTitle[player] = saved.title -- nil = no title yet; PetSystem re-applies the "Title" attribute on join
 	if _G.petsApplyOnJoin then pcall(function() _G.petsApplyOnJoin(player) end) end
+	-- FREE STARTER PET (retention): a brand-new player is handed a Bean Buddy immediately -- owned, auto-equipped,
+	-- following them from their first spawn -- so they OWN something before they have earned anything. Runs AFTER
+	-- petsApplyOnJoin so the pet state is loaded and the grant's sendState/sendInventory is the last word. Guarded
+	-- (pcall + existence check) so a pet-system failure can never break the join/load path. It also persists on the
+	-- normal path: PlayerStats saves _G.playerOwnedPets under saved.ownedPets on autosave/leave.
+	if isBrandNewPlayer and _G.grantStarterPet then
+		task.spawn(function()
+			local ok, granted = pcall(function() return _G.grantStarterPet(player) end)
+			print(string.format("[STARTER PET] %s brandNew=y grantOk=%s granted=%s",
+				player.Name, ok and "y" or "n", (ok and granted) and "y" or "n"))
+		end)
+	end
+	-- OFFLINE PET EARNINGS: pay out what their pets earned while they were away. Deferred so it runs AFTER
+	-- petsApplyOnJoin above has loaded their pets -- the rate is derived from pets owned + equipped level, so
+	-- computing it any earlier would read an empty collection and pay nothing. A brand-new player has no
+	-- lastSeen, so they're skipped entirely (nothing to be away FROM).
+	if not isBrandNewPlayer and saved.lastSeen then
+		local away = os.time() - (tonumber(saved.lastSeen) or os.time())
+		task.spawn(function()
+			task.wait(1) -- let the pet state settle
+			if player.Parent then pcall(offerOfflineEarnings, player, away, false) end
+		end)
+	end
 	-- Gamepass ownership is read LIVE each join (never saved).
 	task.spawn(function()
 		local gpData = {twoXForever=false, glitterTrail=false}
@@ -880,6 +1128,8 @@ Players.PlayerRemoving:Connect(function(player)
 	_G.playerEquippedPet[player] = nil
 	_G.playerDiscoveredQuests[player] = nil
 	_G.playerEverCompletedQuests[player] = nil -- cleared AFTER save (save reads it for everCompletedQuests)
+	_G.playerPetMilestones[player] = nil       -- cleared AFTER save (save reads it for petMilestones)
+	_G.playerTitle[player] = nil               -- cleared AFTER save (save reads it for title)
 end)
 
 -- (Daily Rewards join-handshake removed.)
@@ -900,6 +1150,15 @@ BuyFoodEvent.OnServerEvent:Connect(function(player, foodName)
 	end
 	if not food then
 		print("FOOD NOT FOUND:", foodName)
+		return
+	end
+	-- FAILURE CHECK 0 (PET-QUEST LOCK): a food stand on a quest island is locked until that island's pet quest is
+	-- done. Checked BEFORE coins so a locked stand never takes money and gives the real reason. Islands without a
+	-- pet quest (and island 1) always pass. Forces players to complete each pet quest to progress the climb.
+	if not foodStandUnlocked(player, food.island) then
+		local needPet = FOOD_PET_GATE[food.island]
+		print("[FoodLock] " .. player.Name .. " blocked from buying " .. food.name .. " (island " .. tostring(food.island) .. ") -- needs pet quest: " .. tostring(needPet))
+		pcall(function() StomachFullEvent:FireClient(player, "pet_quest_locked", food.name, needPet) end)
 		return
 	end
 	-- FAILURE CHECK 1 (COINS FIRST — the common blocker): not enough coins -> "not_enough_coins".
@@ -956,6 +1215,7 @@ CoinEvent.OnServerEvent:Connect(function(player, amount)
 	-- FRIEND/GROUP COIN BOOST: scale earned FLIGHT coins by this player's bonus multiplier (1 = none). Set by
 	-- RewardsService (friend-in-server +25%, MLR group +10%, stackable). Flat rewards (codes) are granted directly, unaffected.
 	amt = amt * ((_G.coinBonusMult and _G.coinBonusMult[player]) or 1)
+	amt = amt * ((_G.rebirthMult and _G.rebirthMult[player]) or 1) -- REBIRTH coin boost (stacks on top of the friend/group boost)
 	playerCoinAccum[player] = (playerCoinAccum[player] or 0) + amt
 	local toAdd = math.floor(playerCoinAccum[player])
 	if toAdd > 0 then
@@ -1122,6 +1382,25 @@ local function placeOnStand(char, islandNum)
 	if spot then task.wait(0.05); teleportToHome(char, spot) end
 end
 
+-- ===== WORMHOLE FAST-TRAVEL =====
+-- Place a player on an island's stand IF they've already REACHED it. Called by WormholeService's WormholeWarp
+-- RemoteFunction. Server-authoritative: validates islandNum against the SAVED highestIslandReached (never trusts
+-- the client) and refuses while airborne. TRAVEL ONLY -- it never unlocks an island or grants any progression.
+_G.wormholeMaxIsland = function(player) return highestIslandReached[player] or 1 end
+_G.wormholeWarp = function(player, islandNum)
+	if not player then return false, "no player" end
+	islandNum = tonumber(islandNum); if not islandNum then return false, "bad island" end
+	islandNum = math.floor(islandNum)
+	local maxI = highestIslandReached[player] or 1
+	if islandNum < 1 or islandNum > maxI then return false, "locked" end -- only islands you've reached
+	local char = player.Character; if not char then return false, "no character" end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if hum and hum.FloorMaterial == Enum.Material.Air then return false, "airborne" end -- can't warp mid-flight
+	placeOnStand(char, islandNum)
+	print("[Wormhole] " .. player.Name .. " warped to island " .. islandNum .. " (max " .. maxI .. ")")
+	return true
+end
+
 local function onCharacterAdded(player, char)
 	local target = spawnIsland[player] or highestIslandReached[player] or 1
 	spawnIsland[player] = nil
@@ -1200,6 +1479,32 @@ SelectIslandEvent.OnServerEvent:Connect(function(player, islandNum)
 	end)
 end)
 
+-- DINOSAUR-SELECT VALIDATION: the client picks a dino island (1-14) and fires this. Re-check it against the
+-- server-set "UnlockedDinos" attribute (test accounts get all 14) — never trust the client. On approval we
+-- SPAWN the held player so they enter the game (real dino worlds don't exist yet, so this is a PLACEHOLDER
+-- spawn onto their home island in the main world), then reply so the client fades in. Shares the
+-- SelectIslandEvent one-choice guard (hasChosenIsland) so a player picks ONE destination.
+DinoSelectEvent.OnServerEvent:Connect(function(player, dinoNum)
+	dinoNum = tonumber(dinoNum)
+	if not dinoNum then pcall(function() DinoSelectEvent:FireClient(player, dinoNum, false) end); return end
+	dinoNum = math.floor(dinoNum)
+	if hasChosenIsland[player] then pcall(function() DinoSelectEvent:FireClient(player, dinoNum, false) end); return end
+	-- Fall back to 0, not 1. If the attribute is somehow missing (data still loading, a race on join), the safe
+	-- answer is "you have unlocked nothing" -- a fallback of 1 would approve a dino spawn for a player whose
+	-- unlocks we cannot actually read, which is the exact case this validation exists to catch.
+	local unlocked = tonumber(player:GetAttribute("UnlockedDinos")) or 0
+	if isAllowedTestUser(player) then unlocked = DINO_COUNT end -- \xE2\x9A\xA0 TEST: all dino islands unlocked. REMOVE BEFORE LAUNCH.
+	local approved = (dinoNum >= 1 and dinoNum <= DINO_COUNT and dinoNum <= unlocked)
+	if approved then
+		hasChosenIsland[player] = true
+		spawnIsland[player] = highestIslandReached[player] or 1 -- PLACEHOLDER: main-world home island until dino worlds exist
+		player:LoadCharacter() -- spawn the held player; onCharacterAdded places + handles respawns
+	end
+	print(string.format("DINO SELECT: %s requested dino island %d (unlocked=%d) -> %s",
+		player.Name, dinoNum, unlocked, approved and "APPROVED (placeholder spawn)" or "REJECTED (locked)"))
+	pcall(function() DinoSelectEvent:FireClient(player, dinoNum, approved) end)
+end)
+
 -- ONE-TIME GARDEN INTRO: the client fires this the moment the cinematic finishes. We mark the flag on the
 -- player (so it persists in the next save) and save immediately so a leave right after watching still counts.
 -- (lando5485 is force-reset to FALSE on each load, so the intro still replays for him next join despite this.)
@@ -1266,6 +1571,7 @@ Players.PlayerRemoving:Connect(function(player)
 	attemptsPerIsland[player] = nil
 	-- [BALANCE LOGGING] clean up the added tracking tables.
 	sessionStartTime[player] = nil
+	playtimeAtLoad[player]   = nil
 	islandReachTime[player] = nil
 	lastIslandReachClock[player] = nil
 	coinsAtLastIsland[player] = nil
@@ -1344,6 +1650,11 @@ RunService.Heartbeat:Connect(function(dt)
 					highestIslandReached[plr] = n
 					hi = n
 					plr:SetAttribute("HighestIsland", n)
+					-- Stamp the cumulative playtime at which this island fell. This is what the FASTEST CLIMB board
+					-- ranks on, so it is recorded HERE -- at the one authoritative arrival trigger -- and nowhere
+					-- else. It always describes the player's CURRENT highest island, which is what the board wants:
+					-- "you reached island N, and it took you this long."
+					_G.playerIslandTimeSec[plr] = totalPlaytimeSec(plr)
 					-- [BALANCE LOGGING] attempts to reach this island = flights since the previous new island.
 					local att = flightsSinceNewIsland[plr] or 0
 					attemptsPerIsland[plr] = attemptsPerIsland[plr] or {}
@@ -1492,6 +1803,26 @@ local function goToIsland(player, n)
 	end
 end
 
+-- REBIRTH RESET (exposed for RebirthSystem.server). Unlike Skip/goToIsland this LOWERS the run back to the
+-- start: home base + Island stat -> 1, coins -> base, gut -> base, meter -> 0, then respawns onto Bean Farm
+-- (onCharacterAdded reads highestIslandReached/spawnIsland, both set to 1 here). Pets, gamepasses and lifetime
+-- totals are NOT touched -- those live elsewhere. Server-authoritative; RebirthSystem validates before calling.
+_G.rebirthResetHome = function(player)
+	if not player then return end
+	highestIslandReached[player] = 1
+	spawnIsland[player] = 1
+	player:SetAttribute("HighestIsland", 1)
+	loadedStomachMax[player] = DEFAULT_STOMACH
+	joinRestoreMeter[player] = 0; lastMeter[player] = 0
+	local ls = player:FindFirstChild("leaderstats")
+	if ls then
+		local function setv(name, v) local s = ls:FindFirstChild(name); if s then s.Value = v end end
+		setv("Island", 1); setv("Coins", DEFAULT_COINS); setv("StomachMax", DEFAULT_STOMACH); setv("CurrentPower", 0)
+	end
+	print("[Rebirth] " .. player.Name .. " island run reset -> Bean Farm (island 1, coins=" .. DEFAULT_COINS .. ", gut base)")
+	pcall(function() player:LoadCharacter() end) -- respawn -> onCharacterAdded places on island 1's home stand
+end
+
 -- Real Skip Island product (hotbar): teleport to the next island + move home base.
 SkipIslandEvent.OnServerEvent:Connect(function(player) triggerSkipIsland(player) end)
 
@@ -1524,6 +1855,11 @@ end
 MarketplaceService.ProcessReceipt = function(info)
 	local player = Players:GetPlayerByUserId(info.PlayerId)
 	if not player then return Enum.ProductPurchaseDecision.NotProcessedYet end
+	-- BLIMP feed + top-donator board: observe EVERY product before the branches below, so donations and
+	-- future products show up without another hook. Display-only and pcall'd -- it must never fail a purchase.
+	if _G.blimpRecordPurchase then
+		pcall(function() _G.blimpRecordPurchase(player, info.ProductId) end)
+	end
 	if info.ProductId == PRODUCT_IDS.TwoXOneHour then
 		player:SetAttribute("TwoXHourExpiry", os.time() + 3600)
 		if GamepassEvent then
@@ -1553,6 +1889,13 @@ MarketplaceService.ProcessReceipt = function(info)
 		-- Real purchase: run the offensive nuke (swarm + every other player dies & respawns home + banner).
 		triggerBirdNuke(player)
 		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+	-- GARDEN DONATION Developer Product (tip jar, cosmetic-only): CommunityGarden handles it -- thank-you + banner
+	-- ONLY, no stat/coin/pet/garden change. Checked before the pet handler; each owns a disjoint set of product IDs.
+	if _G.gardenHandleDonationReceipt then
+		local granted = false
+		pcall(function() granted = _G.gardenHandleDonationReceipt(player, info.ProductId) end)
+		if granted then return Enum.ProductPurchaseDecision.PurchaseGranted end
 	end
 	-- PET upgrade Developer Product (cosmetic-only): PetSystem handles it + levels up the player's pending pet.
 	if _G.petsHandleReceipt then
@@ -1613,10 +1956,12 @@ task.spawn(function()
 		pcall(function()
 			ServerEventNotify:FireAllClients(ev.name, ev.dispName, ev.dur, ev.msg, Color3.fromRGB(ev.r, ev.g, ev.b))
 		end)
+		workspace:SetAttribute("ActiveServerEvent", ev.name) -- server-readable flag (e.g. the campfire douses in THUNDERSTORM)
 		task.wait(ev.dur + 2)
 		pcall(function()
 			ServerEventNotify:FireAllClients("END", "", 0, "", Color3.new(1,1,1))
 		end)
+		workspace:SetAttribute("ActiveServerEvent", "")
 		task.wait(240)
 	end
 end)
@@ -1627,7 +1972,7 @@ end)
 -- the random loop above uses -- so the storm runs EXACTLY like normal, just on command. This does
 -- NOT change the storm or the scheduler's normal behavior (the loop above is untouched and keeps
 -- running on its own timer). Gated to the test accounts so random players can't trigger it.
--- \xE2\x9A\xA0 TEST COMMANDS allowed for: lando5485, Broskie310111, itsmaddmax2. REMOVE BEFORE LAUNCH.
+-- \xE2\x9A\xA0 TEST COMMANDS allowed for: lando5485, Broskie310111. REMOVE BEFORE LAUNCH.
 -- (The shared ALLOWED_TEST_USERS list + isAllowedTestUser() are defined near the top of this file so the
 -- island-select all-unlock and these chat commands can both use them. /thunderstorm checks it below.)
 local function fireThunderstormNow()
@@ -1637,8 +1982,10 @@ local function fireThunderstormNow()
 	pcall(function()
 		ServerEventNotify:FireAllClients(ev.name, ev.dispName, ev.dur, ev.msg, Color3.fromRGB(ev.r, ev.g, ev.b))
 	end)
+	workspace:SetAttribute("ActiveServerEvent", ev.name)
 	task.delay(ev.dur + 2, function() -- end it after its duration, exactly like the random loop does
 		pcall(function() ServerEventNotify:FireAllClients("END", "", 0, "", Color3.new(1,1,1)) end)
+		workspace:SetAttribute("ActiveServerEvent", "")
 	end)
 end
 -- \xE2\x9A\xA0 TEST: quick "get<tier>gut" chat commands to grab any gut tier instantly (for belly/flight testing).
@@ -1680,6 +2027,29 @@ local function hookTestStormChat(player) -- \xE2\x9A\xA0 TEST: /thunderstorm cha
 			if not isAllowedTestUser(player) then return end
 			if _G.petsGrantRare then pcall(function() _G.petsGrantRare(player) end) end -- grant all pets RARE + pre-maxed so all 5 rare looks are visible
 			print("[TEST] /rarepets used by " .. player.Name .. " - granted all RARE pets. REMOVE BEFORE LAUNCH.")
+		elseif cmd == "/offline" or cmd:match("^/offline%s+%d+$") then
+			-- \xE2\x9A\xA0 TEST COMMAND /offline - simulate a rejoin after being away, and show the welcome-back HUD.
+			-- REMOVE BEFORE LAUNCH.
+			-- Runs the REAL grant path (same maths, same payout, same card) against a simulated away-time, so what
+			-- you see is exactly what a returning player sees -- it isn't a mock-up of the card.
+			-- "/offline"      -> simulates the full 6-hour cap.
+			-- "/offline 1800" -> simulates being away 1800 seconds (30 min), so you can check partial windows.
+			if not isAllowedTestUser(player) then return end
+			local secs = tonumber(cmd:match("(%d+)")) or (OFFLINE_MAX_HOURS * 3600)
+			local r = offerOfflineEarnings(player, secs, true)
+			if not r then
+				-- tell the tester WHY nothing happened rather than silently doing nothing
+				print(string.format("[TEST] /offline by %s -> NO PAYOUT (need >= %ds away and >= 1 pet owned; away=%ds)",
+					player.Name, OFFLINE_MIN_SECONDS, secs))
+			end
+		elseif cmd == "/10pets" then -- \xE2\x9A\xA0 TEST COMMAND /10pets - complete the COLLECTION. REMOVE BEFORE LAUNCH.
+			-- Grants the 10 pets that COUNT toward the collection, then runs the real milestone check -- so all three
+			-- titles fire in order (3 -> 5 -> 7, ending on "Beastmaster") and the secret Pizza Dragon is awarded by
+			-- the actual 10/10 code path. Deliberately does NOT hand the Dragon over directly: the whole point is to
+			-- exercise the reward logic, not to bypass it.
+			if not isAllowedTestUser(player) then return end
+			if _G.petsGrantCollection then pcall(function() _G.petsGrantCollection(player) end) end
+			print("[TEST] /10pets used by " .. player.Name .. " - completed the collection (titles + secret pet). REMOVE BEFORE LAUNCH.")
 		elseif cmd:match("^/?goisland%s*%d+$") then -- \xE2\x9A\xA0 TEST: "goisland1".."goisland14" -> teleport to that island (slash optional). REMOVE BEFORE LAUNCH.
 			if not isAllowedTestUser(player) then return end
 			goToIsland(player, cmd:match("(%d+)"))
@@ -1742,6 +2112,26 @@ LandingEvent.OnServerEvent:Connect(function(player, remainingPower, birdHit, rea
 	lastMeter[player] = cp.Value -- snapshot the last-known live meter for SAVE (so a later respawn-zero can't persist a stale 0)
 end)
 
+-- On a stomach purchase, FILL the fart meter to just reach the NEXT island — the one in front of the player
+-- (highestIslandReached + 1, e.g. 6 -> 7) — plus a small grace so they clear it, but NOT enough to reach the
+-- island after that. Reach model matches getMaxHeight (CoreClient): height = 50 + power*14, so the power to
+-- reach island Y is (Y - 50)/14. The fill is capped at the new tank's max. RegenEvent replicates it to the
+-- client's gas meter. (10% grace stays safely below the after-next island for every island pair.)
+local NEXT_ISLAND_GRACE = 0.10 -- +10% over the exact power = "a bit more than exactly to the island"
+local function fillMeterForNextIsland(player, ls, newMaxN)
+	local cp = ls:FindFirstChild("CurrentPower"); if not cp then return end
+	local curIsland  = highestIslandReached[player] or 1
+	local nextIsland = math.min(curIsland + 1, #ISLAND_POSITIONS)
+	local yNext = (ISLAND_POSITIONS[nextIsland] and ISLAND_POSITIONS[nextIsland].y) or 0
+	local powerForNext = math.max(0, (yNext - 50) / 14)                 -- exact power to reach that island
+	local target = powerForNext * (1 + NEXT_ISLAND_GRACE)              -- + grace so they clear it
+	local fill = math.clamp(math.floor(target + 0.5), 0, newMaxN)      -- never exceed the tank's max
+	cp.Value = fill
+	pcall(function() RegenEvent:FireClient(player, 0, fill, newMaxN) end)
+	print(string.format("[STOMACH FILL] %s bought gut (max=%d) -> meter filled to %d for island %d (need %d + %d%% grace, Y=%d)",
+		player.Name, newMaxN, fill, nextIsland, math.floor(powerForNext), math.floor(NEXT_ISLAND_GRACE * 100), yNext))
+end
+
 BuyStomachEvent.OnServerEvent:Connect(function(player, newMax, cost)
 	local ls = player:FindFirstChild("leaderstats"); if not ls then return end
 	local coins = ls:FindFirstChild("Coins")
@@ -1778,12 +2168,10 @@ BuyStomachEvent.OnServerEvent:Connect(function(player, newMax, cost)
 	coins.Value = coins.Value - costN
 	coinsSpentOnGuts[player] = (coinsSpentOnGuts[player] or 0) + costN -- [BALANCE LOGGING] track gut spend
 	stomachMaxStat.Value = newMaxN
-	-- CARRY OVER the power already in the tank (don't reset). Only the tank's MAX grows; the current
-	-- fill stays. Clamp to the new max as a safety (new max is always bigger, so this won't trigger).
-	local cp = ls:FindFirstChild("CurrentPower")
-	local carried = 0
-	if cp then cp.Value = math.min(cp.Value, newMaxN); carried = cp.Value end
-	pcall(function() RegenEvent:FireClient(player, 0, carried, newMaxN) end)
+	-- FILL the fart meter to JUST reach the NEXT island (the one in front of the player) + a little grace,
+	-- capped at the new tank's max — so buying a stomach directly enables reaching that island, and only that
+	-- one (not the island after it). Replaces the old carry-over behavior.
+	fillMeterForNextIsland(player, ls, newMaxN)
 	local tierNameStr = "Gut"
 	for _, t in ipairs(stomachTiers) do
 		if t.maxPower == newMaxN then tierNameStr = t.name; break end

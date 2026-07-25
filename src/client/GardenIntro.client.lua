@@ -62,12 +62,12 @@ local PIG_LINES = {
 
 -- TOTAL on-screen window (s) per NPC — ALL of that NPC's lines play within this window, divided evenly
 -- across them (auto-advancing). The camera holds on the NPC for the whole window before panning on.
-local FARMER_WINDOW   = 3   -- short + fast: all of this NPC's lines flash by within the window
-local GARDENER_WINDOW = 3.5
-local COW_WINDOW      = 3
-local PIG_WINDOW      = 3
+local FARMER_WINDOW   = 8   -- ~2s per line (4 lines) so each is readable
+local GARDENER_WINDOW = 9
+local COW_WINDOW      = 8
+local PIG_WINDOW      = 8
 local PAN_TIME        = 0.9  -- camera tween between subjects (snappier)
-local SKIP_AFTER      = 2    -- seconds before the SKIP button becomes active (appears almost immediately)
+local SKIP_AFTER      = 12   -- seconds before the SKIP button becomes active
 
 -- ---- NPC FINDERS (robust; return nil if absent) ---------------------------
 local function findGardener()
@@ -552,6 +552,25 @@ local function playIntro()
 			return false
 		end
 		print("[GARDEN INTRO] segment: " .. label)
+
+		-- The NPC WAVES as the camera settles on him. Without this he stands stone-still through the one scene that
+		-- is entirely about him -- his proximity wave cannot fire, because the player's character is still back at
+		-- spawn while the camera is over here.
+		--
+		-- Deliberately fired a beat AFTER the pan starts, not on the same frame: a wave that begins before the camera
+		-- has arrived is half over by the time you can see him.
+		local WAVERS = { GARDENER = "Gardener", FARMER = "Farmer" }
+		local who = WAVERS[label]
+		if who then
+			task.delay(0.8, function()
+				local ev = ReplicatedStorage:FindFirstChild("GardenerWaveRequest")
+				if ev then
+					ev:FireServer(who)
+					print("[GARDEN INTRO] asked the " .. who .. " to wave")
+				end
+			end)
+		end
+
 		return frameAndSpeak(model, lines, window, dist, noPan)
 	end
 
@@ -565,11 +584,13 @@ local function playIntro()
 		if skipped then return end
 		local revealModel = farm or findGardener() -- fall back to the gardener if the farmer isn't around
 		camera.CFrame = revealModel and frameCFrame(revealModel, 9) or startCF
-		-- hold FULLY BLACK for ~0.5s total since the click (covers menu close + camera move), then fade out (~0.5s)
-		if sleep(math.max(0, 0.5 - (os.clock() - blackStart))) then return end
+		-- Reveal ASAP: hold black only the tiny beat it takes to frame the farmer (min ~0.1s since the click, to cover
+		-- the menu close + camera move), then a QUICK ~0.25s fade -- so the intro appears almost immediately after PLAY
+		-- instead of the old 0.5s-hold + 0.5s-fade (~1s) pause.
+		if sleep(math.max(0, 0.1 - (os.clock() - blackStart))) then return end
 		print("[GARDEN INTRO] black hold done -> fading up to reveal the farmer")
-		TweenService:Create(coverBlack, TweenInfo.new(0.5, Enum.EasingStyle.Quad), {BackgroundTransparency = 1}):Play()
-		if sleep(0.5) then return end
+		TweenService:Create(coverBlack, TweenInfo.new(0.25, Enum.EasingStyle.Quad), {BackgroundTransparency = 1}):Play()
+		if sleep(0.25) then return end
 		if coverGui then coverGui:Destroy(); coverGui = nil end
 
 		-- FARMER FIRST: already framed by the reveal -> straight into his welcome lines (no pan). Then the garden
@@ -579,9 +600,13 @@ local function playIntro()
 		if doSegment(findCow,      COW_LINES,      COW_WINDOW,      11, "COW") then return end
 		if doSegment(findPig,      PIG_LINES,      PIG_WINDOW,      10, "PIG") then return end
 
-		-- ---- ISLAND FLYOVER: Island 1 top-down -> side view up the stack (2..14) -> black hole bottom-up ----
-		local FLY_TRAVEL = 1.3  -- smooth eased travel between viewpoints (unchanged)
-		local FLY_HOLD   = 0.75 -- DWELL: hold at each island / the black hole for 0.75s (transitions stay smooth via FLY_TRAVEL)
+		-- ---- ISLAND FLYOVER: Island 1 top-down -> side view up a FEW islands -> black hole bottom-up ----
+		-- Only a handful of islands are shown (not all 14): the point is a quick "look how high this goes"
+		-- tease, and visiting every island turned it into a ~31s wordless camera trip. The big height jumps
+		-- between these three sell the scale better than the full stack did. Edit FLYOVER_ISLANDS to retune.
+		local FLYOVER_ISLANDS = {5, 9, 14} -- Coconut Cove -> Milk Marsh -> Pizza Palms (the summit)
+		local FLY_TRAVEL = 1.0  -- smooth eased travel between viewpoints
+		local FLY_HOLD   = 0.5  -- DWELL: hold at each island / the black hole
 
 		-- ONLY-CURRENT-ISLAND: cache every island's parts, hide them all, and show just the one in frame each
 		-- segment (so e.g. island 2 isn't visible while island 1 is shown). Client-only via LocalTransparencyModifier;
@@ -613,7 +638,7 @@ local function playIntro()
 			print("[GARDEN INTRO] flyover: ISLAND 1 not found -> skipping")
 		end
 
-		for n = 2, 14 do
+		for _, n in ipairs(FLYOVER_ISLANDS) do
 			if skipped then return end
 			local m = islandModels[n]
 			if m then
@@ -679,7 +704,7 @@ local function playIntro()
 		credit.Size = UDim2.fromScale(0.5, 0.05)
 		credit.BackgroundTransparency = 1
 		credit.Font = Enum.Font.FredokaOne
-		credit.Text = "By: M.L.R Studios"
+		credit.Text = "By: L.R. Studios"
 		credit.TextColor3 = Color3.fromRGB(255, 255, 255)
 		credit.TextScaled = true
 		credit.TextTransparency = 1
@@ -690,7 +715,7 @@ local function playIntro()
 		TweenService:Create(black, TweenInfo.new(1, Enum.EasingStyle.Quad), {BackgroundTransparency = 0}):Play()
 		if sleep(1) then return end
 		-- 2) title + credit fade in just after black (~0.6s)
-		print("[GARDEN INTRO] segment: TITLE CARD (\"Welcome To Fart To Float\" / By: M.L.R Studios)")
+		print("[GARDEN INTRO] segment: TITLE CARD (\"Welcome To Fart To Float\" / By: L.R. Studios)")
 		TweenService:Create(title,  TweenInfo.new(0.6), {TextTransparency = 0}):Play()
 		TweenService:Create(credit, TweenInfo.new(0.6), {TextTransparency = 0}):Play()
 		-- 3) hold the title card on black (~3s)

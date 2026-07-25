@@ -1,3 +1,20 @@
+-- ############################################################################
+-- ## LUAU REGISTER BUDGET -- READ BEFORE ADDING A TOP-LEVEL `local`         ##
+-- ############################################################################
+-- A Luau function may hold at most 200 live local registers, and this script's
+-- MAIN CHUNK is one such function. It currently sits at ~189. If you push it
+-- over 200, the whole file fails to COMPILE with:
+--     "Out of local registers when trying to allocate X: exceeded limit 200"
+-- and NONE of this script runs -- no HUD, no gas meter, no fart button, no coin
+-- counter -- while every other script keeps working. It looks like "the game
+-- didn't load", not like a script error. (This already happened once.)
+--
+-- To add more code here, put it in an IIFE:  ;(function() ... end)()
+-- A `do ... end` block is NOT enough on its own: it is not a function scope, so
+-- its locals still allocate from THIS chunk's 200 -- they are merely freed at
+-- `end`. That is fine for short-lived setup constants (see the sound blocks
+-- below) but useless for anything that must stay live.
+-- ############################################################################
 print("CORECLIENT LOADING")
 task.wait(0.1)
 print("CORECLIENT RUNNING")
@@ -65,79 +82,93 @@ if player.Character then revealHud() end -- safety: if a character somehow alrea
 -- One click sound shared by ALL main-menu buttons (open + close). Clone-and-play so rapid
 -- presses don't cut each other off. Parented to PlayerGui => 2D, audible only to this player.
 -- This is UI-only; it is NOT wired to any gameplay event (flying/food/rings).
-local UI_CLICK_VOLUME = 0.5 -- single adjustable volume for every menu click
-local uiClickSound = Instance.new("Sound")
-uiClickSound.Name = "UIClickSound"
-uiClickSound.SoundId = "rbxassetid://101638558691673"
-uiClickSound.Volume = UI_CLICK_VOLUME
-uiClickSound.Parent = PlayerGui
-local function playUIClick()
-	local s = uiClickSound:Clone()
-	s.Parent = PlayerGui
-	s:Play()
-	game:GetService("Debris"):AddItem(s, 3)
+-- REGISTER BUDGET: the setup locals sit in a do-block so Luau FREES their registers at `end`.
+-- Only playUIClick stays in the main chunk. See the 200-local ceiling note at the top of the file.
+local playUIClick
+do
+	local UI_CLICK_VOLUME = 0.5 -- single adjustable volume for every menu click
+	local uiClickSound = Instance.new("Sound")
+	uiClickSound.Name = "UIClickSound"
+	uiClickSound.SoundId = "rbxassetid://101638558691673"
+	uiClickSound.Volume = UI_CLICK_VOLUME
+	uiClickSound.Parent = PlayerGui
+	function playUIClick()
+		local s = uiClickSound:Clone()
+		s.Parent = PlayerGui
+		s:Play()
+		game:GetService("Debris"):AddItem(s, 3)
+	end
 end
 _G.playUIClick = playUIClick
 
 -- ===== INSUFFICIENT-FUNDS ERROR SOUND =====
 -- Played ONLY when a coin-priced stomach buy is attempted without enough coins.
 -- Clone-and-play (audible to local player); single adjustable volume.
-local ERROR_SOUND_VOLUME = 0.6
-local errorSound = Instance.new("Sound")
-errorSound.Name = "InsufficientFundsSound"
-errorSound.SoundId = "rbxassetid://87486053112716"
-errorSound.Volume = ERROR_SOUND_VOLUME
-errorSound.Parent = PlayerGui
-local function playErrorSound()
-	local s = errorSound:Clone()
-	s.Parent = PlayerGui
-	s:Play()
-	game:GetService("Debris"):AddItem(s, 3)
+local playErrorSound
+do -- REGISTER BUDGET: setup locals scoped so their registers are freed (see the note at the top).
+	local ERROR_SOUND_VOLUME = 0.6
+	local errorSound = Instance.new("Sound")
+	errorSound.Name = "InsufficientFundsSound"
+	errorSound.SoundId = "rbxassetid://87486053112716"
+	errorSound.Volume = ERROR_SOUND_VOLUME
+	errorSound.Parent = PlayerGui
+	function playErrorSound()
+		local s = errorSound:Clone()
+		s.Parent = PlayerGui
+		s:Play()
+		game:GetService("Debris"):AddItem(s, 3)
+	end
 end
 
 -- Quick left-right wobble for "can't afford" feedback on a button (~0.3s, small px shake, then
 -- returns to its original Position). Guarded so rapid taps don't stack or leave it off-center.
-local SHAKE_OFFSET = 8 -- px each side
-local function shakeButton(btn)
-	if not btn or btn:GetAttribute("Shaking") then return end
-	btn:SetAttribute("Shaking", true)
-	local orig = btn.Position
-	local ti = TweenInfo.new(0.04, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
-	task.spawn(function()
-		for _ = 1, 3 do
-			local a = TweenService:Create(btn, ti, {Position = orig + UDim2.fromOffset(-SHAKE_OFFSET, 0)}); a:Play(); a.Completed:Wait()
-			local b = TweenService:Create(btn, ti, {Position = orig + UDim2.fromOffset(SHAKE_OFFSET, 0)}); b:Play(); b.Completed:Wait()
-		end
-		local c = TweenService:Create(btn, ti, {Position = orig}); c:Play(); c.Completed:Wait()
-		btn.Position = orig
-		btn:SetAttribute("Shaking", false)
-	end)
+local shakeButton
+do -- REGISTER BUDGET: SHAKE_OFFSET scoped so its register is freed (see the note at the top).
+	local SHAKE_OFFSET = 8 -- px each side
+	function shakeButton(btn)
+		if not btn or btn:GetAttribute("Shaking") then return end
+		btn:SetAttribute("Shaking", true)
+		local orig = btn.Position
+		local ti = TweenInfo.new(0.04, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
+		task.spawn(function()
+			for _ = 1, 3 do
+				local a = TweenService:Create(btn, ti, {Position = orig + UDim2.fromOffset(-SHAKE_OFFSET, 0)}); a:Play(); a.Completed:Wait()
+				local b = TweenService:Create(btn, ti, {Position = orig + UDim2.fromOffset(SHAKE_OFFSET, 0)}); b:Play(); b.Completed:Wait()
+			end
+			local c = TweenService:Create(btn, ti, {Position = orig}); c:Play(); c.Completed:Wait()
+			btn.Position = orig
+			btn:SetAttribute("Shaking", false)
+		end)
+	end
 end
 
 -- ===== FART SOUNDS =====
 -- Played ONLY when the player starts a fart/ascent (toggle-on). One reusable Sound: each start
 -- stops any in-progress fart and plays a fresh random pick, so rapid toggles never overlap.
 -- Parented to SoundService => 2D, audible to the local player. FART_VOLUME is the single adjustable volume.
-local FART_VOLUME = 0.6
-local FART_SOUND_IDS = {
-	"rbxassetid://137105349517966",
-	"rbxassetid://136812322649032",
-	"rbxassetid://119702591396866",
-	"rbxassetid://123499328258921",
-	"rbxassetid://92449881602559",
-	"rbxassetid://109574021376037",
-	"rbxassetid://129402830763074",
-}
-local fartSound = Instance.new("Sound")
-fartSound.Name = "FartSound"
-fartSound.Volume = FART_VOLUME
-fartSound.Parent = game:GetService("SoundService") -- SoundService => reliable 2D global playback (local player)
-local function playFartSound()
-	fartSound:Stop() -- cut any in-progress fart so rapid re-toggles don't stack
-	local chosenId = FART_SOUND_IDS[math.random(1, #FART_SOUND_IDS)]
-	fartSound.SoundId = chosenId
-	print("FART SOUND playing id="..chosenId)
-	fartSound:Play()
+local playFartSound
+do -- REGISTER BUDGET: setup locals scoped so their registers are freed (see the note at the top).
+	local FART_VOLUME = 0.6
+	local FART_SOUND_IDS = {
+		"rbxassetid://137105349517966",
+		"rbxassetid://136812322649032",
+		"rbxassetid://119702591396866",
+		"rbxassetid://123499328258921",
+		"rbxassetid://92449881602559",
+		"rbxassetid://109574021376037",
+		"rbxassetid://129402830763074",
+	}
+	local fartSound = Instance.new("Sound")
+	fartSound.Name = "FartSound"
+	fartSound.Volume = FART_VOLUME
+	fartSound.Parent = game:GetService("SoundService") -- SoundService => reliable 2D global playback (local player)
+	function playFartSound()
+		fartSound:Stop() -- cut any in-progress fart so rapid re-toggles don't stack
+		local chosenId = FART_SOUND_IDS[math.random(1, #FART_SOUND_IDS)]
+		fartSound.SoundId = chosenId
+		print("FART SOUND playing id="..chosenId)
+		fartSound:Play()
+	end
 end
 
 -- ===== SHARED DATA =====
@@ -197,6 +228,16 @@ _G.serverEventActive=false; _G.serverEventEndTime=0; _G.serverEventDisplayName="
 _G.serverEventSpeedMult=1; _G.serverEventCoinMult=1; _G.serverEventGasDrainMult=1
 _G.serverEventHeightMult=1; _G.serverEventRingMult=1
 _G.thunderstormActive=false; _G.windstormActive=false
+-- REBIRTH flight-speed bonus: +3% per rebirth, read live off the Rebirths leaderstat (set by RebirthSystem).
+_G.rebirthSpeedMult=1
+task.spawn(function()
+	local REBIRTH_SPEED_PER = 0.03
+	local plr = game:GetService("Players").LocalPlayer
+	local ls  = plr:WaitForChild("leaderstats", 30); if not ls then return end
+	local rb  = ls:WaitForChild("Rebirths", 30);     if not rb then return end
+	local function apply() _G.rebirthSpeedMult = 1 + REBIRTH_SPEED_PER * math.max(0, rb.Value) end
+	apply(); rb.Changed:Connect(apply)
+end)
 _G.windstormDir=Vector3.new(1,0,0); _G.stormWindTimer=0; _G.activeBirds={}
 _G.thunderWindVec=Vector3.new(0,0,0) -- LIGHT varying thunderstorm wind (set by EventClient); zero = no push
 -- ===== WORLD TABLES (populated by WorldClient) =====
@@ -207,7 +248,6 @@ _G.playerGamepasses = playerGamepasses
 _G.gui = {}
 
 -- ===== LOCAL STATE =====
-local flightStartY = 50
 local flightStartTime = 0
 local ringStreak = 0
 local ringMultiplier = 1
@@ -246,6 +286,9 @@ local DRAIN_RATE = 3.5 -- gas drained per second of flight (full tank ~= 28s)
 -- responsive drifting to line up with islands. Affects horizontal X/Z only — NOT vertical rise,
 -- gas drain, or on-ground WalkSpeed. Tune freely.
 local FLIGHT_HORIZONTAL_SPEED = 48 -- ~1.8x the old 27
+-- Climb-speed multiplier while carrying the Gardener's watering can. A full can is heavy: you CAN still fly
+-- with it, you just fly worse -- which is the joke. 0.7 = a noticeable drag without stranding anyone.
+local CAN_WEIGHT_MULT = 0.7
 -- Per-flight cap on HEIGHT coin earnings (in-flight ring bonus is separate and NOT capped). The cap
 -- now SCALES with how high you fly: this flight's height coins are capped at peakHeight*CAP_PER_HEIGHT
 -- (never below FLIGHT_COIN_CAP). So a deep flight pays out much more than a shallow one, and earnings
@@ -653,7 +696,9 @@ end
 local setMoreOpen, openLocker  -- MORE+ popup toggler + Locker opener (assigned after the sidebar, below)
 local moreOpenState = false    -- is the MORE+ popup currently open?
 local shopSideFrame,shopSideClick=mkSideBtn(-90*scale,Color3.fromRGB(50,180,50),"\xF0\x9F\x9b\x92","SHOP")
-local inviteSideFrame,inviteSideClick=mkSideBtn(0,Color3.fromRGB(100,80,200),"\xF0\x9F\x91\xa5","INVITE")
+-- WORMHOLE button (was REBIRTH -> was INVITE). Var names kept (inviteSideFrame/inviteSideClick) so the HUD layout +
+-- restyle passes still target this slot. Rebirth moved into the MORE+ menu. Opens the wormhole travel menu.
+local inviteSideFrame,inviteSideClick=mkSideBtn(0,Color3.fromRGB(140,86,226),"\xF0\x9F\x8C\x80","WORMHOLE")
 -- SWAP: the STOMACH button now lives here on the main screen, in the PETS button's OLD slot (same anchor/position/
 -- size/styling). It keeps its OWN icon (GUT_IMAGE), label ("Stomach"), and click action (opens the stomach shop).
 -- Var names dailySideFrame/dailySideClick are kept so the existing HUD layout + restyle code still target this slot.
@@ -673,7 +718,15 @@ shopSideClick.MouseButton1Click:Connect(function()
 end)
 inviteSideClick.MouseButton1Click:Connect(function()
 	playUIClick()
-	pcall(function() SocialService:PromptGameInvite(game.Players.LocalPlayer) end)
+	-- WORMHOLE button opens the wormhole travel menu (WormholeClient). Falls back to the OpenWormhole BindableEvent
+	-- signal if _G.toggleWormhole isn't up yet (script load order).
+	if _G.toggleWormhole then
+		_G.toggleWormhole()
+	else
+		local sig = ReplicatedStorage:FindFirstChild("OpenWormhole")
+		if not sig then sig = Instance.new("BindableEvent"); sig.Name = "OpenWormhole"; sig.Parent = ReplicatedStorage end
+		sig:Fire()
+	end
 end)
 dailySideClick.MouseButton1Click:Connect(function()
 	playUIClick()
@@ -708,36 +761,28 @@ mkStroke(noticeLabel, Color3.new(0, 0, 0), 2)
 local noticeSeq = 0
 -- Suppress the banner while ANYTHING else is happening: a server event, an open shop/menu, the crate
 -- reveal, or another banner already on screen -- so it never collides with on-screen activity.
+-- Is it a bad moment to nag the player? NotifyCenter now owns banner-vs-banner arbitration, so this
+-- only has to answer the question it is actually good at: "is the player busy with something else?"
+-- Storm/windstorm/nuke are checked explicitly -- they set their OWN flags, not _G.serverEventActive,
+-- so the old gate happily fired a "Daily Reward Ready!" nag in the middle of a thunderstorm.
 local function bannerBusy()
-	if _G.serverEventActive then return true end
+	if _G.serverEventActive or _G.thunderstormActive or _G.windstormActive then return true end
 	if _G.MainMenuManager and _G.MainMenuManager.current then return true end
-	if noticeFrame.Visible then return true end
-	if _G.gui then
-		if _G.gui.arrivalFrame and _G.gui.arrivalFrame.Visible then return true end
-		if _G.gui.announceFrame and _G.gui.announceFrame.Visible then return true end
-	end
+	if _G.NotifyCenter and _G.NotifyCenter.isBusy() then return true end
 	local rev = PlayerGui:FindFirstChild("MeteorCrateReveal")
 	if rev and rev.Enabled then return true end
-	local sev = PlayerGui:FindFirstChild("ServerEventGui")
-	if sev then local f = sev:FindFirstChildWhichIsA("Frame"); if f and f.Visible then return true end end
 	return false
 end
+-- A nudge, not news: lowest hero priority, so a real island unlock or purchase preempts it instantly.
 local function showHudBanner(text, color, holdSeconds)
-	noticeSeq = noticeSeq + 1
-	local mySeq = noticeSeq
-	noticeLabel.Text = text
-	noticeFrame.BackgroundColor3 = color or Color3.fromRGB(40, 160, 90)
-	noticeFrame.Position = NOTICE_HIDDEN
-	noticeFrame.Visible = true
-	TweenService:Create(noticeFrame, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-		{ Position = NOTICE_SHOWN }):Play()
-	task.delay(holdSeconds or 4, function()
-		if noticeSeq ~= mySeq then return end -- a newer banner replaced this one
-		TweenService:Create(noticeFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-			{ Position = NOTICE_HIDDEN }):Play()
-		task.wait(0.35)
-		if noticeSeq == mySeq then noticeFrame.Visible = false end
-	end)
+	local NC = _G.NotifyCenter
+	if not NC then return end
+	NC.push({
+		text     = text,
+		color    = color or Color3.fromRGB(40, 160, 90),
+		priority = NC.PRIORITY.REWARD,
+		duration = holdSeconds or 4,
+	})
 end
 _G.showHudBanner = showHudBanner
 -- Periodic reminder: every 20s, if a reward is available and nothing else is on screen, flash the
@@ -973,7 +1018,11 @@ do
 	-- CRATE (Daily Rewards) ready "!" dot infrastructure. The crate snapshot lives in CrateClient,
 	-- which exposes _G.crateIsClaimable; we poll it to toggle a red dot on the ready row + MORE button.
 	local crateReadyDots = {}
-	local function mkCrateDot(parent)
+	local taskPendingDots = {} -- DAILY TASKS: its own dot group, so a done checklist can't clear the crate's dot
+	-- `list` is which group the dot belongs to. Originally this only ever made crate dots; the daily-tasks row
+	-- needs the same dot but toggled by a DIFFERENT condition, so the group is now a parameter rather than the
+	-- function silently appending to one hardcoded table.
+	local function mkCrateDot(parent, list)
 		local dot = Instance.new("Frame")
 		dot.Name = "CrateReadyDot"
 		dot.Size = UDim2.fromOffset(18, 18)
@@ -988,26 +1037,34 @@ do
 		bang.BackgroundTransparency = 1; bang.Size = UDim2.fromScale(1, 1)
 		bang.Font = Enum.Font.GothamBlack; bang.Text = "!"; bang.TextSize = 13
 		bang.TextColor3 = Color3.new(1, 1, 1); bang.ZIndex = 9; bang.Parent = dot
-		crateReadyDots[#crateReadyDots + 1] = dot
+		local group = list or crateReadyDots
+		group[#group + 1] = dot
 		return dot
 	end
 
 	local MORE_ENTRIES = { -- ADD MORE HERE later (each: label + an image OR emoji icon + an action)
+		{ label = "Rebirth", emoji = "\xF0\x9F\x94\x84", action = function() if _G.toggleRebirth then _G.toggleRebirth() end end }, -- MOVED here from the side button (the WORMHOLE button took its slot)
 		{ label = "Daily Rewards", emoji = "\xF0\x9F\x8E\x81", readyDot = true, action = function() -- opens the Mystery Meteor Crate (CrateClient listens on OpenMeteorCrate)
 			local ev = RSx:FindFirstChild("OpenMeteorCrate")
 			if not ev then ev = Instance.new("BindableEvent"); ev.Name = "OpenMeteorCrate"; ev.Parent = RSx end
 			ev:Fire()
 		end },
+		{ label = "Daily Tasks", emoji = "\xF0\x9F\x93\x8B", tasksDot = true, action = function() -- DailyTasks.client owns the panel
+			if _G.toggleDailyTasks then _G.toggleDailyTasks() end
+		end },
 		{ label = "Pets", emoji = "\xF0\x9F\x90\xBE", action = function() print("[MenuMgr] button PetInv clicked while "..tostring(_G.MainMenuManager and _G.MainMenuManager.current).." open"); local ev = PlayerGui:FindFirstChild("PetInvToggle"); if ev then ev:Fire() end end }, -- SWAP: the PETS button now lives in the More+ menu, in the Stomach entry's OLD slot (keeps the paw icon, label + pet-inventory action)
 		{ label = "Seasonal Pets",  emoji = "\xF0\x9F\x90\xBE", action = function() if openLocker then openLocker() end end },
 		{ label = "Codes",          emoji = "\xF0\x9F\x8E\xAB", action = function() if _G.openCodesGui then _G.openCodesGui() end end },  -- redeem codes (RewardsClient builds CodesGui)
+		{ label = "Free Rewards",   emoji = "\xF0\x9F\x8E\x81", action = function() if _G.toggleSocialRewards then _G.toggleSocialRewards() end end }, -- SocialRewards.client owns the panel (like/favourite/group -> +5 pet levels)
+		{ label = "Season Pass",    emoji = "\xE2\xAD\x90",     action = function() if _G.toggleSeasonPass then _G.toggleSeasonPass() end end }, -- SeasonPass.client owns the track UI (free + premium lanes, XP from daily tasks)
 		-- (the "MLR Group" entry was removed from the HUD; non-members are now nudged by a periodic banner that
 		--  opens the group window when tapped -- see RewardsClient)
 	}
 	for i, e in ipairs(MORE_ENTRIES) do
 		local row = mkButton(entryScroll, { Size = UDim2.new(1, 0, 0, 46), BackgroundColor3 = e.color or Color3.fromRGB(248, 240, 250), Text = "", ZIndex = 2, LayoutOrder = i })
 		mkCorner(row, 10)
-			if e.readyDot then mkCrateDot(row) end
+			if e.readyDot then mkCrateDot(row, crateReadyDots) end
+			if e.tasksDot then mkCrateDot(row, taskPendingDots) end
 		if e.image then
 			local im = Instance.new("ImageLabel"); im.BackgroundTransparency = 1; im.Image = e.image; im.ScaleType = Enum.ScaleType.Fit
 			im.Size = UDim2.new(0, 30, 0, 30); im.Position = UDim2.new(0, 8, 0.5, 0); im.AnchorPoint = Vector2.new(0, 0.5); im.ZIndex = 3; im.Parent = row
@@ -1017,9 +1074,9 @@ do
 		mkLabel(row, { Text = e.label, Font = Enum.Font.GothamBold, TextSize = 18, TextColor3 = Color3.fromRGB(70, 40, 65), Size = UDim2.new(1, -50, 1, 0), Position = UDim2.new(0, 46, 0, 0), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3 })
 		row.MouseButton1Click:Connect(function() playUIClick(); setMoreOpen(false); pcall(e.action) end)
 	end
-		mkCrateDot(stomachSideFrame) -- "!" dot on the MORE button itself
-		-- Wiggle the WHOLE MORE+ button whenever the daily-rewards crate is claimable (same ±8° rotation
-		-- oscillation as the gut button). Driven by the same readiness poll below.
+		mkCrateDot(stomachSideFrame, crateReadyDots) -- "!" dot on the MORE button itself
+		-- Wiggle the WHOLE MORE+ button whenever the daily-rewards crate is claimable OR the daily tasks are
+		-- unfinished (same ±8° rotation oscillation as the gut button). Driven by the poll below.
 		local moreWiggling, moreWiggleTween = false, nil
 		local function stopMoreWiggle()
 			if not moreWiggling then return end
@@ -1035,11 +1092,15 @@ do
 			moreWiggleTween = TweenService:Create(stomachSideFrame, info, { Rotation = 8 })
 			moreWiggleTween:Play()
 		end
-		task.spawn(function() -- poll crate readiness every 1s; toggles the row dot + MORE-button dot + wiggle
+		task.spawn(function() -- poll every 1s; toggles the row dots + MORE-button dot + wiggle
 			while true do
-				local ready = (_G.crateIsClaimable and _G.crateIsClaimable()) == true
-				for _, d in ipairs(crateReadyDots) do d.Visible = ready end
-				if ready then startMoreWiggle() else stopMoreWiggle() end
+				local ready   = (_G.crateIsClaimable and _G.crateIsClaimable()) == true
+				local pending = (_G.dailyTasksPending and _G.dailyTasksPending()) == true
+				-- Two INDEPENDENT dot groups: claiming the crate must not clear the daily-tasks dot, and
+				-- finishing your tasks must not clear the crate's. They just happen to share one wiggle.
+				for _, d in ipairs(crateReadyDots)   do d.Visible = ready   end
+				for _, d in ipairs(taskPendingDots)  do d.Visible = pending end
+				if ready or pending then startMoreWiggle() else stopMoreWiggle() end
 				task.wait(1)
 			end
 		end)
@@ -1269,6 +1330,12 @@ end
 killGasMeterBand()
 task.delay(3, killGasMeterBand); task.delay(8, killGasMeterBand); task.delay(12, killGasMeterBand) -- re-run after restyles/scaling settle
 
+-- NOTE: the old "kill the black bar over the gut/gas meter" sweep was REMOVED. The console dumps proved there
+-- is NO foreign black element over the bottom HUD (the gas panel is blue, the gut pill is pink, the fart button
+-- is grey). Worse, that sweep's "bar-shaped image" rule matched the full-screen LOADING SCREEN BACKGROUND image
+-- (1968 wide) and hid it -- which is exactly why the loading picture went blank. If a real black bar ever shows
+-- up, grab a screenshot + F9 output and target it by name instead of a broad heuristic sweep.
+
 -- ===== [DARK] DIAGNOSTIC: scan the ENTIRE PlayerGui for dark-colored elements (print only, no fixes) =====
 -- Runs after the HUD + restyles + scaling have settled. Lists every dark, non-transparent GuiObject and every
 -- dark enabled UIStroke with full path + color + transparency + on-screen pos/size, so the gas-meter dark band
@@ -1392,29 +1459,103 @@ print("GUIS BUILT")
 local StarterGui = game:GetService("StarterGui")
 pcall(function() StarterGui:SetCore("TopbarEnabled", true) end)
 
+-- Global HUD scale. DESKTOP + TABLET keep the original 1280x720 (cap 1) behavior — untouched. Only PHONES
+-- switch to the iPhone SE/8 LANDSCAPE reference (1100x590, matches Space Realm's ResponsiveUI) so the whole
+-- HUD fits every phone instead of rendering at full authored size — that full-size render is why the buttons
+-- land in the wrong place on high-res phones "on join". Also guards the boot 1x1 viewport (camera reports 1x1
+-- for a frame or two at join → without the guard the scale collapses to ~0 and the HUD lands wrong until a resize).
 local function getScale()
-	local vp = workspace.CurrentCamera.ViewportSize
-	return math.min(vp.X/1280, vp.Y/720, 1)
+	local cam = workspace.CurrentCamera
+	local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+	if vp.X <= 1 or vp.Y <= 1 then
+		return isMobile and 0.60 or 1 -- boot: viewport not valid yet; safe default until a recompute fixes it
+	end
+	if isMobile then
+		-- EXACT Space Realm ResponsiveUI formula: iPhone SE/8 landscape reference (1100x590), clamped by
+		-- device CLASS (viewport short-axis). PHONE-class (< 800) caps at 0.60 (clears the joystick, unchanged
+		-- — the phone scaling that's already dialed in). TABLET/iPad (>= 800) caps at 2.5, so it scales UP from
+		-- the reference (e.g. ~1.07 computed is kept) instead of being pinned at 1 — the iPad behavior copied
+		-- from the handoff file.
+		local deviceMax = (math.min(vp.X, vp.Y) >= 800) and 2.5 or 0.60
+		return math.clamp(math.min(vp.X / 1100, vp.Y / 590), 0.55, deviceMax)
+	end
+	return math.min(vp.X / 1280, vp.Y / 720, 1) -- DESKTOP: unchanged (authored layout, capped at 1)
 end
+
+-- ===== PHONE: PER-CLUSTER EXTRA SHRINK =====
+-- getScale() already shrinks the whole HUD to 0.60 on a phone, but three clusters were still eating the screen --
+-- and they are the three that sit ON TOP of where you actually look. So they get an EXTRA multiplier on top of the
+-- global scale, applied ONLY on mobile (desktop multiplies by nothing and is bit-for-bit unchanged).
+--
+-- Why a multiplier rather than smaller authored sizes: the authored sizes are shared with desktop, and every one of
+-- these clusters is a stack of fixed-offset children (the bottom group is a UIListLayout of pill + meter + button).
+-- Editing the numbers would need every child re-tuned and would drift from the desktop layout. One UIScale on the
+-- cluster root shrinks the frames, the gaps, the paddings and the (TextScaled) text together, as one piece.
+--
+-- These are safe to shrink this hard because all three are anchored to a screen EDGE -- bottom-centre for the
+-- bottom group, top-right for the coin pill and the stats panel -- and a UIScale scales about the element's own
+-- AnchorPoint. So they shrink INTO their corner and stay pinned there; they cannot drift off-screen.
+-- Deliberately on _G and NOT a `local`. CoreClient is very close to Luau's hard 200-locals-per-scope ceiling, and
+-- going one over makes the ENTIRE script fail to compile -- silently, taking every handler in it with it. (That is
+-- exactly how the Pet Hub's buttons died once.) A table on _G costs no register, so new tunables go here.
+-- ===== TEXT-SWEEP OPT-OUT =====
+-- Two passes below (applyScaling + repositionGUIs) blanket-force TextScaled=true -- and one of them Visible=true --
+-- on EVERY TextLabel/TextButton under EVERY ScreenGui. That is fine for the panels that were authored to be
+-- auto-fitted, and RUINOUS for any panel authored with explicit TextSizes: TextScaled ignores TextSize and blows
+-- each label up to fill its whole frame, so a carefully sized 12pt caption becomes 40pt and lands on top of its
+-- neighbours. That is the Pet Hub "REWARDS text goes huge and overlaps" bug -- the overlay is built with correct
+-- TextSizes, and then a later sweep (a viewport change, a respawn, or another menu calling _G.applyHudScaling)
+-- reaches in and overwrites them.
+--
+-- So the sweeps are now OPT-OUT. Set the NoTextSweep attribute on a ScreenGui (or any single element) and neither
+-- pass will touch its text. On _G, not a local: CoreClient is at the edge of Luau's 200-locals ceiling.
+_G.hudTextSweepSkip = function(v)
+	local n = v
+	while n and n ~= PlayerGui do
+		if n:GetAttribute("NoTextSweep") then return true end
+		n = n.Parent
+	end
+	return false
+end
+
+_G.MOBILE_SHRINK = {
+	BottomStackGui = 0.72, -- gut pill + gas meter + BUY FOOD FIRST -> 0.60 * 0.72 = 0.43 of authored size
+	CoinGui        = 0.78, -- coin counter, top-right
+	RightPanelGui  = 0.78, -- STATS panel + impulse buttons, top-right
+}
 
 local function applyScaling()
 	local s = getScale()
 	for _, gui in ipairs(PlayerGui:GetChildren()) do
 		-- LoadingScreen scales itself (separate ReplicatedFirst script); leave it alone.
 		if gui:IsA("ScreenGui") and gui.Name ~= "LoadingScreen" then
+			-- phone-only extra shrink for the three screen-hogging clusters; 1.0 (no change) for everything else
+			local extra = (isMobile and _G.MOBILE_SHRINK[gui.Name]) or 1
+			local s = s * extra
+			-- (Safe-area / topbar insets are handled per-GUI by applyTopSafe below, using CoreUISafeInsets —
+			-- see the TOP SAFE-AREA block — so nothing is set here; this pass is scaling only.)
 			-- Scale each top-level cluster around ITS OWN anchor so it stays pinned to its screen
 			-- edge/corner. (A ScreenGui-level UIScale scales from the top-left origin, so right/bottom-
-			-- anchored clusters would drift off their edge as the scale shrinks.) Full-screen backgrounds
-			-- / dimmers (Size ~ 1,1 scale) are skipped so they keep covering the whole screen.
-			for _, child in ipairs(gui:GetChildren()) do
-				if child:IsA("GuiObject") and not (child.Size.X.Scale >= 1 and child.Size.Y.Scale >= 1) then
+			-- anchored clusters would drift off their edge as the scale shrinks.) A full-screen cover
+			-- (Size ~ 1,1 scale — a dimmer / input catcher) is NOT scaled (it must keep covering the
+			-- screen); instead we RECURSE into it so a menu PANEL nested underneath (e.g. the food/premium
+			-- shop, whose panel lives inside a full-screen Frame) still gets scaled on phones. Once we hit a
+			-- non-full-screen element we scale it and stop (its UIScale carries all its descendants).
+			local function scaleNode(child)
+				if not child:IsA("GuiObject") then return end
+				if child.Size.X.Scale >= 1 and child.Size.Y.Scale >= 1 then
+					for _, gc in ipairs(child:GetChildren()) do scaleNode(gc) end -- recurse into the cover
+				else
 					local us = child:FindFirstChildWhichIsA("UIScale")
 					if not us then us = Instance.new("UIScale"); us.Parent = child end
 					us.Scale = s
 				end
 			end
+			for _, child in ipairs(gui:GetChildren()) do scaleNode(child) end
 			for _, v in ipairs(gui:GetDescendants()) do
-				if v:IsA("TextLabel") or v:IsA("TextButton") then v.TextScaled = true end
+				if (v:IsA("TextLabel") or v:IsA("TextButton")) and not _G.hudTextSweepSkip(v) then
+					v.TextScaled = true
+				end
 			end
 		end
 	end
@@ -1436,15 +1577,61 @@ local function repositionGUIs()
 	coinGui.Enabled = true; coinPill.Visible = true
 	coinPill.Size = UDim2.new(0,200,0,52); coinPill.Position = UDim2.new(1,-10,0,10); coinPill.AnchorPoint = Vector2.new(1,0)
 	-- right panel (unified stats + impulse buttons)
-	rightPanel.Size = UDim2.new(0,230,0,500); rightPanel.Position = UDim2.new(1,-5,0,85); rightPanel.AnchorPoint = Vector2.new(1,0)
-	-- left buttons, square and high up
-	shopSideFrame.Size = UDim2.new(0,110,0,110); shopSideFrame.Position = UDim2.new(0,10,0.08,0); shopSideFrame.AnchorPoint = Vector2.new(0,0)
-	inviteSideFrame.Size = UDim2.new(0,110,0,110); inviteSideFrame.Position = UDim2.new(0,10,0.30,0); inviteSideFrame.AnchorPoint = Vector2.new(0,0)
-	dailySideFrame.Size = UDim2.new(0,110,0,110); dailySideFrame.Position = UDim2.new(0,10,0.52,0); dailySideFrame.AnchorPoint = Vector2.new(0,0)
-	stomachSideFrame.Size = UDim2.new(0,110,0,110); stomachSideFrame.Position = UDim2.new(0,10,0.74,0); stomachSideFrame.AnchorPoint = Vector2.new(0,0)
-	-- all text visible and scaled
+	-- right panel (stats + impulse buttons). Anchor (1,0) top-right, so its UIScale shrinks it toward that
+	-- corner. Desktop/tablet keep the authored spot; on phone-class it tucks up under the coin pill.
+	--
+	-- That Y is now DERIVED from the coin pill's live rendered height rather than hard-coded (it used to be a
+	-- flat y48, "a first-pass estimate"). The coin pill and the stats panel now shrink by DIFFERENT amounts, so
+	-- any fixed number is wrong the moment either multiplier is touched -- the gap would silently open up or the
+	-- two would overlap. Measuring it keeps them locked together whatever the scales become.
+	do
+		local vpR = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280,720)
+		local phoneClassR = isMobile and math.min(vpR.X, vpR.Y) < 800
+		rightPanel.Size = UDim2.new(0,230,0,500); rightPanel.AnchorPoint = Vector2.new(1,0)
+		if phoneClassR then
+			local coinScale = getScale() * (_G.MOBILE_SHRINK.CoinGui or 1)
+			local coinBottom = 10 + math.floor(52 * coinScale + 0.5) -- pill's authored y-offset + its scaled height
+			rightPanel.Position = UDim2.new(1, -8, 0, coinBottom + 8)
+		else
+			rightPanel.Position = UDim2.new(1, -5, 0, 85)
+		end
+	end
+	-- LEFT RAIL: 4 stacked 95x95 buttons (SHOP / STOMACH / WORMHOLE / MORE). These are 4 SEPARATE fixed-offset
+	-- frames (NOT one UIListLayout), so applyScaling's per-frame UIScale sizes each button but leaves the GAPS
+	-- fixed — which spreads them out when scaled DOWN (phone) and OVERLAPS them when scaled UP (iPad, now that
+	-- tablets can exceed 1). So on ALL mobile we recompute the stack pitch from the live scale:
+	--   PHONE-class: tight padding 6 (pitch 101*s) + rail raised 30px to y66 (clears the joystick).
+	--   TABLET/iPad: default padding 12 (pitch 107*s), authored top y96 — the reference's tablet treatment.
+	-- DESKTOP keeps the exact authored grid (y96/203/310/417, 107px pitch) — unchanged. (At scale 1 the tablet
+	-- formula equals the authored grid, so they stay continuous.)
+	do
+		local vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+		local phoneClass = isMobile and math.min(vp.X, vp.Y) < 800
+		local frames = { shopSideFrame, inviteSideFrame, dailySideFrame, stomachSideFrame }
+		if isMobile then
+			local s = getScale()
+			local pitch = math.floor((phoneClass and 101 or 107) * s + 0.5) -- (button + padding) * live scale
+			local topY = phoneClass and 66 or 96 -- phone raises 30px to clear the joystick; tablet keeps y96
+			for i, f in ipairs(frames) do
+				f.Size = UDim2.new(0,95,0,95); f.AnchorPoint = Vector2.new(0,0)
+				f.Position = UDim2.new(0, 12, 0, topY + pitch * (i - 1))
+			end
+		else
+			local ys = { 96, 203, 310, 417 } -- DESKTOP: authored grid (107px pitch), unchanged
+			for i, f in ipairs(frames) do
+				f.Size = UDim2.new(0,95,0,95); f.AnchorPoint = Vector2.new(0,0)
+				f.Position = UDim2.new(0, 12, 0, ys[i])
+			end
+		end
+	end
+	-- All text visible and scaled -- EXCEPT anything under a NoTextSweep element (see the opt-out above).
+	-- The Visible=true here is the nastier half of this pass: it force-SHOWS every label, including ones a menu
+	-- deliberately hid (a collapsed tab, a locked row, an empty state). Combined with TextScaled that is exactly
+	-- how the Pet Hub ended up with giant overlapping text on top of each other.
 	for _, v in ipairs(PlayerGui:GetDescendants()) do
-		if v:IsA("TextLabel") or v:IsA("TextButton") then v.TextScaled = true; v.Visible = true end
+		if (v:IsA("TextLabel") or v:IsA("TextButton")) and not _G.hudTextSweepSkip(v) then
+			v.TextScaled = true; v.Visible = true
+		end
 	end
 	-- Tiny Gut pill + gas meter + fart button are ONE centered group (BottomStack + UIListLayout);
 	-- their size/position/centering is owned by that layout + the per-cluster UIScale below — nothing to set here.
@@ -1459,6 +1646,37 @@ player.CharacterAdded:Connect(function()
 	repositionGUIs()
 end)
 task.delay(3, repositionGUIs)
+
+-- ===== TOP SAFE-AREA: keep these panels clear of the device notch (and, where needed, the Roblox topbar) =====
+-- ScreenInsets maps a ScreenGui's coordinate space into a safe rect and Roblox auto-recomputes it on
+-- rotation / safe-area changes. TWO modes, because the choice depends on how the GUI was already inset:
+--   "device" = DeviceSafeInsets  → notch / home-bar ONLY. Used for GUIs that were IgnoreGuiInset=true
+--              (full-screen coords): on desktop this is a NO-OP (no notch), so they stay put — this is what
+--              fixes the "coin + stats got pushed down" regression. On phones it still clears the notch.
+--   "core"   = CoreUISafeInsets  → topbar + notch. Used for GUIs that already respected the topbar
+--              (IgnoreGuiInset=false): adding this doesn't move them on desktop, it just adds notch clearance.
+-- NOTE: we do NOT flip IgnoreGuiInset anymore (that was forcing the topbar inset on the coin/stats).
+local TOP_SAFE_GUIS = {
+	CoinGui = "device",        -- coin pill (was IgnoreGuiInset=true → notch only, no desktop shift)
+	RightPanelGui = "device",  -- STATS panel + impulse buttons (was IgnoreGuiInset=true → notch only)
+	SidebarGui = "device",     -- left rail: notch only. CoreUISafeInsets added the topbar inset and pushed the rail too low — this puts it back up.
+	StomachShopGui = "core",   -- STOMACH SHOP
+	FoodShopGui = "core",      -- SHOP
+	PremiumShopGui = "core",   -- SHOP (premium tab)
+	MoreMenuGui = "core",      -- MORE+ menu (its buttons are children, so they shift with it)
+	GardenerChatGui = "core",  -- Global Community Gardener interact panel
+}
+local function applyTopSafe(sg)
+	local mode = sg:IsA("ScreenGui") and TOP_SAFE_GUIS[sg.Name]
+	if not mode then return end
+	pcall(function()
+		sg.ScreenInsets = (mode == "core") and Enum.ScreenInsets.CoreUISafeInsets or Enum.ScreenInsets.DeviceSafeInsets
+	end)
+end
+for _, sg in ipairs(PlayerGui:GetChildren()) do applyTopSafe(sg) end
+-- Catch any of these built later (shops/gardener panel are built after this runs). Defer so the builder
+-- finishes its own IgnoreGuiInset/setup first, then we assert the safe-area inset last.
+PlayerGui.ChildAdded:Connect(function(sg) task.defer(applyTopSafe, sg) end)
 
 -- ===== TRAIL SELECTOR =====
 sg=Instance.new("ScreenGui"); sg.Name="TrailSelectorGui"; sg.ResetOnSpawn=false; sg.Parent=PlayerGui
@@ -1608,8 +1826,10 @@ task.spawn(function()
 	do
 		local stomachPanel=Instance.new("Frame"); stomachPanel.Name="Panel"; stomachPanel.Size=UDim2.new(0,700,0,520) -- matches the FOOD SHOP panel size (700x520) -- Name="Panel" so GutSkinClient can inject the Skins tab
 		stomachPanel.Position=UDim2.new(0.5,0,0.5,-45); stomachPanel.AnchorPoint=Vector2.new(0.5,0.5) -- nudged UP 45px to match the food shop's on-screen position
-		stomachPanel.BackgroundColor3=Color3.fromRGB(30,120,220); stomachPanel.BorderSizePixel=0; stomachPanel.Active=true; stomachPanel.Parent=stomachShopGui -- Active=true so panel clicks don't leak to the HUD behind it
-		mkCorner(stomachPanel,20); mkStroke(stomachPanel,Color3.fromRGB(20,60,160),3)
+		stomachPanel.BackgroundColor3=Color3.fromRGB(78,46,34); stomachPanel.BorderSizePixel=0; stomachPanel.Active=true; stomachPanel.Parent=stomachShopGui -- WARM THEME (brown panel); Active=true so panel clicks don't leak to the HUD behind it
+		mkCorner(stomachPanel,24); mkStroke(stomachPanel,Color3.fromRGB(198,100,40),2) -- rounder + thinner inner outline
+		do local g=Instance.new("UIGradient"); g.Rotation=90; g.Color=ColorSequence.new(Color3.fromRGB(98,60,44),Color3.fromRGB(64,36,26)); g.Parent=stomachPanel end -- subtle warm brown gradient
+		-- (drop shadow behind the panel REMOVED -- the stomach shop no longer casts the soft shadow behind its UI)
 		do
 			local bg=Instance.new("Frame"); bg.Size=UDim2.new(1,0,1,0); bg.BackgroundColor3=Color3.new(0,0,0)
 			bg.BackgroundTransparency=1; bg.Active=false; bg.BorderSizePixel=0; bg.ZIndex=0; bg.Parent=stomachShopGui -- invisible + Active=FALSE so clicks OUTSIDE the panel fall through to the HUD MENU BUTTONS (direct click-to-switch)
@@ -1627,20 +1847,20 @@ task.spawn(function()
 			mkStroke(ttl,Color3.fromRGB(0,0,0),2)
 		end
 		do
-			local sc=mkButton(stomachPanel,{Size=UDim2.new(0,40,0,40),Position=UDim2.new(1,-48,0,8),BackgroundColor3=Color3.fromRGB(255,60,60),Text="X",Font=Enum.Font.FredokaOne,TextScaled=true,TextColor3=Color3.fromRGB(255,255,255),BorderSizePixel=0})
-			mkCorner(sc,8); mkStroke(sc,Color3.fromRGB(160,20,20),2)
+			local sc=mkButton(stomachPanel,{Size=UDim2.new(0,40,0,40),Position=UDim2.new(1,-48,0,8),BackgroundColor3=Color3.fromRGB(230,96,82),Text="X",Font=Enum.Font.FredokaOne,TextScaled=true,TextColor3=Color3.fromRGB(255,255,255),BorderSizePixel=0})
+			mkCorner(sc,8); mkStroke(sc,Color3.fromRGB(150,50,40),2)
 			sc.MouseButton1Click:Connect(function() playUIClick(); stomachShopGui.Enabled=false; _G.MainMenuManager.notifyClosed("Stomach") end)
 		end
-		currentStomachLabel=mkLabel(stomachPanel,{Size=UDim2.new(1,-20,0,35),Position=UDim2.new(0,10,0,62),BackgroundColor3=Color3.fromRGB(20,80,180),BackgroundTransparency=0,Text="Current: Tiny Gut (100 max power)",Font=Enum.Font.FredokaOne,TextScaled=true,TextColor3=Color3.fromRGB(255,255,255),BorderSizePixel=0})
+		currentStomachLabel=mkLabel(stomachPanel,{Size=UDim2.new(1,-20,0,35),Position=UDim2.new(0,10,0,62),BackgroundColor3=Color3.fromRGB(56,32,24),BackgroundTransparency=0,Text="Current: Tiny Gut (100 max power)",Font=Enum.Font.FredokaOne,TextScaled=true,TextColor3=Color3.fromRGB(247,234,214),BorderSizePixel=0})
 		currentStomachLabel.Name="CurrentLabel" -- GutSkinClient repositions this when it injects the Skins tab
-		mkCorner(currentStomachLabel,10); mkStroke(currentStomachLabel,Color3.fromRGB(255,255,255),2)
+		mkCorner(currentStomachLabel,10); mkStroke(currentStomachLabel,Color3.fromRGB(255,208,96),2)
 		scrollFrame=Instance.new("ScrollingFrame"); scrollFrame.Name="TierList"; scrollFrame.Size=UDim2.new(1,-20,1,-110) -- Name="TierList" so the Skins tab can show/hide it
 		scrollFrame.Position=UDim2.new(0,10,0,105); scrollFrame.BackgroundTransparency=1
 		scrollFrame.ScrollBarThickness=6; scrollFrame.CanvasSize=UDim2.new(0,0,0,0)
 		scrollFrame.AutomaticCanvasSize=Enum.AutomaticSize.Y; scrollFrame.BorderSizePixel=0; scrollFrame.Parent=stomachPanel
 		do
-			local ll=Instance.new("UIListLayout"); ll.Padding=UDim.new(0,8); ll.SortOrder=Enum.SortOrder.LayoutOrder; ll.Parent=scrollFrame
-			local lp=Instance.new("UIPadding"); lp.PaddingLeft=UDim.new(0,4); lp.PaddingRight=UDim.new(0,4); lp.Parent=scrollFrame
+			local ll=Instance.new("UIListLayout"); ll.Padding=UDim.new(0,12); ll.SortOrder=Enum.SortOrder.LayoutOrder; ll.Parent=scrollFrame
+			local lp=Instance.new("UIPadding"); lp.PaddingLeft=UDim.new(0,10); lp.PaddingRight=UDim.new(0,10); lp.PaddingTop=UDim.new(0,4); lp.PaddingBottom=UDim.new(0,8); lp.Parent=scrollFrame
 		end
 	end
 
@@ -1720,7 +1940,9 @@ task.spawn(function()
 				-- then the others keep their existing ascending order (Tiny->Iron) just below it.
 				card.LayoutOrder = (tier.name == "Infinite Gut") and 1 or (i + 1)
 			card.BackgroundColor3=Color3.fromRGB(20,90,200); card.Parent=scrollFrame
-			mkCorner(card,12); mkStroke(card,Color3.fromRGB(255,255,255),2)
+			mkCorner(card,14); mkStroke(card,Color3.fromRGB(120,170,235),1.5) -- cleaner, thinner border
+				do local cg=Instance.new("UIGradient"); cg.Rotation=90; cg.Color=ColorSequence.new(Color3.fromRGB(38,112,224),Color3.fromRGB(16,74,168)); cg.Parent=card end -- soft vertical gradient
+				do local hlz=Instance.new("Frame"); hlz.BackgroundColor3=Color3.new(1,1,1); hlz.BackgroundTransparency=0.82; hlz.BorderSizePixel=0; hlz.Position=UDim2.new(0,8,0,4); hlz.Size=UDim2.new(1,-16,0,10); hlz.ZIndex=(card.ZIndex or 1); hlz.Parent=card; local hc=Instance.new("UICorner",hlz); hc.CornerRadius=UDim.new(0,6); local hg=Instance.new("UIGradient",hlz); hg.Rotation=90; hg.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0.4),NumberSequenceKeypoint.new(1,1)}) end -- subtle top highlight
 			do
 				-- Per-tier gut icon on each shop tier card. XL Gut shows an IMAGE (ScaleType=Fit) in the
 				-- icon slot; the other six show their OWN emoji as text. Same slot size/position either way.
@@ -2125,14 +2347,42 @@ end
 _G.updateCoins=updateCoins
 
 
-local function showFloatingText(text, col)
-	local sg2=Instance.new("ScreenGui"); sg2.ResetOnSpawn=false; sg2.Parent=PlayerGui
-	local lbl=Instance.new("TextLabel"); lbl.Text=text; lbl.Font=Enum.Font.GothamBold; lbl.TextSize=22
-	lbl.TextColor3=col or Color3.fromRGB(255,220,0); lbl.BackgroundTransparency=1
-	lbl.Size=UDim2.new(0,300,0,50); lbl.Position=UDim2.new(0.5,-150,0.5,0); lbl.ZIndex=10; lbl.Parent=sg2
-	Instance.new("UIStroke").Parent=lbl
-	TweenService:Create(lbl,TweenInfo.new(1.5,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Position=UDim2.new(0.5,-150,0.35,0),TextTransparency=1}):Play()
-	task.delay(1.5,function() sg2:Destroy() end)
+-- Ring bonuses, gas boosts, bird hits, "Not Enough Coins" -- all of it lands here, and the ring one
+-- fires on EVERY ring collected. Each call used to build its own ScreenGui at the identical pixel
+-- (0.5, 0.5) with no queue and no token, so grabbing three rings in two seconds drew three labels
+-- straight through each other. Now: ONE ScreenGui, and concurrent floats claim distinct vertical
+-- SLOTS so they read as a stack. Past 3 in flight we drop rather than pile on -- unreadable either way.
+-- The band was also moved off 0.35, which is exactly where the rocket-launch countdown sits.
+-- (`slots` is an upvalue: the do-block frees its REGISTER but the closure keeps the value -- see the
+-- register-budget note at the top of the file.)
+local showFloatingText
+do
+	local FLOAT_SLOTS = 3
+	local slots = {}
+	local floatGui = Instance.new("ScreenGui")
+	floatGui.Name = "FloatingTextGui"
+	floatGui.ResetOnSpawn = false
+	floatGui.IgnoreGuiInset = true
+	floatGui.DisplayOrder = 92
+	floatGui.Parent = PlayerGui
+
+	function showFloatingText(text, col)
+		local slot
+		for i = 1, FLOAT_SLOTS do if not slots[i] then slot = i; break end end
+		if not slot then return end
+		slots[slot] = true
+
+		local startY = 0.60 - (slot - 1) * 0.05 -- 0.60 / 0.55 / 0.50, drifting up 0.10 -> band 0.40..0.60
+		local lbl = Instance.new("TextLabel")
+		lbl.Text = text; lbl.Font = Enum.Font.GothamBold; lbl.TextSize = 22
+		lbl.TextColor3 = col or Color3.fromRGB(255,220,0); lbl.BackgroundTransparency = 1
+		lbl.Size = UDim2.new(0,300,0,50); lbl.Position = UDim2.new(0.5,-150,startY,0)
+		lbl.ZIndex = 10; lbl.Parent = floatGui
+		Instance.new("UIStroke").Parent = lbl
+		TweenService:Create(lbl, TweenInfo.new(1.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{ Position = UDim2.new(0.5,-150,startY - 0.10,0), TextTransparency = 1 }):Play()
+		task.delay(1.5, function() lbl:Destroy(); slots[slot] = nil end)
+	end
 end
 _G.showFloatingText=showFloatingText
 
@@ -2140,10 +2390,21 @@ _G.showFloatingText=showFloatingText
 task.spawn(function()
 	local StomachFullEvent=RS:WaitForChild("StomachFullEvent",30)
 	if StomachFullEvent then
-		StomachFullEvent.OnClientEvent:Connect(function(reason)
+		local GATE_PET_NAMES = { BroccoliPet="Broccoli Bunny", CoconutCrab="Coconut Crab", PopcornSheep="Popcorn Sheep", ButterDuck="Butter Duck", BurritoArmadillo="Burrito Armadillo" }
+		StomachFullEvent.OnClientEvent:Connect(function(reason, foodName, needPet)
 			if reason == "not_enough_coins" then
 				-- Coin shortfall: show the correct message; do NOT open the stomach shop.
 				showFloatingText("\xe2\x9a\xa0 Not Enough Coins", Color3.fromRGB(255,100,100))
+			elseif reason == "pet_quest_locked" then
+				-- Food stand locked: this island's pet quest isn't done yet. Styled HERO notice (matches the game),
+				-- with a plain floating-text fallback. Never opens a shop.
+				local petName = GATE_PET_NAMES[needPet] or "pet"
+				local msg = "Finish the " .. petName .. " quest to unlock this food stand!"
+				if _G.NotifyCenter and _G.NotifyCenter.push then
+					_G.NotifyCenter.push({ top = "\xF0\x9F\x94\x92 Food Stand Locked", text = msg, color = Color3.fromRGB(255,190,60), priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.PURCHASE or nil, duration = 3.5 })
+				else
+					showFloatingText("\xF0\x9F\x94\x92 " .. msg, Color3.fromRGB(255,190,60))
+				end
 			elseif reason == "not_enough_room" then
 				-- HAS room but this food is too big to fit -> distinct message; nudge to a bigger gut.
 				showFloatingText("\xe2\x9a\xa0 Not Enough Room!", Color3.fromRGB(255,100,100))
@@ -2174,20 +2435,23 @@ local function playIslandSound()
 	game:GetService("Debris"):AddItem(sound,4)
 end
 
+-- Landing a NEW island is the biggest moment in the game, so it goes to NotifyCenter's HERO lane at
+-- the top priority: it PREEMPTS anything lesser already on screen (a reward nag, a purchase) rather
+-- than being drawn underneath it. (The old arrivalFrame sat at UDim2.new(0.5,0,0,10) -- the same pixel
+-- as announceFrame/noticeFrame/PurchaseBanner, with nothing arbitrating between them.)
 local function showArrival(islandNum)
 	if arrivedIslands[islandNum] then return end
 	arrivedIslands[islandNum]=true
-	_G.gui.arrivalFrame.BackgroundColor3=islandColors[islandNum] or Color3.fromRGB(100,200,100)
-	_G.gui.islandLabel.Text=(ISLAND_DISPLAY_NAMES[islandNum] or ("Island "..islandNum)).."!"
-	_G.gui.arrivalFrame.Position=UDim2.new(0.5,0,0,-100); _G.gui.arrivalFrame.Visible=true
-	playIslandSound()
-	TweenService:Create(_G.gui.arrivalFrame,TweenInfo.new(0.4,Enum.EasingStyle.Back),{Position=UDim2.new(0.5,0,0,10)}):Play()
-	local token={}; arrivalHideToken=token
-	task.delay(3,function()
-		if arrivalHideToken~=token then return end
-		TweenService:Create(_G.gui.arrivalFrame,TweenInfo.new(0.3),{Position=UDim2.new(0.5,0,0,-100)}):Play()
-		task.delay(0.35,function() if arrivalHideToken==token then _G.gui.arrivalFrame.Visible=false end end)
-	end)
+	local NC = _G.NotifyCenter
+	if not NC then return end
+	NC.push({
+		top      = "\xF0\x9F\x8F\x9d\xef\xb8\x8f You reached",
+		text     = (ISLAND_DISPLAY_NAMES[islandNum] or ("Island "..islandNum)).."!",
+		color    = islandColors[islandNum] or Color3.fromRGB(100,200,100),
+		priority = NC.PRIORITY.ISLAND,
+		duration = 3.5,
+		sound    = playIslandSound,
+	})
 end
 _G.showArrival=showArrival
 
@@ -2202,22 +2466,14 @@ local function showServerEventBanner(msg, col)
 end
 _G.showServerEventBanner=showServerEventBanner
 
+-- "<player> reached <island>!" is OTHER people's news. It used to take the prime top-centre slot for
+-- 3.3s a time -- in a busy server, back to back -- burying the player's own arrival banner, which sat
+-- at the identical pixel. It now goes to NotifyCenter's SOCIAL lane (small pills, top-left, up to 3
+-- stacked), where it can fire as often as it likes without ever competing with the player's own moments.
 local function queueAnnouncement(msg)
-	table.insert(announceQueue,msg)
-	if not announceRunning then
-		announceRunning=true
-		task.spawn(function()
-			while #announceQueue>0 do
-				local m=table.remove(announceQueue,1)
-				_G.gui.announceBanner.Text=m; _G.gui.announceFrame.Position=UDim2.new(0.5,0,0,-100); _G.gui.announceFrame.Visible=true
-				TweenService:Create(_G.gui.announceFrame,TweenInfo.new(0.3,Enum.EasingStyle.Back),{Position=UDim2.new(0.5,0,0,10)}):Play()
-				task.wait(3.3)
-				TweenService:Create(_G.gui.announceFrame,TweenInfo.new(0.3),{Position=UDim2.new(0.5,0,0,-100)}):Play()
-				task.wait(0.4); _G.gui.announceFrame.Visible=false
-			end
-			announceRunning=false
-		end)
-	end
+	local NC = _G.NotifyCenter
+	if not NC then return end
+	NC.push({ text = msg, lane = "social", priority = NC.PRIORITY.SOCIAL })
 end
 
 local function getWindArrow(wx,wz)
@@ -2654,8 +2910,12 @@ RunService.Heartbeat:Connect(function(dt)
 		end
 		local scaledPower = (gasMeter / maxGasMeter) * stomachMax -- power scaled by remaining gas
 		currentPower = scaledPower
-		local speed = getFlightSpeed(scaledPower) * (_G.serverEventSpeedMult or 1)
+		local speed = getFlightSpeed(scaledPower) * (_G.serverEventSpeedMult or 1) * (_G.rebirthSpeedMult or 1) -- rebirth: a little faster each time
 		if twoXBoostActive then speed = speed * 2 end
+		-- WATERING CAN WEIGHT. A full can is heavy -- carrying it drags your climb down. The server sets this
+		-- attribute when the Gardener hands one over and clears it the moment the can is used or lost, so this
+		-- can't get stuck on. Applied AFTER the 2x boost so the penalty scales with your real climb speed.
+		if player:GetAttribute("CarryingWateringCan") then speed = speed * CAN_WEIGHT_MULT end
 
 		-- Horizontal steering while flying. Source the direction from the Humanoid's MoveDirection so
 		-- it works for PC (WASD/arrows), mobile (joystick), AND gamepad — it's already camera-relative.
@@ -2901,101 +3161,67 @@ do
 end
 
 -- ===== PURCHASE ANNOUNCEMENT BANNER =====
--- Purchase banner: display fn + event handler, wrapped in a do-block so these locals stay out of
--- the main chunk's register budget (same reason as the IIFE further below).
-do
--- Builds and shows the gold purchase banner (slide-in, confetti, sound, auto-dismiss). Called by
--- the PurchaseAnnouncementEvent handler on a real purchase.
-local function showPurchaseBanner(playerName, itemName, isGamepass)
-		local bannerGui = Instance.new("ScreenGui")
-		bannerGui.Name = "PurchaseBanner"
-		bannerGui.ResetOnSpawn = false
-		bannerGui.IgnoreGuiInset = true
-		bannerGui.Parent = PlayerGui
+-- The banner itself now goes through NotifyCenter's HERO lane (priority PURCHASE) instead of
+-- building its own ScreenGui at UDim2.new(0.5,0,0,10) -- which is the exact spot the arrival,
+-- announce and reward banners also used, so a purchase could land on top of "ISLAND UNLOCKED!".
+-- The confetti + sound stay: they're a full-screen celebration layered OVER whatever the hero
+-- lane is showing, so they cost no screen real estate and can't collide with anything.
+-- Still an IIFE, not a do-block -- see the register-budget note at the top of the file.
+;(function()
+local function celebrate()
+	local fx = Instance.new("ScreenGui")
+	fx.Name = "PurchaseConfetti"
+	fx.ResetOnSpawn = false
+	fx.IgnoreGuiInset = true
+	fx.DisplayOrder = 96 -- just above the hero banner it celebrates
+	fx.Parent = PlayerGui
 
-		local banner = Instance.new("Frame")
-		banner.Size = UDim2.new(0,500,0,60)
-		banner.Position = UDim2.new(0.5,0,0,-70)
-		banner.AnchorPoint = Vector2.new(0.5,0)
-		banner.BackgroundColor3 = Color3.fromRGB(255,200,0)
-		banner.ZIndex = 20
-		banner.Parent = bannerGui
-		local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0,12); bc.Parent = banner
-		local bs = Instance.new("UIStroke"); bs.Color = Color3.fromRGB(200,150,0); bs.Thickness = 3; bs.Parent = banner
+	local sound = Instance.new("Sound")
+	sound.SoundId = "rbxassetid://112825313814792"
+	sound.Volume = 0.8
+	sound.Parent = workspace
+	sound:Play()
+	game:GetService("Debris"):AddItem(sound, 5)
 
-		local icon = Instance.new("TextLabel")
-		icon.Size = UDim2.new(0,50,1,0)
-		icon.Position = UDim2.new(0,8,0,0)
-		icon.BackgroundTransparency = 1
-		icon.Text = isGamepass and "\xe2\xad\x90" or "\xf0\x9f\x8e\x89"
-		icon.TextSize = 28
-		icon.Font = Enum.Font.Gotham
-		icon.RichText = false
-		icon.ZIndex = 21
-		icon.Parent = banner
-
-		local label = Instance.new("TextLabel")
-		label.Size = UDim2.new(1,-60,1,0)
-		label.Position = UDim2.new(0,55,0,0)
-		label.BackgroundTransparency = 1
-		label.Text = playerName .. " bought " .. itemName .. "!"
-		label.Font = Enum.Font.GothamBold
-		label.TextSize = 16
-		label.TextColor3 = Color3.fromRGB(80,40,0)
-		label.TextXAlignment = Enum.TextXAlignment.Left
-		label.TextScaled = false
-		label.ZIndex = 21
-		label.Parent = banner
-
-		TweenService:Create(banner, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-			{Position = UDim2.new(0.5,0,0,10)}):Play()
-
-		local function playConfettiSound()
-				local sound = Instance.new("Sound")
-				sound.SoundId = "rbxassetid://112825313814792"
-				sound.Volume = 0.8
-				sound.Parent = workspace
-				sound:Play()
-				game:GetService("Debris"):AddItem(sound, 5)
-			end
-
-			task.spawn(function()
-				playConfettiSound()
-				for i = 1, 30 do
-					task.wait(0.05)
-					local confetti = Instance.new("Frame")
-				confetti.Size = UDim2.new(0, math.random(8,14), 0, math.random(8,14))
-				confetti.Position = UDim2.new(math.random(20,80)/100, 0, 0, math.random(-10,0))
-				confetti.BackgroundColor3 = Color3.fromHSV(math.random(0,100)/100, 1, 1)
-				confetti.BorderSizePixel = 0
-				confetti.ZIndex = 22
-				confetti.Rotation = math.random(0,360)
-				confetti.Parent = bannerGui
-				local uic = Instance.new("UICorner"); uic.CornerRadius = UDim.new(0,2); uic.Parent = confetti
-				TweenService:Create(confetti, TweenInfo.new(2), {
-					Position = UDim2.new(confetti.Position.X.Scale, 0, 1, 50),
-					Rotation = math.random(360),
-					BackgroundTransparency = 1
-				}):Play()
-				game:GetService("Debris"):AddItem(confetti, 2.1)
-			end
-		end)
-
-		task.delay(4, function()
-			TweenService:Create(banner, TweenInfo.new(0.3),
-				{Position = UDim2.new(0.5,0,0,-70)}):Play()
-			task.wait(0.4)
-			bannerGui:Destroy()
-		end)
+	task.spawn(function()
+		for _ = 1, 30 do
+			task.wait(0.05)
+			local confetti = Instance.new("Frame")
+			confetti.Size = UDim2.new(0, math.random(8,14), 0, math.random(8,14))
+			confetti.Position = UDim2.new(math.random(20,80)/100, 0, 0, math.random(-10,0))
+			confetti.BackgroundColor3 = Color3.fromHSV(math.random(0,100)/100, 1, 1)
+			confetti.BorderSizePixel = 0
+			confetti.Rotation = math.random(0,360)
+			confetti.Parent = fx
+			local uic = Instance.new("UICorner"); uic.CornerRadius = UDim.new(0,2); uic.Parent = confetti
+			TweenService:Create(confetti, TweenInfo.new(2), {
+				Position = UDim2.new(confetti.Position.X.Scale, 0, 1, 50),
+				Rotation = math.random(360),
+				BackgroundTransparency = 1
+			}):Play()
+			game:GetService("Debris"):AddItem(confetti, 2.1)
+		end
+		task.wait(2.2)
+		fx:Destroy()
+	end)
 end
 
 local PAE = RS:WaitForChild("PurchaseAnnouncementEvent", 10)
 if PAE then
 	PAE.OnClientEvent:Connect(function(playerName, itemName, isGamepass)
-		showPurchaseBanner(playerName, itemName, isGamepass)
+		local NC = _G.NotifyCenter
+		if not NC then return end
+		NC.push({
+			top      = isGamepass and "â­ GAMEPASS" or "ð PURCHASE",
+			text     = tostring(playerName) .. " bought " .. tostring(itemName) .. "!",
+			color    = Color3.fromRGB(255, 200, 0),
+			priority = NC.PRIORITY.PURCHASE,
+			duration = 4,
+			sound    = celebrate,
+		})
 	end)
 end
-end
+end)()
 
 -- ===== BRIGHT FLAT STYLE =====
 -- IIFE keeps locals out of the outer function's 200-register budget
@@ -3026,12 +3252,12 @@ end
 	local shS = shopSideFrame:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
 	shS.Color = Color3.fromRGB(30,120,30); shS.Thickness = 3; shS.Parent = shopSideFrame
 
-	-- INVITE BUTTON  (variable: inviteSideFrame, line 302)
-	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(160,80,220)
+	-- REBIRTH BUTTON  (variable kept as inviteSideFrame)
+	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(140,86,226) -- WORMHOLE button
 	local inC = inviteSideFrame:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
 	inC.CornerRadius = UDim.new(0,16); inC.Parent = inviteSideFrame
 	local inS = inviteSideFrame:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
-	inS.Color = Color3.fromRGB(80,30,140); inS.Thickness = 3; inS.Parent = inviteSideFrame
+	inS.Color = Color3.fromRGB(90,40,160); inS.Thickness = 3; inS.Parent = inviteSideFrame
 
 	-- PETS BUTTON  (variable kept as dailySideFrame; repurposed paw button)
 	dailySideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70)
@@ -3124,7 +3350,7 @@ end)()
 		ColorSequenceKeypoint.new(1,   Color3.fromRGB(0,255,80)),
 	}) end
 	shopSideFrame.BackgroundColor3 = Color3.fromRGB(50,220,50)
-	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(180,80,255)
+	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(140,86,226) -- WORMHOLE button
 	dailySideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70)
 	shopSideFrame.Size = UDim2.new(0,95,0,95)
 	inviteSideFrame.Size = UDim2.new(0,95,0,95)

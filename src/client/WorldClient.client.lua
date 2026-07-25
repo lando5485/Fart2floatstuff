@@ -401,7 +401,7 @@ end)
 
 -- OWNER overhead tags: these 3 usernames (lando5485 also matched by UserId for safety) show a single
 -- green "Owner" tag instead of the normal island/name billboard. Every OTHER player is unchanged.
-local OWNER_NAMES = { ["Broskie310111"] = true, ["itsmaddmax2"] = true, ["lando5485"] = true }
+local OWNER_NAMES = { ["Broskie310111"] = true, ["lando5485"] = true }
 local OWNER_USERIDS = { [1086836724] = true } -- lando5485 (extra safety; the username above also matches)
 local function isOwner(p)
 	return OWNER_NAMES[p.Name] == true or OWNER_USERIDS[p.UserId] == true
