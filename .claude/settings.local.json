@@ -143,7 +143,8 @@
       "Bash(echo \"EXIT=$?\")",
       "Bash(awk -F'fromRGB' '{print $0}')",
       "Bash(npx --yes @johnnymorganz/stylua-bin --check src/client/MenuBackdropGuard.client.lua)",
-      "Bash(npx --yes @johnnymorganz/stylua-bin --check src/client/DailyTasks.client.luau)"
+      "Bash(npx --yes @johnnymorganz/stylua-bin --check src/client/DailyTasks.client.luau)",
+      "Bash(git merge *)"
     ]
   }
 }
