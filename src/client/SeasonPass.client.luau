@@ -166,6 +166,23 @@ end
 laneLabel("FREE", 238, COL_FREE_A, COL_GREENINK)
 laneLabel("PLUS", 392, COL_PREM_A, COL_GOLDINK)
 
+-- ---- CODES lives here now ----------------------------------------------------------------------------------
+-- Redeeming a code used to be its own MORE+ entry, which is a whole menu row for a window the player opens
+-- maybe twice ever. It sits in the left gutter under the lane labels instead -- the same 66px column, the same
+-- pill shape -- so the two "free stuff" flows (season rewards, code rewards) are one place.
+-- RewardsClient owns the window (_G.openCodesGui); this only opens it. Opening it routes through
+-- MainMenuManager, which closes this panel underneath -- deliberate: one menu on screen at a time.
+local codesBtn = Instance.new("TextButton")
+codesBtn.AnchorPoint = Vector2.new(0, 0.5); codesBtn.Position = UDim2.fromOffset(14, 462); codesBtn.Size = UDim2.fromOffset(66, 52)
+codesBtn.BackgroundColor3 = COL_GOLD; codesBtn.Font = Enum.Font.FredokaOne
+codesBtn.Text = "\xF0\x9F\x8E\xAB CODES"; codesBtn.TextScaled = true; codesBtn.TextWrapped = true
+codesBtn.TextColor3 = Color3.fromRGB(70, 40, 0); codesBtn.ZIndex = 3; codesBtn.Parent = panel
+corner(codesBtn, 10); gradient(codesBtn, Color3.fromRGB(255, 224, 120), COL_GOLD_D, 90)
+stroke(codesBtn, COL_GOLDINK, 2); padAll(codesBtn, 6)
+codesBtn.Activated:Connect(function()
+	if _G.openCodesGui then _G.openCodesGui() end
+end)
+
 --------------------------------------------------------------------------------
 -- horizontal scroll of tier columns
 --------------------------------------------------------------------------------
@@ -311,7 +328,10 @@ local function setOpen(o)
 end
 _G.toggleSeasonPass = function() setOpen(not panel.Visible) end
 closeBtn.MouseButton1Click:Connect(function() setOpen(false) end)
-dim.MouseButton1Click:Connect(function() setOpen(false) end)
+-- NOTE: there is deliberately NO click-outside-to-close handler (matching the Pet Hub). The backdrop spans
+-- the whole screen, so a click anywhere off the panel used to slam it shut, which made menus feel like they
+-- closed at random. This panel now closes ONLY on an explicit action: its X button, its own toggle, or
+-- MainMenuManager closing it because another menu opened.
 
 -- STALE-DUPLICATE DEFENSE: an old baked-in copy of this script (it prints "[SeasonPass] client ready" at a
 -- DIFFERENT line) builds its own SeasonPassGui and steals _G.toggleSeasonPass, so More+ opens a dead panel.

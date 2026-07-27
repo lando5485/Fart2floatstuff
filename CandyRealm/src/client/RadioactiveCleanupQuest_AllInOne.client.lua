@@ -35,6 +35,10 @@ local TextChatService    = game:GetService("TextChatService")
 local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
 
+-- SYNC CHECK: if you DON'T see this exact line in the Output when you play, Rojo is NOT syncing this
+-- file into Studio (see the checklist) -- none of the recent crane/shovel fixes will be running.
+print("[Cleanup] >>> VERSION redpanel-v4 loaded <<<")
+
 -- ============================================================================
 -- CONFIG
 -- ============================================================================
@@ -729,35 +733,34 @@ local function spawnPiles()
 	for _, p in ipairs(piles) do
 		local want = solveFor and solveFor(p.pos, p.topY, 1.2)
 		p.reachable = (want ~= nil) and (want.miss <= GRAB_RADIUS)
-		if p.reachable then
-			reach += 1
-		else
-			byHand += 1
-			-- an out-of-reach pile gets its own "pick it up" prompt, live only once you
-			-- hold the shovel. Until then it just sits there glowing.
-			local part = p.model and p.model.PrimaryPart
-			if part then
-				part.CanQuery = true
-				local pr = Instance.new("ProximityPrompt")
-				pr.ActionText = "Pick Up Waste"; pr.ObjectText = "Radioactive Cocoa"
-				pr.HoldDuration = 0.4; pr.MaxActivationDistance = 12
-				pr.RequiresLineOfSight = false; pr.Parent = part
-				pr.Triggered:Connect(function()
-					if not hasShovel then
-						if _G.NotifyCenter then
-							pcall(function() _G.NotifyCenter.push({
-								text = "\xE2\x98\xA2 Too hot to touch -- find the secret shovel!", color = RED_L }) end)
-						end
-						return
+		if p.reachable then reach += 1 else byHand += 1 end
+		-- EVERY pile also gets a "Pick Up Waste" shovel prompt as a reliable fallback -- so a pile
+		-- the crane can't actually grab (or that you'd rather do by hand) is never left stuck. The
+		-- crane still grabs reachable ones normally; their prompts ride the hook + vanish on drop.
+		local part = p.model and p.model.PrimaryPart
+		if part then
+			part.CanQuery = true
+			local pr = Instance.new("ProximityPrompt")
+			pr.ActionText = "Pick Up Waste"; pr.ObjectText = "Radioactive Cocoa"
+			pr.HoldDuration = 0.4; pr.MaxActivationDistance = 12
+			pr.RequiresLineOfSight = false; pr.Parent = part
+			p.handPrompt = pr   -- kept so an interrupted carry can re-enable it (any-order safety)
+			pr.Triggered:Connect(function()
+				if p.taken then pr.Enabled = false; return end
+				if not hasShovel then
+					if _G.NotifyCenter then
+						pcall(function() _G.NotifyCenter.push({
+							text = "\xE2\x98\xA2 Too hot to touch -- find the secret shovel!", color = RED_L }) end)
 					end
-					if handPile then return end
-					pr.Enabled = false
-					handPickup(p)
-				end)
-			end
+					return
+				end
+				if handPile then return end
+				pr.Enabled = false
+				handPickup(p)
+			end)
 		end
 	end
-	print(("[Cleanup] %d pile(s) in crane range, %d need the secret shovel"):format(reach, byHand))
+	print(("[Cleanup] %d pile(s) in crane range, %d out of reach (all hand-diggable with the shovel)"):format(reach, byHand))
 end
 
 -- ============================================================================
@@ -887,41 +890,54 @@ do
 end
 
 -- ===== RED "the crane can't reach the rest" alert -- a full-screen red wash with the message +
--- a big EXIT button. Lives inside the console gui, so it only shows while you're operating the
--- crane; refreshHUD toggles redAlert.Visible when the crane is stuck. =====
-local redAlert = Instance.new("Frame")
-redAlert.Name = "CraneStuckAlert"; redAlert.Size = UDim2.fromScale(1, 1)
-redAlert.BackgroundColor3 = Color3.fromRGB(120, 20, 16); redAlert.BackgroundTransparency = 0.4
-redAlert.BorderSizePixel = 0; redAlert.Visible = false; redAlert.ZIndex = 50; redAlert.Parent = gui
-local raMsg = Instance.new("TextLabel")
-raMsg.AnchorPoint = Vector2.new(0.5, 0.5); raMsg.Position = UDim2.new(0.5, 0, 0.38, 0); raMsg.Size = UDim2.fromOffset(760, 190)
-raMsg.BackgroundTransparency = 1; raMsg.Font = Enum.Font.GothamBlack; raMsg.TextScaled = true
-raMsg.Text = "\xE2\x9B\x8F THE CRANE CAN'T REACH THE REST!\nExit the machine and go find the Secret Shovel."
-raMsg.TextColor3 = Color3.fromRGB(255, 236, 226); raMsg.TextStrokeColor3 = Color3.new(0, 0, 0); raMsg.TextStrokeTransparency = 0
-raMsg.ZIndex = 51; raMsg.Parent = redAlert
-do local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 34; sz.Parent = raMsg end
-local redExitBtn = Instance.new("TextButton")
-redExitBtn.AnchorPoint = Vector2.new(0.5, 0.5); redExitBtn.Position = UDim2.new(0.5, 0, 0.62, 0); redExitBtn.Size = UDim2.fromOffset(320, 68)
-redExitBtn.BackgroundColor3 = Color3.fromRGB(226, 62, 58); redExitBtn.AutoButtonColor = true
-redExitBtn.Font = Enum.Font.GothamBlack; redExitBtn.Text = "EXIT THE MACHINE"; redExitBtn.TextScaled = true
-redExitBtn.TextColor3 = Color3.fromRGB(255, 255, 255); redExitBtn.ZIndex = 51; redExitBtn.Parent = redAlert
+-- a big EXIT button (named "RedExit"). Lives inside the console gui, so it only shows while you're
+-- operating the crane. refreshHUD toggles its .Visible (found by name) and the EXIT button is wired
+-- next to btnExit. Wrapped in do...end so none of this leaks a top-level local (Luau caps at 200). =====
 do
-	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 14); c.Parent = redExitBtn
-	local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(120, 20, 16); s.Thickness = 3; s.Parent = redExitBtn
-	local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 26; sz.Parent = redExitBtn
-end
--- pulse the wash + button while it's up
-task.spawn(function()
-	local t = 0
-	while true do
-		t += 0.08
-		if redAlert.Visible then
-			redAlert.BackgroundTransparency = 0.42 + (math.sin(t * 3) * 0.5 + 0.5) * 0.16
-			redExitBtn.Size = UDim2.fromOffset(320 + math.sin(t * 5) * 14, 68)
+	-- The stuck alert is its OWN ScreenGui with a high DisplayOrder, so it is GUARANTEED to render on
+	-- top of the crane console (no ZIndex/parent ambiguity). refreshHUD + the assist toggle
+	-- alertGui.Enabled; setOperating hides it on exit. Active frame = modal. All wrapped in do...end
+	-- so nothing leaks a top-level local (Luau caps functions at 200 registers).
+	local alertGui = Instance.new("ScreenGui")
+	alertGui.Name = "CraneStuckGui"; alertGui.ResetOnSpawn = false; alertGui.IgnoreGuiInset = true
+	alertGui.DisplayOrder = 60; alertGui.Enabled = false; alertGui.Parent = PlayerGui
+	local redAlert = Instance.new("Frame")
+	redAlert.Name = "CraneStuckAlert"; redAlert.Active = true
+	redAlert.AnchorPoint = Vector2.new(0.5, 1); redAlert.Position = UDim2.new(0.5, 0, 1, -16); redAlert.Size = UDim2.new(0, 740, 0, 300)
+	redAlert.BackgroundColor3 = Color3.fromRGB(150, 28, 22); redAlert.BackgroundTransparency = 0.02
+	redAlert.BorderSizePixel = 0; redAlert.Parent = alertGui
+	local rc = Instance.new("UICorner"); rc.CornerRadius = UDim.new(0, 14); rc.Parent = redAlert
+	local rst = Instance.new("UIStroke"); rst.Color = Color3.fromRGB(255, 96, 74); rst.Thickness = 3; rst.Parent = redAlert
+	local rg = Instance.new("UIGradient"); rg.Rotation = 90
+	rg.Color = ColorSequence.new(Color3.fromRGB(176, 34, 26), Color3.fromRGB(120, 20, 16)); rg.Parent = redAlert
+	local raMsg = Instance.new("TextLabel")
+	raMsg.AnchorPoint = Vector2.new(0.5, 0); raMsg.Position = UDim2.new(0.5, 0, 0, 30); raMsg.Size = UDim2.new(1, -44, 0, 160)
+	raMsg.BackgroundTransparency = 1; raMsg.Font = Enum.Font.GothamBlack; raMsg.TextScaled = true; raMsg.TextWrapped = true
+	raMsg.Text = "\xE2\x9B\x8F THE CRANE CAN'T REACH THE REST!\n\nExit the machine and dig out the last piles with the Secret Shovel."
+	raMsg.TextColor3 = Color3.fromRGB(255, 238, 230); raMsg.TextStrokeColor3 = Color3.new(0, 0, 0); raMsg.TextStrokeTransparency = 0
+	raMsg.Parent = redAlert
+	local sz1 = Instance.new("UITextSizeConstraint"); sz1.MaxTextSize = 30; sz1.Parent = raMsg
+	local redExitBtn = Instance.new("TextButton")
+	redExitBtn.Name = "RedExit"
+	redExitBtn.AnchorPoint = Vector2.new(0.5, 1); redExitBtn.Position = UDim2.new(0.5, 0, 1, -28); redExitBtn.Size = UDim2.fromOffset(340, 60)
+	redExitBtn.BackgroundColor3 = Color3.fromRGB(255, 236, 226); redExitBtn.AutoButtonColor = true
+	redExitBtn.Font = Enum.Font.GothamBlack; redExitBtn.Text = "\xE2\x9C\x96 EXIT THE MACHINE"; redExitBtn.TextScaled = true
+	redExitBtn.TextColor3 = Color3.fromRGB(150, 26, 22); redExitBtn.Parent = redAlert
+	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 12); c.Parent = redExitBtn
+	local st = Instance.new("UIStroke"); st.Color = Color3.fromRGB(120, 20, 16); st.Thickness = 2; st.Parent = redExitBtn
+	local sz2 = Instance.new("UITextSizeConstraint"); sz2.MaxTextSize = 24; sz2.Parent = redExitBtn
+	task.spawn(function()
+		local t = 0
+		while true do
+			t += 0.08
+			if alertGui.Enabled then
+				rst.Transparency = (math.sin(t * 4) * 0.5 + 0.5) * 0.55
+				redExitBtn.Size = UDim2.fromOffset(340 + math.sin(t * 5) * 12, 60)
+			end
+			task.wait(0.08)
 		end
-		task.wait(0.08)
-	end
-end)
+	end)
+end
 
 -- ---- helpers ---------------------------------------------------------------
 local function bevel(inst, radius, strokeCol)
@@ -950,22 +966,19 @@ header.Size = UDim2.new(1, 0, 0, 28); header.BackgroundColor3 = HAZARD; header.B
 header.Parent = console
 do
 	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 14); c.Parent = header
-	-- diagonal hazard chevrons
-	for i = 0, 15 do
-		local st = Instance.new("Frame")
-		st.BackgroundColor3 = Color3.fromRGB(24, 22, 12); st.BorderSizePixel = 0
-		st.Size = UDim2.new(0, 12, 0, 46); st.Position = UDim2.new(0, i * 44 - 10, 0, -9)
-		st.Rotation = 22; st.BackgroundTransparency = 0.82; st.Parent = header
-	end
+	-- The sixteen diagonal hazard chevrons are gone. They were the loudest thing on a panel
+	-- whose actual job is two buttons and one sentence, and stripes behind text are the first
+	-- thing that makes a readout hard to read.
 end
 mkText(header, "BEANLIFT  //  REACTOR CLEANUP", 14, 0, 340, 28, Color3.fromRGB(28, 24, 8), 13).TextYAlignment = Enum.TextYAlignment.Center
 local hdrRight = mkText(header, "SYS: NOMINAL", -170, 0, 156, 28, Color3.fromRGB(28, 24, 8), 11, Enum.TextXAlignment.Right)
 hdrRight.Position = UDim2.new(1, -14, 0, 0); hdrRight.AnchorPoint = Vector2.new(1, 0)
 hdrRight.TextYAlignment = Enum.TextYAlignment.Center
+hdrRight.Visible = false                 -- "SYS: NOMINAL" never said anything you could act on
 
 -- ---- BIG PLAIN-ENGLISH PROMPT + small telemetry ----------------------------
 local hintBar = mkPanel(12, 38, 696, 40, Color3.fromRGB(16, 19, 22))
-local hintLbl = mkText(hintBar, "", 12, 0, 424, 40, Color3.fromRGB(255, 226, 150), 17)
+local hintLbl = mkText(hintBar, "", 12, 0, 672, 40, Color3.fromRGB(255, 226, 150), 17)
 hintLbl.TextYAlignment = Enum.TextYAlignment.Center; hintLbl.TextWrapped = true
 
 local depthTrack = Instance.new("Frame")
@@ -975,9 +988,15 @@ depthTrack.Parent = hintBar
 local depthFill = Instance.new("Frame")
 depthFill.Size = UDim2.new(0, 0, 1, 0); depthFill.BackgroundColor3 = AMBER
 depthFill.BorderSizePixel = 0; depthFill.Parent = depthTrack
+depthTrack.Visible = false               -- the hook-depth bar goes with the depth readout
 
+-- DEPTH AND SLEW READOUTS, HIDDEN. The crane drives itself; a boom angle in degrees is
+-- telemetry for somebody flying it by hand, and nobody here is. They still update, so
+-- turning either back on is one Visible.
 local depthLbl = mkText(hintBar, "-00.0m", 452, 3, 110, 16, AMBER, 12)
 local slewLbl  = mkText(hintBar, "000\xC2\xB0", 452, 21, 110, 16, AMBER, 12)
+depthLbl.Visible = false
+slewLbl.Visible  = false
 local loadLbl  = mkText(hintBar, "EMPTY", 572, 0, 116, 40, STEEL, 12)
 loadLbl.TextYAlignment = Enum.TextYAlignment.Center
 
@@ -1017,6 +1036,7 @@ for i = 1, 3 do
 	local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(8, 9, 11); s.Thickness = 2; s.Parent = l
 	hudLamps[i] = l
 end
+lampRow.Visible = false                  -- the three lamps only repeat the BIN bar beside them
 
 local function mkButton(text, x, y, w, h, tint)
 	local b = Instance.new("TextButton")
@@ -1037,7 +1057,7 @@ btnAssist.TextSize = 30
 local btnGrab   = mkButton("GRAB", 364, 86, 344, 104, Color3.fromRGB(52, 104, 60))
 btnGrab.TextSize = 30
 
-local btnExit = mkButton("LET GO OF THE CONTROLS", 440, 202, 268, 34, Color3.fromRGB(84, 44, 46))
+local btnExit = mkButton("LEAVE", 440, 202, 268, 34, Color3.fromRGB(84, 44, 46))
 -- pulse the exit button red when the crane can't reach the last piles (attribute set in refreshHUD)
 task.spawn(function()
 	local t, base, hot = 0, Color3.fromRGB(84, 44, 46), Color3.fromRGB(226, 62, 58)
@@ -1146,7 +1166,7 @@ local function refreshHUD()
 	-- the big plain-English prompt: always says what to do NEXT
 	btnAssist.Text = carrying and "GO TO BIN" or "FIND WASTE"
 	if finished then
-		hintLbl.Text = "All done! Let go of the controls and go file your findings."
+		hintLbl.Text = "All done! Press LEAVE and go file your findings."
 	elseif carrying then
 		hintLbl.Text = "Nice! Press GO TO BIN, then press DROP."
 	else
@@ -1154,16 +1174,20 @@ local function refreshHUD()
 	end
 
 	-- crane can't reach the last piles -> tell them to EXIT and go find the shovel (pulses the button)
-	local strandedByCrane = questAccepted and not hasShovel and craneWorkLeft and craneWorkLeft() == 0 and unreachableLeft and unreachableLeft() > 0
-	if strandedByCrane and not finished then
-		hintLbl.Text = "The crane can't reach the rest!\nEXIT and go find the Secret Shovel."
-		btnExit.Text = "\xE2\x9B\x8F EXIT & FIND THE SHOVEL"
+	-- crane out of reach but piles remain -> EXIT and finish by hand. Shown while operating, but NOT
+	-- mid-carry (so the last crane drop isn't blocked by the modal red panel).
+	local craneStuck = questAccepted and not finished and not carrying and craneWorkLeft and craneWorkLeft() == 0 and unreachableLeft and unreachableLeft() > 0
+	if craneStuck then
+		hintLbl.Text = hasShovel and "The crane can't reach the rest!\nEXIT and dig them out with the shovel."
+			or "The crane can't reach the rest!\nEXIT and go find the Secret Shovel."
+		btnExit.Text = "\xE2\x9B\x8F EXIT THE MACHINE"
 		btnExit:SetAttribute("pulse", true)
 	else
-		if btnExit.Text ~= "LET GO OF THE CONTROLS" then btnExit.Text = "LET GO OF THE CONTROLS" end
+		if btnExit.Text ~= "LEAVE" then btnExit.Text = "LEAVE" end
 		btnExit:SetAttribute("pulse", false)
 	end
-	redAlert.Visible = strandedByCrane and not finished   -- the full-screen red "go find the shovel" wash
+	local ag = PlayerGui:FindFirstChild("CraneStuckGui")   -- the full red panel over the console
+	if ag then ag.Enabled = craneStuck and operating end
 
 	-- containment segments fill left to right
 	for i, s in ipairs(segFrames) do
@@ -1337,11 +1361,14 @@ local function startAssist()
 		if not pile then
 			-- crane's done everything in its reach. Anything left is a hand job.
 			if unreachableLeft() > 0 then
-				setStatus("!! CAN'T GRAB IT -- FIND THE SECRET SHOVEL")
-				hintLbl.Text = "Oh no! The crane can't reach those last piles.\nGo find the SECRET SHOVEL to pick them up!"
+				setStatus("!! CAN'T GRAB IT -- EXIT + USE THE SHOVEL")
+				hintLbl.Text = "Oh no! The crane can't reach those last piles.\nEXIT and dig them out with the shovel!"
+				local ag = PlayerGui:FindFirstChild("CraneStuckGui")   -- show the big red exit panel now
+				if ag then ag.Enabled = true end
+				print("[Cleanup] crane out of reach -- red EXIT panel shown")
 				if _G.NotifyCenter then
 					pcall(function() _G.NotifyCenter.push({
-						text = "\xE2\x9B\x8F Can't grab it! Go find the secret shovel.", color = HAZARD }) end)
+						text = "\xE2\x9B\x8F Can't grab it! Exit and use the shovel.", color = HAZARD }) end)
 				end
 			else
 				setStatus("NO WASTE LEFT")
@@ -1365,6 +1392,10 @@ local savedWalk, savedJump, returnCF
 local function setOperating(on)
 	operating = on
 	gui.Enabled = on
+	if not on then   -- leaving the crane -> always drop the red stuck panel
+		local ag = PlayerGui:FindFirstChild("CraneStuckGui")
+		if ag then ag.Enabled = false end
+	end
 	for k in pairs(held) do held[k] = false end
 
 	local char = player.Character
@@ -1405,7 +1436,12 @@ local function setOperating(on)
 end
 
 btnExit.MouseButton1Click:Connect(function() setOperating(false) end)
-redExitBtn.MouseButton1Click:Connect(function() setOperating(false) end)   -- the red-alert EXIT button
+do   -- the red-alert EXIT button (found by name so it costs no top-level local)
+	local ag = PlayerGui:FindFirstChild("CraneStuckGui")
+	local ra = ag and ag:FindFirstChild("CraneStuckAlert")
+	local rb = ra and ra:FindFirstChild("RedExit")
+	if rb then rb.MouseButton1Click:Connect(function() setOperating(false) end) end
+end
 
 -- dying at the controls shouldn't leave you frozen or stuck in the console
 player.CharacterAdded:Connect(function()
@@ -2055,6 +2091,12 @@ end
 task.spawn(function()
 	while true do
 		RunService.RenderStepped:Wait()
+		if handPile and (not handPile.model or not handPile.model.Parent) then
+			-- the carried pile vanished before the bin -> free it up so the run never soft-locks
+			handPile.taken = false
+			if handPile.handPrompt then handPile.handPrompt.Enabled = true end
+			handPile = nil
+		end
 		if handPile and handPile.model and handPile.model.Parent then
 			local char = player.Character
 			local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -2272,32 +2314,27 @@ local function bannerText()
 	end
 	return ("\xE2\x98\xA2 Clear the radioactive cocoa:  %d/%d loads"):format(loadsDone, LOADS_REQUIRED)
 end
--- a pulsing RED sign over the crane the moment it can't reach the last piles (until the shovel is found)
-local craneShovelSign
-local function updateCraneShovelSign()
+refreshBanner = function()
+	objLabel.Text = bannerText()
+	-- a pulsing RED "Find the Secret Shovel!" sign over the crane the moment it can't reach the rest
+	-- (found/created by name so it costs no top-level local -- Luau caps functions at 200 registers)
 	local show = questAccepted and not hasShovel and craneWorkLeft and craneWorkLeft() == 0 and unreachableLeft and unreachableLeft() > 0
-	if show and not craneShovelSign then
-		local anchor = (rig and (rig.boomTip or rig.heel)) or (crane and firstBasePart(crane))
-		if not anchor then return end
+	local anchor = (rig and (rig.boomTip or rig.heel)) or (crane and firstBasePart(crane))
+	local existing = anchor and anchor:FindFirstChild("CraneShovelSign")
+	if show and anchor and not existing then
 		local bb = Instance.new("BillboardGui"); bb.Name = "CraneShovelSign"; bb.Adornee = anchor
 		bb.Size = UDim2.fromOffset(300, 64); bb.StudsOffset = Vector3.new(0, 9, 0); bb.AlwaysOnTop = true; bb.MaxDistance = 500; bb.Parent = anchor
 		local tl = Instance.new("TextLabel"); tl.BackgroundTransparency = 1; tl.Size = UDim2.fromScale(1, 1)
 		tl.Font = Enum.Font.GothamBlack; tl.Text = "\xE2\x9B\x8F Find the Secret Shovel!"; tl.TextColor3 = Color3.fromRGB(255, 58, 48)
 		tl.TextStrokeColor3 = Color3.new(0, 0, 0); tl.TextStrokeTransparency = 0; tl.TextScaled = true; tl.Parent = bb
-		craneShovelSign = bb
 		task.spawn(function()
 			local t = 0
-			while craneShovelSign == bb and bb.Parent do
-				t += 0.08
-				tl.TextTransparency = 0.05 + (math.sin(t * 4) * 0.5 + 0.5) * 0.45
-				task.wait(0.08)
-			end
+			while bb.Parent do t += 0.08; tl.TextTransparency = 0.05 + (math.sin(t * 4) * 0.5 + 0.5) * 0.45; task.wait(0.08) end
 		end)
-	elseif (not show) and craneShovelSign then
-		craneShovelSign:Destroy(); craneShovelSign = nil
+	elseif (not show) and existing then
+		existing:Destroy()
 	end
 end
-refreshBanner = function() objLabel.Text = bannerText(); updateCraneShovelSign() end
 
 -- Shop_AllInOne calls this when you touch the LOCKED island-9 stand -- same contract as
 -- _G.candyQuestNudge (island 1) and _G.cookieQuestNudge (island 3).

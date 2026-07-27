@@ -1044,17 +1044,26 @@ do
 
 	local MORE_ENTRIES = { -- ADD MORE HERE later (each: label + an image OR emoji icon + an action)
 		{ label = "Rebirth", emoji = "\xF0\x9F\x94\x84", action = function() if _G.toggleRebirth then _G.toggleRebirth() end end }, -- MOVED here from the side button (the WORMHOLE button took its slot)
-		{ label = "Daily Rewards", emoji = "\xF0\x9F\x8E\x81", readyDot = true, action = function() -- opens the Mystery Meteor Crate (CrateClient listens on OpenMeteorCrate)
-			local ev = RSx:FindFirstChild("OpenMeteorCrate")
-			if not ev then ev = Instance.new("BindableEvent"); ev.Name = "OpenMeteorCrate"; ev.Parent = RSx end
-			ev:Fire()
-		end },
-		{ label = "Daily Tasks", emoji = "\xF0\x9F\x93\x8B", tasksDot = true, action = function() -- DailyTasks.client owns the panel
-			if _G.toggleDailyTasks then _G.toggleDailyTasks() end
+		-- ONE daily entry. "Daily Rewards" and "Daily Tasks" were two rows for one habit, and a player had to
+		-- already know they were different menus. The Daily Tasks panel now carries the crate as a DAILY REWARD
+		-- button in its bottom row, so this opens the panel and both dots ride on this single row.
+		{ label = "Daily", emoji = "\xF0\x9F\x8E\x81", readyDot = true, tasksDot = true, action = function()
+			-- Eligible -> open the panel (the crate button is in it). Not eligible yet (a brand-new player has
+			-- no task list) -> the panel would refuse to open, so fire the crate directly instead. The daily
+			-- reward is never unreachable either way.
+			if _G.dailyTasksAvailable and _G.dailyTasksAvailable() then
+				if _G.toggleDailyTasks then _G.toggleDailyTasks() end
+			else
+				local ev = RSx:FindFirstChild("OpenMeteorCrate")
+				if not ev then ev = Instance.new("BindableEvent"); ev.Name = "OpenMeteorCrate"; ev.Parent = RSx end
+				ev:Fire()
+			end
 		end },
 		{ label = "Pets", emoji = "\xF0\x9F\x90\xBE", action = function() print("[MenuMgr] button PetInv clicked while "..tostring(_G.MainMenuManager and _G.MainMenuManager.current).." open"); local ev = PlayerGui:FindFirstChild("PetInvToggle"); if ev then ev:Fire() end end }, -- SWAP: the PETS button now lives in the More+ menu, in the Stomach entry's OLD slot (keeps the paw icon, label + pet-inventory action)
+		{ label = "Pet Wheel", emoji = "\xF0\x9F\x8E\xA1", action = function() if _G.togglePetWheel then _G.togglePetWheel() end end }, -- PetWheel.client owns the panel; it was only reachable from the Pet Hub header, which buried the whole feature one menu deep
 		{ label = "Seasonal Pets",  emoji = "\xF0\x9F\x90\xBE", action = function() if openLocker then openLocker() end end },
-		{ label = "Codes",          emoji = "\xF0\x9F\x8E\xAB", action = function() if _G.openCodesGui then _G.openCodesGui() end end },  -- redeem codes (RewardsClient builds CodesGui)
+		-- (the "Codes" entry moved INTO the Season Pass panel -- bottom-left CODES button. One row for one
+		--  feature: both are "free rewards you claim", and Codes was a whole menu row for a rare action.)
 		{ label = "Free Rewards",   emoji = "\xF0\x9F\x8E\x81", action = function() if _G.toggleSocialRewards then _G.toggleSocialRewards() end end }, -- SocialRewards.client owns the panel (like/favourite/group -> +5 pet levels)
 		{ label = "Season Pass",    emoji = "\xE2\xAD\x90",     action = function() if _G.toggleSeasonPass then _G.toggleSeasonPass() end end }, -- SeasonPass.client owns the track UI (free + premium lanes, XP from daily tasks)
 		-- (the "MLR Group" entry was removed from the HUD; non-members are now nudged by a periodic banner that

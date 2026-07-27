@@ -4291,14 +4291,81 @@ _G.PetHub.showDetail = function(key, p)
 	ladder[#ladder+1] = { "Mythical", "Variant", Color3.fromRGB(255,70,230),
 		isDuck and ("1 in " .. comma(odds)) or "Duck only" }
 
-	sectionHeader("\xF0\x9F\x8F\x86  RARITY LADDER  \xC2\xB7  rarest last", 100, true)
+	-- ===== TIER PREVIEW ======================================================================================
+	-- Clicking a row on the ladder re-renders the BIG picture as this same pet AT THAT TIER, so a player can see
+	-- what they're actually chasing instead of guessing from a level band. Purely cosmetic: it rebuilds the same
+	-- makeViewportIcon at a different level and never reads or writes pet data, so it cannot desync anything.
+	--
+	-- Which level represents a tier: the TOP of its band (5 / 10 / 15 / 20 / 25). applyLevelVisual ramps the pet's
+	-- size continuously across levels and unlocks accessories at thresholds, so the top of the band is where that
+	-- tier's look is fully grown -- which is what makes each rung of the ladder read as visibly different.
+	-- Exotic/Mythical aren't level bands at all: they're variant LOOKS, so they preview with isRare = true, which
+	-- applyLevelVisual already treats as pre-maxed Lv25 plus the rare recolour.
+	local PREVIEW_LEVEL = { Common = 5, Uncommon = 10, Rare = 15, Epic = 20, Legendary = 25 }
+	local ownLevel   = p.level or 1
+	local previewing = nil          -- nil = the picture is showing the pet's own real look
+	local rowOf      = {}           -- tierName -> { btn = row, base = its resting BackgroundTransparency }
+
+	-- Caption sits INSIDE the bottom of the picture, so turning it on and off never disturbs the surrounding
+	-- layout (the lore blurb below the picture keeps its position whatever is being previewed).
+	-- NOT named `cap` -- that local is already the pet's LEVEL cap further up this same function
+	local pvCap = Instance.new("TextLabel"); pvCap.Name = "PreviewCap"
+	pvCap.Size = UDim2.new(0.45,-24,0,24); pvCap.Position = UDim2.new(0,16,0,328)
+	pvCap.BackgroundColor3 = Color3.fromRGB(8,26,64); pvCap.BackgroundTransparency = 0.25
+	pvCap.Font = Enum.Font.GothamBold; pvCap.TextSize = 13; pvCap.TextColor3 = Color3.new(1,1,1)
+	pvCap.ZIndex = 8; pvCap.Parent = d
+	uicorner(pvCap, 6)
+
+	local function refreshCaption()
+		if previewing then
+			local t = previewing
+			local lvl = PREVIEW_LEVEL[t[1]]
+			pvCap.TextColor3 = t[3]
+			pvCap.Text = "PREVIEW  \xC2\xB7  " .. t[1] .. (lvl and ("  \xC2\xB7  Lv " .. lvl) or "") .. "   (tap again for yours)"
+		elseif locked then
+			-- a locked pet has no real level to report, so don't dress a placeholder Lv1 up as "yours"
+			pvCap.TextColor3 = Color3.fromRGB(255,205,90)
+			pvCap.Text = "\xF0\x9F\x94\x92 LOCKED   \xC2\xB7  tap a tier below to preview"
+		else
+			pvCap.TextColor3 = Color3.fromRGB(190,212,255)
+			pvCap.Text = "Your " .. tierName .. (isVariant and "" or ("  \xC2\xB7  Lv " .. ownLevel)) .. "   \xC2\xB7  tap a tier below"
+		end
+		for name, r in pairs(rowOf) do
+			local sel = (previewing ~= nil and previewing[1] == name)
+			r.btn.BackgroundTransparency = sel and 0.25 or r.base
+		end
+	end
+
+	-- Rebuild the big picture. Destroying the old ViewportFrame is enough to retire it: the shared iconSpins loop
+	-- drops any entry whose viewport has lost its Parent, so no stale spinner is left behind.
+	local function renderPet(level, isRare)
+		if bigVp then pcall(function() bigVp:Destroy() end) end
+		bigVp = makeViewportIcon(d, petId, level, isRare, UDim2.new(0.45,-24,0,300), UDim2.new(0,16,0,52), Vector2.new(0,0))
+		bigVp.ZIndex = 6
+	end
+
+	local function setPreview(t)
+		if previewing and t and previewing[1] == t[1] then t = nil end   -- tapping the active tier returns to yours
+		previewing = t
+		if t then renderPet(PREVIEW_LEVEL[t[1]] or 25, t[2] == "Variant")
+		else        renderPet(ownLevel, p.rare) end
+		refreshCaption()
+	end
+
+	-- (sectionHeader is one non-wrapping line, so this string has to stay about as short as the old one)
+	sectionHeader("\xF0\x9F\x8F\x86  RARITY LADDER  \xC2\xB7  tap to preview", 100, true)
 	for i, t in ipairs(ladder) do
 		local here = (tierName == t[1]) -- where THIS pet sits on the ladder
+		-- A variant row only means something for the species it belongs to: the Butter Duck has a Mythical look and
+		-- no Exotic one, every other pet the reverse. The row that can't apply stays on the ladder (so the whole
+		-- scale stays legible) but isn't previewable, because there is no such model to render.
+		local previewable = (t[2] ~= "Variant") or (t[1] == "Mythical") == isDuck
 		-- Each tier is ONE clean line -- a colour pip, the tier name, its level band, and the odds -- built on the
 		-- same 24px row + corner + background as the fact rows above, so the two sections read as one panel instead
 		-- of two different designs. The player's own tier is filled with its colour and flagged, so their place in
 		-- the scale is obvious at a glance without having to compare numbers.
-		local ch = Instance.new("Frame"); ch.Size = UDim2.new(1,-6,0,24); ch.LayoutOrder = 100 + i
+		local ch = Instance.new("TextButton"); ch.Size = UDim2.new(1,-6,0,24); ch.LayoutOrder = 100 + i
+		ch.Text = ""; ch.AutoButtonColor = false
 		ch.BackgroundColor3 = here and t[3] or Color3.fromRGB(12,44,104)
 		ch.BackgroundTransparency = here and 0.6 or 0.55; ch.BorderSizePixel = 0; ch.ZIndex = 6; ch.Parent = facts
 		uicorner(ch, 6)
@@ -4318,7 +4385,15 @@ _G.PetHub.showDetail = function(key, p)
 		tc.BackgroundTransparency = 1; tc.Font = Enum.Font.GothamBold; tc.TextSize = 11
 		tc.TextColor3 = here and Color3.new(1,1,1) or Color3.fromRGB(205,222,255)
 		tc.TextXAlignment = Enum.TextXAlignment.Right; tc.ZIndex = 7; tc.Text = t[4]; tc.Parent = ch
+
+		if previewable then
+			rowOf[t[1]] = { btn = ch, base = ch.BackgroundTransparency }
+			ch.MouseButton1Click:Connect(function() setPreview(t) end)
+		else
+			tn.TextTransparency = 0.45; tr.TextTransparency = 0.45; tc.TextTransparency = 0.45
+		end
 	end
+	refreshCaption()
 
 	-- FLAVOUR BLURB in the LEFT column, directly under the picture -- deliberately NOT across the full width, so a
 	-- long fact list on the right can never collide with it however many rows a pet ends up with.

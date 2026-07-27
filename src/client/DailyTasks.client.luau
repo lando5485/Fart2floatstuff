@@ -211,10 +211,14 @@ layout.SortOrder = Enum.SortOrder.LayoutOrder
 layout.Parent    = body
 
 -- ===== bonus strip =====
+-- Narrower than full width now: the DAILY REWARD button (the crate) shares this bottom row with it. The two
+-- daily things -- the checklist bonus and the daily crate -- were separate More+ entries, which meant a player
+-- had to know that "Daily Rewards" and "Daily Tasks" were different menus. They are one row now.
+local BONUS_GAP, REWARD_W = 12, 196
 local bonus = Instance.new("Frame")
-bonus.AnchorPoint      = Vector2.new(0.5, 1)
-bonus.Position         = UDim2.new(0.5, 0, 1, -20)
-bonus.Size             = UDim2.new(1, -48, 0, 54)
+bonus.AnchorPoint      = Vector2.new(0, 1)
+bonus.Position         = UDim2.new(0, 24, 1, -20)
+bonus.Size             = UDim2.new(1, -48 - REWARD_W - BONUS_GAP, 0, 54)
 bonus.BackgroundColor3 = CARD
 bonus.BorderSizePixel  = 0
 bonus.ZIndex           = 3
@@ -232,6 +236,47 @@ bonusTxt.TextColor3             = TXT_DIM
 bonusTxt.TextSize               = 18
 bonusTxt.ZIndex                 = 4
 bonusTxt.Parent                 = bonus
+
+-- ===== DAILY REWARD (the Mystery Meteor Crate) =====
+-- CrateClient owns the crate; it listens on the OpenMeteorCrate BindableEvent, which is exactly what the old
+-- "Daily Rewards" More+ entry fired. Firing it from here is the same call -- the entry point moved, the crate
+-- did not change. Gold, because it is the one thing in this panel that hands you something immediately.
+local rewardBtn = Instance.new("TextButton")
+rewardBtn.AnchorPoint      = Vector2.new(1, 1)
+rewardBtn.Position         = UDim2.new(1, -24, 1, -20)
+rewardBtn.Size             = UDim2.fromOffset(REWARD_W, 54)
+rewardBtn.BackgroundColor3 = GOLD
+rewardBtn.Font             = Enum.Font.GothamBlack
+rewardBtn.Text             = "\u{1F381}  DAILY REWARD"
+rewardBtn.TextColor3       = Color3.fromRGB(64, 40, 4)
+rewardBtn.TextSize         = 18
+rewardBtn.AutoButtonColor  = true
+rewardBtn.ZIndex           = 3
+rewardBtn.Parent           = panel
+Instance.new("UICorner", rewardBtn).CornerRadius = UDim.new(0, 12)
+do
+	local rs = Instance.new("UIStroke", rewardBtn); rs.Color = GOLD_DK; rs.Thickness = 2
+	local rg = Instance.new("UIGradient", rewardBtn); rg.Rotation = 90
+	rg.Color = ColorSequence.new(Color3.fromRGB(255, 226, 128), GOLD_DK)
+end
+
+-- "!" dot, the same cue the More+ row used to carry, driven by the same _G.crateIsClaimable() CrateClient
+-- exposes. It lives ON the button now, so the panel itself tells you whether there is anything to claim.
+local rewardDot = Instance.new("Frame")
+rewardDot.AnchorPoint      = Vector2.new(1, 0)
+rewardDot.Position         = UDim2.new(1, 4, 0, -6)
+rewardDot.Size             = UDim2.fromOffset(20, 20)
+rewardDot.BackgroundColor3 = Color3.fromRGB(225, 50, 50)
+rewardDot.Visible          = false
+rewardDot.ZIndex           = 6
+rewardDot.Parent           = rewardBtn
+Instance.new("UICorner", rewardDot).CornerRadius = UDim.new(1, 0)
+do
+	local bang = Instance.new("TextLabel")
+	bang.BackgroundTransparency = 1; bang.Size = UDim2.fromScale(1, 1)
+	bang.Font = Enum.Font.GothamBlack; bang.Text = "!"; bang.TextSize = 14
+	bang.TextColor3 = Color3.new(1, 1, 1); bang.ZIndex = 7; bang.Parent = rewardDot
+end
 
 -- ============================ open / close ============================
 
@@ -255,8 +300,58 @@ local function setOpen(open)
 	end
 end
 
+-- THE DAILY REWARD BUTTON.
+--
+-- CrateClient's attemptOpen() starts with `if not isClaimable() then return end` -- a SILENT return. So on
+-- cooldown, closing this panel and firing the event would look exactly like a broken button: the panel vanishes
+-- and nothing happens. So we ask the same question CrateClient asks (its own _G.crateIsClaimable) BEFORE
+-- committing: not ready -> stay open and say so on the button itself; ready -> close and fire.
+--
+-- If _G.crateIsClaimable doesn't exist yet (CrateClient still loading) we fire anyway rather than refusing --
+-- CrateClient connects its listener before any blocking wait, and warns for itself if it's not ready.
+local rewardBusy = false
+rewardBtn.MouseButton1Click:Connect(function()
+	if rewardBusy then return end
+	local claimable = (_G.crateIsClaimable == nil) or (_G.crateIsClaimable() == true)
+	if not claimable then
+		-- say it ON the button (this panel has no toast lane of its own), then put it back
+		rewardBusy = true
+		local was = rewardBtn.Text
+		rewardBtn.Text = "\u{23F3}  COME BACK TOMORROW"
+		rewardBtn.TextSize = 15
+		task.delay(2, function()
+			if rewardBtn.Parent then rewardBtn.Text = was; rewardBtn.TextSize = 18 end
+			rewardBusy = false
+		end)
+		return
+	end
+	-- The crate takes over the screen when it opens, so close this panel first rather than letting the reveal
+	-- land on top of it. Firing the event is all CrateClient needs: it creates the BindableEvent and connects
+	-- its listener up front (before any blocking WaitForChild), which is the same instance the old More+ row
+	-- fired -- so this is the identical entry point, just moved into the panel.
+	setOpen(false)
+	local ev = ReplicatedStorage:FindFirstChild("OpenMeteorCrate")
+	if not ev then
+		ev = Instance.new("BindableEvent"); ev.Name = "OpenMeteorCrate"; ev.Parent = ReplicatedStorage
+	end
+	ev:Fire()
+end)
+
+-- keep the "!" dot in step with the crate's cooldown while the panel is open
+task.spawn(function()
+	while true do
+		if screen.Enabled then
+			rewardDot.Visible = (_G.crateIsClaimable and _G.crateIsClaimable()) == true
+		end
+		task.wait(1)
+	end
+end)
+
 close.MouseButton1Click:Connect(function() setOpen(false) end)
-catcher.MouseButton1Click:Connect(function() setOpen(false) end)
+-- NOTE: there is deliberately NO click-outside-to-close handler (matching the Pet Hub). The backdrop spans
+-- the whole screen, so a click anywhere off the panel used to slam it shut, which made menus feel like they
+-- closed at random. This panel now closes ONLY on an explicit action: its X button, its own toggle, or
+-- MainMenuManager closing it because another menu opened.
 
 -- Let the manager slam us shut when another menu opens over us.
 --
@@ -449,6 +544,46 @@ end
 _G.toggleDailyTasks = function()
 	setOpen(not screen.Enabled)
 end
+
+-- TRUE when this panel can actually open. setOpen() refuses while the server says the player isn't eligible
+-- for tasks yet (a brand-new join), and since the daily CRATE now lives inside this panel, the More+ entry has
+-- to know that -- otherwise a new player's only route to their crate would silently do nothing.
+_G.dailyTasksAvailable = function()
+	return (latest ~= nil) and (latest.show == true)
+end
+
+-- STALE-DUPLICATE DEFENSE (same pattern SeasonPass uses, and for the same reason). An old baked-in copy of this
+-- script is running alongside the Rojo one -- the Output prints "[DailyTasks] panel ready" TWICE from two
+-- different line numbers, and both build a ScreenGui called "DailyTasksGui". Whichever loads LAST wins
+-- _G.toggleDailyTasks, so More+ can open the stale panel instead -- and the stale panel has no DAILY REWARD
+-- button in it, which is exactly "the daily reward button isn't there / doesn't work".
+--
+-- Destroy any OTHER DailyTasksGui and RE-CLAIM both globals for THIS panel, now and whenever a duplicate turns
+-- up later. Targets DailyTasksGui ONLY. (Deleting the stale LocalScript in Studio is the real fix.)
+local function claimDailyTasks()
+	for _, g in ipairs(gui:GetChildren()) do
+		if g ~= screen and g:IsA("ScreenGui") and g.Name == "DailyTasksGui" then
+			g:Destroy()
+			warn("[DailyTasks] destroyed a STALE duplicate DailyTasksGui -- delete the old LocalScript in Studio")
+		end
+	end
+	_G.toggleDailyTasks    = function() setOpen(not screen.Enabled) end
+	_G.dailyTasksAvailable = function() return (latest ~= nil) and (latest.show == true) end
+end
+task.defer(claimDailyTasks)
+gui.ChildAdded:Connect(function(c)
+	if c ~= screen and c:IsA("ScreenGui") and c.Name == "DailyTasksGui" then task.defer(claimDailyTasks) end
+end)
+-- ChildAdded only covers a duplicate that appears AFTER us. A duplicate that loaded first is already parented,
+-- so it never fires -- and it can still overwrite _G.toggleDailyTasks a moment after our task.defer ran, since
+-- LocalScript start order isn't guaranteed. Re-claim a few times across the first seconds so the last word is
+-- always ours; it stops on its own.
+task.spawn(function()
+	for _ = 1, 5 do          -- 2s apart, so ~10s of cover, then it stops
+		task.wait(2)
+		pcall(claimDailyTasks)
+	end
+end)
 
 -- Drives the "!" dot + wiggle on the More+ button. TRUE while any task is still outstanding today.
 _G.dailyTasksPending = function()

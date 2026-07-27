@@ -40,6 +40,11 @@ local NPC_NAMES        = { "candynpc" }
 local COOKIE_NAME      = "giantcookie"
 local COLLECT_DISTANCE = 12
 local BANNER_RANGE     = 320                           -- banner only shows when near island3's NPC
+-- HOW FAR FROM THE COOKIE A "chunk" MAY BE and still count as one of island 3's. The sweep
+-- below matches any name CONTAINING "chunk" anywhere in Workspace, and island 11's mine builds
+-- rock parts called Chunk -- so without this the cave filled up with chocolate pickups every
+-- time you went down it. Generous enough to cover island 3, far short of anywhere else.
+local CHUNK_RANGE      = 700
 
 -- candy / chocolate palette
 local FILL   = Color3.fromRGB(255, 240, 248)
@@ -761,6 +766,18 @@ task.spawn(function()
 	-- chunks STREAM IN as the player nears island3 (StreamingEnabled) -- island3 is far
 	-- from the island-1 spawn, so a one-time scan finds nothing. Keep scanning and spawn a
 	-- chocolate chunk for each new "chunk" brick as it appears.
+	-- Anything called "chunk" that is not near the cookie belongs to another island, so leave
+	-- it alone. With no cookie found yet we take nothing: better a late chunk than island 11's
+	-- mine turned into a chocolate box.
+	local function nearCookie(d)
+		local at = cookie and (cookie:IsA("Model") and cookie:GetPivot().Position or cookie.Position)
+		if not at then return false end
+		local ok, pos = pcall(function()
+			return d:IsA("Model") and d:GetPivot().Position or d.Position
+		end)
+		return ok and pos and (pos - at).Magnitude <= CHUNK_RANGE
+	end
+
 	task.spawn(function()
 		local seen, idx, firstDone = {}, 0, false
 		while true do
@@ -770,7 +787,8 @@ task.spawn(function()
 				-- but NEVER the cookie's own chips -- those may be named Chunk1..Chunk6 too, and they
 				-- belong to the cookie (hidden until the reveal), not to the island hunt.
 				local inCookie = cookie and (d == cookie or d:IsDescendantOf(cookie))
-				if not inCookie and (d:IsA("BasePart") or d:IsA("Model")) and string.find(string.lower(d.Name), CHUNK_NAME, 1, true) then
+				if not inCookie and (d:IsA("BasePart") or d:IsA("Model")) and string.find(string.lower(d.Name), CHUNK_NAME, 1, true)
+					and nearCookie(d) then
 					found += 1
 					if not seen[d] then
 						seen[d] = true; idx += 1; spawnChunk(d, idx)

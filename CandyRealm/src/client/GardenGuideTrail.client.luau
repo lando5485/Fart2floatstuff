@@ -19,8 +19,8 @@ local player     = Players.LocalPlayer
 -- ===== look / motion tuning (EXACT from GreenChevronTrail) =====
 local BRIGHT     = Color3.fromRGB(90, 200, 110) -- friendly green
 local EDGE       = Color3.fromRGB(40, 120, 60)  -- darker green outline
-local SPACING    = 6    -- studs between chevrons
-local MAX_ARROWS = 18   -- most chevrons drawn at once
+local SPACING    = 6    -- studs between chevrons (minimum; long routes stretch this)
+local MAX_ARROWS = 26   -- most chevrons drawn at once
 local STOP_DIST  = 7    -- stop the trail this many studs short of the target ("arrived")
 local prefix     = "GardenGuide"
 
@@ -135,6 +135,7 @@ local function destroyAll() for _, nd in ipairs(pool) do pcall(function() nd:Des
 local started   = false
 local stage     = 1
 local override  = nil    -- Vector3 set by _G.guideTrailTo(); nil = fall back to the tutorial route
+local npcTarget = nil    -- LOW PRIORITY slot, set by NpcGuideArrow: the island NPC you have not met
 local flownOnce = false  -- LATCH: true forever once the player first fart-flies. Ends the TUTORIAL route only.
 
 _G.startGardenGuide = function()
@@ -148,6 +149,14 @@ _G.guideTrailTo = function(pos)
 end
 _G.guideTrailClear = function()
 	override = nil
+end
+
+-- A SECOND, LOWER-PRIORITY SLOT. NpcGuideArrow points this at the quest giver on whichever
+-- island you just landed on. It is deliberately not the same slot as the override: a hatchable
+-- egg has to beat an NPC every time, and with one slot whichever script wrote last would win,
+-- so the trail would flicker between the two rather than choosing.
+_G.guideTrailNpc = function(pos)
+	npcTarget = (typeof(pos) == "Vector3") and pos or nil
 end
 
 local conn
@@ -173,13 +182,25 @@ conn = RunService.RenderStepped:Connect(function()
 			.. " (egg trails still work)")
 	end
 
-	-- Mid-flight there is no ground to lay chevrons on. HIDE, do not destroy -- we want the egg trail back on landing.
-	if _G.isFlying then hideFrom(1); return end
+	-- Mid-flight there is no ground to lay chevrons on. HIDE, do not destroy -- we want the trail
+	-- back on landing.
+	--
+	-- BUT NOT ON THE FLAG ALONE. _G.isFlying belongs to the flight system and only has to be
+	-- right for flight; if it lingers true after a landing or a teleport, this returns every
+	-- frame and the trail is simply gone, with nothing anywhere saying why. So the flag hides
+	-- the trail only when the player is ALSO off the ground. Standing on something, the trail
+	-- draws regardless of what the flag currently says.
+	if _G.isFlying then
+		local hit = Workspace:Raycast(hrp.Position, Vector3.new(0, -14, 0), rayParams)
+		if not hit then hideFrom(1); return end
+	end
 
 	-- A hatchable egg (override) beats the tutorial route. With neither, the trail idles.
 	local tpos
 	if override then
 		tpos = override
+	elseif npcTarget then
+		tpos = npcTarget
 	elseif started and stage < 3 and not flownOnce then
 		tpos = (stage == 1) and gardenerPos() or standPos()
 	end
@@ -190,26 +211,38 @@ conn = RunService.RenderStepped:Connect(function()
 	local dist = flat.Magnitude
 	if dist <= STOP_DIST then
 		hideFrom(1)
-		-- Arriving at an EGG must not advance the tutorial stage -- the two routes are unrelated, and letting an
-		-- egg tick the tutorial forward would silently skip the food stand for anyone who hatched a pet first.
-		-- PetFollow stops calling guideTrailTo once the egg is hatched, so the trail clears itself.
-		if not override then
+		-- Arriving at an EGG or an ISLAND NPC must not advance the tutorial stage -- the routes are unrelated,
+		-- and letting either tick the tutorial forward would silently skip the food stand for anyone who hatched
+		-- a pet, or met a quest giver, first. Both owners stop calling in once they are done, so the trail clears
+		-- itself either way. Only the tutorial route may move the tutorial on.
+		if not override and not npcTarget then
 			stage += 1
 			if stage == 2 then print("[GardenGuideTrail] reached the Gardener -> re-routing to the FOOD STAND")
 			else print("[GardenGuideTrail] reached the food stand -> guidance complete") end
 		end
 		return
 	end
-	if dist > 400 then hideFrom(1); return end -- target far away (e.g. another island)
+	-- RANGE CAP. 400 was chosen for the Bean Farm tutorial, where the gardener and the food
+	-- stand are a short walk apart. An island NPC is easily twice that from where you land, and
+	-- hitting this cap is SILENT -- the trail just draws nothing, which is indistinguishable
+	-- from a broken script. So the NPC route gets a cap that matches the distances it actually
+	-- deals with, and the tutorial keeps its tight one.
+	local CAP = npcTarget and 900 or 400
+	if dist > CAP then hideFrom(1); return end
 	local dir = flat.Unit
 
 	-- exclude the player + every chevron so the ground ray doesn't hit them
 	local excl = { char }; for _, nd in ipairs(pool) do excl[#excl + 1] = nd end
 	rayParams.FilterDescendantsInstances = excl
+	-- SPREAD THEM OVER THE WHOLE ROUTE. At a fixed 6 studs apart, 26 chevrons cover 156 studs --
+	-- across an island that is a stub of a trail pointing off into nothing, with no sense of how
+	-- much further there is to go. Stretching the gap to fit means the line always runs from
+	-- your feet to the target, and how far apart they sit tells you how far is left.
 	local maxAlong = dist - STOP_DIST
+	local step = math.max(SPACING, maxAlong / MAX_ARROWS)
 	local placed = 0
 	for i = 1, MAX_ARROWS do
-		local along = i * SPACING
+		local along = i * step
 		if along > maxAlong then break end
 		placed += 1
 		local px = hrp.Position.X + dir.X * along

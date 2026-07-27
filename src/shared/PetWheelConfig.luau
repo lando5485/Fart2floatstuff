@@ -59,6 +59,27 @@ Config.PRODUCTS = {
 	{ id = "spin10", productId = 333333333, spins = 10, robux = 89, tag = "Best Value", label = "10 Spins" },
 }
 
+-- ---- TEST MODE (no Robux) ----------------------------------------------------------------------------------
+-- While TEST_MODE is true the buy cards do NOT open the Roblox purchase prompt (there is no real product to
+-- prompt for yet). Instead the client fires "buy" and the SERVER credits the spins through addSpins() -- the
+-- exact same function the real ProcessReceipt path calls -- so every downstream step (credit count, saving,
+-- the SPIN button, the roll, the rewards, the pet-picker) behaves precisely as it will on launch. The ONLY
+-- difference is where the credit comes from.
+--
+-- TO GO LIVE: create the three Developer Products, paste their real ids over the placeholders above, and set
+-- this to false. Nothing else changes -- the server refuses the "buy" verb outright once this is false, so a
+-- shipped build cannot be farmed for free spins even if an old client tries.
+Config.TEST_MODE = true
+
+-- Find a product by our own short id ("spin5"). Used by the TEST_MODE buy path, which sends the short id rather
+-- than a Roblox productId (there isn't a real one yet).
+function Config.productById(id)
+	for _, p in ipairs(Config.PRODUCTS) do
+		if p.id == id then return p end
+	end
+	return nil
+end
+
 -- ---- HELPERS -----------------------------------------------------------------------------------------------
 -- Total of all weights (should be 100). Computed from the table so it can never disagree with SEGMENTS.
 function Config.totalWeight()

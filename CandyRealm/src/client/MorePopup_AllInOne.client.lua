@@ -53,6 +53,7 @@ local MORE_ENTRIES = {
 	  attention = function() return (_G.crateIsClaimable and _G.crateIsClaimable()) == true end },
 	{ label = "Daily Tasks", emoji = "\xF0\x9F\x93\x8B", action = function() if _G.toggleDailyTasks then _G.toggleDailyTasks() else print("[MorePopup] _G.toggleDailyTasks missing") end end,
 	  attention = function() return (_G.dailyTasksPending and _G.dailyTasksPending()) == true end },
+	{ label = "Journal",     emoji = "\xF0\x9F\x93\x96",  action = function() if _G.toggleJournal then _G.toggleJournal() else print("[MorePopup] _G.toggleJournal missing") end end },
 	{ label = "Rebirth",     emoji = "\xE2\x9C\xA8",     action = function() if _G.toggleRebirth then _G.toggleRebirth() else print("[MorePopup] _G.toggleRebirth missing") end end },
 	{ label = "Season Pass", emoji = "\xF0\x9F\x8E\x9F", action = function() if _G.toggleSeasonPass then _G.toggleSeasonPass() else print("[MorePopup] _G.toggleSeasonPass missing") end end },
 	{ label = "Codes",       emoji = "\xF0\x9F\x8E\xAB", action = function() if _G.openCodesGui then _G.openCodesGui() else print("[MorePopup] _G.openCodesGui missing") end end },

@@ -13,9 +13,11 @@
 -- PROTOCOL over the single RemoteEvent "PetWheelEvent" (verb-multiplexed, mirrors SeasonPass/Rebirth style):
 --   client -> server:  "requestState"                     ask for a fresh {spins, pending}
 --                      "spin"                             spend 1 credit, roll, grant
+--                      "buy", productId                   TEST_MODE ONLY: credit a spin pack with no Robux
 --                      "assign", petId                    assign held pet-levels to an owned pet (pet-picker)
 --   server -> client:  "state",   { spins, pending }       current credits + held (unassigned) pet levels
 --                      "result",  { segIndex, segId, reward, spins, pending }   the rolled outcome to animate to
+--                      "purchased",{ productId, spins, total, test }  a spin pack landed (test purchase)
 --                      "assigned",{ petId, added, pending } result of assigning held levels
 --                      "toast",   message                  a short info line (e.g. out of spins)
 --
@@ -117,6 +119,41 @@ _G.wheelHandleReceipt = function(player, productId)
 end
 
 -- ============================================================================================================
+-- TEST-MODE PURCHASE (Config.TEST_MODE only) -- the buy cards have no real Developer Product behind them yet,
+-- so the client fires "buy" <productId> and we credit the spins HERE, through the same addSpins() the real
+-- receipt handler above uses. That is the whole point: the client never touches its own spin count, so the
+-- flow being tested (button -> server grant -> state push -> SPIN enabled -> roll) is the shipping flow.
+--
+-- Two guards, because this is a "free spins" endpoint:
+--   * Config.TEST_MODE -- flip it false and this returns immediately, so a live build can't be farmed.
+--   * a 0.4s per-player cooldown -- a spammed/auto-clicked card can't stack hundreds of credits in a frame.
+-- ============================================================================================================
+local lastBuy = {}   -- [player] = os.clock() of their last accepted test purchase
+
+local function doTestBuy(player, productKey)
+	if not Config.TEST_MODE then
+		toast(player, "Purchases aren't available right now.")
+		return
+	end
+	local product = Config.productById(productKey)
+	if not product then return end
+	local now = os.clock()
+	if lastBuy[player] and (now - lastBuy[player]) < 0.4 then return end
+	lastBuy[player] = now
+
+	addSpins(player, product.spins)               -- same grant path as _G.wheelHandleReceipt
+	pcall(function() saveState(player) end)       -- and the same immediate save
+	local st = state[player]
+	print(string.format("[PetWheel][TEST] %s bought %s (+%d spins), now %d",
+		player.Name, product.label or product.id, product.spins, st and st.spins or 0))
+	pcall(function()
+		remote:FireClient(player, "purchased", {
+			productId = product.id, spins = product.spins, total = st and st.spins or 0, test = true,
+		})
+	end)
+end
+
+-- ============================================================================================================
 -- DEV HOOKS (REMOVE BEFORE LAUNCH) -- called from DevCommands.server.luau for /givespins and /forcemythical.
 -- ============================================================================================================
 _G.wheelGiveSpins = function(player, n)
@@ -211,6 +248,8 @@ remote.OnServerEvent:Connect(function(player, verb, arg)
 		pushState(player)
 	elseif verb == "spin" then
 		doSpin(player)
+	elseif verb == "buy" then
+		doTestBuy(player, arg)   -- no-op unless Config.TEST_MODE (see doTestBuy)
 	elseif verb == "assign" then
 		doAssign(player, arg)
 	end
@@ -248,7 +287,7 @@ Players.PlayerRemoving:Connect(function(player)
 	dirty[player] = dirty[player] or false
 	-- always try a final save (mark dirty so a load-then-leave with no change still no-ops cheaply)
 	saveState(player)
-	state[player] = nil; dirty[player] = nil; forceMythical[player] = nil
+	state[player] = nil; dirty[player] = nil; forceMythical[player] = nil; lastBuy[player] = nil
 end)
 
 -- periodic autosave for held credits/pending (paid content -> don't lose it on a crash)

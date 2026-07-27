@@ -2750,7 +2750,13 @@ local function tryWater(player)
 	-- proximity check (anti-cheat): must be near the WaterSpot
 	if waterSpotPos then
 		local char = player.Character; local hrp = char and char:FindFirstChild("HumanoidRootPart")
-		if not hrp or (hrp.Position - waterSpotPos).Magnitude > WATER_RANGE then return false end
+		if not hrp or (hrp.Position - waterSpotPos).Magnitude > WATER_RANGE then
+			-- TELL THEM. This used to fail silently: swinging the can in the wrong place did nothing at all,
+			-- which reads as a broken tool rather than as "wrong place". The client turns this into an
+			-- on-screen "you can't water here" line and points the arrows at the spot.
+			pcall(function() GardenWaterEvent:FireClient(player, { kind = "toofar" }) end)
+			return false
+		end
 	end
 	waterReadyAt[player.UserId] = os.time() + COOLDOWN_SECONDS
 	player:SetAttribute("HasWateredGarden", true) -- unlocks the Gardener's Talk chat (his client hides it until now)
@@ -2959,7 +2965,10 @@ local function giveCan(player)
 	-- hotbar: a tool sitting in the backpack is unreachable and the player can never select it. Putting it
 	-- straight into their hand is the only way they can actually use it.
 	pcall(function() hum:EquipTool(can) end)
-	gardenerSay("Here you go! Go water the garden.", 5)
+	-- Say the WHOLE instruction, in the order they'll do it: follow the arrows, then tap. The can is a tool with
+	-- no hotbar (CoreClient hides the Backpack), so "tap anywhere" is not discoverable on its own -- the client
+	-- also puts a banner on screen while they carry it, and this line is what sends them looking for the arrows.
+	gardenerSay("Here you go! Follow the green arrows to the water spot, then tap your screen to pour it!", 8)
 end
 
 -- Belt and braces: a fresh character never starts out flagged as carrying a can.

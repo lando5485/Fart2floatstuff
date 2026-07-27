@@ -106,6 +106,10 @@ GardenWaterEvent.OnClientEvent:Connect(function(payload)
 	elseif payload.kind == "denied" then
 		toast("\xF0\x9F\x92\xA7 Come back tomorrow!")
 		setOnCooldown(payload.secs or 0)
+	elseif payload.kind == "toofar" then
+		-- They swung the can somewhere that isn't the water spot. Say so plainly and immediately -- the arrows
+		-- are already pointing at the right place, so the toast only has to name the mistake.
+		toast("\xE2\x9D\x8C You can't water here! Follow the arrows to the water spot.")
 	elseif payload.kind == "celebrate" then
 		-- STAGE 2 harvest celebration: a bigger GOLD banner, shown a little longer than a normal toast
 		-- toastGui.Enabled is what actually gates rendering (it defaults to FALSE and `toast()` is the
@@ -127,3 +131,79 @@ end)
 
 -- ask the server for our current cooldown so the prompt shows the right state on join
 task.spawn(function() task.wait(1); pcall(function() GardenWaterEvent:FireServer("query") end) end)
+
+--======================================================================
+-- WATERING CAN GUIDANCE -- arrows to the water spot + a "what do I press?" banner.
+--======================================================================
+-- The can has no hotbar slot (CoreClient hides the Backpack CoreGui), it is auto-equipped, and Tool.Activated
+-- is a plain tap -- so without this a player is handed an object with no stated purpose and no stated control.
+-- Three things fix that, and all three are driven by ONE attribute the server already sets when it hands the
+-- can over (CarryingWateringCan):
+--   1. the existing green chevron trail is pointed at the WaterSpot (via _G.guideTrailTo -- we never build a
+--      second trail; GardenGuideTrail owns the arrows and its override beats its own tutorial route),
+--   2. a banner names the control: "TAP ANYWHERE to pour" once they're in range, "follow the arrows" before,
+--   3. the Gardener says the same thing out loud when he hands it over (server side).
+-- Everything here is display-only: the server still decides whether a swing actually waters anything.
+local RunService = game:GetService("RunService")
+local CARRY_ATTR = "CarryingWateringCan"
+local POUR_RANGE = 26   -- a shade under the server's WATER_RANGE (28) so the banner never says "tap" a step
+                        -- before a tap would actually be accepted
+
+local hintGui = Instance.new("ScreenGui")
+hintGui.Name = "WateringCanHint"; hintGui.ResetOnSpawn = false; hintGui.DisplayOrder = 45
+hintGui.Enabled = false; hintGui.Parent = player:WaitForChild("PlayerGui")
+
+-- y 0.60: above the garden toast (0.68) and well clear of the bottom HUD, so the hint, a toast and the meters
+-- can all be on screen at once without stacking.
+local hint = Instance.new("TextLabel")
+hint.AnchorPoint = Vector2.new(0.5, 0.5); hint.Position = UDim2.new(0.5, 0, 0.60, 0)
+hint.Size = UDim2.new(0, 460, 0, 56)
+hint.BackgroundColor3 = Color3.fromRGB(26, 79, 214)   -- the house blue, same as the crate/shop panels
+hint.BackgroundTransparency = 0.08
+hint.Font = Enum.Font.FredokaOne; hint.TextSize = 24; hint.TextColor3 = Color3.fromRGB(255, 255, 255)
+hint.Text = ""; hint.Parent = hintGui
+Instance.new("UICorner", hint).CornerRadius = UDim.new(0, 14)
+do
+	local s = Instance.new("UIStroke", hint); s.Color = Color3.fromRGB(255, 255, 255); s.Thickness = 3
+	local ts = Instance.new("UIStroke", hint); ts.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+	ts.Color = Color3.fromRGB(14, 40, 110); ts.Thickness = 2
+end
+
+-- gentle breathing pulse so the banner reads as "act on me", not as static furniture
+local hintScale = Instance.new("UIScale", hint)
+
+local wasCarrying = false
+RunService.Heartbeat:Connect(function()
+	local carrying = player:GetAttribute(CARRY_ATTR) == true
+	if not carrying then
+		if wasCarrying then
+			-- put everything away the moment the can is gone (used, dropped, died) -- guideTrailClear only
+			-- drops OUR override, so the trail's own tutorial route is untouched.
+			wasCarrying = false
+			hintGui.Enabled = false
+			if _G.guideTrailClear then _G.guideTrailClear() end
+		end
+		return
+	end
+	wasCarrying = true
+
+	local char = player.Character
+	local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+	if not (hrp and waterSpot and waterSpot.Parent) then return end
+
+	-- Point the shared trail at the spot. Called every frame on purpose: guideTrailTo is cheap and
+	-- self-correcting, and it means the arrows follow the spot if the garden ever rebuilds it.
+	if _G.guideTrailTo then _G.guideTrailTo(waterSpot.Position) end
+
+	local dist = (hrp.Position - waterSpot.Position).Magnitude
+	hintGui.Enabled = true
+	if dist <= POUR_RANGE then
+		hint.Text = "\xF0\x9F\x92\xA7  TAP ANYWHERE to pour the water!"
+		hint.BackgroundColor3 = Color3.fromRGB(46, 150, 70)     -- green = you can do it right now
+		hintScale.Scale = 1 + 0.03 * math.sin(os.clock() * 4)
+	else
+		hint.Text = "\xF0\x9F\x92\xA7  Follow the green arrows to the water spot"
+		hint.BackgroundColor3 = Color3.fromRGB(26, 79, 214)
+		hintScale.Scale = 1
+	end
+end)

@@ -151,45 +151,133 @@ function setNotice(text)
 	if noticeLbl then noticeLbl.Text = text or "" end
 end
 
+-- ---- shared chrome (the same treatment the Garden Reward chest panel uses) ---------------------------------
+-- FIXED 700x520 at the shops' centre, plus the SAME adaptive UIScale every other menu gets from
+-- _G.applyHudScaling -- min(vp.X/1280, vp.Y/720, 1). The panel used to be sized in SCALE (0.6 x 0.62), which
+-- meant it was a different shape on every screen and never matched the Shop / Pet Hub / crate panels sitting
+-- next to it in the same session.
+local function hudScale(frame)
+	local s = Instance.new("UIScale"); s.Parent = frame
+	local function apply()
+		local cam = Workspace.CurrentCamera
+		local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+		s.Scale = math.min(vp.X / 1280, vp.Y / 720, 1)
+	end
+	apply()
+	if Workspace.CurrentCamera then
+		Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(apply)
+	end
+	return s
+end
+
+-- soft navy drop shadow behind a panel: two rounded twins, never black (black on blue reads as grime)
+local function dropShadow(frame, radius)
+	local parent = frame.Parent
+	for i, sp in ipairs({ 54, 30 }) do
+		local sh = mkFrame(parent, {
+			AnchorPoint = frame.AnchorPoint, Position = UDim2.new(frame.Position.X.Scale, frame.Position.X.Offset, frame.Position.Y.Scale, frame.Position.Y.Offset + 6),
+			Size = UDim2.new(0, frame.Size.X.Offset + sp, 0, frame.Size.Y.Offset + sp),
+			BackgroundColor3 = Color3.fromRGB(6, 26, 80), BackgroundTransparency = ({ 0.8, 0.62 })[i],
+			BorderSizePixel = 0, ZIndex = 0,
+		})
+		mkCorner(sh, radius + sp)
+	end
+end
+
+-- The four tiers get four DIFFERENT identities instead of four identical green boxes -- a kid can tell them
+-- apart at a glance, and the ladder (sprout -> sunflower -> tree -> trophy) says "bigger" without reading a
+-- number. Colours are the house palette; nothing here changes what any tier costs or grants.
+local TIER_LOOK = {
+	{ emoji = "\xF0\x9F\x8C\xB1", top = Color3.fromRGB(126, 217,  87), bot = Color3.fromRGB( 74, 168,  42), ink = Color3.fromRGB( 24,  72,  16), tag = nil },
+	{ emoji = "\xF0\x9F\x8C\xBB", top = Color3.fromRGB(255, 210,  74), bot = Color3.fromRGB(226, 160,  30), ink = Color3.fromRGB( 96,  60,   4), tag = "POPULAR" },
+	{ emoji = "\xF0\x9F\x8C\xB3", top = Color3.fromRGB( 94, 198, 255), bot = Color3.fromRGB( 40, 130, 220), ink = Color3.fromRGB( 10,  48, 100), tag = nil },
+	{ emoji = "\xF0\x9F\x8F\x86", top = Color3.fromRGB(226, 158, 255), bot = Color3.fromRGB(150,  86, 224), ink = Color3.fromRGB( 62,  20, 108), tag = "LEGEND" },
+}
+
 function buildHUD()
 	gui = Instance.new("ScreenGui")
 	gui.Name = "GardenDonationGui"; gui.ResetOnSpawn = false; gui.DisplayOrder = 100; gui.Enabled = false; gui.Parent = PlayerGui
 
-	-- dim click-catcher backdrop (click outside closes)
-	local backdrop = mkButton(gui, { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.45, Text = "", AutoButtonColor = false, Active = true })
-	backdrop.MouseButton1Click:Connect(closePanel)
+	-- dim click-catcher backdrop: it swallows clicks that land off the panel, but does NOT close it
+	local backdrop = mkButton(gui, { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.fromRGB(6, 26, 80), BackgroundTransparency = 0.45, Text = "", AutoButtonColor = false, Active = true })
+	-- NOTE: there is deliberately NO click-outside-to-close handler (matching the Pet Hub). The backdrop spans
+	-- the whole screen, so a click anywhere off the panel used to slam it shut, which made menus feel like they
+	-- closed at random. This panel now closes ONLY on an explicit action: its X button, its own toggle, or
+	-- MainMenuManager closing it because another menu opened.
 
-	-- PANEL (blue modal -- same style as the Garden Reward / shop panels)
-	panel = mkFrame(gui, { Size = UDim2.new(0.6, 0, 0.62, 0), Position = UDim2.new(0.5, 0, 0.5, 0), AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = BLUE_PANEL, ClipsDescendants = true, Active = true })
-	mkCorner(panel, 24); mkStroke(panel, Color3.fromRGB(10, 40, 90), 3); soft(panel)
+	-- PANEL -- bright house blue, thick white cartoon border, navy shadow underneath
+	panel = mkFrame(gui, {
+		Size = UDim2.new(0, 700, 0, 520), Position = UDim2.new(0.5, 0, 0.5, -45), AnchorPoint = Vector2.new(0.5, 0.5),
+		BackgroundColor3 = BLUE_PANEL, ClipsDescendants = true, Active = true, ZIndex = 2,
+	})
+	mkCorner(panel, 24); mkStroke(panel, Color3.new(1, 1, 1), 4)
+	do local g = Instance.new("UIGradient", panel); g.Rotation = 90
+		g.Color = ColorSequence.new(Color3.fromRGB(46, 122, 226), BLUE_HEADER) end
+	dropShadow(panel, 24)
+	hudScale(panel)
 
-	-- TITLE BAR (no corner/filler needed -- the panel's ClipsDescendants rounds the header's top for us)
-	local header = mkFrame(panel, { Size = UDim2.new(1, 0, 0, 58), BackgroundColor3 = BLUE_HEADER }); soft(header)
-	mkLabel(header, { Text = "\xF0\x9F\x92\x9B Support the Garden", Font = Enum.Font.FredokaOne, TextSize = 27, TextColor3 = Color3.new(1, 1, 1), Size = UDim2.new(1, -120, 1, 0), Position = UDim2.new(0, 20, 0, 0), TextXAlignment = Enum.TextXAlignment.Left })
-	local closeBtn = mkButton(header, { AnchorPoint = Vector2.new(0, 0.5), Size = UDim2.new(0, 42, 0, 42), Position = UDim2.new(1, -52, 0.5, 0), BackgroundColor3 = Color3.fromRGB(230, 96, 82), Text = "X", Font = Enum.Font.FredokaOne, TextScaled = true, TextColor3 = Color3.new(1, 1, 1) }); mkCorner(closeBtn, 11); mkStroke(closeBtn, Color3.fromRGB(150, 40, 32), 2); juice(closeBtn)
+	-- TITLE BAR -- gold, because this is the treasure chest's panel and gold is what a chest is full of
+	local header = mkFrame(panel, { Size = UDim2.new(1, -28, 0, 66), Position = UDim2.new(0, 14, 0, 14), BackgroundColor3 = Color3.fromRGB(255, 200, 60), ZIndex = 3 })
+	mkCorner(header, 16); mkStroke(header, Color3.new(1, 1, 1), 2)
+	do local g = Instance.new("UIGradient", header); g.Rotation = 90
+		g.Color = ColorSequence.new(Color3.fromRGB(255, 226, 140), Color3.fromRGB(232, 172,  36)) end
+
+	local chestBadge = mkFrame(header, { Size = UDim2.new(0, 46, 0, 46), Position = UDim2.new(0, 12, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5), BackgroundColor3 = Color3.fromRGB(255, 248, 224), ZIndex = 4 })
+	mkCorner(chestBadge, 12); mkStroke(chestBadge, Color3.fromRGB(180, 120, 20), 2)
+	mkLabel(chestBadge, { Text = "\xF0\x9F\x92\xB0", Font = Enum.Font.FredokaOne, TextSize = 26, Size = UDim2.new(1, 0, 1, 0), ZIndex = 5 })
+
+	mkLabel(header, { Text = "SUPPORT THE GARDEN", Font = Enum.Font.FredokaOne, TextSize = 30, TextColor3 = Color3.fromRGB(84, 48, 4), Size = UDim2.new(1, -190, 1, 0), Position = UDim2.new(0, 70, 0, 0), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 4 })
+
+	local closeBtn = mkButton(header, { AnchorPoint = Vector2.new(1, 0.5), Size = UDim2.new(0, 44, 0, 44), Position = UDim2.new(1, -10, 0.5, 0), BackgroundColor3 = Color3.fromRGB(232, 72, 84), Text = "X", Font = Enum.Font.FredokaOne, TextScaled = true, TextColor3 = Color3.new(1, 1, 1), ZIndex = 5 })
+	mkCorner(closeBtn, 12); mkStroke(closeBtn, Color3.new(1, 1, 1), 2); juice(closeBtn)
 	do local cp = Instance.new("UIPadding", closeBtn); for _, s in ipairs({"PaddingTop","PaddingBottom","PaddingLeft","PaddingRight"}) do cp[s] = UDim.new(0, 9) end end
 	closeBtn.MouseButton1Click:Connect(closePanel)
 
-	-- SUBTITLE (two lines)
-	mkLabel(panel, { Text = "Love the garden? Chip in to help keep it growing! \xF0\x9F\x8C\xBB", Font = Enum.Font.GothamMedium, TextSize = 17, TextColor3 = Color3.fromRGB(205, 228, 255), Size = UDim2.new(0.92, 0, 0, 22), Position = UDim2.new(0.5, 0, 0, 66), AnchorPoint = Vector2.new(0.5, 0), TextXAlignment = Enum.TextXAlignment.Center })
-	mkLabel(panel, { Text = "Donations are pure support \xE2\x80\x94 no boosts, just our thanks. \xF0\x9F\x92\x9B", Font = Enum.Font.GothamMedium, TextSize = 17, TextColor3 = Color3.fromRGB(205, 228, 255), Size = UDim2.new(0.92, 0, 0, 22), Position = UDim2.new(0.5, 0, 0, 88), AnchorPoint = Vector2.new(0.5, 0), TextXAlignment = Enum.TextXAlignment.Center })
+	-- SUBTITLE + the honesty chip. One line each: the old two grey lines read as small print.
+	mkLabel(panel, { Text = "Love the garden? Chip in to help keep it growing! \xF0\x9F\x8C\xBB", Font = Enum.Font.FredokaOne, TextSize = 21, TextColor3 = Color3.new(1, 1, 1), Size = UDim2.new(1, -40, 0, 26), Position = UDim2.new(0.5, 0, 0, 90), AnchorPoint = Vector2.new(0.5, 0), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
+	local chip = mkFrame(panel, { Size = UDim2.new(0, 372, 0, 28), Position = UDim2.new(0.5, 0, 0, 120), AnchorPoint = Vector2.new(0.5, 0), BackgroundColor3 = Color3.fromRGB(16, 56, 148), ZIndex = 3 })
+	mkCorner(chip, 14); mkStroke(chip, Color3.fromRGB(120, 180, 250), 1)
+	mkLabel(chip, { Text = "\xF0\x9F\x92\x9B Pure support \xE2\x80\x94 no boosts, just our thanks", Font = Enum.Font.GothamBold, TextSize = 15, TextColor3 = Color3.fromRGB(206, 232, 255), Size = UDim2.new(1, 0, 1, 0), ZIndex = 4 })
 
 	-- 2x2 PRESET GRID
-	local gridFrame = mkFrame(panel, { Size = UDim2.new(0.88, 0, 0, 232), Position = UDim2.new(0.5, 0, 0, 120), AnchorPoint = Vector2.new(0.5, 0), BackgroundTransparency = 1 })
+	local gridFrame = mkFrame(panel, { Size = UDim2.new(0, 620, 0, 250), Position = UDim2.new(0.5, 0, 0, 158), AnchorPoint = Vector2.new(0.5, 0), BackgroundTransparency = 1, ZIndex = 3 })
 	local grid = Instance.new("UIGridLayout")
-	grid.CellSize = UDim2.new(0.5, -9, 0.5, -9); grid.CellPadding = UDim2.new(0, 14, 0, 14)
+	grid.CellSize = UDim2.new(0.5, -8, 0.5, -8); grid.CellPadding = UDim2.new(0, 16, 0, 16)
 	grid.HorizontalAlignment = Enum.HorizontalAlignment.Center; grid.VerticalAlignment = Enum.VerticalAlignment.Center
 	grid.SortOrder = Enum.SortOrder.LayoutOrder; grid.Parent = gridFrame
 
 	for i, p in ipairs(PRESETS) do
-		local card = mkFrame(gridFrame, { BackgroundColor3 = CARD_GREEN, LayoutOrder = i }); mkCorner(card, 16); mkStroke(card, Color3.fromRGB(28, 108, 50), 1.5); soft(card)
+		local look = TIER_LOOK[i] or TIER_LOOK[1]
+		local card = mkFrame(gridFrame, { BackgroundColor3 = look.bot, LayoutOrder = i, ZIndex = 3 })
+		mkCorner(card, 18); mkStroke(card, Color3.new(1, 1, 1), 2.5)
+		do local g = Instance.new("UIGradient", card); g.Rotation = 90; g.Color = ColorSequence.new(look.top, look.bot) end
 		do -- soft shine across the top of the card
-			local sh = mkFrame(card, { Size = UDim2.new(1, -16, 0, 9), Position = UDim2.new(0, 8, 0, 5), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.78, BorderSizePixel = 0 }); mkCorner(sh, 5)
-			local sg = Instance.new("UIGradient", sh); sg.Rotation = 90; sg.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 1) })
+			local sh = mkFrame(card, { Size = UDim2.new(1, -20, 0, 12), Position = UDim2.new(0, 10, 0, 7), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.72, BorderSizePixel = 0, ZIndex = 4 }); mkCorner(sh, 6)
+			local sg = Instance.new("UIGradient", sh); sg.Rotation = 90; sg.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.4), NumberSequenceKeypoint.new(1, 1) })
 		end
-		makeWateringCan(card, { Size = UDim2.new(0, 34, 0, 34), Position = UDim2.new(0, 8, 0, 10), BackgroundTransparency = 1 }) -- green watering-can card motif
-		mkLabel(card, { Text = "\xF0\x9F\x92\x9B " .. string.format("%d R$", p.amount), Font = Enum.Font.FredokaOne, TextSize = 28, TextColor3 = Color3.new(1, 1, 1), Size = UDim2.new(1, -16, 0, 40), Position = UDim2.new(0.5, 0, 0, 16), AnchorPoint = Vector2.new(0.5, 0), TextXAlignment = Enum.TextXAlignment.Center }) -- a heart + the amount
-		local donateBtn = mkButton(card, { Size = UDim2.new(0.82, 0, 0, 38), Position = UDim2.new(0.5, 0, 1, -12), AnchorPoint = Vector2.new(0.5, 1), BackgroundColor3 = BTN_GREEN, Text = "\xF0\x9F\x92\x96 Donate", Font = Enum.Font.FredokaOne, TextSize = 20, TextColor3 = Color3.new(1, 1, 1) }); mkCorner(donateBtn, 12); mkStroke(donateBtn, BTN_GREEN2, 2); juice(donateBtn)
+
+		-- tier motif in a white well (the same icon-well shape the shop cards use)
+		local well = mkFrame(card, { Size = UDim2.new(0, 44, 0, 44), Position = UDim2.new(0, 12, 0, 14), BackgroundColor3 = Color3.fromRGB(255, 255, 255), BackgroundTransparency = 0.16, ZIndex = 4 })
+		mkCorner(well, 12)
+		mkLabel(well, { Text = look.emoji, Font = Enum.Font.FredokaOne, TextSize = 26, Size = UDim2.new(1, 0, 1, 0), ZIndex = 5 })
+
+		-- the amount, big, right of the motif -- outlined in the tier's own dark ink so white text stays legible
+		-- on the lighter tiers (the gold one especially)
+		local amountLbl = mkLabel(card, { Text = string.format("%d R$", p.amount), Font = Enum.Font.FredokaOne, TextSize = 34, TextColor3 = Color3.new(1, 1, 1), Size = UDim2.new(1, -70, 0, 44), Position = UDim2.new(0, 64, 0, 14), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 4 })
+		do
+			local ts = Instance.new("UIStroke"); ts.Color = look.ink; ts.Thickness = 2.5
+			ts.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual; ts.LineJoinMode = Enum.LineJoinMode.Round
+			ts.Parent = amountLbl
+		end
+
+		if look.tag then
+			local badge = mkFrame(card, { AnchorPoint = Vector2.new(1, 0), Size = UDim2.new(0, 86, 0, 22), Position = UDim2.new(1, -10, 0, -8), BackgroundColor3 = Color3.fromRGB(255, 255, 255), ZIndex = 6 })
+			mkCorner(badge, 11); mkStroke(badge, look.ink, 2)
+			mkLabel(badge, { Text = look.tag, Font = Enum.Font.FredokaOne, TextSize = 13, TextColor3 = look.ink, Size = UDim2.new(1, 0, 1, 0), ZIndex = 7 })
+		end
+
+		local donateBtn = mkButton(card, { Size = UDim2.new(1, -24, 0, 46), Position = UDim2.new(0.5, 0, 1, -12), AnchorPoint = Vector2.new(0.5, 1), BackgroundColor3 = BTN_GREEN, Text = "\xF0\x9F\x92\x96  DONATE", Font = Enum.Font.FredokaOne, TextSize = 22, TextColor3 = Color3.new(1, 1, 1), ZIndex = 5 })
+		mkCorner(donateBtn, 13); mkStroke(donateBtn, Color3.new(1, 1, 1), 2); juice(donateBtn)
 		local ds = Instance.new("UIScale"); ds.Parent = donateBtn -- hover pop
 		donateBtn.MouseEnter:Connect(function() TweenService:Create(ds, TweenInfo.new(0.1), { Scale = 1.05 }):Play() end)
 		donateBtn.MouseLeave:Connect(function() TweenService:Create(ds, TweenInfo.new(0.1), { Scale = 1 }):Play() end)
@@ -197,8 +285,8 @@ function buildHUD()
 	end
 
 	-- NOTICE line (setup / personal thank-you) + FOOTER
-	noticeLbl = mkLabel(panel, { Text = "", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = Color3.fromRGB(255, 235, 140), Size = UDim2.new(0.92, 0, 0, 22), Position = UDim2.new(0.5, 0, 1, -46), AnchorPoint = Vector2.new(0.5, 1), TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Center })
-	mkLabel(panel, { Text = "\xF0\x9F\x92\x9B Thank you for helping our garden grow! \xF0\x9F\x92\x9B", Font = Enum.Font.FredokaOne, TextSize = 19, TextColor3 = Color3.fromRGB(255, 245, 200), Size = UDim2.new(0.96, 0, 0, 28), Position = UDim2.new(0.5, 0, 1, -14), AnchorPoint = Vector2.new(0.5, 1), TextXAlignment = Enum.TextXAlignment.Center })
+	noticeLbl = mkLabel(panel, { Text = "", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = Color3.fromRGB(255, 235, 140), Size = UDim2.new(1, -40, 0, 22), Position = UDim2.new(0.5, 0, 1, -52), AnchorPoint = Vector2.new(0.5, 1), TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
+	mkLabel(panel, { Text = "\xF0\x9F\x92\x9B Thank you for helping our garden grow! \xF0\x9F\x92\x9B", Font = Enum.Font.FredokaOne, TextSize = 20, TextColor3 = Color3.fromRGB(255, 245, 200), Size = UDim2.new(1, -40, 0, 30), Position = UDim2.new(0.5, 0, 1, -16), AnchorPoint = Vector2.new(0.5, 1), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
 end
 
 function showThanks(donorName, robux)
@@ -213,6 +301,10 @@ function openHUD(promptPart, chestModel)
 	activeChest = chestModel
 	gui.Enabled = true
 	setNotice("")
+	-- pop in, like every other menu: starting slightly small and settling reads as a panel arriving rather than
+	-- blinking into existence
+	panel.Size = UDim2.new(0, 660, 0, 490)
+	TweenService:Create(panel, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = UDim2.new(0, 700, 0, 520) }):Play()
 	if chestModel then pcall(function() openLid(chestModel) end) end
 	if promptPart then pcall(function() sparkle(promptPart.Position) end) end
 end

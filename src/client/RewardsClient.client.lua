@@ -71,7 +71,9 @@ task.spawn(function()
 	while not _G.MainMenuManager do task.wait(0.1) end
 	_G.MainMenuManager.register("Codes", function() codesGui.Enabled = false; codesPanel.Visible = false; codesCatch.Visible = false end)
 end)
-codesCatch.MouseButton1Click:Connect(function() setCodesOpen(false) end)
+-- NOTE: the catcher deliberately does NOT close the window any more -- it only swallows clicks that land off
+-- the panel. A tap-outside-to-close on a window with a TEXT BOX in it is especially bad: tapping past the box
+-- to dismiss the on-screen keyboard would throw away a half-typed code. The X is the way out.
 codesX.MouseButton1Click:Connect(function() setCodesOpen(false) end)
 
 local redeeming = false

@@ -155,7 +155,10 @@ local function setOpen(o)
 end
 _G.toggleSocialRewards = function() setOpen(not panel.Visible) end
 closeBtn.MouseButton1Click:Connect(function() setOpen(false) end)
-dim.MouseButton1Click:Connect(function() setOpen(false) end)
+-- NOTE: there is deliberately NO click-outside-to-close handler (matching the Pet Hub). The backdrop spans
+-- the whole screen, so a click anywhere off the panel used to slam it shut, which made menus feel like they
+-- closed at random. This panel now closes ONLY on an explicit action: its X button, its own toggle, or
+-- MainMenuManager closing it because another menu opened.
 
 -- STALE-DUPLICATE DEFENSE: an old baked-in copy prints "[Social] client ready" at a DIFFERENT line, builds
 -- its own SocialRewardsGui (the empty black toast = "the black bar") AND steals _G.toggleSocialRewards.

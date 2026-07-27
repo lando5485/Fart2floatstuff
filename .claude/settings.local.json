@@ -133,7 +133,17 @@
       "Bash(unzip -l /c/Users/riley/Downloads/Fart2floatstuff/LeftSidebar_Connections.zip)",
       "Bash(grep -ci '\\\\.zip$')",
       "Bash(grep -i '\\\\.zip$')",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "PowerShell(foreach \\($c in @\\('lua','lua54','luajit','luau','luau-analyze','selene','stylua'\\)\\) { $g = Get-Command $c -ErrorAction SilentlyContinue; if \\($g\\) { \"$c -> $\\($g.Source\\)\" } })",
+      "PowerShell(git diff *)",
+      "Bash(grep -n \"stroke\\(panel\\\\|stroke\\(oddsOverlay\\\\|stroke\\(pickerOverlay\\\\|cardSkin\\\\|LINE_PANEL, LINE_CARD\\\\|fromRGB\\(  *[0-9]\\\\{1,2\\\\}, *[0-9]\\\\{1,2\\\\}, *[0-9]\\\\{1,3\\\\}\\)\" src/client/PetWheel.client.lua)",
+      "Bash(npx --yes @johnnymorganz/stylua-bin --check src/client/PetWheel.client.lua src/server/PetWheel.server.lua src/shared/PetWheelConfig.luau src/client/CoreClient.client.lua src/client/SeasonPass.client.luau src/client/DailyTasks.client.luau src/client/RewardsClient.client.lua src/client/CommunityGarden.client.lua src/server/CommunityGarden.server.lua src/client/GardenDonationClient.client.lua src/client/GardenChestClient.client.lua src/client/RebirthClient.client.luau src/client/SocialRewards.client.luau src/client/WormholeClient.client.luau)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(awk -F'fromRGB' '{print $0}')",
+      "Bash(npx --yes @johnnymorganz/stylua-bin --check src/client/MenuBackdropGuard.client.lua)",
+      "Bash(npx --yes @johnnymorganz/stylua-bin --check src/client/DailyTasks.client.luau)"
     ]
   }
 }

@@ -36,6 +36,7 @@ local UserInputService = game:GetService("UserInputService")
 local SoundService     = game:GetService("SoundService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TextChatService  = game:GetService("TextChatService")
+local Lighting         = game:GetService("Lighting")
 
 local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
@@ -51,7 +52,7 @@ local ISLAND_RANGE   = 900          -- how near island11 the blast zone can be
 
 local CRATES_NEEDED  = 3            -- dynamite crates to plant on the X
 local NODES_NEEDED   = 10           -- diamond ore nodes to mine
-local SWINGS_PER_NODE = 3           -- prompt taps to break a node
+local SWINGS_PER_NODE = 4           -- slices the drill cuts through one node
 
 local COIN_REWARD    = 750
 local XP_REWARD      = 300          -- flavour (shown on the completion card)
@@ -500,7 +501,7 @@ local function openShaft()
 		sp("DeepCrystal", Vector3.new(1.3, 3 + math.random() * 2, 1.3), CFrame.new(ground - look * 20 + right * c[1] + up * c[2]) * CFrame.Angles(math.rad((math.random() - 0.5) * 40), math.random() * 3, 0), col, false, Enum.Material.Neon)
 	end
 	local deepGlowP = sp("DeepGlow", Vector3.new(1, 1, 1), CFrame.new(ground - look * 20 + up * 5), CRYSTAL_COLS[3]); deepGlowP.Transparency = 1
-	local dgl = Instance.new("PointLight"); dgl.Color = CRYSTAL_COLS[3]; dgl.Brightness = 1.4; dgl.Range = 20; dgl.Shadows = false; dgl.Parent = deepGlowP
+	local dgl = Instance.new("PointLight"); dgl.Color = CRYSTAL_COLS[3]; dgl.Brightness = 0.09; dgl.Range = 7; dgl.Shadows = false; dgl.Parent = deepGlowP
 
 	-- timber portal: two posts + a double lintel + angled corner braces + head planks
 	for _, s in ipairs({ -7, 7 }) do
@@ -534,7 +535,7 @@ local function openShaft()
 		sp("LanternPost", Vector3.new(0.4, 0.5, 0.4), CFrame.new(ground + right * s + up * 10.6), Color3.fromRGB(70, 58, 30))
 		local gl = sp("LanternGlow", Vector3.new(1, 1.3, 1), CFrame.new(ground + right * s + up * 10), Color3.fromRGB(255, 196, 110))
 		gl.Material = Enum.Material.Neon; gl.Shape = Enum.PartType.Ball
-		local pl = Instance.new("PointLight"); pl.Color = Color3.fromRGB(255, 190, 120); pl.Brightness = 1.6; pl.Range = 20; pl.Shadows = false; pl.Parent = gl
+		local pl = Instance.new("PointLight"); pl.Color = Color3.fromRGB(255, 190, 120); pl.Brightness = 0.11; pl.Range = 7; pl.Shadows = false; pl.Parent = gl
 		pl:SetAttribute("ph", #lanternLights * 2.1); lanternLights[#lanternLights + 1] = pl
 	end
 
@@ -568,7 +569,7 @@ local function openShaft()
 
 	-- warm glow spilling out + a subtle dust plume from the opening
 	local glowP = sp("ShaftGlow", Vector3.new(1, 1, 1), CFrame.new(ground - look * 3 + up * 6), FLAME); glowP.Transparency = 1
-	local glow = Instance.new("PointLight"); glow.Color = FLAME; glow.Brightness = 2.4; glow.Range = 26; glow.Shadows = false; glow.Parent = glowP
+	local glow = Instance.new("PointLight"); glow.Color = FLAME; glow.Brightness = 0.17; glow.Range = 10; glow.Shadows = false; glow.Parent = glowP
 	local att = Instance.new("Attachment"); att.Parent = glowP
 	local dust = Instance.new("ParticleEmitter"); dust.Color = ColorSequence.new(Color3.fromRGB(160, 148, 130)); dust.Size = NumberSequence.new(4)
 	dust.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.82), NumberSequenceKeypoint.new(1, 1) })
@@ -580,7 +581,7 @@ local function openShaft()
 		local cr = sp("PortalCrystal", Vector3.new(1.2, 4 + math.random() * 2, 1.2),
 			CFrame.new(ground + right * spec[1] + up * spec[2] + look * 1.2) * CFrame.Angles(math.rad((math.random() - 0.5) * 40), math.random() * 3, math.rad((math.random() - 0.5) * 40)),
 			col, false, Enum.Material.Neon)
-		if spec[2] > 5 then local pl = Instance.new("PointLight"); pl.Color = col; pl.Brightness = 0.8; pl.Range = 12; pl.Shadows = false; pl.Parent = cr end
+		if spec[2] > 5 then local pl = Instance.new("PointLight"); pl.Color = col; pl.Brightness = 0.06; pl.Range = 5; pl.Shadows = false; pl.Parent = cr end
 	end
 
 	-- a parked minecart off to one side of the entrance (a few coloured ore lumps inside)
@@ -604,8 +605,8 @@ local function openShaft()
 		local t = 0
 		while m.Parent do
 			t = t + 0.12
-			if glow then glow.Brightness = 2.2 + math.sin(t * 3) * 0.5 + math.random() * 0.2 end
-			for _, lp in ipairs(lanternLights) do lp.Brightness = 1.5 + math.abs(math.sin(t * 2 + (lp:GetAttribute("ph") or 0))) * 0.5 end
+			if glow then glow.Brightness = 0.15 + math.sin(t * 3) * 0.5 + math.random() * 0.2 end
+			for _, lp in ipairs(lanternLights) do lp.Brightness = 0.10 + math.abs(math.sin(t * 2 + (lp:GetAttribute("ph") or 0))) * 0.5 end
 			task.wait(0.12)
 		end
 	end)
@@ -629,6 +630,124 @@ local function openShaft()
 
 	mineShaft = m
 	surfaceReturnCF = CFrame.new(ground + look * 9 + up * 4)  -- pop out here when you leave the mine
+end
+
+-- ============================================================================
+-- THE ISLAND SHIFTS  (the moment the cave opens)
+-- ============================================================================
+-- Blowing a hole into a mountain should be felt across the whole island, not just at the wall
+-- you were standing at. This runs for about two and a half seconds and does four things at
+-- once, because any one of them alone reads as an effect rather than an event:
+--
+--   RUMBLE    a sustained shake that BUILDS and then decays, not a single jolt. One sharp
+--             knock says "explosion"; a long low roll says "the ground is moving".
+--   ROCKS     debris raining down all around you, not just at the blast -- that is what makes
+--             it the island reacting rather than one wall breaking.
+--   DUST      curtains of it falling out of the air at several points, drifting rather than
+--             puffing, so it settles for seconds afterwards.
+--   FRAMING   letterbox bars and a lens punch. Cheap, and it is what tells the player to stop
+--             playing for a moment and watch.
+local function islandQuake(at, seconds)
+	seconds = seconds or 2.6
+	local cam = Workspace.CurrentCamera
+
+	-- ---- FRAMING: a lens punch only. The letterbox bars are gone -- black edges on the screen
+	-- read as a cutscene taking the game off you, and the shake alone does the cinematic job
+	-- without covering anything up.
+	local fov0 = cam and cam.FieldOfView or 70
+	if cam then
+		TweenService:Create(cam, TweenInfo.new(0.28, Enum.EasingStyle.Back), { FieldOfView = fov0 + 14 }):Play()
+	end
+
+	-- ---- RUMBLE: builds over the first third, holds, then rolls off
+	task.spawn(function()
+		local t0 = os.clock()
+		while os.clock() - t0 < seconds do
+			local u = (os.clock() - t0) / seconds
+			-- HARD. The build is quick and the decay is long, so it hits you and then keeps
+			-- rolling. Displacement AND rotation on all three axes -- shifting the camera alone
+			-- reads as a rattle; turning it as well reads as the ground itself moving.
+			local m = (u < 0.18) and (u / 0.18) or (1 - (u - 0.18) / 0.82) ^ 1.3
+			m *= 4.2
+			if cam then
+				cam.CFrame = cam.CFrame
+					* CFrame.new((math.random() - 0.5) * m,
+					             (math.random() - 0.5) * m,
+					             (math.random() - 0.5) * m * 0.5)
+					* CFrame.Angles((math.random() - 0.5) * m * 0.016,
+					                (math.random() - 0.5) * m * 0.016,
+					                (math.random() - 0.5) * m * 0.030)
+			end
+			RunService.RenderStepped:Wait()
+		end
+		if cam then
+			TweenService:Create(cam, TweenInfo.new(0.5), { FieldOfView = fov0 }):Play()
+		end
+	end)
+
+	-- ---- ROCKS: they come down all over, at staggered times, and burst into dust on landing
+	task.spawn(function()
+		local hrp = hrpOf()
+		local base = (hrp and hrp.Position) or at
+		for i = 1, 26 do
+			task.delay(0.15 + math.random() * (seconds - 0.6), function()
+				local a  = math.random() * math.pi * 2
+				local r  = 18 + math.random() * 110
+				local gx = base.X + math.cos(a) * r
+				local gz = base.Z + math.sin(a) * r
+				local sz = 1.0 + math.random() * 2.6
+				local rock = mk({ Name = "Debris", Size = Vector3.new(sz, sz * 0.8, sz * 0.9),
+					Color = (i % 2 == 0) and ROCK_DK or ROCK, Material = Enum.Material.Rock })
+				rock.CFrame = CFrame.new(gx, base.Y + 70 + math.random() * 50, gz)
+				rock.Parent = Workspace
+				local land = CFrame.new(gx, base.Y - 2, gz)
+					* CFrame.Angles(math.random() * 6, math.random() * 6, math.random() * 6)
+				TweenService:Create(rock, TweenInfo.new(0.85, Enum.EasingStyle.Quad,
+					Enum.EasingDirection.In), { CFrame = land }):Play()
+				task.delay(0.85, function()
+					-- a puff where it lands, so the rock arrives somewhere instead of just stopping
+					local att = Instance.new("Attachment")
+					att.WorldPosition = Vector3.new(gx, base.Y, gz); att.Parent = Workspace.Terrain
+					local pe = Instance.new("ParticleEmitter")
+					pe.Color = ColorSequence.new(Color3.fromRGB(150, 138, 122))
+					pe.Size = NumberSequence.new(4)
+					pe.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.45),
+						NumberSequenceKeypoint.new(1, 1) })
+					pe.Lifetime = NumberRange.new(0.8, 1.6); pe.Rate = 0
+					pe.Speed = NumberRange.new(3, 9); pe.SpreadAngle = Vector2.new(120, 120)
+					pe.Parent = att; pe:Emit(14)
+					Debris:AddItem(att, 2.4)
+					TweenService:Create(rock, TweenInfo.new(0.5), { Transparency = 1 }):Play()
+				end)
+				Debris:AddItem(rock, 1.6)
+			end)
+		end
+	end)
+
+	-- ---- DUST: curtains sifting out of the air around you, drifting DOWN and lingering
+	task.spawn(function()
+		local hrp = hrpOf()
+		local base = (hrp and hrp.Position) or at
+		for i = 1, 7 do
+			local a = (i / 7) * math.pi * 2
+			local att = Instance.new("Attachment")
+			att.WorldPosition = base + Vector3.new(math.cos(a) * 55, 34, math.sin(a) * 55)
+			att.Parent = Workspace.Terrain
+			local pe = Instance.new("ParticleEmitter")
+			pe.Color = ColorSequence.new(Color3.fromRGB(158, 146, 130))
+			pe.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 6),
+				NumberSequenceKeypoint.new(1, 16) })
+			pe.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1),
+				NumberSequenceKeypoint.new(0.2, 0.55), NumberSequenceKeypoint.new(1, 1) })
+			pe.Lifetime = NumberRange.new(2.4, 4.2)
+			pe.Rate = 9; pe.Speed = NumberRange.new(1, 4)
+			pe.SpreadAngle = Vector2.new(60, 60)
+			pe.Acceleration = Vector3.new(0, -7, 0)
+			pe.Parent = att
+			task.delay(seconds, function() pe.Rate = 0 end)
+			Debris:AddItem(att, seconds + 5)
+		end
+	end)
 end
 
 local function detonate()
@@ -655,7 +774,8 @@ local function detonate()
 	ff.BackgroundTransparency = 0.1; ff.BorderSizePixel = 0; ff.Parent = flash
 	TweenService:Create(ff, TweenInfo.new(0.6), { BackgroundTransparency = 1 }):Play()
 	Debris:AddItem(flash, 0.7)
-	screenShake(2.2, 0.7)
+	-- the whole island moves, not just the wall you were stood at
+	islandQuake(pos, 2.6)
 
 	-- debris + dust from the wall, then remove it
 	for i = 1, 24 do
@@ -694,35 +814,615 @@ local oreNodes = {}   -- { model=, prompt=, hp=, broken=bool }
 local mineCart, cartFillParts = nil, {}
 local exitPrompt
 
+-- ============================================================================
+-- MINER'S GEAR  (hard hat + pack)
+-- ============================================================================
+-- The same wood-framed pack the camp on island 14 hands out, re-cut in mining colours, plus a
+-- hard hat -- and the hat is not decoration: its lamp is a real light pointed wherever you
+-- look, and the mine is dark. Both are WELDED, never anchored and re-positioned each frame,
+-- which is what makes a prop read as worn rather than as floating alongside you.
+-- ONE DIAL FOR THE HAT. Every size and offset below is multiplied by it, so resizing is one
+-- number instead of a dozen -- and, more to the point, the offsets scale WITH the sizes, so it
+-- never ends up a bigger dome sitting at the old height with its brim through your eyebrows.
+local HAT_SCALE = 0.95
+
+-- FIT THE HAT TO THE HEAD THAT IS WEARING IT.
+--
+-- A fixed-size hat is wrong on almost everybody: hair, horns and hoods are accessories with
+-- their own sizes, so the same dome that sits neatly on a bald head has a fringe growing
+-- through it on the next player. This measures the head AND every accessory attached to it, in
+-- the head's own frame, and returns how wide and how tall the hat has to be to swallow them.
+--
+-- Distance-gated to 6 studs so it measures headwear and not a back accessory or a tool.
+local function headExtent(char, head)
+	local rad = math.max(head.Size.X, head.Size.Z) * 0.5
+	local top = head.Size.Y * 0.5
+	for _, a in ipairs(char:GetChildren()) do
+		if a:IsA("Accessory") then
+			local h = a:FindFirstChild("Handle")
+			if h and h:IsA("BasePart") and (h.Position - head.Position).Magnitude < 6 then
+				local o, s = head.CFrame:PointToObjectSpace(h.Position), h.Size * 0.5
+				rad = math.max(rad, math.abs(o.X) + s.X, math.abs(o.Z) + s.Z)
+				top = math.max(top, o.Y + s.Y)
+			end
+		end
+	end
+	return rad, top
+end
+
+-- Grow the hat until it covers that, then RAISE it until its crown clears the tallest thing on
+-- the head -- growing alone would leave a tall hairstyle poking straight out of the top.
+--
+-- FIT ON THE BRIM, NOT THE DOME. The brim is 1.66 wide at scale 1 against the dome's 1.30, so
+-- it is the brim that does the covering -- and sizing off the narrower dome grew the whole hat
+-- about a quarter larger than it needed to be to cover the same hair. Radii at scale 1: brim
+-- 0.83, dome 0.65, dome half-height 0.54.
+local function fitHat(char, head, base)
+	local rad, top = headExtent(char, head)
+	local H    = math.clamp(math.max(base, (rad + 0.03) / 0.83), base, 1.55)
+	local seat = math.max(0.52 * H, top + 0.05 - 0.54 * H)
+	return H, seat
+end
+
+-- Anything still standing proud of the crown after all that is taller than a hat can sensibly
+-- be -- some hair pieces are half a metre of spikes. Those get hidden while the hat is on
+-- rather than growing the hat into something comical, and put back when it comes off.
+local function tuckHair(char, head, seat, H, store)
+	local crown = seat + 0.54 * H
+	for _, a in ipairs(char:GetChildren()) do
+		if a:IsA("Accessory") then
+			local h = a:FindFirstChild("Handle")
+			if h and h:IsA("BasePart") and (h.Position - head.Position).Magnitude < 6 then
+				local o, s = head.CFrame:PointToObjectSpace(h.Position), h.Size * 0.5
+				if o.Y + s.Y > crown then
+					store[h] = h.Transparency
+					h.Transparency = 1
+				end
+			end
+		end
+	end
+end
+
+local minerGear
+local hidHair = {}
+local function takeGear()
+	if minerGear then minerGear:Destroy(); minerGear = nil end
+	for h, t in pairs(hidHair) do if h and h.Parent then h.Transparency = t end end
+	hidHair = {}
+end
+
+local function giveGear()
+	if minerGear then return end
+	local char  = player.Character
+	local head  = char and char:FindFirstChild("Head")
+	local torso = char and (char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso"))
+	if not (head and torso) then return end
+
+	minerGear = Instance.new("Folder"); minerGear.Name = "MinerGear"; minerGear.Parent = char
+
+	-- weld everything to one root per item, then that root to the body: one joint to place,
+	-- and the whole thing moves with the animation instead of chasing it
+	local function rig(host, parent, cf, parts)
+		local root
+		for i, q in ipairs(parts) do
+			local p = mk(q.props)
+			p.Anchored = false; p.CanCollide = false; p.CanQuery = false; p.Massless = true
+			p.CFrame = parent.CFrame * cf * q.at
+			p.Parent = host
+            if i == 1 then root = p end
+		end
+		for _, p in ipairs(host:GetChildren()) do
+			if p:IsA("BasePart") and p ~= root then
+				local wc = Instance.new("WeldConstraint"); wc.Part0 = root; wc.Part1 = p; wc.Parent = root
+			end
+		end
+		local w = Instance.new("Weld")
+		w.Part0 = parent; w.Part1 = root; w.C0 = cf; w.Parent = root
+		return root
+	end
+
+	-- ---- THE HARD HAT. Half the size it was and genuinely round: the dome is a BALL squashed
+	-- on Y, not a box, and the brim and band are cylinders. A hard hat is the one piece of kit
+	-- with no flat faces on it, so building it out of blocks fought the shape the whole way.
+	-- Its lower half sits inside the head, which is what gives the dome its clean rim.
+	local hat = Instance.new("Model"); hat.Name = "HardHat"; hat.Parent = minerGear
+	local H, seat = fitHat(char, head, HAT_SCALE)
+	tuckHair(char, head, seat, H, hidHair)
+	rig(hat, head, CFrame.new(0, seat, 0), {
+		{ props = { Shape = Enum.PartType.Ball, Color = FLAME,
+			Size = Vector3.new(1.30, 1.08, 1.30) * H }, at = CFrame.new() },
+		{ props = { Shape = Enum.PartType.Cylinder, Color = FLAME,
+			Size = Vector3.new(0.11, 1.66, 1.66) * H },
+			at = CFrame.new(0, -0.30 * H, 0) * CFrame.Angles(0, 0, math.rad(90)) },
+		{ props = { Shape = Enum.PartType.Cylinder, Color = Color3.fromRGB(214, 112, 30),
+			Size = Vector3.new(0.26, 1.34, 1.34) * H },
+			at = CFrame.new(0, -0.17 * H, 0) * CFrame.Angles(0, 0, math.rad(90)) },
+		-- the peak, pulled forward over the lamp
+		{ props = { Shape = Enum.PartType.Cylinder, Color = FLAME,
+			Size = Vector3.new(0.11, 1.10, 1.10) * H },
+			at = CFrame.new(0, -0.28 * H, -0.44 * H) * CFrame.Angles(0, 0, math.rad(90)) },
+		{ props = { Color = STEEL_DK, Size = Vector3.new(0.30, 0.24, 0.18) * H },
+			at = CFrame.new(0, -0.05 * H, -0.60 * H) },
+		-- chin strap, down past the ears
+		{ props = { Color = STEEL_DK, Size = Vector3.new(0.08, 0.62, 0.08) * H },
+			at = CFrame.new(-0.62 * H, -0.52 * H, 0) },
+		{ props = { Color = STEEL_DK, Size = Vector3.new(0.08, 0.62, 0.08) * H },
+			at = CFrame.new(0.62 * H, -0.52 * H, 0) },
+	})
+
+	-- the lamp itself, welded on separately so it can carry the light
+	local lamp = mk({ Shape = Enum.PartType.Cylinder, Color = Color3.fromRGB(255, 246, 200),
+		Material = Enum.Material.Neon, Size = Vector3.new(0.10, 0.30, 0.30) * HAT_SCALE })
+	-- (lamp size stays on the dial; only where it sits follows the fitted hat)
+	lamp.Name = "HatLamp"
+	lamp.Anchored = false; lamp.CanCollide = false; lamp.CanQuery = false; lamp.Massless = true
+	-- the lens is a disc, so it has to be turned to FACE forward: a cylinder's flat faces are on
+	-- its X axis, and unrotated that points out of your ear
+	local lampCF = CFrame.new(0, seat - 0.05 * H, -0.72 * H) * CFrame.Angles(0, math.rad(90), 0)
+	lamp.CFrame = head.CFrame * lampCF
+	lamp.Parent = hat
+	local lw = Instance.new("Weld")
+	lw.Part0 = head; lw.Part1 = lamp; lw.C0 = lampCF; lw.Parent = lamp
+
+	-- THE BEAM GETS ITS OWN AIM PART, unrotated, so it points wherever the head points.
+	-- Hanging the light off the lens meant the beam followed whatever rotation the ART needed --
+	-- turn the lens to look right and the beam swings off with it, which is exactly what
+	-- happened: it was lighting the wall to your left instead of what you were looking at.
+	local aim = mk({ Transparency = 1, Size = Vector3.new(0.2, 0.2, 0.2) })
+	aim.Name = "LampAim"
+	aim.Anchored = false; aim.CanCollide = false; aim.CanQuery = false; aim.Massless = true
+	local aimCF = CFrame.new(0, seat - 0.05 * H, -0.72 * H)
+	aim.CFrame = head.CFrame * aimCF
+	aim.Parent = hat
+	local aw = Instance.new("Weld")
+	aw.Part0 = head; aw.Part1 = aim; aw.C0 = aimCF; aw.Parent = aim
+
+	-- A SPOTLIGHT, not a point light: a headlamp throws a cone the way you are facing. A point
+	-- light on your head just raises the brightness of the room and the cave stops being dark.
+	-- Front is -Z, which is the way a character faces.
+	local beam = Instance.new("SpotLight")
+	beam.Color = Color3.fromRGB(255, 244, 214); beam.Brightness = 4.2
+	beam.Range = 55; beam.Angle = 58; beam.Face = Enum.NormalId.Front
+	beam.Shadows = true; beam.Parent = aim
+
+	-- ---- THE PACK: the island 14 shape in mining colours -- frame, sack, rolled top, bedroll
+	local pack = Instance.new("Model"); pack.Name = "MinerPack"; pack.Parent = minerGear
+	rig(pack, torso, CFrame.new(0, 0.1, 0.92), {
+		{ props = { Color = DIRT, Size = Vector3.new(1.8, 1.7, 0.9) }, at = CFrame.new() },
+		-- FRAME UPRIGHTS, ENDING AT THE PACK. They used to run 2.8 studs from a low centre, so
+		-- they came out under the sack like a pair of poles growing out of your back.
+		{ props = { Color = WOOD_DK, Size = Vector3.new(0.18, 2.1, 0.18) }, at = CFrame.new(-0.85, 0.2, 0.52) },
+		{ props = { Color = WOOD_DK, Size = Vector3.new(0.18, 2.1, 0.18) }, at = CFrame.new(0.85, 0.2, 0.52) },
+		{ props = { Color = WOOD, Size = Vector3.new(1.9, 0.16, 0.16) },  at = CFrame.new(0, 1.16, 0.52) },
+		{ props = { Color = WOOD, Size = Vector3.new(1.9, 0.16, 0.16) },  at = CFrame.new(0, -0.76, 0.52) },
+		-- rounded pads where the straps cross your shoulders: the one place a pack touches you
+		{ props = { Shape = Enum.PartType.Cylinder, Color = WOOD_DK, Size = Vector3.new(0.9, 0.42, 0.42) },
+			at = CFrame.new(-0.6, 0.92, -0.44) * CFrame.Angles(0, 0, math.rad(90)) },
+		{ props = { Shape = Enum.PartType.Cylinder, Color = WOOD_DK, Size = Vector3.new(0.9, 0.42, 0.42) },
+			at = CFrame.new(0.6, 0.92, -0.44) * CFrame.Angles(0, 0, math.rad(90)) },
+		{ props = { Color = DIRT, Size = Vector3.new(1.4, 0.7, 0.75) },   at = CFrame.new(0, -1.1, -0.02) },
+		{ props = { Shape = Enum.PartType.Cylinder, Color = DIRT, Size = Vector3.new(1.75, 0.46, 0.46) },
+			at = CFrame.new(0, 1.0, 0) * CFrame.Angles(0, 0, math.rad(90)) },
+		{ props = { Color = WOOD_DK, Size = Vector3.new(1.85, 0.6, 0.96) }, at = CFrame.new(0, 0.78, 0.02) },
+		{ props = { Color = STEEL_DK, Size = Vector3.new(0.3, 0.28, 0.14) }, at = CFrame.new(-0.45, 0.2, 0.5) },
+		{ props = { Color = STEEL_DK, Size = Vector3.new(0.3, 0.28, 0.14) }, at = CFrame.new(0.45, 0.2, 0.5) },
+		-- bedroll slung under it
+		{ props = { Shape = Enum.PartType.Cylinder, Color = ROCK_LT, Size = Vector3.new(1.9, 0.6, 0.6) },
+			at = CFrame.new(0, -1.45, 0.06) * CFrame.Angles(0, 0, math.rad(90)) },
+		-- shoulder straps, over the shoulder and down the chest
+		{ props = { Color = WOOD_DK, Size = Vector3.new(0.3, 0.24, 1.4) },
+			at = CFrame.new(-0.6, 0.86, -0.58) * CFrame.Angles(math.rad(18), 0, 0) },
+		{ props = { Color = WOOD_DK, Size = Vector3.new(0.3, 0.24, 1.4) },
+			at = CFrame.new(0.6, 0.86, -0.58) * CFrame.Angles(math.rad(18), 0, 0) },
+		{ props = { Color = WOOD_DK, Size = Vector3.new(0.3, 1.4, 0.22) },
+			at = CFrame.new(-0.62, 0.06, -1.44) * CFrame.Angles(math.rad(-9), 0, 0) },
+		{ props = { Color = WOOD_DK, Size = Vector3.new(0.3, 1.4, 0.22) },
+			at = CFrame.new(0.62, 0.06, -1.44) * CFrame.Angles(math.rad(-9), 0, 0) },
+		-- a spare pick strapped to the side, so it reads as mining kit and not luggage
+		{ props = { Color = WOOD, Size = Vector3.new(0.14, 1.6, 0.14) },
+			at = CFrame.new(0.98, 0.2, 0.5) * CFrame.Angles(0, 0, math.rad(-10)) },
+		{ props = { Color = STEEL, Size = Vector3.new(1.0, 0.16, 0.16) }, at = CFrame.new(1.12, 0.95, 0.5) },
+		-- compression straps round the sack, and a pad on the base it stands on
+		{ props = { Color = WOOD_DK, Size = Vector3.new(1.86, 0.14, 0.94) }, at = CFrame.new(0, 0.34, 0.01) },
+		{ props = { Color = WOOD_DK, Size = Vector3.new(1.86, 0.14, 0.94) }, at = CFrame.new(0, -0.36, 0.01) },
+		{ props = { Color = ROCK_DK, Size = Vector3.new(1.7, 0.18, 0.86) }, at = CFrame.new(0, -0.92, 0) },
+		-- a haul loop on top and lash loops down the side: it is the bits you would grab hold of
+		-- that make a bag read as carried rather than modelled
+		{ props = { Color = WOOD_DK, Size = Vector3.new(0.5, 0.16, 0.16) }, at = CFrame.new(0, 1.5, -0.3) },
+		{ props = { Color = WOOD_DK, Size = Vector3.new(0.16, 0.3, 0.16) }, at = CFrame.new(-0.22, 1.38, -0.3) },
+		{ props = { Color = WOOD_DK, Size = Vector3.new(0.16, 0.3, 0.16) }, at = CFrame.new(0.22, 1.38, -0.3) },
+		{ props = { Color = WOOD_DK, Size = Vector3.new(0.14, 0.26, 0.3) }, at = CFrame.new(-0.94, 0.2, 0.42) },
+		{ props = { Color = WOOD_DK, Size = Vector3.new(0.14, 0.26, 0.3) }, at = CFrame.new(-0.94, -0.4, 0.42) },
+		-- end caps on the bedroll: a bare cylinder reads as pipe, capped it reads as a roll
+		{ props = { Shape = Enum.PartType.Cylinder, Color = ROCK, Size = Vector3.new(0.1, 0.64, 0.64) },
+			at = CFrame.new(-0.95, -1.45, 0.06) * CFrame.Angles(0, 0, math.rad(90)) },
+		{ props = { Shape = Enum.PartType.Cylinder, Color = ROCK, Size = Vector3.new(0.1, 0.64, 0.64) },
+			at = CFrame.new(0.95, -1.45, 0.06) * CFrame.Angles(0, 0, math.rad(90)) },
+	})
+
+	print(("[TunnelQuest] miner's gear issued -- hat fitted at %.2f scale, %d hair piece(s) tucked")
+		:format(H, (function() local n = 0; for _ in pairs(hidHair) do n += 1 end; return n end)()))
+end
+
+-- a respawn drops both welds with the old character, so put them back on
+player.CharacterAdded:Connect(function()
+	minerGear = nil
+	task.delay(1.6, function()
+		if phase ~= "idle" and phase ~= "done" then giveGear() end
+	end)
+end)
+
+-- ============================================================================
+-- THE DRILL  (HUD)
+-- ============================================================================
+-- HOLD TO DRILL. Depth climbs while you hold and the bit heats up; let go and it cools but the
+-- depth you have cut STAYS. Push it past the red line and it seizes -- locked out while it
+-- cools, and you lose a bite of depth for it.
+--
+-- That tension is the whole game: the fastest way through is one long hold, and one long hold
+-- is exactly what overheats it. Tapping is safe and slow, feathering it right at the red line
+-- is fast. A plain hold-to-fill bar has no decision in it anywhere.
+--
+-- Everything hangs off one table -- cheaper on registers than twenty named locals, and it keeps
+-- the whole HUD addressable from one place.
+local DRILL = {}
+local drillBusy = false
+
+do
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "MineDrill"; gui.ResetOnSpawn = false; gui.DisplayOrder = 12
+	gui.IgnoreGuiInset = true; gui.Enabled = false; gui.Parent = PlayerGui
+	DRILL.gui = gui
+
+	local catch = Instance.new("TextButton")
+	catch.Size = UDim2.fromScale(1, 1); catch.BackgroundTransparency = 1
+	catch.Text = ""; catch.AutoButtonColor = false; catch.ZIndex = 1; catch.Parent = gui
+	DRILL.catch = catch
+
+	-- HOME is stored because the panel gets shoved around: it rumbles while the bit is in the
+	-- rock and jerks when it seizes, and both need somewhere to return to.
+	DRILL.home = UDim2.new(0.5, -300, 0.7, 0)
+
+	local panel = Instance.new("Frame")
+	panel.Size = UDim2.new(0, 600, 0, 214)
+	panel.Position = DRILL.home
+	panel.BackgroundColor3 = Color3.fromRGB(14, 18, 24); panel.BackgroundTransparency = 0.06
+	panel.BorderSizePixel = 0; panel.ZIndex = 2; panel.Parent = gui
+	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 16)
+	DRILL.panel = panel
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = DIAMOND; stroke.Thickness = 3; stroke.Transparency = 0.12
+	stroke.Parent = panel
+	DRILL.stroke = stroke
+
+	-- ---- THE BIT. A drill you can watch spin says "you are drilling" faster than any label,
+	-- and its speed is the readout: it winds up as you hold and stalls dead when it seizes.
+	local bit = Instance.new("Frame")
+	bit.Size = UDim2.new(0, 64, 0, 64); bit.Position = UDim2.new(0, 18, 0, 12)
+	bit.BackgroundTransparency = 1; bit.ZIndex = 3; bit.Parent = panel
+	DRILL.bit = bit
+	for i = 1, 3 do
+		local f = Instance.new("Frame")
+		f.AnchorPoint = Vector2.new(0.5, 0.5)
+		f.Position = UDim2.fromScale(0.5, 0.5)
+		f.Size = UDim2.new(0, 58, 0, 12)
+		f.BackgroundColor3 = (i == 1) and Color3.fromRGB(210, 226, 240) or Color3.fromRGB(128, 140, 154)
+		f.BorderSizePixel = 0; f.Rotation = (i - 1) * 60; f.ZIndex = 3 + (i == 1 and 1 or 0)
+		f.Parent = bit
+		Instance.new("UICorner", f).CornerRadius = UDim.new(0, 4)
+	end
+	local hubf = Instance.new("Frame")
+	hubf.AnchorPoint = Vector2.new(0.5, 0.5); hubf.Position = UDim2.fromScale(0.5, 0.5)
+	hubf.Size = UDim2.new(0, 22, 0, 22); hubf.BackgroundColor3 = DIAMOND
+	hubf.BorderSizePixel = 0; hubf.ZIndex = 5; hubf.Parent = bit
+	Instance.new("UICorner", hubf).CornerRadius = UDim.new(1, 0)
+	DRILL.hub = hubf
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(0, 300, 0, 28); title.Position = UDim2.new(0, 94, 0, 14)
+	title.BackgroundTransparency = 1; title.Font = Enum.Font.GothamBlack
+	title.TextSize = 22; title.TextColor3 = Color3.fromRGB(226, 244, 255)
+	title.TextXAlignment = Enum.TextXAlignment.Left; title.ZIndex = 3
+	title.Text = "DRILL THE SEAM"; title.Parent = panel
+
+	local state = Instance.new("TextLabel")
+	state.Size = UDim2.new(0, 200, 0, 22); state.Position = UDim2.new(0, 94, 0, 42)
+	state.BackgroundTransparency = 1; state.Font = Enum.Font.GothamBold
+	state.TextSize = 16; state.TextColor3 = DIAMOND
+	state.TextXAlignment = Enum.TextXAlignment.Left; state.ZIndex = 3
+	state.Text = ""; state.Parent = panel
+	DRILL.state = state
+
+	-- the big number: at a glance, how far through the rock you are
+	local pct = Instance.new("TextLabel")
+	pct.Size = UDim2.new(0, 170, 0, 54); pct.Position = UDim2.new(1, -186, 0, 12)
+	pct.BackgroundTransparency = 1; pct.Font = Enum.Font.GothamBlack
+	pct.TextSize = 44; pct.TextColor3 = DIAMOND
+	pct.TextXAlignment = Enum.TextXAlignment.Right; pct.ZIndex = 3
+	pct.Text = "0%"; pct.Parent = panel
+	DRILL.pct = pct
+
+	local function bar(y, label, col)
+		local cap = Instance.new("TextLabel")
+		cap.Size = UDim2.new(0, 70, 0, 20); cap.Position = UDim2.new(0, 18, 0, y)
+		cap.BackgroundTransparency = 1; cap.Font = Enum.Font.GothamBold
+		cap.TextSize = 14; cap.TextColor3 = Color3.fromRGB(150, 166, 180)
+		cap.TextXAlignment = Enum.TextXAlignment.Left; cap.ZIndex = 3
+		cap.Text = label; cap.Parent = panel
+
+		local track = Instance.new("Frame")
+		track.Size = UDim2.new(1, -114, 0, 26); track.Position = UDim2.new(0, 96, 0, y - 3)
+		track.BackgroundColor3 = Color3.fromRGB(9, 12, 16); track.BorderSizePixel = 0
+		track.ClipsDescendants = true; track.ZIndex = 3; track.Parent = panel
+		Instance.new("UICorner", track).CornerRadius = UDim.new(0, 7)
+
+		local fill = Instance.new("Frame")
+		fill.Size = UDim2.new(0, 0, 1, 0); fill.BackgroundColor3 = col
+		fill.BorderSizePixel = 0; fill.ZIndex = 4; fill.Parent = track
+		return fill, track
+	end
+
+	local depth, depthTrack = bar(88, "DEPTH", DIAMOND)
+	DRILL.depth = depth
+	-- SLICE MARKS. The rock breaks in four bites, and without the marks the bar gives you no
+	-- idea how close the next one is -- so a run of drilling feels like nothing is happening
+	-- right up until the rock suddenly reacts.
+	for i = 1, 3 do
+		local t = Instance.new("Frame")
+		t.Size = UDim2.new(0, 2, 1, 0); t.Position = UDim2.new(i / 4, 0, 0, 0)
+		t.BackgroundColor3 = Color3.fromRGB(58, 72, 86); t.BorderSizePixel = 0
+		t.ZIndex = 6; t.Parent = depthTrack
+	end
+
+	local heat, heatTrack = bar(130, "HEAT", Color3.fromRGB(255, 168, 60))
+	DRILL.heat = heat
+	local red = Instance.new("Frame")
+	red.Size = UDim2.new(0, 3, 1, 0); red.Position = UDim2.new(0.78, 0, 0, 0)
+	red.BackgroundColor3 = Color3.fromRGB(255, 80, 60); red.BorderSizePixel = 0
+	red.ZIndex = 6; red.Parent = heatTrack
+
+	local hint = Instance.new("TextLabel")
+	hint.Size = UDim2.new(1, -36, 0, 24); hint.Position = UDim2.new(0, 18, 0, 172)
+	hint.BackgroundTransparency = 1; hint.Font = Enum.Font.GothamMedium
+	hint.TextSize = 15; hint.TextColor3 = Color3.fromRGB(150, 166, 180)
+	hint.TextXAlignment = Enum.TextXAlignment.Left; hint.ZIndex = 3
+	hint.Text = "Hold anywhere to drill  --  ease off before the red or the bit seizes"
+	hint.Parent = panel
+end
+
+-- Drill one node. onBite fires each time you cut through another slice, so the rock out in the
+-- world shakes and throws chips in step with the bar rather than only at the end.
+local function playDrill(bites, onBite)
+	if drillBusy then return false end
+	drillBusy = true
+
+	DRILL.depth.Size = UDim2.new(0, 0, 1, 0)
+	DRILL.heat.Size  = UDim2.new(0, 0, 1, 0)
+	DRILL.pct.Text   = "0%"
+	DRILL.state.Text = "READY"
+	DRILL.gui.Enabled = true
+	DRILL.panel.Position = DRILL.home + UDim2.new(0, 0, 0.08, 0)
+	TweenService:Create(DRILL.panel, TweenInfo.new(0.22, Enum.EasingStyle.Back),
+		{ Position = DRILL.home }):Play()
+
+	local down, depth, heat, seized, done = false, 0, 0, 0, 0
+	local spin, rpm = 0, 0
+	local c1 = DRILL.catch.MouseButton1Down:Connect(function() down = true end)
+	local c2 = DRILL.catch.MouseButton1Up:Connect(function() down = false end)
+	local c3 = DRILL.catch.MouseLeave:Connect(function() down = false end)
+
+	while depth < 1 do
+		local dt = math.min(task.wait(), 0.05)
+
+		if seized > 0 then
+			seized -= dt
+			heat = math.max(0, heat - dt * 0.9)          -- it only cools while it is seized
+			rpm  = math.max(0, rpm - dt * 2600)          -- and the bit stalls dead
+			DRILL.state.Text = "SEIZED  --  BIT JAMMED"
+			DRILL.stroke.Color = Color3.fromRGB(255, 80, 60)
+		elseif down then
+			depth = math.min(1, depth + dt * 0.30)       -- ~3.3s of clean holding, if you could
+			heat  = heat + dt * 0.40
+			rpm   = math.min(900, rpm + dt * 1800)
+			DRILL.state.Text = (heat > 0.78) and "DRILLING  --  RUNNING HOT" or "DRILLING"
+			DRILL.stroke.Color = (heat > 0.78) and Color3.fromRGB(255, 168, 60) or DIAMOND
+			if heat >= 1 then
+				-- pushed past the red: it bites back and you lose ground
+				seized = 1.3
+				heat   = 1
+				depth  = math.max(0, depth - 0.14)
+				down   = false
+				-- one hard jolt, so a seize is something you feel and not just a word
+				DRILL.panel.Position = DRILL.home + UDim2.new(0, math.random(-14, 14), 0, math.random(-10, 10))
+			end
+		else
+			heat = math.max(0, heat - dt * 0.55)         -- cools when you let go; depth stays
+			rpm  = math.max(0, rpm - dt * 1200)
+			DRILL.state.Text = (heat > 0.05) and "COOLING" or "READY"
+			DRILL.stroke.Color = DIAMOND
+		end
+
+		-- the bit: speed IS the readout, and the hub glows with the heat
+		spin += rpm * dt
+		DRILL.bit.Rotation = spin
+		DRILL.hub.BackgroundColor3 = DIAMOND:Lerp(Color3.fromRGB(255, 70, 52), heat)
+
+		-- the panel rumbles while the bit is in the rock, harder the hotter it gets
+		if seized <= 0 then
+			local sh = (rpm / 900) * (1.2 + heat * 2.6)
+			DRILL.panel.Position = DRILL.home
+				+ UDim2.new(0, math.random(-10, 10) * sh * 0.1, 0, math.random(-10, 10) * sh * 0.1)
+		end
+
+		DRILL.depth.Size = UDim2.new(depth, 0, 1, 0)
+		DRILL.heat.Size  = UDim2.new(heat, 0, 1, 0)
+		DRILL.pct.Text   = ("%d%%"):format(math.floor(depth * 100))
+		DRILL.pct.TextColor3 = DIAMOND:Lerp(Color3.fromRGB(255, 168, 60), math.max(0, heat - 0.5) * 2)
+		DRILL.heat.BackgroundColor3 = Color3.fromRGB(255, 168, 60)
+			:Lerp(Color3.fromRGB(255, 70, 52), math.clamp((heat - 0.55) / 0.45, 0, 1))
+
+		-- every slice cut is a hit on the rock out in the world
+		local want = math.floor(depth * bites)
+		while done < want and done < bites do
+			done += 1
+			if onBite then onBite(done) end
+			DRILL.pct.TextSize = 54                      -- the number kicks on every bite
+			TweenService:Create(DRILL.pct, TweenInfo.new(0.25), { TextSize = 44 }):Play()
+		end
+	end
+
+	DRILL.state.Text = "THROUGH"
+	DRILL.pct.Text = "100%"
+	DRILL.panel.Position = DRILL.home
+	c1:Disconnect(); c2:Disconnect(); c3:Disconnect()
+	task.wait(0.3)
+	TweenService:Create(DRILL.panel, TweenInfo.new(0.18),
+		{ Position = DRILL.home + UDim2.new(0, 0, 0.12, 0) }):Play()
+	task.delay(0.2, function() DRILL.gui.Enabled = false end)
+	drillBusy = false
+	return true
+end
+
 local function buildOreNode(cf, idx)
 	local m = Instance.new("Model"); m.Name = "DiamondOre"; m:SetAttribute("QuestProp", true)
-	local rock = mk({ Name = "Ore", Size = Vector3.new(3.4, 3.0, 3.4), Color = ROCK, Material = Enum.Material.Slate, CanCollide = true, CanQuery = true })
-	rock.CFrame = cf; rock.Parent = m; m.PrimaryPart = rock
-	-- angular chunks
-	for i = 1, 4 do
-		local a = (i / 4) * math.pi * 2
-		local ch = mk({ Name = "Chunk", Size = Vector3.new(1.4, 1.3, 1.4), Color = (i % 2 == 0) and ROCK_DK or ROCK_LT, Material = Enum.Material.Rock })
-		ch.CFrame = cf * CFrame.new(math.cos(a) * 1.5, (i % 2) * 0.6 - 0.3, math.sin(a) * 1.5) * CFrame.Angles(i, i * 1.3, i)
-		ch.Parent = m
+	local function piece(props, at)
+		local p = mk(props); p.CFrame = at; p.Parent = m; return p
 	end
-	-- embedded glowing diamonds
-	for i = 1, 3 do
-		local a = (i / 3) * math.pi * 2 + idx
-		local gem = mk({ Name = "Gem", Shape = Enum.PartType.Ball, Size = Vector3.new(0.9, 1.2, 0.9),
-			Color = DIAMOND, Material = Enum.Material.Neon, Reflectance = 0.2 })
-		gem.CFrame = cf * CFrame.new(math.cos(a) * 1.2, 0.6, math.sin(a) * 1.2)
-		gem.Parent = m
+
+	-- A WORKED DIG, not a pile of rocks. `cf` faces the room centre, so local -Z is the side the
+	-- player walks up to: the exposed face, the vein and all the gear go on that side.
+	--
+	--   rock face  ->  a timbered opening propped around it  ->  a seam of diamonds cut across
+	--   it  ->  a lantern over the work, a pick left leaning, a bucket of ore at the foot.
+
+	-- A BOULDER, NOT A SLAB. The old node was three flat blocks with gems stuck on the front,
+	-- which reads as a wall with stickers. This is a lumpy mass of angular lumps on stepped
+	-- sizes and yaws, with one flatter face turned toward you -- and that face is the only
+	-- place the seam has been opened.
+	local rock = piece({ Name = "Ore", Size = Vector3.new(4.4, 3.4, 2.4), Color = ROCK,
+		Material = Enum.Material.Slate, CanCollide = true, CanQuery = true },
+		cf * CFrame.Angles(math.rad(4), 0, math.rad(-3)))
+	m.PrimaryPart = rock
+
+	--    x     y     z     sx    sy    sz    yaw   tone
+	local LUMPS = {
+		{ -2.2, -0.5,  0.3, 2.7, 2.5, 2.2,  0.7, ROCK_DK },
+		{  2.3, -0.6,  0.2, 2.4, 2.2, 2.0, -0.6, ROCK_LT },
+		{ -1.3,  1.5,  0.5, 2.1, 1.7, 1.8,  0.3, ROCK_LT },
+		{  1.4,  1.7,  0.4, 1.8, 1.5, 1.6, -0.9, ROCK    },
+		{  0.2, -1.6,  0.6, 3.0, 1.4, 2.1,  0.15, ROCK_DK },
+		{ -2.6,  0.9, -0.3, 1.5, 1.4, 1.3,  1.1, ROCK    },
+		{  2.7,  0.8, -0.2, 1.4, 1.3, 1.2, -1.2, ROCK_DK },
+	}
+	for i, L in ipairs(LUMPS) do
+		piece({ Name = "Ore", Size = Vector3.new(L[4], L[5], L[6]), Color = L[8],
+			Material = Enum.Material.Slate, CanCollide = true },
+			cf * CFrame.new(L[1], L[2], L[3])
+				* CFrame.Angles(math.rad((i % 3 - 1) * 9), L[7], math.rad((i % 4 - 2) * 7)))
 	end
-	local light = Instance.new("PointLight"); light.Color = DIAMOND; light.Brightness = 1.4; light.Range = 12; light.Parent = rock
+
+	-- THE POCKET. Every gem sits in a socket cut into the face and only its outer third stands
+	-- proud -- a crystal laid flat on the surface reads as a sticker, one set into a recess
+	-- reads as something you have to dig out. Two big and four small, clustered rather than
+	-- evenly spaced: a vein is a pocket that got opened, not a pattern.
+	local GEMS = { { 0.0, 0.35, 1.00 }, { -1.05, -0.10, 0.72 }, { 0.95, 0.55, 0.66 },
+	               { -0.45, 1.00, 0.50 }, { 0.35, -0.70, 0.58 }, { 1.55, -0.30, 0.44 } }
+	for i, g in ipairs(GEMS) do
+		local d  = g[3] * (0.85 + ((i + idx) % 3) * 0.12)
+		local at = cf * CFrame.new(g[1], g[2], -1.06)
+		-- the socket: a dark recess, so the crystal has somewhere to be set into
+		piece({ Name = "OreChip", Size = Vector3.new(d * 2.0, d * 2.0, 0.45), Color = ROCK_DK,
+			Material = Enum.Material.Slate }, at * CFrame.Angles(0, 0, i * 0.5))
+		-- the crystal, mostly buried
+		piece({ Name = "Gem", Size = Vector3.new(d, d * 1.5, d), Color = DIAMOND,
+			Material = Enum.Material.Neon, Reflectance = 0.25 },
+			at * CFrame.new(0, 0, -0.16) * CFrame.Angles(math.rad(28), math.rad(45), i * 0.4))
+		-- a table facet on the big ones, so they read as cut rather than as a lump of light
+		if d > 0.6 then
+			piece({ Name = "Gem", Size = Vector3.new(d * 0.6, d * 0.6, d * 0.6), Color = DIAMOND,
+				Material = Enum.Material.Neon, Reflectance = 0.35 },
+				at * CFrame.new(0, 0, -0.42) * CFrame.Angles(math.rad(45), math.rad(45), 0))
+		end
+	end
+
+	-- and a couple showing in the SIDES of the boulder, so the seam runs into the rock rather
+	-- than being painted on the front of it
+	for _, s in ipairs({ -1, 1 }) do
+		piece({ Name = "Gem", Size = Vector3.new(0.46, 0.66, 0.46), Color = DIAMOND,
+			Material = Enum.Material.Neon, Reflectance = 0.25 },
+			cf * CFrame.new(s * 2.15, 0.35, 0.15)
+				* CFrame.Angles(math.rad(18), math.rad(s * 62), math.rad(s * 22)))
+	end
+
+	-- TIMBERED OPENING: two props and a header, braced -- the thing that says "someone is
+	-- working this" rather than "a rock happens to have gems in it"
+	for _, s in ipairs({ -1, 1 }) do
+		piece({ Name = "Prop", Size = Vector3.new(0.5, 3.9, 0.5), Color = WOOD, CanCollide = true,
+			Material = Enum.Material.Wood }, cf * CFrame.new(s * 2.5, -0.1, -1.1))
+		piece({ Name = "Prop", Size = Vector3.new(0.34, 1.0, 0.4), Color = WOOD_DK,
+			Material = Enum.Material.Wood },
+			cf * CFrame.new(s * 2.05, 1.45, -1.1) * CFrame.Angles(0, 0, math.rad(s * 42)))
+	end
+	piece({ Name = "Prop", Size = Vector3.new(5.9, 0.55, 0.66), Color = WOOD_DK,
+		Material = Enum.Material.Wood }, cf * CFrame.new(0, 2.05, -1.1))
+	piece({ Name = "Prop", Size = Vector3.new(5.5, 0.14, 0.3), Color = WOOD,
+		Material = Enum.Material.Wood }, cf * CFrame.new(0, 2.36, -1.28))
+
+	-- a lantern hung over the work: warm, so it reads against the cold blue of the seam
+	piece({ Name = "Prop", Size = Vector3.new(0.12, 0.55, 0.12), Color = WOOD_DK,
+		Material = Enum.Material.Wood }, cf * CFrame.new(1.1, 1.55, -1.42))
+	local lamp = piece({ Name = "LampGlow", Size = Vector3.new(0.46, 0.6, 0.46), Color = FLAME,
+		Material = Enum.Material.Neon }, cf * CFrame.new(1.1, 1.05, -1.42))
+	local lpl = Instance.new("PointLight")
+	lpl.Color = FLAME; lpl.Brightness = 0.10; lpl.Range = 6; lpl.Parent = lamp
+
+	-- a pick left leaning against the prop
+	piece({ Name = "Prop", Size = Vector3.new(0.16, 2.5, 0.16), Color = WOOD,
+		Material = Enum.Material.Wood },
+		cf * CFrame.new(-2.05, -0.65, -1.85) * CFrame.Angles(math.rad(-9), 0, math.rad(14)))
+	piece({ Name = "Prop", Size = Vector3.new(1.25, 0.2, 0.2), Color = Color3.fromRGB(96, 100, 108),
+		Material = Enum.Material.Metal },
+		cf * CFrame.new(-1.75, 0.5, -1.9) * CFrame.Angles(0, 0, math.rad(24)))
+
+	-- a bucket of hewn ore at the foot of the face
+	piece({ Name = "Prop", Size = Vector3.new(1.3, 1.05, 1.3), Color = WOOD_DK, CanCollide = true,
+		Material = Enum.Material.Wood }, cf * CFrame.new(2.35, -1.35, -2.0))
+	piece({ Name = "Prop", Size = Vector3.new(1.4, 0.16, 1.4), Color = Color3.fromRGB(96, 100, 108),
+		Material = Enum.Material.Metal }, cf * CFrame.new(2.35, -1.0, -2.0))
+	for i = 1, 2 do
+		piece({ Name = "Gem", Size = Vector3.new(0.36, 0.48, 0.36), Color = DIAMOND,
+			Material = Enum.Material.Neon, Reflectance = 0.2 },
+			cf * CFrame.new(2.15 + i * 0.32, -0.72, -2.05)
+				* CFrame.Angles(math.rad(28), math.rad(45), i * 0.7))
+	end
+
+	-- chippings where the face has been worked
+	for i = 1, 5 do
+		local a = (i / 5) * math.pi * 2 + idx
+		piece({ Name = "OreChip", Size = Vector3.new(1.1, 0.7, 1.2),
+			Color = (i % 2 == 0) and ROCK_DK or ROCK_LT, Material = Enum.Material.Rock },
+			cf * CFrame.new(math.cos(a) * 2.1, -1.55, -1.4 + math.sin(a) * 0.9)
+				* CFrame.Angles(math.rad(i * 11), a, math.rad(i * 8)))
+	end
+	local light = Instance.new("PointLight"); light.Color = DIAMOND; light.Brightness = 0.09; light.Range = 5; light.Parent = rock
 	local hl = Instance.new("Highlight"); hl.FillTransparency = 1; hl.OutlineColor = DIAMOND
 	hl.OutlineTransparency = 0.25; hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop; hl.Adornee = rock; hl.Parent = m
 
 	local prompt = Instance.new("ProximityPrompt")
-	prompt.ActionText = "Mine"; prompt.ObjectText = "Diamond Ore"; prompt.HoldDuration = 0.35
+	prompt.ActionText = "Drill"; prompt.ObjectText = "Diamond Ore"; prompt.HoldDuration = 0.25
 	prompt.MaxActivationDistance = 12; prompt.RequiresLineOfSight = false; prompt.Parent = rock
 
 	local node = { model = m, prompt = prompt, hp = SWINGS_PER_NODE, broken = false, hl = hl }
-	prompt.Triggered:Connect(function() mineNode(node) end)
+	prompt.Triggered:Connect(function()
+		if node.broken or phase ~= "mine" or drillBusy then return end
+		prompt.Enabled = false
+		-- ONE DRILL PER NODE. Each slice the bit cuts through is one hit on the rock, so the
+		-- shake and the chips out in the world keep pace with the bar instead of the whole
+		-- node breaking in one lump at the end.
+		playDrill(SWINGS_PER_NODE, function() mineNode(node) end)
+		if not node.broken then prompt.Enabled = true end
+	end)
 	m.Parent = caveModel
 	oreNodes[#oreNodes + 1] = node
 	return node
@@ -761,7 +1461,7 @@ function mineNode(node)
 	local diamond = mk({ Name = "DroppedDiamond", Shape = Enum.PartType.Ball, Size = Vector3.new(1.2, 1.6, 1.2),
 		Color = DIAMOND, Material = Enum.Material.Neon, Reflectance = 0.3 })
 	diamond.CFrame = CFrame.new(from + Vector3.new(0, 2, 0)); diamond.Parent = Workspace
-	local pl = Instance.new("PointLight"); pl.Color = DIAMOND; pl.Brightness = 2; pl.Range = 8; pl.Parent = diamond
+	local pl = Instance.new("PointLight"); pl.Color = DIAMOND; pl.Brightness = 0.14; pl.Range = 4; pl.Parent = diamond
 	task.spawn(function()
 		local t0 = os.clock()
 		while os.clock() - t0 < 0.6 do
@@ -817,6 +1517,10 @@ end
 
 local function buildCave()
 	if caveModel then return end
+	-- THE MINE IS MEANT TO BE DARK. Every fixture below was tuned before there was a headlamp,
+	-- and a cave you can already see across is a cave where the lamp on your hat is decoration.
+	-- The fixtures now mark WHERE things are -- a torch, a vein, the exit -- and the lamp is
+	-- what you actually see by.
 	local m = Instance.new("Model"); m.Name = "PrivateMine_" .. player.UserId; m.Parent = Workspace
 	caveModel = m
 	local O = voidOffset   -- cave origin (far below, per-player)
@@ -860,12 +1564,16 @@ local function buildCave()
 		local fire = mk({ Name = "TorchFire", Shape = Enum.PartType.Ball, Size = Vector3.new(1.4, 1.8, 1.4),
 			Color = FLAME, Material = Enum.Material.Neon })
 		fire.CFrame = CFrame.new(O + tp + Vector3.new(0, 2, 0)); fire.Parent = m
-		local pl = Instance.new("PointLight"); pl.Color = FLAME; pl.Brightness = 2.4; pl.Range = 30; pl.Parent = fire
+		local pl = Instance.new("PointLight"); pl.Color = FLAME; pl.Brightness = 0.17; pl.Range = 12; pl.Parent = fire
 	end
 	-- a dim, warm general fill so the room reads but stays moody + mysterious
 	local fill = mk({ Name = "FillLight", Size = Vector3.new(1, 1, 1), Transparency = 1 })
 	fill.CFrame = CFrame.new(O + Vector3.new(0, H - 8, 6)); fill.Parent = m
-	local fpl = Instance.new("PointLight"); fpl.Color = Color3.fromRGB(236, 186, 136); fpl.Brightness = 0.68; fpl.Range = 72; fpl.Parent = fill
+	-- THE AMBIENT FILL is the single reason the mine reads as lit at all. It was a 72-stud wash
+	-- showing you the whole room; now it is a faint haze that says "there is a space here" and
+	-- leaves the seeing to your headlamp.
+	local fpl = Instance.new("PointLight"); fpl.Color = Color3.fromRGB(180, 150, 120)
+	fpl.Brightness = 0.09; fpl.Range = 24; fpl.Parent = fill
 
 	-- ======================================================================
 	-- ENVIRONMENT DETAIL -- handcrafted mine dressing. EVERYTHING below is decorative and
@@ -883,10 +1591,26 @@ local function buildCave()
 		return ROCK_DK:Lerp(ROCK_LT, math.clamp((z + HL) / L, 0, 1))
 	end
 	-- analytic footprints of the nodes + cart/entry/exit so nothing decorative lands on them
+	-- Node positions are decided ONCE, here, because the decor pass has to keep clear of them.
+	-- FOUR SEAMS along the walls rather than one evenly spaced ring: ore comes in veins, and ten
+	-- rocks at identical angular spacing reads as placed rather than found.
+	local nodeSpots = {}
+	do
+		local seams = { { 0.55, 46 }, { 2.05, 42 }, { 3.55, 47 }, { 5.05, 43 } }
+		local per   = { 3, 3, 2, 2 }                    -- 3+3+2+2 = 10
+		for si, s in ipairs(seams) do
+			for k = 1, per[si] do
+				if #nodeSpots >= NODES_NEEDED then break end
+				local a = s[1] + (k - (per[si] + 1) / 2) * 0.17
+				local r = s[2] + ((k % 2 == 0) and -5 or 4)
+				nodeSpots[#nodeSpots + 1] = { x = math.cos(a) * r, z = math.sin(a) * r, a = a }
+			end
+		end
+	end
+
 	local clearZones = { { 24, -18, 12 }, { 0, HL - 14, 14 }, { 0, -HL + 8, 14 } }
-	for i = 1, NODES_NEEDED do
-		local a = (i / NODES_NEEDED) * math.pi * 2; local r = 34 + (i % 3) * 10
-		clearZones[#clearZones + 1] = { math.cos(a) * r, math.sin(a) * r, 8 }
+	for _, sp in ipairs(nodeSpots) do
+		clearZones[#clearZones + 1] = { sp.x, sp.z, 8 }
 	end
 	local function clearAt(x, z, pad)
 		pad = pad or 0
@@ -981,7 +1705,7 @@ local function buildCave()
 				col, Enum.Material.Neon)
 		end
 		if i % 3 == 0 then
-			local pl = Instance.new("PointLight"); pl.Color = col; pl.Brightness = 0.9; pl.Range = 12; pl.Shadows = false; pl.Parent = vein
+			local pl = Instance.new("PointLight"); pl.Color = col; pl.Brightness = 0.06; pl.Range = 5; pl.Shadows = false; pl.Parent = vein
 		end
 	end
 
@@ -1002,14 +1726,14 @@ local function buildCave()
 			deco("Crystal", Vector3.new(1.15, 1.15, 1.15), sub.CFrame * CFrame.new(0, sh / 2, 0) * CFrame.Angles(math.rad(45), math.rad(35), 0), col, Enum.Material.Neon) -- point
 		end
 		-- subtle coloured pool (calm, no overwhelming bloom)
-		local pl = Instance.new("PointLight"); pl.Color = col; pl.Brightness = 1.3; pl.Range = 20; pl.Shadows = false; pl.Parent = big
+		local pl = Instance.new("PointLight"); pl.Color = col; pl.Brightness = 0.09; pl.Range = 7; pl.Shadows = false; pl.Parent = big
 	end
 	local backGlow = deco("BackGlow", Vector3.new(1, 1, 1), CFrame.new(O + Vector3.new(0, 12, -HL + 16)), DIAMOND); backGlow.Transparency = 1
-	local bgl = Instance.new("PointLight"); bgl.Color = Color3.fromRGB(140, 200, 255); bgl.Brightness = 1.0; bgl.Range = 48; bgl.Shadows = false; bgl.Parent = backGlow
+	local bgl = Instance.new("PointLight"); bgl.Color = Color3.fromRGB(140, 200, 255); bgl.Brightness = 0.07; bgl.Range = 19; bgl.Shadows = false; bgl.Parent = backGlow
 	-- gentle shimmer on the diamond chamber (breathing glow; stops when the cave is torn down)
 	task.spawn(function()
 		local t = 0
-		while m.Parent do t = t + 0.1; bgl.Brightness = 0.8 + math.abs(math.sin(t)) * 0.6; task.wait(0.1) end
+		while m.Parent do t = t + 0.1; bgl.Brightness = 0.06 + math.abs(math.sin(t)) * 0.6; task.wait(0.1) end
 	end)
 
 	-- ---- EVERYTHING hanging from the ceiling is a CRYSTAL formation (low-poly faceted gems). A tiny
@@ -1033,7 +1757,7 @@ local function buildCave()
 				(big and 3 or 2.2) + math.random() * 2.5, big and 0.9 or 0.7, col)
 		end
 		if big then
-			local pl = Instance.new("PointLight"); pl.Color = col; pl.Brightness = 1.0; pl.Range = 16; pl.Shadows = false; pl.Parent = main
+			local pl = Instance.new("PointLight"); pl.Color = col; pl.Brightness = 0.07; pl.Range = 6; pl.Shadows = false; pl.Parent = main
 		end
 	end
 	local ci = 0
@@ -1060,7 +1784,7 @@ local function buildCave()
 		end
 		local main = spike(x, z, 1.7, 5 + math.random() * 3)
 		for _ = 1, 3 do spike(x + (math.random() - 0.5) * 3.5, z + (math.random() - 0.5) * 3.5, 1, 3 + math.random() * 2.5) end
-		local pl = Instance.new("PointLight"); pl.Color = col; pl.Brightness = 1.0; pl.Range = 16; pl.Shadows = false; pl.Parent = main
+		local pl = Instance.new("PointLight"); pl.Color = col; pl.Brightness = 0.07; pl.Range = 6; pl.Shadows = false; pl.Parent = main
 	end
 	for fi, sp in ipairs({ { -50, 18 }, { 52, -22 }, { -46, -40 }, { 44, 40 }, { 18, -52 } }) do
 		floorCluster(sp[1], sp[2], CRYSTAL_COLS[(fi % 4) + 1])
@@ -1072,7 +1796,7 @@ local function buildCave()
 		deco("Lamp", Vector3.new(1.3, 1.9, 1.3), CFrame.new(O + Vector3.new(x, H - 9.5, z)), Color3.fromRGB(72, 58, 30), Enum.Material.Metal)
 		local glow = deco("LampGlow", Vector3.new(0.95, 1.1, 0.95), CFrame.new(O + Vector3.new(x, H - 9.5, z)), Color3.fromRGB(255, 196, 110), Enum.Material.Neon)
 		glow.Shape = Enum.PartType.Ball
-		local pl = Instance.new("PointLight"); pl.Color = Color3.fromRGB(255, 188, 118); pl.Brightness = 1.8; pl.Range = 26; pl.Shadows = false; pl.Parent = glow
+		local pl = Instance.new("PointLight"); pl.Color = Color3.fromRGB(255, 188, 118); pl.Brightness = 0.13; pl.Range = 10; pl.Shadows = false; pl.Parent = glow
 	end
 	for _, lp in ipairs({ { -26, 24 }, { 28, 26 }, { -30, -12 }, { 30, -20 }, { 0, 0 } }) do lantern(lp[1], lp[2]) end
 
@@ -1268,13 +1992,14 @@ local function buildCave()
 	dp.Triggered:Connect(depositAtCart)
 	mineCart = cart
 
-	-- 10 diamond ore nodes ringed around the room
+	-- the ore nodes, on the seam positions worked out above (so the decor already avoided them)
 	oreNodes = {}
-	for i = 1, NODES_NEEDED do
-		local a = (i / NODES_NEEDED) * math.pi * 2
-		local r = 34 + (i % 3) * 10
-		local cf = CFrame.new(O + Vector3.new(math.cos(a) * r, 1.6, math.sin(a) * r)) * CFrame.Angles(0, -a, 0)
-		buildOreNode(cf, i)
+	for i, sp in ipairs(nodeSpots) do
+		-- AIMED AT THE ROOM CENTRE. buildOreNode puts the worked face, the seam, the timbering
+		-- and all the gear on local -Z, so the dig has to face the way the player walks up to
+		-- it -- the old CFrame.Angles(0, -a, 0) left them pointing whichever way the maths fell.
+		local at = O + Vector3.new(sp.x, 1.6, sp.z)
+		buildOreNode(CFrame.new(at, O + Vector3.new(0, 1.6, 0)), i)
 	end
 
 	-- ======================================================================
@@ -1286,23 +2011,50 @@ local function buildCave()
 	--    invisible trigger/marker parts (deposit/exit zones, light markers) stay non-solid so the
 	--    prompts + teleports still work.
 	-- ======================================================================
-	local GREY = { Color3.fromRGB(162, 165, 175), Color3.fromRGB(130, 133, 145), Color3.fromRGB(100, 103, 116), Color3.fromRGB(76, 79, 92) }
+	-- THE STONE GOT DARKER WITH THE LIGHTS. Pale grey rock looks lit even with nothing shining on
+	-- it, so dimming the fixtures alone left the cave bright-LOOKING but unlit -- the worst of
+	-- both. Roughly half the old values.
+	local GREY = { Color3.fromRGB(52, 54, 60), Color3.fromRGB(41, 43, 48), Color3.fromRGB(31, 33, 38), Color3.fromRGB(22, 23, 28) }
 	local function greyByZ(z, jit)
 		local base = GREY[4]:Lerp(GREY[1], math.clamp((z + HL) / L, 0, 1))
 		return (jit % 2 == 0) and base:Lerp(Color3.new(1, 1, 1), 0.05) or base:Lerp(Color3.new(0, 0, 0), 0.05)
 	end
 	local STONE = { WallRock = true, Floor = true, WallN = true, WallS = true, WallE = true, WallW = true,
 		Rubble = true, Stalagmite = true, Stalactite = true, Gravel = true, Pebble = true, CaveIn = true,
-		TunnelMouth = true, Ore = true, Chunk = true, Step = true }
+		TunnelMouth = true, Ore = true, OreChip = true, Step = true }
+	-- these WERE called "Chunk". The cookie quest on island 3 sweeps all of Workspace for any
+	-- name containing "chunk" and turns each one into a chocolate pickup, so the mine was
+	-- growing chocolate every time you walked into it. Both ends are fixed: the sweep is now
+	-- distance-scoped to island 3, and nothing down here shares the name any more.
 	local CRYSTAL = { BigCrystal = true, Crystal = true, CrystalVein = true, Shard = true }
 	local KEEPNEON = { TorchFire = true, LampGlow = true, Gem = true }
 	local gi = 0
 	for _, p in ipairs(m:GetDescendants()) do
 		if p:IsA("BasePart") then
 			gi = gi + 1
+			-- THE CRYSTALS AND GEMS ARE THE EXCEPTION TO ALL THE DIMMING.
+			--
+			-- They were flattened to SmoothPlastic when the cave was a lit room, where a matte
+			-- crystal catching the torchlight looked right. In a black cave a matte crystal is
+			-- simply invisible -- and these are the things you are down here to find, plus the
+			-- only landmarks you have to navigate by. So they go NEON, and their lights are set
+			-- to fixed values rather than inheriting the dimming the rest of the cave got: the
+			-- point of the dark is to make these stand out, not to hide them too.
 			if CRYSTAL[p.Name] then
-				p.Material = Enum.Material.SmoothPlastic; p.Reflectance = 0.2
-			elseif not KEEPNEON[p.Name] then
+				p.Material = Enum.Material.Neon; p.Reflectance = 0.1
+				for _, l in ipairs(p:GetChildren()) do
+					if l:IsA("PointLight") then
+						l.Brightness = 1.8; l.Range = 21; l.Shadows = false
+					end
+				end
+			elseif KEEPNEON[p.Name] then
+				for _, l in ipairs(p:GetChildren()) do
+					if l:IsA("PointLight") then
+						l.Brightness = (p.Name == "Gem") and 3.0 or 2.0
+						l.Range      = (p.Name == "Gem") and 20 or 18
+					end
+				end
+			else
 				p.Material = Enum.Material.SmoothPlastic
 			end
 			if p.Name == "Ceiling" then
@@ -1320,6 +2072,56 @@ end
 -- ============================================================================
 -- TELEPORTS  (into / out of the private mine)
 -- ============================================================================
+-- ============================================================================
+-- CAVE DARKNESS
+-- ============================================================================
+-- The build deliberately never touched global Lighting -- correct, because the mine used to be
+-- one room in a bright outdoor game and stamping on Lighting would have dimmed the islands too.
+--
+-- It is worth it now, and only now, because three things are true: the mine is a PRIVATE,
+-- per-player model you can only be inside alone, you are wearing a headlamp built to be the
+-- thing you see by, and this is a LocalScript so it changes nothing for anybody else. Fixtures
+-- and stone colours can only take you so far -- ambient light reaches every surface no matter
+-- how dim the lamps are, and while that stays at daylight levels the cave cannot be dark.
+--
+-- Everything is captured before it is touched and put straight back on the way out, including
+-- if you die down there.
+local litSaved
+local function caveDark(on)
+	if on then
+		if litSaved then return end
+		litSaved = {
+			amb  = Lighting.Ambient,
+			out  = Lighting.OutdoorAmbient,
+			bri  = Lighting.Brightness,
+			fog  = Lighting.FogEnd,
+			fogs = Lighting.FogStart,
+			fogc = Lighting.FogColor,
+		}
+		-- BLACK, not dim. Ambient is what stops a cave being dark, so it goes to nothing; the
+		-- fog closes to 90 studs so anything past your lamp is gone rather than merely faint.
+		Lighting.Ambient        = Color3.fromRGB(0, 0, 0)
+		Lighting.OutdoorAmbient = Color3.fromRGB(0, 0, 0)
+		Lighting.Brightness     = 0
+		Lighting.FogEnd         = 90
+		Lighting.FogStart       = 12
+		Lighting.FogColor       = Color3.fromRGB(0, 0, 0)
+	elseif litSaved then
+		Lighting.Ambient        = litSaved.amb
+		Lighting.OutdoorAmbient = litSaved.out
+		Lighting.Brightness     = litSaved.bri
+		Lighting.FogEnd         = litSaved.fog
+		Lighting.FogStart       = litSaved.fogs
+		Lighting.FogColor       = litSaved.fogc
+		litSaved = nil
+	end
+end
+
+-- dying underground must not leave the whole game dark
+player.CharacterAdded:Connect(function()
+	if phase ~= "mine" then caveDark(false) end
+end)
+
 function enterMine()
 	if busy or phase ~= "descend" then return end
 	busy = true
@@ -1333,6 +2135,7 @@ function enterMine()
 	local char = player.Character
 	if char and caveEntryCF then char:PivotTo(caveEntryCF) end
 	phase = "mine"
+	caveDark(true)
 	updateObjective()
 	task.wait(0.15)
 	TweenService:Create(ff, TweenInfo.new(0.4), { BackgroundTransparency = 1 }):Play()
@@ -1374,6 +2177,7 @@ leaveMine = function()
 	task.wait(0.4)
 	local char = player.Character
 	if char and surfaceReturnCF then char:PivotTo(surfaceReturnCF) end
+	caveDark(false)
 	phase = "descend"
 	updateObjective()
 	task.wait(0.15)
@@ -1393,7 +2197,9 @@ local function grantRewards()
 end
 
 function completeQuest()
+	caveDark(false)
 	phase = "done"
+	takeGear()                                   -- the kit goes back with the job
 	updateObjective()
 	grantRewards()
 	_G.tunnelQuestComplete = true   -- unlocks the island-11 stand (Shop_AllInOne)
@@ -1567,6 +2373,7 @@ local function beginQuest()
 	if started then return end
 	started = true
 	phase = "blast"
+	giveGear()                                   -- hard hat + pack, before you go anywhere near the dark
 	if startPrompt then startPrompt.Enabled = false end
 	wirePlacePrompt()
 	-- prefer the placed "tnt" brick as the charge source; otherwise spawn a stack of crates

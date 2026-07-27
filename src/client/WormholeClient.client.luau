@@ -237,7 +237,10 @@ warpTo = function(islandNum, islandName)
 end
 
 closeBtn.Activated:Connect(closeMenu)
-backdrop.MouseButton1Click:Connect(closeMenu)
+-- NOTE: there is deliberately NO click-outside-to-close handler (matching the Pet Hub). The backdrop spans
+-- the whole screen, so a click anywhere off the panel used to slam it shut, which made menus feel like they
+-- closed at random. This panel now closes ONLY on an explicit action: its X button, its own toggle, or
+-- MainMenuManager closing it because another menu opened.
 -- OpenWormhole BindableEvent (fired by the WORMHOLE side button in CoreClient)
 do
 	local sig = ReplicatedStorage:FindFirstChild("OpenWormhole")
