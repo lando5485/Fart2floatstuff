@@ -172,7 +172,9 @@
       "Bash(uniq -c -f1)",
       "Bash(grep -n '\"[A-Z][A-Z ]\\\\{3,\\\\}\"' src/server/BlimpService.server.lua)",
       "Bash(grep -rnE \"l1lI1l|I1lI|_0x[0-9a-f]|\\\\\\\\\\\\\\\\x[0-9a-f]{2}\\\\\\\\\\\\\\\\x[0-9a-f]{2}\\\\\\\\\\\\\\\\x[0-9a-f]{2}\\\\\\\\\\\\\\\\x[0-9a-f]{2}\\\\\\\\\\\\\\\\x[0-9a-f]{2}|do not delete|required for game to work|dont delete\" --include=*.lua --include=*.luau .)",
-      "Bash(grep -viE \"\\\\\\\\\\\\\\\\xF0|\\\\\\\\\\\\\\\\xE2|\\\\\\\\\\\\\\\\xC2|\\\\\\\\\\\\\\\\xE3|emoji\")"
+      "Bash(grep -viE \"\\\\\\\\\\\\\\\\xF0|\\\\\\\\\\\\\\\\xE2|\\\\\\\\\\\\\\\\xC2|\\\\\\\\\\\\\\\\xE3|emoji\")",
+      "Bash(git fetch *)",
+      "Bash(git ls-remote *)"
     ]
   }
 }
