@@ -205,6 +205,11 @@ _G.dailyTaskDone = function(player, id)
 	s.done[id] = true
 	print(string.format("[DailyTasks] %s completed '%s'", player.Name, id))
 
+	-- CRATE TOKENS (cosmetic currency) ride along with every task. Guarded, so this file works unchanged with
+	-- SkinCrateService absent. The AMOUNT lives in Shared/CrateTokens.REWARDS, not here -- retuning the cosmetic
+	-- economy must never mean editing the quest system.
+	if _G.crateTokensAward then pcall(_G.crateTokensAward, player, "dailyTask") end
+
 	-- BONUS: paid automatically the instant the last task lands. No claim button -> nothing to exploit.
 	if allDone(s) and not s.bonus then
 		s.bonus = true
@@ -219,6 +224,12 @@ _G.dailyTaskDone = function(player, id)
 		grantCoins(player, payout)
 		print(string.format("[DailyTasks] %s cleared ALL tasks -> day %d streak, +%d coins",
 			player.Name, newStreak, payout))
+		-- Clearing the list also pays the all-tasks token bonus AND the login-streak token reward -- this is the
+		-- one place in the game that already knows the streak day, so it's where the streak payout belongs.
+		if _G.crateTokensAward then
+			pcall(_G.crateTokensAward, player, "dailyAllTasks")
+			pcall(_G.crateTokensAward, player, "loginStreak", newStreak)
+		end
 	end
 
 	push(player)

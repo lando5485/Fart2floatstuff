@@ -490,6 +490,10 @@ end
 local HUD_GUIS = { "BottomStackGui", "GasMeterGui", "FartButtonGui", "StomachGui" }
 local hudPrevEnabled = nil
 local function setHudHidden(hidden)
+	-- Tell the bottom-HUD authority in CoreClient that this reveal is a REAL reason to keep BottomStackGui off.
+	-- Without the hold it re-enables the bottom buttons a quarter-second into the reveal, straight over the top
+	-- of the modal. The other three GUIs in HUD_GUIS are not arbitrated there and are still restored below.
+	if _G.hudHold then _G.hudHold("MeteorCrate", hidden) end
 	if hidden then
 		if hudPrevEnabled then return end -- already hidden; don't re-capture
 		hudPrevEnabled = {}

@@ -27,7 +27,7 @@ local LAP_ALTITUDE  = 3      -- studs above the island's top surface (110 -> 55 
 local LAP_SECONDS   = 75     -- one full circuit
 local BOB_HEIGHT    = 4      -- gentle vertical bob, studs
 local BOB_SECONDS   = 9
-local FEED_LENGTH   = 6      -- how many recent purchases the board shows
+local TOP_BUYERS_N  = 8      -- players listed on the MOST PURCHASES board
 local BOARD_REFRESH = 60     -- seconds between top-donator re-reads (DataStore budget)
 local TOP_N         = 8      -- donators listed
 
@@ -55,8 +55,12 @@ local GAMEPASSES = {
 -- ============================================================================
 
 local donorStore = DataStoreService:GetOrderedDataStore("TopDonors_v1")
+-- MOST PURCHASES is a COUNT, not a total spend -- one key per player, +1 per purchase. Deliberately a
+-- separate store from TopDonors_v1: that one ranks by Robux, this one by how many times you have bought
+-- anything, so a player who buys a lot of cheap things can top this board without out-spending a whale.
+local buyerStore = DataStoreService:GetOrderedDataStore("TopBuyers_v1")
 
-local recentFeed = {}   -- newest-first list of strings, capped at FEED_LENGTH
+local topBuyers  = {}   -- [{name=, count=}] refreshed every BOARD_REFRESH
 local topDonors  = {}   -- [{name=, robux=}] refreshed every BOARD_REFRESH
 local nameCache  = {}   -- [userId] = username (GetNameFromUserIdAsync is a web call; don't repeat it)
 
@@ -98,10 +102,31 @@ local function refreshTopDonors()
 	topDonors = fresh
 end
 
--- text = the left-hand line; tag = the right-hand value column (nil for entries with no amount).
-local function pushFeed(text, tag)
-	table.insert(recentFeed, 1, { text = text, tag = tag })
-	while #recentFeed > FEED_LENGTH do table.remove(recentFeed) end
+-- +1 purchase for this player. IncrementAsync for the same reason bankDonation uses it: two servers can
+-- process a receipt for the same player at once, and the store does the add itself so neither is lost.
+local function bankPurchase(player)
+	nameCache[player.UserId] = player.Name
+	local ok, err = pcall(function()
+		buyerStore:IncrementAsync(tostring(player.UserId), 1)
+	end)
+	if not ok then
+		warn("[Blimp] failed to count a purchase for " .. player.Name .. ": " .. tostring(err))
+	end
+end
+
+local function refreshTopBuyers()
+	local ok, pages = pcall(function()
+		return buyerStore:GetSortedAsync(false, TOP_BUYERS_N) -- false = descending, most purchases first
+	end)
+	if not ok then
+		warn("[Blimp] top-buyer read failed -- keeping the last good board")
+		return -- same rule as the donor board: keep the last good list rather than blanking on a blip
+	end
+	local fresh = {}
+	for _, entry in ipairs(pages:GetCurrentPage()) do
+		fresh[#fresh + 1] = { name = userName(tonumber(entry.key)), count = entry.value }
+	end
+	topBuyers = fresh
 end
 
 -- =====================  THE BLIMP  =====================
@@ -452,7 +477,7 @@ beaconLight.Parent     = beacon
 -- The two billboards, hung off the flanks. They MUST sit outside MAX_R (8.6) or they'd be buried inside the
 -- envelope and invisible; 9.5 clears the widest frame with a little daylight, like a real banner on standoffs.
 local donorRows    = board(blimp, "PortBoard",      CFrame.new(-9.5, 0, -4), "TOP DONATORS",     Color3.fromRGB(255, 205, 70))
-local purchaseRows = board(blimp, "StarboardBoard", CFrame.new( 9.5, 0, -4), "RECENT PURCHASES", Color3.fromRGB(120, 225, 140))
+local purchaseRows = board(blimp, "StarboardBoard", CFrame.new( 9.5, 0, -4), "MOST PURCHASES",   Color3.fromRGB(120, 225, 140))
 
 -- An explicit invisible root, rather than borrowing a hull slice -- the slice list is generated, so which
 -- parts exist depends on the profile maths, and PrimaryPart must not be able to come back nil.
@@ -500,36 +525,40 @@ local function renderDonors()
 	end
 end
 
-local function renderFeed()
+-- WAS a chronological "recent purchases" feed, which only ever held what had been bought since this server
+-- booted -- so it read "Nothing bought yet this server." on a fresh server and lost everything on restart.
+-- Now a persistent ranking of who has bought the most, so the board always names real players.
+local function renderBuyers()
 	clearRows(purchaseRows)
-	if #recentFeed == 0 then
-		emptyNote(purchaseRows, "Nothing bought yet this server.")
+	if #topBuyers == 0 then
+		emptyNote(purchaseRows, "No purchases yet.\nBe the first to make the board!")
 		return
 	end
-	for i, f in ipairs(recentFeed) do
-		-- No rank badge here -- this is a chronological feed, not a ranking. The newest entry is highlighted.
-		addRow(purchaseRows, i, nil, nil, f.text, f.tag)
+	for i, b in ipairs(topBuyers) do
+		-- Ranked, so it carries the same medal badges as the donator board beside it.
+		addRow(purchaseRows, i, tostring(i), MEDALS[i] or Color3.fromRGB(96, 104, 122),
+			b.name, shortNum(b.count) .. (b.count == 1 and " buy" or " buys"))
 	end
 end
 
 renderDonors()
-renderFeed()
+renderBuyers()
 
 -- =====================  PURCHASE HOOKS  =====================
 
 -- Called by PlayerStats' SINGLE ProcessReceipt for EVERY Developer Product. Always returns nothing and never
 -- errors the caller -- this is a display-only observer and must never be able to fail a real purchase.
 _G.blimpRecordPurchase = function(player, productId)
+	-- COUNTED WHETHER OR NOT THE PRODUCT IS MAPPED. The old feed bailed out here on an unknown productId
+	-- because it needed a LABEL to print; this board only needs to know that a purchase happened, so token
+	-- packs and anything added later count too instead of being silently dropped.
+	task.spawn(function()
+		bankPurchase(player)
+		refreshTopBuyers() -- climb the board immediately, not on the next 60s tick
+		renderBuyers()
+	end)
 	local info = PRODUCTS[productId]
-	if not info then return end -- an unmapped product (e.g. a new pet item) just doesn't show; harmless
-	if info.robux then
-		-- A donation: the amount is the story, so it gets the right-hand value column.
-		pushFeed(player.Name .. " donated", info.label)
-	else
-		pushFeed(player.Name .. " bought " .. info.label, nil)
-	end
-	renderFeed()
-	if info.robux then
+	if info and info.robux then
 		task.spawn(function()
 			bankDonation(player, info.robux)
 			refreshTopDonors() -- a donation should climb the board immediately, not on the next 60s tick
@@ -541,10 +570,12 @@ end
 -- Gamepasses need no hook in PlayerStats: this is a signal, so our listener runs alongside theirs.
 MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, passId, wasPurchased)
 	if not wasPurchased then return end
-	local label = GAMEPASSES[passId]
-	if not label then return end
-	pushFeed(player.Name .. " bought " .. label, nil)
-	renderFeed()
+	-- Same as above: an unmapped pass still counts as a purchase.
+	task.spawn(function()
+		bankPurchase(player)
+		refreshTopBuyers()
+		renderBuyers()
+	end)
 end)
 
 -- =====================  FLY  =====================
@@ -553,6 +584,8 @@ task.spawn(function()
 	while true do
 		refreshTopDonors()
 		renderDonors()
+		refreshTopBuyers() -- both boards re-read on the same tick, so they never drift apart
+		renderBuyers()
 		task.wait(BOARD_REFRESH)
 	end
 end)

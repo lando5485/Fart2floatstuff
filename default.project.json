@@ -13,9 +13,6 @@
       "PlayerStats": {
         "$path": "src/server/PlayerStats.server.lua"
       },
-      "PetWheel": {
-        "$path": "src/server/PetWheel.server.lua"
-      },
       "BlimpService": {
         "$path": "src/server/BlimpService.server.lua"
       },
@@ -162,6 +159,9 @@
       },
       "WormholeService": {
         "$path": "src/server/WormholeService.server.luau"
+      },
+      "SkinCrateService": {
+        "$path": "src/server/SkinCrateService.server.lua"
       }
     },
     "ReplicatedStorage": {
@@ -183,8 +183,20 @@
         "GutSkins": {
           "$path": "src/shared/GutSkins.luau"
         },
-        "PetWheelConfig": {
-          "$path": "src/shared/PetWheelConfig.luau"
+        "PetSkins": {
+          "$path": "src/shared/PetSkins.luau"
+        },
+        "PetTraits": {
+          "$path": "src/shared/PetTraits.luau"
+        },
+        "SkinCrates": {
+          "$path": "src/shared/SkinCrates.luau"
+        },
+        "CrateTokens": {
+          "$path": "src/shared/CrateTokens.luau"
+        },
+        "PetCollection": {
+          "$path": "src/shared/PetCollection.luau"
         }
       },
       "PhoneHUD": {
@@ -290,9 +302,6 @@
         "$className": "StarterPlayerScripts",
         "CoreClient": {
           "$path": "src/client/CoreClient.client.lua"
-        },
-        "PetWheel": {
-          "$path": "src/client/PetWheel.client.lua"
         },
         "MenuBackdropGuard": {
           "$path": "src/client/MenuBackdropGuard.client.lua"
@@ -437,6 +446,15 @@
         },
         "WarpEffect": {
           "$path": "src/client/WarpEffect.luau"
+        },
+        "PetSkinLook": {
+          "$path": "src/client/PetSkinLook.client.lua"
+        },
+        "SkinCrateClient": {
+          "$path": "src/client/SkinCrateClient.client.lua"
+        },
+        "SettingsMenu": {
+          "$path": "src/client/SettingsMenu.client.lua"
         }
       }
     }

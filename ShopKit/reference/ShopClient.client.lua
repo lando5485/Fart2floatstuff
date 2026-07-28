@@ -23,27 +23,15 @@ local stands = {}
 local lastAwayTime = 0
 local STAND_TRIGGER_RADIUS = 12 -- studs: how close (horizontally) the player must walk to a stand before its shop opens (was 15 original -> 9 reduced -> 12 midpoint)
 
--- FOOD IS GATED BY HEIGHT REACHED: a food unlocks when you have reached ITS island. Pizza (island 14) is
--- unbuyable until you have actually stood on island 14; the same holds for every island above the one you
--- are on. Locked foods still SHOW in the grid -- greyed, 🔒, "???" instead of a price -- so the ladder ahead
--- is visible without being purchasable. All of that rendering already keys off this one function.
---
--- THIS IS NOT THE OLD STAND LOCK. Two different gates:
---   * the STAND lock (which stands would even open, and the pet-quest wall on 5 islands) is still GONE --
---     foodStandUnlocked() is a permanent `true`, every stand opens for everybody and sells the full menu;
---   * this one gates the individual FOOD by island reached.
--- So you can walk into the island-1 stand and buy anything you have climbed to, and nothing above it.
---
--- CANNOT SOFT-LOCK. Power ACCUMULATES across purchases (BuyFoodEvent adds to CurrentPower up to StomachMax),
--- so the food you already have unlocked can always fill the tank -- it just takes more buys. There is no
--- island that needs a food you cannot yet reach.
---
--- The SERVER enforces the same rule in PlayerStats.BuyFoodEvent ("food_locked"). Both halves must stay in
--- step: a cell that looks buyable while the server refuses it is worse than either gate alone.
-local function isUnlocked(island)
-	local n = tonumber(island)
-	if not n then return true end          -- unknown island -> never hide it; the server is still authoritative
-	return unlockedIslands[n] == true
+local function isUnlocked(islandNum)
+	if unlockedIslands[islandNum] then
+		return true
+	end
+	if _G.unlockedIslands and _G.unlockedIslands[islandNum] then
+		unlockedIslands[islandNum] = true
+		return true
+	end
+	return false
 end
 
 local function mkCorner(p,r) local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,r); c.Parent=p; return c end
@@ -1160,35 +1148,7 @@ if not _G.MainMenuManager then
 	_G.MainMenuManager = mgr
 end
 -- the food-STAND menu fully hides here (also clears shopOpen so the proximity loop knows it's closed)
--- THE STAND KEEPS THE BOTTOM HUD. MainMenuManager.notifyOpened() disables BottomStackGui outright, and the
--- gut pill, the gas meter and the BUY FOOD button all live in there -- so walking up to a food stand hid the
--- three things you need in order to use it.
---
--- Re-enabling alone is not enough: the shop is DisplayOrder 100 and the HUD is 5, so it would still be drawn
--- underneath. 105 puts it above the shop while staying below the crate reveal (120).
---
--- The previous order is stashed on an ATTRIBUTE rather than a local, so the restore is still correct if the
--- stand closes by a path this function never saw -- a respawn, a teleport, another menu stealing focus.
-local function standHudPin(on)
-	local pg = player:FindFirstChildOfClass("PlayerGui")
-	local g = pg and pg:FindFirstChild("BottomStackGui")
-	if not g then return end
-	if on then
-		if g:GetAttribute("HudOrderBeforePin") == nil then g:SetAttribute("HudOrderBeforePin", g.DisplayOrder) end
-		g.DisplayOrder = 105
-		g.Enabled = true
-	else
-		local prev = g:GetAttribute("HudOrderBeforePin")
-		if prev then
-			g.DisplayOrder = prev
-			g:SetAttribute("HudOrderBeforePin", nil)
-		end
-	end
-end
-
--- Closing by ANY route -- another menu stealing focus, the X, a respawn -- must unpin too, or the HUD would
--- be left floating above whatever opened next.
-_G.MainMenuManager.register("FoodShop", function() FoodShopGui.Enabled = false; shopOpen = false; standHudPin(false) end)
+_G.MainMenuManager.register("FoodShop", function() FoodShopGui.Enabled = false; shopOpen = false end)
 
 -- [UIFix] print the SHOP panel's REAL final layout + any size-controlling constraints (so the menus can copy them exactly),
 -- then its RESOLVED on-screen size each time it opens (compare against the Pet Hub / Seasonal Pets prints).
@@ -1342,14 +1302,39 @@ task.spawn(function()
 	end
 end)
 
--- ===== FOOD-STAND PET-QUEST LOCK -- REMOVED =====
--- Quest islands (Broccoli Bluff 2, Coconut Cove 5, Popcorn 8, Butter Swamp 10, Burrito Barrens 13) used to
--- keep their stand shut until you owned that island's pet, enforced in THREE places: this one refused to open
--- the shop at all, isUnlocked() greyed the food cells, and PlayerStats.BuyFoodEvent refused the purchase.
--- All three are gone -- a half-removed gate is worse than the gate, because the cell looks buyable and the
--- server silently says no.
---
--- The pet quests themselves are untouched; they are simply optional now rather than a wall across the climb.
+-- ===== FOOD-STAND PET-QUEST LOCK =====
+-- A food stand on a QUEST island stays locked until that island's pet quest is done (the player owns the pet).
+-- Islands without a pet quest are never gated. Ownership is read from _G.ownedPetSpecies (published by PetFollow
+-- off PetStateEvent). The SERVER also enforces this in BuyFoodEvent; this just stops the shop from even OPENING on
+-- a locked stand and shows a styled notice instead. Mirrors PlayerStats' FOOD_PET_GATE.
+local FOOD_GATE = { [2] = "BroccoliPet", [5] = "CoconutCrab", [8] = "PopcornSheep", [10] = "ButterDuck", [13] = "BurritoArmadillo" }
+local FOOD_GATE_NAMES = { BroccoliPet = "Broccoli Bunny", CoconutCrab = "Coconut Crab", PopcornSheep = "Popcorn Sheep", ButterDuck = "Butter Duck", BurritoArmadillo = "Burrito Armadillo" }
+-- returns the gating petId if this island's stand is LOCKED (quest island + pet not yet owned), else nil (open)
+local function foodStandLockedPet(island)
+	local petId = FOOD_GATE[island]
+	if not petId then return nil end                                  -- no quest on this island -> never locked
+	if _G.ownedPetSpecies and _G.ownedPetSpecies[petId] then return nil end -- owns the pet -> unlocked
+	return petId
+end
+local lastFoodLockNotice = 0
+local function showFoodLockNotice(island)
+	local petId = FOOD_GATE[island]; if not petId then return end
+	local now = tick(); if now - lastFoodLockNotice < 3.2 then return end -- debounce: don't spam while standing on it
+	lastFoodLockNotice = now
+	local petName = FOOD_GATE_NAMES[petId] or "pet"
+	local msg = "Finish the " .. petName .. " quest to unlock this food stand!"
+	if _G.NotifyCenter and _G.NotifyCenter.push then                  -- styled HERO notification (matches the rest of the game)
+		_G.NotifyCenter.push({
+			top = "\xF0\x9F\x94\x92 Food Stand Locked",
+			text = msg,
+			color = Color3.fromRGB(255, 190, 60),
+			priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.PURCHASE or nil,
+			duration = 3.5,
+		})
+	elseif _G.showHudBanner then
+		_G.showHudBanner(msg)
+	end
+end
 
 -- ===== STAND DETECTION =====
 local RS = game:GetService("ReplicatedStorage")
@@ -1400,17 +1385,18 @@ task.spawn(function()
 			end
 			if nearStand then
 				lastAwayTime = 0
-				-- EVERY STAND OPENS. The quest-island lock that used to sit here (walk up to Broccoli Bluff without the
-				-- Broccoli Bunny and the shop simply refused to appear) is gone along with the other two stand gates.
+				local lockedPet = foodStandLockedPet(foundIsland)
+				if lockedPet then
+					-- LOCKED quest island: do NOT open the shop; show the styled "finish the quest" notice instead.
+					showFoodLockNotice(foundIsland)
 				-- only auto-open if no OTHER main menu is open (proximity yields to a deliberately-opened menu)
-				if not shopOpen and not playerClosedShop and not _G.MainMenuManager.isOtherOpen("FoodShop") then
+				elseif not shopOpen and not playerClosedShop and not _G.MainMenuManager.isOtherOpen("FoodShop") then
 					nearIslandNumber = foundIsland
 					featuredFood = _G.foods[foundIsland]  -- big display defaults to the island's MAIN food on open
 					updateFoodShop(foundIsland)
 					_G.MainMenuManager.notifyOpened("FoodShop") -- becomes the one open main menu
 					FoodShopGui.Enabled = true
 					shopOpen = true
-					standHudPin(true) -- the stand is a world menu: gut pill, gas meter and BUY FOOD stay up
 					print("SHOP OPEN ISLAND", foundIsland)
 				end
 			else
@@ -1419,7 +1405,6 @@ task.spawn(function()
 				if shopOpen then
 					FoodShopGui.Enabled = false
 					shopOpen = false
-					standHudPin(false) -- walked away: hand the HUD back to whatever owns it normally
 					_G.MainMenuManager.notifyClosed("FoodShop")
 					print("SHOP CLOSED")
 				end

@@ -22,9 +22,20 @@ local SPACE_REALM_PLACE_ID = 125063266868039 -- Space Realm place (within the Ft
 
 -- ⚠ TESTER LOCK -- flip to false to open Space Realm to everyone; REMOVE/OPEN BEFORE PUBLIC LAUNCH. ⚠
 local SPACE_REALM_TESTERS_ONLY = true
-local TESTER_IDS   = { [1086836724] = true, [1418148401] = true }                                 -- lando5485, Broskie310111
-local TESTER_NAMES = { ["lando5485"] = true, ["Broskie310111"] = true }
-local function isTester(plr) return TESTER_IDS[plr.UserId] == true or TESTER_NAMES[plr.Name] == true end
+local TESTER_IDS   = { [1086836724] = true, [1418148401] = true }  -- lando5485, Broskie310111
+-- Keys are LOWER-CASE and the lookup lower-cases too. The previous version compared plr.Name directly
+-- against mixed-case keys, so anyone whose account capitalisation differed by a single letter was refused
+-- with no message -- which is exactly how a tester ends up locked out of Space Realm for no visible reason.
+local TESTER_NAMES = { ["lando5485"] = true, ["broskie310111"] = true, ["itsmaddmax1"] = true, ["itsmaddmax2"] = true }
+local function isTester(plr)
+	-- Prefer the SHARED allow-list in PlayerStats when it has loaded, so there is one place to add a tester;
+	-- the local table stays as a fallback for load-order (this script may run before PlayerStats).
+	if type(_G.isAllowedTestUser) == "function" then
+		local ok, res = pcall(_G.isAllowedTestUser, plr)
+		if ok and res then return true end
+	end
+	return TESTER_IDS[plr.UserId] == true or TESTER_NAMES[string.lower(plr.Name)] == true
+end
 local function allowed(plr) return (not SPACE_REALM_TESTERS_ONLY) or isTester(plr) end
 
 -- RemoteEvent the client (orb touch) fires its INTENT on. getOrCreate so a missing project.json entry can't

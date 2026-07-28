@@ -18,6 +18,46 @@ local Workspace        = game:GetService("Workspace")
 local ServerStorage    = game:GetService("ServerStorage")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+-- DUPLICATE GUARD ---------------------------------------------------------------------------------------
+-- THREE copies of this script were running: the Rojo one plus two stale copies baked into the place file.
+-- Every one of them built its own set of 4 campfires on the same spots, and every one of them connected its
+-- own handler to the CampfireStick remote -- so one press of Roast/Stop/Eat/Remove ran three times, against
+-- three separate heldStick tables that disagreed about what you were holding. Eat paid out three times and
+-- three handlers raced to destroy the tool; Remove sometimes hit a copy that had already dropped it. That is
+-- why the buttons felt broken.
+--
+-- Same treatment RealmPortals already uses: first loader wins, later copies bail, and same-named sibling
+-- Scripts are destroyed. Repeated on a short timer because load ORDER is not ours to choose -- a stale copy
+-- that starts before us is only reachable after we exist.
+if _G.__CampfireServer then
+	warn("[Campfire] a SECOND copy of Campfire.server is running -- this one is bailing out. " ..
+		"Delete the stale Script in Studio (Explorer > search 'Campfire') and re-sync Rojo.")
+	return
+end
+_G.__CampfireServer = true
+
+local STALE_SCAN = { "ServerScriptService", "ServerStorage", "ReplicatedStorage", "ReplicatedFirst", "Workspace" }
+local function nukeStaleServerCopies()
+	local removed = 0
+	for _, svcName in ipairs(STALE_SCAN) do
+		local ok, svc = pcall(function() return game:GetService(svcName) end)
+		if ok and svc then
+			for _, inst in ipairs(svc:GetDescendants()) do
+				if inst ~= script and inst:IsA("Script") and inst.Name == script.Name then
+					pcall(function() inst.Disabled = true; inst:Destroy() end)
+					removed = removed + 1
+				end
+			end
+		end
+	end
+	if removed > 0 then
+		warn("[Campfire] removed " .. removed .. " STALE duplicate server script(s) -- they were tripling every " ..
+			"Roast/Stop/Eat/Remove press. Delete them in Studio for good.")
+	end
+end
+nukeStaleServerCopies()
+task.delay(1, nukeStaleServerCopies); task.delay(4, nukeStaleServerCopies); task.delay(9, nukeStaleServerCopies)
+
 -- client -> server actions for the roasting buttons ("roast" / "stop" / "eat"). getOrCreate so a missing
 -- project.json entry can't break it; the client WaitForChild's this same name.
 local stickRemote = ReplicatedStorage:FindFirstChild("CampfireStick")
@@ -150,6 +190,7 @@ local function buildCampfire(baseCF, seats)
 	seats = seats or SEATS
 	local model = Instance.new("Model"); model.Name = "Campfire"; model.Parent = Workspace
 	model:SetAttribute("CampfireSpot", true)
+	model:SetAttribute("BuiltByLiveScript", true) -- stamp: lets us tell OUR fires from a stale copy's (see pruneDuplicateFires)
 
 	-- a SOLID stone rim around the pit: chunky blocks laid tangent to the circle and overlapped so there are
 	-- no gaps -- one continuous low-poly ring, not scattered pebbles.
@@ -297,7 +338,7 @@ local function buildCampfire(baseCF, seats)
 		Color3.fromRGB(255, 255, 255), Enum.Material.SmoothPlastic)
 	promptAnchor.Transparency = 1
 	local pp = Instance.new("ProximityPrompt")
-	pp.Name = "TakeMarshmallowStick"; pp.ActionText = "Take a Marshmallow Stick"; pp.ObjectText = "Campfire"
+	pp.Name = "TakeMarshmallowStick"; pp.ActionText = "Take a Marshmallow"; pp.ObjectText = "Campfire"
 	pp.HoldDuration = 0.4; pp.MaxActivationDistance = 12; pp.RequiresLineOfSight = false
 	pp.Parent = promptAnchor
 	pp.Triggered:Connect(function(plr) if plr then giveStick(plr) end end)
@@ -385,6 +426,34 @@ local function roastResult(r)
 	elseif r < 92 then return "Crispy and gooey!",                 4, Color3.fromRGB(170, 110, 60)
 	else               return "\xF0\x9F\x98\x85 Burnt to a crisp!", 1, Color3.fromRGB(90, 60, 40)
 	end
+end
+
+-- MARSHMALLOW ON / OFF ----------------------------------------------------------------------------------
+-- Eating no longer throws the stick away. You keep the stick and walk back to the bucket for another
+-- marshmallow, so the marshmallow has to come OFF and go back ON again.
+--
+-- It is HIDDEN, not destroyed. The marshmallow is a welded part of the tool model, so destroying it means
+-- rebuilding and re-welding a fresh one on every refill -- a lot of moving parts to get wrong on someone
+-- else's imported model. Transparency is exact, reversible, and cannot desync the weld. The original
+-- transparency is stashed on the part the first time we touch it, so a model that ships a slightly see-through
+-- marshmallow comes back looking the way its author made it.
+local function setMarsh(tool, on)
+	local marsh = tool and tool:FindFirstChild("Marshmallow")
+	if not marsh then return false end
+	if marsh:GetAttribute("BaseTransparency") == nil then marsh:SetAttribute("BaseTransparency", marsh.Transparency) end
+	marsh.Transparency = on and (marsh:GetAttribute("BaseTransparency") or 0) or 1
+	marsh.CanCollide = false
+	marsh.CanTouch   = on and true or false
+	if on then marsh.Color = marshColor(0) end -- a fresh one is raw again, however burnt the last was
+	tool:SetAttribute("Roast", 0)
+	tool:SetAttribute("HasMarsh", on and true or false)
+	return true
+end
+
+-- Is there something on the end of the stick to cook? Attribute missing (a stick handed out by an older copy
+-- of this script) counts as YES, so nobody ends up holding a stick the buttons refuse to work on.
+local function hasMarsh(tool)
+	return tool ~= nil and tool:GetAttribute("HasMarsh") ~= false and tool:FindFirstChild("Marshmallow") ~= nil
 end
 
 -- a quick bubble over the player's head (server-built, so no client script + everyone sees it)
@@ -558,6 +627,7 @@ local function buildStickTemplate()
 			tmpl.ToolTip = "Roast it over the fire"
 			local marsh = normalizeMarsh(tmpl)
 			tmpl:SetAttribute("Roast", 0)
+			tmpl:SetAttribute("HasMarsh", true)
 			aimStick(tmpl)
 			print(("[Campfire] using your '%s' as the roasting stick (marshmallow part: %s)")
 				:format(src.Name, marsh and marsh.Name or "NONE FOUND -- roasting won't recolour"))
@@ -602,18 +672,30 @@ end
 local heldStick = {} -- [player] = tool
 local roasting  = {} -- [player] = true while cooking (Go pressed, Stop clears it)
 
--- EAT: bank the result for how done it is, then the stick + marshmallow are gone. Only the Eat BUTTON
--- calls this (never a screen tap). Clearing heldStick first makes a double-eat impossible.
+-- EAT: bank the result for how done it is, take the marshmallow -- and KEEP THE STICK. Eating used to
+-- destroy the whole tool, which meant one marshmallow per stick and a fresh trip to the bucket for a whole
+-- new stick each time. Now the stick stays in your hand and you walk back for another marshmallow, which is
+-- both what a real campfire does and what makes a second helping worth going and getting.
+--
+-- Only the Eat BUTTON calls this (never a screen tap -- the tool deliberately has no Activated handler).
+-- Two guards against a double payout: no marshmallow means nothing to eat, and a short lock on the tool
+-- absorbs a double-tap or a leftover duplicate script answering the same press.
 local function eatStick(player)
 	local tool = heldStick[player]
 	if not tool then return end
-	heldStick[player] = nil
-	roasting[player]  = nil
+	if not hasMarsh(tool) then
+		flashOverhead(player, "\xF0\x9F\x8D\xA1 No marshmallow -- grab one from the bucket", Color3.fromRGB(255, 205, 130))
+		return
+	end
+	local now = os.clock()
+	if (tool:GetAttribute("EatAt") or -1) + 0.5 > now then return end -- same press answered twice
+	tool:SetAttribute("EatAt", now)
+	roasting[player] = nil
 	local r = tool:GetAttribute("Roast") or 0
 	local msg, coins, tint = roastResult(r)
 	creditCoins(player, coins)
 	flashOverhead(player, msg .. " +" .. coins, tint)
-	task.delay(0.35, function() if tool then tool:Destroy() end end)
+	setMarsh(tool, false) -- marshmallow gone, stick stays -- go get another from the bucket
 end
 
 function giveStick(player) -- assigns the forward-declared local above
@@ -621,7 +703,22 @@ function giveStick(player) -- assigns the forward-declared local above
 	local hum  = char and char:FindFirstChildOfClass("Humanoid")
 	local bp   = player:FindFirstChildOfClass("Backpack")
 	if not (char and hum and bp) then return end
-	if char:FindFirstChild("Marshmallow Stick") or bp:FindFirstChild("Marshmallow Stick") then return end -- already has one
+	-- ALREADY HOLDING A STICK? Then this is a REFILL, not a new stick. Because eating keeps the stick, coming
+	-- back to the bucket has to put a fresh marshmallow on the one you are already holding -- the old code
+	-- just returned here, which made the stick a one-shot and the second trip do nothing at all.
+	local existing = char:FindFirstChild("Marshmallow Stick") or bp:FindFirstChild("Marshmallow Stick")
+	if existing then
+		heldStick[player] = existing -- re-adopt: the table drifts after a respawn or a transient reparent
+		roasting[player]  = nil
+		if hasMarsh(existing) then
+			flashOverhead(player, "\xF0\x9F\x8D\xA1 You already have a marshmallow", Color3.fromRGB(255, 225, 160))
+		else
+			setMarsh(existing, true)
+			flashOverhead(player, "\xF0\x9F\x8D\xA1 Fresh marshmallow!", Color3.fromRGB(255, 245, 225))
+		end
+		pcall(function() hum:EquipTool(existing) end) -- no hotbar in this game, so put it back in hand
+		return
+	end
 
 	local tool = getStickTemplate():Clone()
 
@@ -632,6 +729,7 @@ function giveStick(player) -- assigns the forward-declared local above
 		if not parent and heldStick[player] == tool then heldStick[player] = nil; roasting[player] = nil end
 	end)
 
+	setMarsh(tool, true) -- explicit: a brand-new stick always arrives with a raw marshmallow on it
 	tool.Parent = bp
 	heldStick[player] = tool
 	roasting[player]  = nil -- starts NOT cooking; you press Go to begin
@@ -658,9 +756,13 @@ stickRemote.OnServerEvent:Connect(function(player, action)
 	if action == "roast"   then roasting[player] = true
 	elseif action == "stop" then roasting[player] = nil
 	elseif action == "eat"  then eatStick(player)
-	elseif action == "remove" then -- throw it away, no eat, no reward
+	elseif action == "remove" then
+		-- Put the stick down: no eat, no reward. Destroying the tool is what hands the bottom buttons back --
+		-- the HUD authority in CoreClient only hides them while you are holding a stick AT a fire, so the gut
+		-- pill / gas meter / BUY FOOD return within a quarter-second, exactly as if you had walked away.
 		heldStick[player] = nil; roasting[player] = nil
 		tool:Destroy()
+		flashOverhead(player, "\xF0\x9F\x97\x91 Put the stick back", Color3.fromRGB(255, 170, 150))
 	end
 end)
 
@@ -722,7 +824,7 @@ local function runRoasting()
 				heldStick[player] = nil; roasting[player] = nil
 				flashOverhead(player, "\xF0\x9F\x8D\xA1 You left the campfire", Color3.fromRGB(255, 170, 90))
 				tool:Destroy()
-			elseif marsh and firesLit and roasting[player] and hrp and nearestFlameDist(hrp.Position) <= REST_RADIUS then
+			elseif marsh and hasMarsh(tool) and firesLit and roasting[player] and hrp and nearestFlameDist(hrp.Position) <= REST_RADIUS then
 				-- fires must be LIT to cook -- a rained-out fire won't roast anything
 				local r = math.min(100, (tool:GetAttribute("Roast") or 0) + ROAST_STEP)
 				tool:SetAttribute("Roast", r)
@@ -760,6 +862,33 @@ local function runWeather()
 	end
 end
 
+-- PRUNE DUPLICATE FIRES ---------------------------------------------------------------------------------
+-- Destroying a stale script does not undo what it already built. Two stale copies each built their own set of
+-- 4 campfires on the SAME spots before we could reach them -- 12 models stacked three deep, each with its own
+-- "Take a Marshmallow" prompt, so one keypress hit three prompts and three leash loops fought over your stick.
+--
+-- Ours carry a BuiltByLiveScript stamp; anything named Campfire without one came from a copy that should not
+-- be running. Refuses to do anything unless at least one of OUR fires exists, so a failed build can never
+-- leave the island with no campfire at all.
+local function pruneDuplicateFires()
+	local mine = 0
+	for _, m in ipairs(Workspace:GetChildren()) do
+		if m.Name == "Campfire" and m:GetAttribute("BuiltByLiveScript") then mine = mine + 1 end
+	end
+	if mine == 0 then return end -- we have not built yet (or the build failed) -- leave every fire alone
+	local removed = 0
+	for _, m in ipairs(Workspace:GetChildren()) do
+		if m.Name == "Campfire" and m:GetAttribute("CampfireSpot") and not m:GetAttribute("BuiltByLiveScript") then
+			pcall(function() m:Destroy() end)
+			removed = removed + 1
+		end
+	end
+	if removed > 0 then
+		warn(("[Campfire] removed %d duplicate campfire model(s) left behind by stale script copies (kept %d)")
+			:format(removed, mine))
+	end
+end
+
 --------------------------------------------------------------------------------
 -- init
 --------------------------------------------------------------------------------
@@ -780,6 +909,8 @@ task.spawn(function()
 	end
 	print(("[Campfire] %d campfire(s) ready -- rest within %d studs, roast marshmallows over the flames")
 		:format(#FLAMES, REST_RADIUS))
+	pruneDuplicateFires() -- now that ours exist and are stamped, clear out any built by a stale copy
+	task.delay(2, pruneDuplicateFires); task.delay(6, pruneDuplicateFires) -- again, for a stale copy that builds after us
 	setFiresLit(Workspace:GetAttribute("ActiveServerEvent") ~= "THUNDERSTORM") -- correct state if we spawned mid-storm
 	task.spawn(runWeather)
 	task.spawn(runRoasting)

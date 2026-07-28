@@ -229,7 +229,8 @@ local PetEquipBroadcast = getOrCreateRemote("PetEquipBroadcast")      -- s->c (A
 local PetTradeRequest = getOrCreateRemote("PetTradeRequestEvent")     -- c->s: (targetUserId) ask to trade
 local PetTradeRespond = getOrCreateRemote("PetTradeRespondEvent")     -- c->s: (accept:bool) answer a request
 local PetTradeOffer   = getOrCreateRemote("PetTradeOfferEvent")       -- c->s: (petId, add:bool) add/remove a pet from your offer
-local PetTradeConfirm = getOrCreateRemote("PetTradeConfirmEvent")     -- c->s: () lock in your current offer
+local PetTradeConfirm = getOrCreateRemote("PetTradeConfirmEvent")     -- c->s: () lock in your current offer / final-confirm
+local PetTradeTokens  = getOrCreateRemote("PetTradeTokensEvent")      -- c->s: (amount) set how many Crate Tokens you're offering
 local PetTradeCancel  = getOrCreateRemote("PetTradeCancelEvent")      -- c->s: () cancel the trade
 local PetTradeState   = getOrCreateRemote("PetTradeStateEvent")       -- s->c: (perspective state) live trade window
 local PetTradePrompt  = getOrCreateRemote("PetTradeRequestPromptEvent") -- s->c: (fromUserId, fromName) incoming request popup
@@ -1448,6 +1449,34 @@ _G.petOnIsland     = function(player)        awardXP(player, XP_PER_ISLAND, "isl
 
 -- List the player's OWNED pets for the crate picker: { {petId, displayName, level, maxed}, ... },
 -- sorted by petId for a deterministic order (server picker fallback + stable client list).
+-- Every pet SPECIES id in the catalogue, sorted. The skin system needs the full list (not just owned ones) --
+-- skins exist for pets you haven't unlocked yet, so /unlockall has to walk the whole roster. Sorted so the
+-- output is stable rather than pairs()-order.
+_G.petAllSpecies = function()
+	local list = {}
+	for petId in pairs(PETS) do list[#list + 1] = petId end
+	table.sort(list)
+	return list
+end
+
+-- The catalogue's DISPLAY data for every species, keyed by petId:
+--   { displayName, islandName, questDesc, maxLevel }
+-- The Pets page, the Quest page and the Collection Book all need a pet's name and realm, and none of them should
+-- be re-deriving it from a hard-coded copy of this table -- PETS stays the one place a pet is described.
+-- Returns a fresh table each call so a caller can't mutate the catalogue by accident.
+_G.petSpeciesInfo = function()
+	local out = {}
+	for petId, def in pairs(PETS) do
+		out[petId] = {
+			displayName = def.displayName or petId,
+			islandName  = def.islandName or "",
+			questDesc   = def.questDesc or "",
+			maxLevel    = def.maxLevel or 1,
+		}
+	end
+	return out
+end
+
 _G.petListOwned = function(player)
 	local list = {}
 	local op = _G.playerOwnedPets[player]; if not op then return list end
@@ -2064,7 +2093,9 @@ PetClaimEvent.OnServerEvent:Connect(function(player, petId)
 	checkCollectionMilestones(player) -- a new species may have just completed a milestone (title / the secret pet)
 end)
 
--- ===== MYTHICAL WHEEL JACKPOT GRANT (server-authoritative). PetWheel.server.lua calls this when the 0.1%
+-- ===== MYTHICAL JACKPOT GRANT (server-authoritative). CURRENTLY UNCALLED: its only caller was the Pet
+-- Wheel, which has been removed. Kept because it is a complete, working grant path -- wire it to a crate
+-- tier or an event when you want a mythical payout again. Was called when the 0.1%
 -- MYTHICAL PET wedge is rolled. Grants `petId` as its RARE/"Mythical" variant, pre-maxed to level 25 -- the
 -- exact same variant + look the rare hatch produces (see the `if isRare then` branch in PetClaimEvent above).
 -- Reuses the file-local variantKey / sendState / sendInventory / broadcastEquip / PetRareEvent so the pet
@@ -2084,7 +2115,7 @@ _G.petGrantMythicalVariant = function(player, petId)
 	_G.playerEverCompletedQuests[player][petId] = true               -- permanent, mirrors the hatch path
 	if not _G.playerEquippedPet[player] then _G.playerEquippedPet[player] = skey end -- auto-equip if it's their first pet
 	local name = RARE_NAMES[petId] or petId
-	print(string.format("[PetWheel] %s won MYTHICAL %s%s", player.Name, name, already and " (already owned)" or ""))
+	print(string.format("[Pet] %s won MYTHICAL %s%s", player.Name, name, already and " (already owned)" or ""))
 	pcall(function() PetRareEvent:FireClient(player, petId, name) end) -- same rare-hatch fanfare
 	sendState(player); sendInventory(player)
 	if _G.playerEquippedPet[player] == skey then broadcastEquip(player, "rare") end -- show the equipped rare to others
@@ -2223,8 +2254,22 @@ local incomingReq = {} -- [targetPlayer] = requesterPlayer (one pending incoming
 
 local function keyList(set) local t = {}; for k in pairs(set) do t[#t+1] = k end; return table.concat(t, ",") end
 local function ownedKeyList(player) local t = {}; for k in pairs(_G.playerOwnedPets[player] or {}) do t[#t+1] = k end; return table.concat(t, ",") end
+-- ===== SKIN OFFERS ride this same trade session =====
+-- A skin offer arrives as a "SKIN:<pet>|<skin>|<trait>" string over the SAME PetTradeOfferEvent. These three
+-- one-line helpers route those keys to SkinCrateService's hooks, so skins became tradable without a second trade
+-- system, a second window, or any change to the request/confirm handshake. All guarded: with the skin service
+-- absent, isSkinKey is never true and every path below behaves exactly as it did before.
+local SKIN_PREFIX = "SKIN:"
+local function isSkinKey(k) return type(k) == "string" and k:sub(1, #SKIN_PREFIX) == SKIN_PREFIX end
+local function skinKeyOf(k) return k:sub(#SKIN_PREFIX + 1) end
+
 -- compact display payload for an offered pet (skey = the storage key being offered; petId = its SPECIES for the icon)
 local function petBrief(player, skey)
+	if isSkinKey(skey) then -- a SKIN entry, not a pet: let the skin service describe it
+		if not _G.skinTradeBrief then return nil end
+		local ok, brief = pcall(_G.skinTradeBrief, player, skinKeyOf(skey))
+		return ok and brief or nil
+	end
 	local d = getPetData(player, skey); local sp = speciesOf(skey); local def = PETS[sp]; if not d then return nil end
 	return { key = skey, petId = sp, name = (d.rare and RARE_NAMES[sp]) or (def and def.displayName) or sp, level = d.level, rare = d.rare and true or false }
 end
@@ -2234,14 +2279,67 @@ end
 local function tradeStatus(myC, theirC)
 	if myC and theirC then return "trading" elseif myC then return "waiting_them" elseif theirC then return "waiting_you" else return "open" end
 end
+
+-- ANTI-SCAM STAGES. The classic trade scam is swapping your offer in the instant before the other person's
+-- click lands, so they confirm something different from what they read. Three things stop that here:
+--   1. ANY change to EITHER offer (items or tokens) clears BOTH readies -- already true for items, now true
+--      for tokens too.
+--   2. Once both sides are READY the offers are FROZEN and a countdown runs. Nothing can be added or removed
+--      during it, so the last thing you saw is the thing that trades.
+--   3. After the countdown BOTH sides must press CONFIRM one more time. That second press is on a locked
+--      offer, so it can't be raced.
+-- Cancel is available at every stage right up until the swap, and cancelling costs nothing -- no items move
+-- until the final confirmations are both in.
+local TRADE_STAGE_OFFER     = "offer"     -- building offers; readies clear on any change
+local TRADE_STAGE_COUNTDOWN = "countdown" -- both ready; offers frozen; timer running
+local TRADE_STAGE_FINAL     = "final"     -- timer done; both must confirm once more to execute
+local TRADE_COUNTDOWN_SEC   = 5
+
+-- Crate Tokens live in SkinCrateService, so every read goes through its global. Guarded: if that service failed
+-- to load, trading simply reports a zero balance and the token half of the deal is unusable, rather than erroring
+-- out the whole trade window.
+local function tokenBalance(player)
+	if not _G.crateTokensBalance then return 0 end
+	local ok, n = pcall(_G.crateTokensBalance, player)
+	return (ok and tonumber(n)) or 0
+end
+
+-- Back to a live, editable offer. Used whenever anything about the deal changes.
+local function resetTradeStage(session)
+	session.stage = TRADE_STAGE_OFFER
+	session.confirmA, session.confirmB = false, false
+	session.finalA, session.finalB = false, false
+	session.countdownEnds = nil
+	session.countdownToken = (session.countdownToken or 0) + 1 -- invalidates any in-flight countdown thread
+end
 local function sendTradeState(session)
 	local A, B = session.a, session.b
-	pcall(function() if A.Parent then PetTradeState:FireClient(A, { active=true, withName=B.Name,
-		mine=offerList(A, session.offerA), theirs=offerList(B, session.offerB),
-		myConfirm=session.confirmA, theirConfirm=session.confirmB, status=tradeStatus(session.confirmA, session.confirmB) }) end end)
-	pcall(function() if B.Parent then PetTradeState:FireClient(B, { active=true, withName=A.Name,
-		mine=offerList(B, session.offerB), theirs=offerList(A, session.offerA),
-		myConfirm=session.confirmB, theirConfirm=session.confirmA, status=tradeStatus(session.confirmB, session.confirmA) }) end end)
+	local stage = session.stage or TRADE_STAGE_OFFER
+	-- Seconds left, recomputed per push rather than counted down on the client, so a laggy client can't show a
+	-- longer window than the server is actually enforcing.
+	local left = 0
+	if session.countdownEnds then left = math.max(0, math.ceil(session.countdownEnds - tick())) end
+	local function payload(me, them, myOffer, theirOffer, myC, theirC, myF, theirF, myTok, theirTok)
+		return {
+			active = true, withName = them.Name,
+			mine = offerList(me, myOffer), theirs = offerList(them, theirOffer),
+			myConfirm = myC, theirConfirm = theirC,
+			status = tradeStatus(myC, theirC),
+			-- token half of the deal
+			myTokens = myTok, theirTokens = theirTok,
+			myTokenBalance = tokenBalance(me),
+			-- anti-scam stage machine
+			stage = stage, countdown = left,
+			myFinal = myF, theirFinal = theirF,
+			locked = (stage ~= TRADE_STAGE_OFFER), -- client greys out add/remove while true
+		}
+	end
+	pcall(function() if A.Parent then PetTradeState:FireClient(A,
+		payload(A, B, session.offerA, session.offerB, session.confirmA, session.confirmB,
+			session.finalA, session.finalB, session.tokensA or 0, session.tokensB or 0)) end end)
+	pcall(function() if B.Parent then PetTradeState:FireClient(B,
+		payload(B, A, session.offerB, session.offerA, session.confirmB, session.confirmA,
+			session.finalB, session.finalA, session.tokensB or 0, session.tokensA or 0)) end end)
 end
 local function closeTrade(session, reason, doneFlag)
 	if not tradeOf[session.a] and not tradeOf[session.b] then return end -- already closed
@@ -2255,8 +2353,27 @@ local function executeTrade(session)
 	local A, B = session.a, session.b
 	if not (A.Parent and B.Parent) then closeTrade(session, "a player left"); return end
 	-- SECURITY re-check at execution: both must still OWN everything they're offering (not just when added).
-	for petId in pairs(session.offerA) do if not ownsPet(A, petId) then closeTrade(session, A.Name.." no longer owns "..petId); return end end
-	for petId in pairs(session.offerB) do if not ownsPet(B, petId) then closeTrade(session, B.Name.." no longer owns "..petId); return end end
+	-- Skin entries are checked through the skin service's own ownership function -- same rule, different inventory.
+	local function stillOwns(who, key)
+		if isSkinKey(key) then
+			if not _G.skinTradeOwns then return false end
+			local ok, owns = pcall(_G.skinTradeOwns, who, skinKeyOf(key))
+			return ok and owns == true
+		end
+		return ownsPet(who, key)
+	end
+	for petId in pairs(session.offerA) do if not stillOwns(A, petId) then closeTrade(session, A.Name.." no longer owns "..petId); return end end
+	for petId in pairs(session.offerB) do if not stillOwns(B, petId) then closeTrade(session, B.Name.." no longer owns "..petId); return end end
+	-- CRATE TOKENS are re-checked here too, not just when they were offered: a player can open a crate between
+	-- offering and confirming, and promising tokens you no longer hold must fail the trade rather than transfer
+	-- a smaller amount than the other side agreed to.
+	local tokA, tokB = math.max(0, math.floor(session.tokensA or 0)), math.max(0, math.floor(session.tokensB or 0))
+	if tokA > 0 and not (_G.crateTokensCanAfford and _G.crateTokensCanAfford(A, tokA)) then
+		closeTrade(session, A.Name.." no longer has "..tokA.." tokens"); return
+	end
+	if tokB > 0 and not (_G.crateTokensCanAfford and _G.crateTokensCanAfford(B, tokB)) then
+		closeTrade(session, B.Name.." no longer has "..tokB.." tokens"); return
+	end
 	-- OPEN TRADING with STACKING + VARIANTS: ANY pet for ANY pet. Offers are STORAGE KEYS (petId or petId#R), so a
 	-- normal and a rare of one species are independent units. Receiving a key you already own STACKS it (count++,
 	-- shared at the higher level); receiving a DIFFERENT variant key just lands as its own separate entry. Nothing to
@@ -2266,15 +2383,37 @@ local function executeTrade(session)
 	-- snapshot the UNIT each side gives (level/xp/rare), remove ONE from each giver (count--, or drop the stack at 0),
 	-- then add ONE to each receiver: STACK if they already own that exact key (count++, keep the higher level) else new.
 	local giveA, giveB = {}, {}
-	for skey in pairs(session.offerA) do local d = getPetData(A, skey); giveA[skey] = d and { level = d.level, xp = d.xp, height = d.height, time = d.time, rare = d.rare } end
-	for skey in pairs(session.offerB) do local d = getPetData(B, skey); giveB[skey] = d and { level = d.level, xp = d.xp, height = d.height, time = d.time, rare = d.rare } end
+	-- Snapshot the unit each side is giving. For a SKIN key the unit is {pet,skin,trait} from the skin service; for
+	-- a pet key it's the level/xp/progress bundle. Both are just opaque payloads to addOne below.
+	local function snapshot(owner, skey)
+		if isSkinKey(skey) then
+			if not _G.skinTradeUnit then return nil end
+			local ok, unit = pcall(_G.skinTradeUnit, owner, skinKeyOf(skey))
+			return ok and unit or nil
+		end
+		local d = getPetData(owner, skey)
+		return d and { level = d.level, xp = d.xp, height = d.height, time = d.time, rare = d.rare } or nil
+	end
+	for skey in pairs(session.offerA) do giveA[skey] = snapshot(A, skey) end
+	for skey in pairs(session.offerB) do giveB[skey] = snapshot(B, skey) end
 	local function removeOne(owner, skey)
+		if isSkinKey(skey) then
+			if _G.skinTradeRemoveOne then pcall(_G.skinTradeRemoveOne, owner, skinKeyOf(skey)) end
+			return
+		end
 		local d = op[owner][skey]; if not d then return end
 		local c = (d.count or 1) - 1
 		if c <= 0 then op[owner][skey] = nil else d.count = c end
 	end
 	local function addOne(owner, skey, unit)
 		if not unit then return end
+		if isSkinKey(skey) then
+			-- Receiving a skin STACKS on the matching key (or lands as a new entry), including a skin for a pet the
+			-- receiver has NOT unlocked -- that's allowed on purpose, and it shows as "Unlock <Pet> to equip" until
+			-- they do. The skin service owns that logic.
+			if _G.skinTradeAddOne then pcall(_G.skinTradeAddOne, owner, unit) end
+			return
+		end
 		local d = op[owner][skey]
 		if d then -- same exact key -> stack, keeping the higher level so no progress is lost
 			d.count = (d.count or 1) + 1
@@ -2285,12 +2424,22 @@ local function executeTrade(session)
 	end
 	for skey in pairs(session.offerA) do removeOne(A, skey) end
 	for skey in pairs(session.offerB) do removeOne(B, skey) end
+	-- Tokens move in the same no-yield window as the items. Validated just above, so a false here means the
+	-- balance changed between two lines of straight-line code, which can't happen -- it's logged rather than
+	-- unwound because there is nothing that could have consumed it.
+	if tokA > 0 and _G.crateTokensTrade and not _G.crateTokensTrade(A, B, tokA) then
+		warn("[Trade] token transfer A->B failed unexpectedly ("..tokA..")")
+	end
+	if tokB > 0 and _G.crateTokensTrade and not _G.crateTokensTrade(B, A, tokB) then
+		warn("[Trade] token transfer B->A failed unexpectedly ("..tokB..")")
+	end
 	for skey, unit in pairs(giveA) do addOne(B, skey, unit) end -- A's unit -> B (stacks onto B's matching key)
 	for skey, unit in pairs(giveB) do addOne(A, skey, unit) end -- B's unit -> A (stacks onto A's matching key)
 	-- RE-DOABLE QUESTS: whoever traded away their LAST of a SPECIES (owns neither variant now) gets that quest reset
 	-- so they can earn it again. A re-completion grants a GUARANTEED NORMAL (rare roll is first-time-only).
-	for skey in pairs(giveA) do local sp = speciesOf(skey); if not ownsSpecies(A, sp) then resetQuestProgress(A, sp); questAvailable(A, sp) end end
-	for skey in pairs(giveB) do local sp = speciesOf(skey); if not ownsSpecies(B, sp) then resetQuestProgress(B, sp); questAvailable(B, sp) end end
+	-- (Skin keys are skipped here: giving away a SKIN never affects a pet quest -- you still own the pet.)
+	for skey in pairs(giveA) do if not isSkinKey(skey) then local sp = speciesOf(skey); if not ownsSpecies(A, sp) then resetQuestProgress(A, sp); questAvailable(A, sp) end end end
+	for skey in pairs(giveB) do if not isSkinKey(skey) then local sp = speciesOf(skey); if not ownsSpecies(B, sp) then resetQuestProgress(B, sp); questAvailable(B, sp) end end end
 	-- clear equipped if it was traded away (keep equip state sane)
 	if _G.playerEquippedPet[A] and not ownsPet(A, _G.playerEquippedPet[A]) then _G.playerEquippedPet[A] = nil end
 	if _G.playerEquippedPet[B] and not ownsPet(B, _G.playerEquippedPet[B]) then _G.playerEquippedPet[B] = nil end
@@ -2298,6 +2447,8 @@ local function executeTrade(session)
 	print(string.format("[Trade] DONE - %s now owns %s, %s now owns %s", A.Name, ownedKeyList(A), B.Name, ownedKeyList(B)))
 	-- refresh both clients FIRST (the swap is already done in memory), then persist (SetAsync yields).
 	sendState(A); sendInventory(A); sendState(B); sendInventory(B)
+	-- push the SKIN inventories too, so a traded skin appears/disappears in the cosmetics UI immediately
+	if _G.skinTradeAfter then pcall(_G.skinTradeAfter, A); pcall(_G.skinTradeAfter, B) end
 	-- a trade can COMPLETE a collection (you received the species you were missing). It can also drop someone below
 	-- a threshold they'd already been paid for -- milestones are deliberately NOT revoked in that case: the reward
 	-- was earned, and clawing back a title (or the secret pet) because a player traded a duplicate away would be a
@@ -2322,7 +2473,14 @@ PetTradeRespond.OnServerEvent:Connect(function(player, accept)
 	local requester = incomingReq[player]; incomingReq[player] = nil
 	if not (requester and requester.Parent) then return end
 	if accept == true and not tradeOf[player] and not tradeOf[requester] then
-		local session = { a = requester, b = player, offerA = {}, offerB = {}, confirmA = false, confirmB = false }
+		local session = {
+			a = requester, b = player,
+			offerA = {}, offerB = {},
+			confirmA = false, confirmB = false,
+			tokensA = 0, tokensB = 0,                -- Crate Tokens each side is putting in
+			finalA = false, finalB = false,          -- the post-countdown second confirmation
+			stage = TRADE_STAGE_OFFER, countdownToken = 0,
+		}
 		tradeOf[requester] = session; tradeOf[player] = session
 		print(string.format("[Trade] %s accepted trade with %s", player.Name, requester.Name))
 		sendTradeState(session)
@@ -2334,8 +2492,24 @@ end)
 
 PetTradeOffer.OnServerEvent:Connect(function(player, petId, add)
 	local session = tradeOf[player]; if not session or type(petId) ~= "string" then return end
+	-- FROZEN once both sides are ready: the whole point of the countdown is that what you read is what you get,
+	-- so a late add/remove is refused outright rather than silently resetting everyone back to the offer stage.
+	if (session.stage or TRADE_STAGE_OFFER) ~= TRADE_STAGE_OFFER then return end
 	local mine = (session.a == player) and session.offerA or session.offerB
 	if add == true then
+		if isSkinKey(petId) then
+			-- SKIN offer: ownership is checked against the skin inventory instead of the pet table. Nothing is
+			-- auto-unequipped here -- a skin stays wearable right up until the trade executes, and the skin service
+			-- clears the equip at that point if the last copy left.
+			local owns = false
+			if _G.skinTradeOwns then local ok, r = pcall(_G.skinTradeOwns, player, skinKeyOf(petId)); owns = ok and r == true end
+			if not owns then return end
+			mine[petId] = true
+			print(string.format("[Trade] %s added skin %s to offer", player.Name, skinKeyOf(petId)))
+			resetTradeStage(session)
+			sendTradeState(session)
+			return
+		end
 		if not ownsPet(player, petId) then return end -- can only offer what you actually own
 		if _G.playerEquippedPet[player] == petId then -- auto-unequip the equipped pet when you offer it
 			_G.playerEquippedPet[player] = nil; sendState(player); sendInventory(player)
@@ -2347,15 +2521,86 @@ PetTradeOffer.OnServerEvent:Connect(function(player, petId, add)
 		mine[petId] = nil
 		print(string.format("[Trade] %s removed %s from offer", player.Name, petId))
 	end
-	session.confirmA = false; session.confirmB = false -- ANY offer change RESETS both confirms (anti-scam)
+	resetTradeStage(session) -- ANY offer change RESETS both readies (anti-scam)
 	sendTradeState(session)
 end)
 
+-- TOKEN OFFER. Same anti-scam rules as an item: refused while frozen, and any change clears both readies.
+-- The amount is clamped to what the player actually holds at the time, and re-validated again at execution --
+-- so spending tokens on a crate mid-trade can't let someone promise more than they have.
+PetTradeTokens.OnServerEvent:Connect(function(player, amount)
+	local session = tradeOf[player]; if not session then return end
+	if (session.stage or TRADE_STAGE_OFFER) ~= TRADE_STAGE_OFFER then return end
+	local n = math.floor(tonumber(amount) or 0)
+	if n < 0 then n = 0 end
+	n = math.min(n, tokenBalance(player))
+	if session.a == player then
+		if session.tokensA == n then return end
+		session.tokensA = n
+	else
+		if session.tokensB == n then return end
+		session.tokensB = n
+	end
+	print(string.format("[Trade] %s set token offer to %d", player.Name, n))
+	resetTradeStage(session)
+	sendTradeState(session)
+end)
+
+-- ONE button, three meanings depending on the stage -- READY while building, ignored during the countdown, and
+-- CONFIRM once the countdown is done. Keeping it on the existing remote means the trade window didn't need a
+-- second verb and older clients still work (they just see the button relabel itself).
 PetTradeConfirm.OnServerEvent:Connect(function(player)
 	local session = tradeOf[player]; if not session then return end
-	if session.a == player then session.confirmA = true else session.confirmB = true end
-	print(string.format("[Trade] %s confirmed (offers locked: %s=[%s] %s=[%s])", player.Name, session.a.Name, keyList(session.offerA), session.b.Name, keyList(session.offerB)))
-	if session.confirmA and session.confirmB then executeTrade(session) else sendTradeState(session) end
+	local isA = (session.a == player)
+	local stage = session.stage or TRADE_STAGE_OFFER
+
+	if stage == TRADE_STAGE_COUNTDOWN then
+		return -- nothing to press; the timer has to finish first
+	end
+
+	if stage == TRADE_STAGE_FINAL then
+		-- SECOND confirmation, on an offer that has been frozen since before the countdown started.
+		if isA then session.finalA = true else session.finalB = true end
+		print(string.format("[Trade] %s gave FINAL confirmation", player.Name))
+		if session.finalA and session.finalB then executeTrade(session) else sendTradeState(session) end
+		return
+	end
+
+	-- READY
+	if isA then session.confirmA = true else session.confirmB = true end
+	print(string.format("[Trade] %s is READY (offers: %s=[%s]+%dtok %s=[%s]+%dtok)", player.Name,
+		session.a.Name, keyList(session.offerA), session.tokensA or 0,
+		session.b.Name, keyList(session.offerB), session.tokensB or 0))
+
+	if not (session.confirmA and session.confirmB) then
+		sendTradeState(session)
+		return
+	end
+
+	-- BOTH READY -> freeze and run the countdown. `countdownToken` is captured now and compared when the timer
+	-- fires: resetTradeStage bumps it, so a trade that got edited (or cancelled, or re-opened between two
+	-- different players) can never have a stale thread push it into the final stage.
+	session.stage = TRADE_STAGE_COUNTDOWN
+	session.countdownEnds = tick() + TRADE_COUNTDOWN_SEC
+	local myToken = session.countdownToken or 0
+	print(string.format("[Trade] both ready -> %ds countdown", TRADE_COUNTDOWN_SEC))
+	sendTradeState(session)
+
+	task.spawn(function()
+		-- Tick once a second so the window can show the number counting down, re-checking validity each time.
+		for _ = 1, TRADE_COUNTDOWN_SEC do
+			task.wait(1)
+			if session.countdownToken ~= myToken then return end        -- edited/cancelled
+			if not tradeOf[session.a] or not tradeOf[session.b] then return end -- closed
+			sendTradeState(session)
+		end
+		if session.countdownToken ~= myToken then return end
+		if not tradeOf[session.a] or not tradeOf[session.b] then return end
+		session.stage = TRADE_STAGE_FINAL
+		session.countdownEnds = nil
+		print("[Trade] countdown done -> FINAL confirmation required from both sides")
+		sendTradeState(session)
+	end)
 end)
 
 PetTradeCancel.OnServerEvent:Connect(function(player)

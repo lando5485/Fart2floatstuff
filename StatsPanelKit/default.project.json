@@ -1,0 +1,15 @@
+{
+  "name": "StatsPanelKit",
+  "tree": {
+    "$className": "DataModel",
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "StatsPanel": {
+          "$path": "StatsPanelKit_AllInOne.client.lua"
+        }
+      }
+    }
+  }
+}

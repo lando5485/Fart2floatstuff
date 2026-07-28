@@ -674,13 +674,12 @@ local function buildPortal(key)
 	ambient.Parent = p.anchor
 	p.ambient = ambient
 
-	-- ---- labels: ONE header per portal, a lock badge above it, a requirement line beneath ----
-	-- All hang off this portal's own anchor, so they can never drift onto a neighbour. The headers get
-	-- pinned to a shared world height in alignHeaders(); their Y offsets are set there, not here.
-	local nameBB, nameLbl = makePlate(p.anchor, 280, 72)
-	nameLbl.Text = look.emoji .. " " .. look.title
-	p.nameBB, p.nameLbl = nameBB, nameLbl
-
+	-- ---- labels: a lock badge over the portal, and a requirement line beneath ----
+	-- The realm-NAME header was removed: the portal already tells you which realm it is through its own
+	-- colour, emoji-free art and vortex tint, and three floating name plates in a row was the noisiest
+	-- thing on the hub skyline. The lock badge stays -- that is the one bit of state the art cannot show.
+	-- Everything hangs off this portal's own anchor so it can never drift onto a neighbour; the Y offset is
+	-- pinned to a shared world height in alignHeaders(), not here.
 	local lockBB, lockLbl, lockCard = makePlate(p.anchor, 66, 66)
 	lockLbl.Text = "\xF0\x9F\x94\x92" -- 🔒
 	lockCard.BackgroundTransparency = 0.25
@@ -775,13 +774,14 @@ local function alignHeaders()
 	end
 	if top == -math.huge then return end
 
-	-- One shared world height for every header -> the row reads dead level, whatever height the bricks
-	-- happen to sit at. The lock badge rides just above its own header.
+	-- One shared world height for every lock badge -> the row reads dead level, whatever height the
+	-- bricks happen to sit at.
 	for _, p in pairs(portals) do
 		if p.anchor then
 			local anchorY = p.anchor.Position.Y
-			p.nameBB.StudsOffsetWorldSpace = Vector3.new(0, top + 3.4 - anchorY, 0)
-			p.lockBB.StudsOffsetWorldSpace = Vector3.new(0, top + 7.2 - anchorY, 0)
+			-- 3.4 was the name header's height; with the header gone the badge takes its place rather than
+			-- hanging at 7.2 with empty air beneath it.
+			p.lockBB.StudsOffsetWorldSpace = Vector3.new(0, top + 3.4 - anchorY, 0)
 		end
 	end
 end
@@ -836,8 +836,7 @@ local function render(p)
 		d.part.Transparency = 0.35 + i * 0.1
 	end
 
-	p.nameLbl.TextColor3 = look.lightA
-	p.inlay.Color        = look.lightA
+	p.inlay.Color = look.lightA
 
 	-- k: not yet yours -> still lit, still swirling, just quieter than a door you can walk through.
 	-- d: the realm's own brightness trim (Candy 0.7 -- its white light blows out at the shared level).

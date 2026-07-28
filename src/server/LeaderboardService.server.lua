@@ -439,7 +439,7 @@ local function beam(plaza, cf, name, x1, z1, x2, z2, y, h, d, color)
 	if len < 0.01 then return end
 	newPart(plaza, name, Vector3.new(len + EMBED * 2, h, d), color,
 		cf * CFrame.new((x1 + x2) / 2, y, (z1 + z2) / 2) * CFrame.Angles(0, math.atan2(-dz, dx), 0),
-		Enum.Material.Slate)
+		Enum.Material.Plastic)
 	return len
 end
 
@@ -449,12 +449,15 @@ local function brazier(plaza, cf, x, z)
 	-- Built to the same standard as the lanterns: a grounded FOOTING, a post, a COLLAR that bridges the post
 	-- up to the wider bowl, then the bowl + coals. Every piece overlaps the next (see the y ranges), so it
 	-- reads as one solid torch instead of a bowl balanced on a stick.
-	local STONE = Color3.fromRGB(104, 94, 80)
-	newPart(plaza, "BrazierBase",   Vector3.new(1.7, 0.6, 1.7), STONE, cf * CFrame.new(x, 0.3, z), Enum.Material.Slate) -- 0.0 .. 0.6
-	newPart(plaza, "BrazierPost",   Vector3.new(0.95, 3.4, 0.95), STONE, cf * CFrame.new(x, 1.9, z), Enum.Material.Slate) -- 0.2 .. 3.6
-	newPart(plaza, "BrazierCollar", Vector3.new(1.4, 0.45, 1.4), STONE, cf * CFrame.new(x, 3.55, z), Enum.Material.Slate) -- 3.325 .. 3.775
+	-- Garden STONE2. The Hall of Fame stonework was Slate in greys (104,94,80 / 150,140,122 / 168,156,136);
+	-- it now uses the Community Garden's material (Plastic) and its three tan tones, so the monument reads
+	-- as the same stone as the garden rather than as grey concrete dropped next to it.
+	local STONE = Color3.fromRGB(168, 142, 104)
+	newPart(plaza, "BrazierBase",   Vector3.new(1.7, 0.6, 1.7), STONE, cf * CFrame.new(x, 0.3, z), Enum.Material.Plastic) -- 0.0 .. 0.6
+	newPart(plaza, "BrazierPost",   Vector3.new(0.95, 3.4, 0.95), STONE, cf * CFrame.new(x, 1.9, z), Enum.Material.Plastic) -- 0.2 .. 3.6
+	newPart(plaza, "BrazierCollar", Vector3.new(1.4, 0.45, 1.4), STONE, cf * CFrame.new(x, 3.55, z), Enum.Material.Plastic) -- 3.325 .. 3.775
 	pillarCyl(plaza, "BrazierBowl", cf * CFrame.new(x, 3.95, z), 1.1, 3,
-		Color3.fromRGB(150, 140, 122), Enum.Material.Slate)          -- 3.4 .. 4.5, seated on the collar
+		Color3.fromRGB(196, 170, 130), Enum.Material.Plastic)          -- 3.4 .. 4.5, seated on the collar
 	-- the glowing coals: a ROUND disc (matches the round bowl), not a square block, sunk into the bowl
 	local coals = pillarCyl(plaza, "BrazierCoals", cf * CFrame.new(x, 4.55, z), 0.5, 2.2,
 		Color3.fromRGB(255, 140, 40), Enum.Material.Neon)
@@ -513,14 +516,44 @@ local function buildPlaza(parent, cf)
 	-- Its top sits at exactly y=0 (the marker's own height), which is the SAME plane the board posts stand on --
 	-- that is what stops the boards floating or sinking, so do not raise it without raising ANCHOR_LIFT too.
 	local floor = newPart(plaza, "PlazaFloor", Vector3.new(1, PLAZA_R * 2, PLAZA_R * 2),
-		Color3.fromRGB(150, 140, 122), cf * CFrame.new(0, -0.5, 0) * CFrame.Angles(0, 0, math.rad(90)),
-		Enum.Material.Slate)
+		Color3.fromRGB(196, 170, 130), cf * CFrame.new(0, -0.5, 0) * CFrame.Angles(0, 0, math.rad(90)),
+		Enum.Material.Plastic)
 	floor.Shape = Enum.PartType.Cylinder
 
 	local rim = newPart(plaza, "PlazaRim", Vector3.new(0.8, PLAZA_R * 2 + 1.6, PLAZA_R * 2 + 1.6),
 		Color3.fromRGB(196, 170, 96), cf * CFrame.new(0, -0.9, 0) * CFrame.Angles(0, 0, math.rad(90)),
 		Enum.Material.Metal)
 	rim.Shape = Enum.PartType.Cylinder
+
+	-- BRICK COURSING around the plaza edge -- the same skin the Community Garden wraps its stone in.
+	--
+	-- Matching the garden's MATERIAL (Plastic) and COLOUR still left this reading as flat cast stone next to
+	-- it, because the garden's stone texture is not a Material at all: it is GEOMETRY. brickRing() in
+	-- CommunityGarden lays individual brick blocks in stacked rows, shifts every other row by half a brick
+	-- (running bond) and alternates two tones so each brick catches the light separately. A Material swap can
+	-- never reproduce that, which is why the colour matched and the texture did not.
+	--
+	-- Same numbers as the garden's: 2.4-stud bricks, 0.5 proud of the face, 0.86/0.9 of the cell so the mortar
+	-- gaps show. Sits just outside the metal rim so the course bands the plaza rather than fighting it.
+	do
+		local BW, ROWS, ROW_H = 2.4, 2, 0.7
+		local bR   = PLAZA_R + 1.0
+		local n    = math.max(8, math.floor((2 * math.pi * bR) / BW))
+		local step = 2 * math.pi / n
+		for r = 0, ROWS - 1 do
+			local y   = -1.4 + ROW_H * (r + 0.5)
+			local off = (r % 2 == 0) and 0 or (step * 0.5) -- running bond: alternate rows shift half a brick
+			for i = 0, n - 1 do
+				local a = i * step + off
+				-- X = radial (what makes the brick stand proud), Y = height, Z = tangent (its width)
+				newPart(plaza, "Brick", Vector3.new(0.5, ROW_H * 0.86, BW * 0.9),
+					((i + r) % 2 == 0) and Color3.fromRGB(196, 170, 130) or Color3.fromRGB(178, 150, 110),
+					cf * CFrame.new(math.cos(a) * bR, y, math.sin(a) * bR) * CFrame.Angles(0, -a, 0),
+					Enum.Material.Plastic)
+			end
+		end
+		print(string.format("[HallOfFame] brick course: %d bricks x %d rows around r=%.1f (garden coursing)", n, ROWS, bR))
+	end
 
 	-- INLAY: a gold ring with a dark disc inside it, both stood PROUD of the floor rather than flush with it.
 	-- Flush would z-fight (two coplanar surfaces flickering as the camera moves), so each layer clears the one
@@ -535,7 +568,7 @@ local function buildPlaza(parent, cf)
 		cf * CFrame.new(0, 0.05, 0) * CFrame.Angles(0, 0, math.rad(90)), Enum.Material.Metal)
 	gold.Shape = Enum.PartType.Cylinder; gold.CanCollide = false
 	local disc = newPart(plaza, "InlayDisc", Vector3.new(0.4, 40, 40), Color3.fromRGB(96, 92, 86),
-		cf * CFrame.new(0, 0.10, 0) * CFrame.Angles(0, 0, math.rad(90)), Enum.Material.Slate)
+		cf * CFrame.new(0, 0.10, 0) * CFrame.Angles(0, 0, math.rad(90)), Enum.Material.Plastic)
 	disc.Shape = Enum.PartType.Cylinder; disc.CanCollide = false
 
 	-- ATMOSPHERE: gold motes drifting across the whole plaza, emitted from an invisible volume overhead. This is
@@ -579,8 +612,8 @@ local function buildPlaza(parent, cf)
 	local ROAD_LEN  = SLAB_D * 3
 	for i = 1, 3 do
 		local slab = newPart(plaza, "Approach", Vector3.new(ROAD_HALF * 2, 0.4, SLAB_D),
-			Color3.fromRGB(150, 140, 122),
-			cf * CFrame.new(0, 0.05, -(PLAZA_R + 1.5 + (i - 1) * SLAB_D)), Enum.Material.Slate)
+			Color3.fromRGB(196, 170, 130),
+			cf * CFrame.new(0, 0.05, -(PLAZA_R + 1.5 + (i - 1) * SLAB_D)), Enum.Material.Plastic)
 		slab.CanCollide = false
 	end
 
@@ -590,8 +623,8 @@ local function buildPlaza(parent, cf)
 	-- overlaps the (slightly wider) road so there is no strip of bare ground between them.
 	for _, sx in ipairs({ -1, 1 }) do
 		local kx = sx * (WALK_HALF + 1.0)
-		newPart(plaza, "Kerb", Vector3.new(1.2, 1, ROAD_LEN), Color3.fromRGB(150, 140, 122),
-			cf * CFrame.new(kx, 0.3, ROAD_MID), Enum.Material.Slate)          -- -0.2 .. 0.8
+		newPart(plaza, "Kerb", Vector3.new(1.2, 1, ROAD_LEN), Color3.fromRGB(196, 170, 130),
+			cf * CFrame.new(kx, 0.3, ROAD_MID), Enum.Material.Plastic)          -- -0.2 .. 0.8
 		newPart(plaza, "KerbCap", Vector3.new(1.5, 0.3, ROAD_LEN), Color3.fromRGB(196, 170, 96),
 			cf * CFrame.new(kx, 0.8, ROAD_MID), Enum.Material.Metal)          -- 0.65 .. 0.95
 		-- LANTERNS standing ON the kerb, well outside the corridor.
@@ -659,10 +692,10 @@ local function buildPlaza(parent, cf)
 		local inGate = math.abs(a - 180) < GATE_GAP -- 180 deg is the front/gateway
 		if not inGate then
 			cols[#cols + 1] = a
-			newPart(plaza, "ColumnBase", Vector3.new(2.8, 1.6, 2.8), Color3.fromRGB(150, 140, 122),
-				ring(cf, a, COL_R, 0.5), Enum.Material.Slate) -- -0.3..1.3: sunk into the floor
+			newPart(plaza, "ColumnBase", Vector3.new(2.8, 1.6, 2.8), Color3.fromRGB(196, 170, 130),
+				ring(cf, a, COL_R, 0.5), Enum.Material.Plastic) -- -0.3..1.3: sunk into the floor
 			pillarCyl(plaza, "Column", ring(cf, a, COL_R, 1 + COL_H / 2), COL_H, 2,
-				Color3.fromRGB(168, 156, 136), Enum.Material.Slate)
+				Color3.fromRGB(178, 150, 110), Enum.Material.Plastic)
 			newPart(plaza, "ColumnCap", Vector3.new(2.6, 0.9, 2.6), Color3.fromRGB(212, 184, 108),
 				ring(cf, a, COL_R, CAP_Y), Enum.Material.Metal)
 		end
@@ -688,15 +721,15 @@ local function buildPlaza(parent, cf)
 	-- inherits the marker's rotation -- is the face pointing back at whoever is approaching.
 	--   base -0.3..1.3 | pillar 1.0..17.0 | cap 16.8..17.8 | lintel 17.6..21.0 | lintel cap 20.85..21.55
 	for _, sx in ipairs({ -16, 16 }) do
-		newPart(plaza, "PillarBase", Vector3.new(3.6, 1.6, 3.6), Color3.fromRGB(150, 140, 122),
-			cf * CFrame.new(sx, 0.5, ARCH_Z), Enum.Material.Slate)
-		newPart(plaza, "Pillar", Vector3.new(2.2, 16, 2.2), Color3.fromRGB(168, 156, 136),
-			cf * CFrame.new(sx, 9, ARCH_Z), Enum.Material.Slate)
+		newPart(plaza, "PillarBase", Vector3.new(3.6, 1.6, 3.6), Color3.fromRGB(196, 170, 130),
+			cf * CFrame.new(sx, 0.5, ARCH_Z), Enum.Material.Plastic)
+		newPart(plaza, "Pillar", Vector3.new(2.2, 16, 2.2), Color3.fromRGB(178, 150, 110),
+			cf * CFrame.new(sx, 9, ARCH_Z), Enum.Material.Plastic)
 		newPart(plaza, "PillarCap", Vector3.new(3, 1, 3), Color3.fromRGB(212, 184, 108),
 			cf * CFrame.new(sx, 17.3, ARCH_Z), Enum.Material.Metal)
 	end
 	local lintel = newPart(plaza, "Lintel", Vector3.new(36, 3.4, 2.4), Color3.fromRGB(178, 166, 144),
-		cf * CFrame.new(0, 19.3, ARCH_Z), Enum.Material.Slate)
+		cf * CFrame.new(0, 19.3, ARCH_Z), Enum.Material.Plastic)
 	newPart(plaza, "LintelCap", Vector3.new(37.5, 0.7, 3), Color3.fromRGB(212, 184, 108),
 		cf * CFrame.new(0, 21.2, ARCH_Z), Enum.Material.Metal)
 

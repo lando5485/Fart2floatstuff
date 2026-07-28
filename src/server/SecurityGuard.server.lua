@@ -25,8 +25,7 @@ local CONFIG = {
 	signatureNames = { "backdoor", "infected", "malware", "trojan", "exploit", "synapse", "remotespy", "lagswitch", "antiskid", "nightmare", "ic3w0lf", "wutev", "nemesis vip" },
 	-- legitimate scripts that DO appear at runtime and must NEVER be removed:
 	allowNames     = { ["Animate"] = true, ["Health"] = true, ["Sound"] = true, ["Respawn"] = true, ["ControlScript"] = true, ["CameraScript"] = true, ["PlayerScriptsLoader"] = true, ["PlayerModule"] = true, ["RbxCharacterSounds"] = true,
-		-- legit game scripts (Pet Wheel system) -- allowlisted so a late Rojo sync can't get them mistaken for an injection:
-		["PetWheel"] = true, ["PetWheelConfig"] = true },
+		},
 	-- services to protect (these never legitimately gain scripts at runtime in this game):
 	protectedServices = { "Workspace", "ServerScriptService", "ServerStorage", "ReplicatedStorage", "ReplicatedFirst", "StarterGui", "StarterPack", "StarterPlayer", "Lighting", "SoundService" },
 }

@@ -144,7 +144,24 @@ end
 print("ICON FIX DONE")
 
 -- Premium Shop
-sg=Instance.new("ScreenGui"); sg.Name="PremiumShopGui"; sg.ResetOnSpawn=false; sg.Enabled=false; sg.DisplayOrder=100; sg.Parent=PlayerGui -- DisplayOrder 100 = definitively above the HUD (<=5) so the shop covers it
+--
+-- ⚠ RETIRED -- ShopKit_AllInOne now owns "PremiumShopGui".
+--
+-- ShopKit builds the same six cards with the same gamepass/product ids as the block below,
+-- plus the 💰 BUY COINS banner and COIN SHOP page this one never had. Two ScreenGuis with the
+-- SAME NAME would have been the real bug: everything toggles this panel by
+-- PlayerGui:FindFirstChild("PremiumShopGui") (JustButtons:174, and _G.MainMenuManager's
+-- "Premium" closer), and FindFirstChild returns an arbitrary one of the duplicates -- so the
+-- SHOP button would open one window while the manager closed the other.
+--
+-- Renaming is the whole fix, and it is deliberately a ONE-LINE, fully reversible change rather
+-- than deleting ~450 lines of working code: nothing looks this panel up by any other means, so
+-- under a different name it is simply never opened. It still gets BUILT each session (a few
+-- hundred hidden instances) -- if that ever matters, delete this section properly, but do it as
+-- its own change so a bad merge cannot silently take the shop with it.
+--
+-- TO ROLL BACK: put the name to "PremiumShopGui" and delete ShopKit_AllInOne.client.lua.
+sg=Instance.new("ScreenGui"); sg.Name="PremiumShopGui_RETIRED"; sg.ResetOnSpawn=false; sg.Enabled=false; sg.DisplayOrder=100; sg.Parent=PlayerGui
 local PremiumShopGui=sg
 mkFrame(sg,{Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.new(0,0,0),BackgroundTransparency=1,Active=false}) -- invisible + Active=FALSE so clicks OUTSIDE the panel fall through to the HUD MENU BUTTONS (direct click-to-switch)
 local premPanel=mkFrame(sg,{Size=UDim2.new(0.9,0,0.85,0),Position=UDim2.new(0.5,0,0.5,0),AnchorPoint=Vector2.new(0.5,0.5),BackgroundColor3=Color3.fromRGB(25,90,185),ClipsDescendants=true,Active=true})

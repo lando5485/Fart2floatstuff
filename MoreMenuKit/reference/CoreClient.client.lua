@@ -985,82 +985,15 @@ do
 
 	-- --- the MORE+ popup itself ---
 	local moreGui = Instance.new("ScreenGui"); moreGui.Name = "MoreMenuGui"; moreGui.ResetOnSpawn = false
-	-- DisplayOrder 9, not 8. The stale menu below also used 8, and at equal DisplayOrder the winner is
-	-- whichever happened to be created last -- so the old design could render OVER the new one for the
-	-- moment before the sweep reaches it. 9 makes this one win outright, sweep or no sweep.
-	moreGui.DisplayOrder = 9; moreGui.Parent = PlayerGui
-	-- ============================================================================================
-	-- ONE MORE MENU, AND IT IS THIS ONE.
-	-- ============================================================================================
-	-- HUD_AllInOne.client.lua builds its OWN ScreenGui, also called "MoreMenuGui", also DisplayOrder 8,
-	-- containing the OLD 196x206 pop-out: its own catcher, panel, header and button rows. It is not in
-	-- default.project.json -- no *_AllInOne file is -- so it cannot be reaching the game through Rojo, and
-	-- the only way it runs is as a copy baked into the place file. That is what is showing through behind
-	-- the new cards: not leftovers inside this menu (this ScreenGui is built from scratch every run and
-	-- contains nothing but the dashboard), but a whole second menu sitting underneath it.
-	--
-	-- Deleting the source file cannot fix that, because a baked-in instance is not the source file. So the
-	-- live script evicts it instead:
-	--   * NOW, for a copy that was built before this line ran;
-	--   * ON ChildAdded, for one built after it (load order between two LocalScripts is not defined);
-	--   * and on a few delayed passes, because a StarterGui copy is re-cloned into PlayerGui on respawn.
-	-- The watcher stays connected for the session, so a rebuild at any point is caught too.
-	--
-	-- TARGETED BY NAME, and it never touches this ScreenGui. Sweeping PlayerGui broadly is what produced
-	-- the black bar over the HUD -- other menus legitimately keep hidden frames parked, and a blanket
-	-- "destroy anything invisible" pass eats them.
-	do
-		local function evictStaleMoreMenus()
-			for _, g in ipairs(PlayerGui:GetChildren()) do
-				if g ~= moreGui and g:IsA("ScreenGui") and g.Name == "MoreMenuGui" then
-					print("[MOREMENU] evicted a stale duplicate MoreMenuGui (old pop-out design)")
-					g:Destroy()
-				end
-			end
-		end
-		evictStaleMoreMenus()
-		PlayerGui.ChildAdded:Connect(function(c)
-			if c ~= moreGui and c:IsA("ScreenGui") and c.Name == "MoreMenuGui" then
-				-- deferred: let the other script finish parenting before it is taken away, so it cannot
-				-- error mid-build and leave half a menu behind
-				task.defer(function()
-					if c and c.Parent and c ~= moreGui then
-						print("[MOREMENU] evicted a stale duplicate MoreMenuGui (added after ours)")
-						c:Destroy()
-					end
-				end)
-			end
-		end)
-		for _, d in ipairs({ 0.5, 2, 5, 10 }) do task.delay(d, evictStaleMoreMenus) end
-	end
+	moreGui.DisplayOrder = 8; moreGui.Parent = PlayerGui
 	local catcher = mkButton(moreGui, { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "", ZIndex = 1, Visible = false }) -- tap-outside-to-close
-	-- FULL-SIZE PANEL: 700x520 at (0.5,0,0.5,-45) -- the exact geometry the Shop, Pet Hub, Daily Tasks, Locker and
-	-- Skin Crates all use, so every menu in the game opens to the same box in the same place. It used to be a
-	-- 196x206 pop-out beside the MORE button, which showed ~3 of its 8 rows and buried the rest below the fold.
-	local panel = mkFrame(moreGui, { Size = UDim2.new(0, 700, 0, 520), Position = UDim2.new(0.5, 0, 0.5, -45),
-		AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.fromRGB(225, 70, 170), Visible = false, ZIndex = 2, Active = true })
-	mkCorner(panel, 20); mkStroke(panel, Color3.fromRGB(140, 20, 100), 3)
-	-- 60px header bar in the darker pink, matching the other panels' header band.
-	-- THE TEXT SWEEPS MUST NOT TOUCH THIS MENU. _G.applyHudScaling force-sets TextScaled = true AND Visible = true
-	-- on every TextLabel/TextButton under PlayerGui, which is exactly what blew the Pet Hub's type up on top of
-	-- itself. A dashboard is all precise type sizes -- a 21px title beside a 13px description -- so every one of
-	-- them would be rescaled to fill its frame and the hierarchy would collapse. The NoTextSweep attribute is the
-	-- sweep's own documented opt-out (see _G.hudTextSweepSkip); the mobile UIScale pass still applies as normal.
-	moreGui:SetAttribute("NoTextSweep", true)
-	-- 72px header band: title, subtitle, close. Squared off at the bottom because the 20px corner is only wanted
-	-- where it meets the panel's own top corners -- without this the band's lower corners cut in and the pink
-	-- shows through either side of the divider.
-	local hdr = mkFrame(panel, { Size = UDim2.new(1, 0, 0, 72), BackgroundColor3 = Color3.fromRGB(170, 40, 125), ZIndex = 2 })
-	mkCorner(hdr, 20)
-	mkFrame(hdr, { Size = UDim2.new(1, 0, 0, 22), Position = UDim2.new(0, 0, 1, -22), BackgroundColor3 = Color3.fromRGB(170, 40, 125), BorderSizePixel = 0, ZIndex = 2 })
-	-- The title used to carry a double-encoded U+2795 (the UTF-8 of the UTF-8), which rendered as garbage.
-	-- Dropped rather than re-encoded -- the header reads better without a glyph in front of it.
-	mkLabel(hdr, { Text = "MORE", Font = Enum.Font.FredokaOne, TextSize = 34, TextColor3 = Color3.fromRGB(255, 220, 0), Size = UDim2.new(0, 300, 0, 38), Position = UDim2.new(0, 20, 0, 8), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3 })
-	mkLabel(hdr, { Text = "Everything else lives here", Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = Color3.fromRGB(255, 205, 238), Size = UDim2.new(0, 300, 0, 16), Position = UDim2.new(0, 22, 0, 46), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3 })
-	local moreX = mkButton(hdr, { Size = UDim2.new(0, 40, 0, 40), Position = UDim2.new(1, -52, 0, 16), BackgroundColor3 = Color3.fromRGB(210, 60, 55), Text = "X", Font = Enum.Font.FredokaOne, TextSize = 20, TextColor3 = Color3.new(1, 1, 1), ZIndex = 3 })
-	mkCorner(moreX, 10); mkStroke(moreX, Color3.new(0, 0, 0), 2)
-	-- Hairline divider separating the header from the cards.
-	mkFrame(panel, { Size = UDim2.new(1, -40, 0, 2), Position = UDim2.new(0, 20, 0, 74), BackgroundColor3 = Color3.fromRGB(255, 190, 232), BackgroundTransparency = 0.62, BorderSizePixel = 0, ZIndex = 3 })
+	local panel = mkFrame(moreGui, { Size = UDim2.new(0, 196, 0, 206), BackgroundColor3 = Color3.fromRGB(225, 70, 170), Visible = false, ZIndex = 2 }) -- FIXED window (~3 entries tall); the EntryList ScrollingFrame scrolls because the 5 entries overflow it
+	mkCorner(panel, 14); mkStroke(panel, Color3.new(1, 1, 1), 2)
+	local pad = Instance.new("UIPadding", panel); pad.PaddingTop = UDim.new(0, 8); pad.PaddingBottom = UDim.new(0, 8); pad.PaddingLeft = UDim.new(0, 8); pad.PaddingRight = UDim.new(0, 8)
+	local hdr = mkFrame(panel, { Size = UDim2.new(1, 0, 0, 28), Position = UDim2.new(0, 0, 0, 0), BackgroundTransparency = 1, ZIndex = 2 }) -- header pinned at top; panel no longer uses a UIListLayout (mirrors Locker's manual layout) so the scroll's canvas can compute
+	mkLabel(hdr, { Text = "MORE", Font = Enum.Font.FredokaOne, TextSize = 18, TextColor3 = Color3.new(1, 1, 1), Size = UDim2.new(1, -32, 1, 0), Position = UDim2.new(0, 4, 0, 0), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3 })
+	local moreX = mkButton(hdr, { Size = UDim2.new(0, 26, 0, 26), Position = UDim2.new(1, -26, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5), BackgroundColor3 = Color3.fromRGB(210, 60, 55), Text = "X", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = Color3.new(1, 1, 1), ZIndex = 3 })
+	mkCorner(moreX, 8)
 
 	-- Entry-list scroll: a real ScrollingFrame whose canvas Roblox auto-measures from the UIListLayout's children.
 	-- The entry buttons are parented DIRECTLY into this ScrollingFrame (no intermediate Frame), so the layout +
@@ -1069,8 +1002,8 @@ do
 	entryScroll.Name = "EntryList"
 	entryScroll.BackgroundTransparency = 1 -- seamless: the panel's pink shows through, so the menu looks identical
 	entryScroll.BorderSizePixel = 0
-	entryScroll.Position = UDim2.new(0, 16, 0, 82) -- below the 72px header band + its divider
-	entryScroll.Size = UDim2.new(1, -32, 1, -96)  -- 668 x 424, the exact area the cards below are sized to fill
+	entryScroll.Position = UDim2.new(0, 0, 0, 36) -- below the 28px header + 8px gap (within the panel's 8px UIPadding)
+	entryScroll.Size = UDim2.new(1, 0, 1, -36) -- SCALE height off the FIXED panel -> a real bounded window
 	entryScroll.ScrollingEnabled = true
 	entryScroll.ScrollingDirection = Enum.ScrollingDirection.Y
 	entryScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
@@ -1080,16 +1013,7 @@ do
 	entryScroll.ClipsDescendants = true
 	entryScroll.ZIndex = 2
 	entryScroll.Parent = panel
-	-- DASHBOARD GEOMETRY. Positioned by hand rather than by a UIGridLayout, because the Season Pass card spans
-	-- BOTH columns and a grid layout cannot make one cell double-width.
-	--
-	-- It is built to fill the 668x424 content box EXACTLY, so there is no dead space and no scrollbar:
-	--   columns  327 + 14 gutter + 327 = 668
-	--   rows     3 x 100 + 2 x 14 gutter = 328, then a 14 gutter, then the 82 full-width card = 424
-	-- Cards are anchored from their CENTRE so the hover scale grows evenly on all four sides instead of
-	-- shoving the card down and to the right. One table rather than eight locals: this file sits at 187 of
-	-- Luau's 200-locals ceiling and every scope here is one bad edit from silently failing to compile.
-	local MORE_UI = { CARD_W = 327, CARD_H = 100, GAP = 14, FULL_W = 668, FULL_H = 82, FULL_Y = 342 }
+	local entryListLayout = Instance.new("UIListLayout"); entryListLayout.SortOrder = Enum.SortOrder.LayoutOrder; entryListLayout.Padding = UDim.new(0, 8); entryListLayout.Parent = entryScroll
 
 	-- CRATE (Daily Rewards) ready "!" dot infrastructure. The crate snapshot lives in CrateClient,
 	-- which exposes _G.crateIsClaimable; we poll it to toggle a red dot on the ready row + MORE button.
@@ -1119,13 +1043,11 @@ do
 	end
 
 	local MORE_ENTRIES = { -- ADD MORE HERE later (each: label + an image OR emoji icon + an action)
-		{ label = "Rebirth", desc = "Reset your progress for permanent multipliers.", tint = Color3.fromRGB(90, 200, 255), order = 1,
-		emoji = "\xF0\x9F\x94\x84", action = function() if _G.toggleRebirth then _G.toggleRebirth() end end }, -- MOVED here from the side button (the WORMHOLE button took its slot)
+		{ label = "Rebirth", emoji = "\xF0\x9F\x94\x84", action = function() if _G.toggleRebirth then _G.toggleRebirth() end end }, -- MOVED here from the side button (the WORMHOLE button took its slot)
 		-- ONE daily entry. "Daily Rewards" and "Daily Tasks" were two rows for one habit, and a player had to
 		-- already know they were different menus. The Daily Tasks panel now carries the crate as a DAILY REWARD
 		-- button in its bottom row, so this opens the panel and both dots ride on this single row.
-		{ label = "Daily Rewards", desc = "Claim free rewards every day.", tint = Color3.fromRGB(255, 175, 45), order = 2,
-		emoji = "\xF0\x9F\x8E\x81", readyDot = true, tasksDot = true, action = function()
+		{ label = "Daily", emoji = "\xF0\x9F\x8E\x81", readyDot = true, tasksDot = true, action = function()
 			-- Eligible -> open the panel (the crate button is in it). Not eligible yet (a brand-new player has
 			-- no task list) -> the panel would refuse to open, so fire the crate directly instead. The daily
 			-- reward is never unreachable either way.
@@ -1137,107 +1059,28 @@ do
 				ev:Fire()
 			end
 		end },
-		{ label = "Pets", desc = "Manage your pets and equipped skins.", tint = Color3.fromRGB(120, 225, 120), order = 3,
-		emoji = "\xF0\x9F\x90\xBE", action = function() print("[MenuMgr] button PetInv clicked while "..tostring(_G.MainMenuManager and _G.MainMenuManager.current).." open"); local ev = PlayerGui:FindFirstChild("PetInvToggle"); if ev then ev:Fire() end end }, -- SWAP: the PETS button now lives in the More+ menu, in the Stomach entry's OLD slot (keeps the paw icon, label + pet-inventory action)
-		{ label = "Seasonal Pets", desc = "Limited-time exclusive pets.", tint = Color3.fromRGB(110, 225, 240),
-		emoji = "\xE2\x9D\x84\xEF\xB8\x8F", order = 6, action = function() if openLocker then openLocker() end end },
-		-- PET SKIN CRATES (cosmetic): the CS:GO-style crate shop + skin inventory. SkinCrateClient owns the panel;
-		-- this row is just the way in, so the whole system is reachable without another HUD button.
-		{ label = "Skin Crates", desc = "Open crates to unlock skins and traits.", tint = Color3.fromRGB(170, 130, 255),
-		emoji = "\xF0\x9F\x93\xA6", order = 4, action = function() if _G.toggleSkinCrates then _G.toggleSkinCrates() end end },
+		{ label = "Pets", emoji = "\xF0\x9F\x90\xBE", action = function() print("[MenuMgr] button PetInv clicked while "..tostring(_G.MainMenuManager and _G.MainMenuManager.current).." open"); local ev = PlayerGui:FindFirstChild("PetInvToggle"); if ev then ev:Fire() end end }, -- SWAP: the PETS button now lives in the More+ menu, in the Stomach entry's OLD slot (keeps the paw icon, label + pet-inventory action)
+		{ label = "Pet Wheel", emoji = "\xF0\x9F\x8E\xA1", action = function() if _G.togglePetWheel then _G.togglePetWheel() end end }, -- PetWheel.client owns the panel; it was only reachable from the Pet Hub header, which buried the whole feature one menu deep
+		{ label = "Seasonal Pets",  emoji = "\xF0\x9F\x90\xBE", action = function() if openLocker then openLocker() end end },
 		-- (the "Codes" entry moved INTO the Season Pass panel -- bottom-left CODES button. One row for one
 		--  feature: both are "free rewards you claim", and Codes was a whole menu row for a rare action.)
-		{ label = "Free Rewards", desc = "Claim rewards just for playing.", tint = Color3.fromRGB(255, 105, 140), order = 5,
-		emoji = "\xF0\x9F\x8E\x81", action = function() if _G.toggleSocialRewards then _G.toggleSocialRewards() end end }, -- SocialRewards.client owns the panel (like/favourite/group -> +5 pet levels)
-		-- FULL WIDTH, last: the premium row, given its own band across the bottom of the dashboard.
-	{ label = "Season Pass", desc = "Unlock exclusive rewards and premium perks.", tint = Color3.fromRGB(255, 205, 50),
-		emoji = "\xE2\xAD\x90", full = true, order = 7, action = function() if _G.toggleSeasonPass then _G.toggleSeasonPass() end end }, -- SeasonPass.client owns the track UI (free + premium lanes, XP from daily tasks)
+		{ label = "Free Rewards",   emoji = "\xF0\x9F\x8E\x81", action = function() if _G.toggleSocialRewards then _G.toggleSocialRewards() end end }, -- SocialRewards.client owns the panel (like/favourite/group -> +5 pet levels)
+		{ label = "Season Pass",    emoji = "\xE2\xAD\x90",     action = function() if _G.toggleSeasonPass then _G.toggleSeasonPass() end end }, -- SeasonPass.client owns the track UI (free + premium lanes, XP from daily tasks)
 		-- (the "MLR Group" entry was removed from the HUD; non-members are now nudged by a periodic banner that
 		--  opens the group window when tapped -- see RewardsClient)
 	}
-	-- Draw in the requested reading order, not the order the table happens to be written in. `order` overrides;
-	-- anything without one keeps its table position, so adding an entry still Just Works.
-	table.sort(MORE_ENTRIES, function(a, b) return (a.order or 99) < (b.order or 99) end)
 	for i, e in ipairs(MORE_ENTRIES) do
-		-- WHERE THIS CARD GOES. The full-width Season Pass sits on its own band under the 3x2 grid.
-		local w = e.full and MORE_UI.FULL_W or MORE_UI.CARD_W
-		local h = e.full and MORE_UI.FULL_H or MORE_UI.CARD_H
-		local cx = e.full and (MORE_UI.FULL_W / 2)
-			or (((i - 1) % 2) * (MORE_UI.CARD_W + MORE_UI.GAP) + MORE_UI.CARD_W / 2)
-		local cy = (e.full and MORE_UI.FULL_Y
-			or (math.floor((i - 1) / 2) * (MORE_UI.CARD_H + MORE_UI.GAP))) + h / 2
-		-- NO SHADOW FRAME. There used to be one here: a sibling the same size as the card, offset 5px down,
-		-- meant to read as a soft drop shadow. It had no UICorner, so its four SQUARE corners stuck out past
-		-- the card's 16px rounded ones and rendered as little dark rectangular tabs behind every tile --
-		-- reading as stray accents rather than as depth. The card's own dark stroke already separates it from
-		-- the panel, so the shadow is gone rather than rounded; add mkCorner(shadow, 16) if depth is wanted
-		-- back, but it MUST be rounded to the same radius as the card or the tabs come straight back.
-		local row = mkButton(entryScroll, { Size = UDim2.new(0, w, 0, h), Position = UDim2.new(0, cx, 0, cy),
-			AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.fromRGB(186, 44, 138),
-			Text = "", AutoButtonColor = false, ClipsDescendants = true, ZIndex = 3, LayoutOrder = i })
-		mkCorner(row, 16); mkStroke(row, Color3.fromRGB(140, 20, 100), 2)
-		-- GLOSS: a fixed sheen over the top half. Always on -- this is what makes the tile read as a panel.
-		do
-			local gl = mkFrame(row, { Size = UDim2.new(1, 0, 0.5, 0), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, ZIndex = 4 })
-			mkCorner(gl, 16)
-			local gg = Instance.new("UIGradient"); gg.Rotation = 90
-			gg.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.84), NumberSequenceKeypoint.new(1, 1) })
-			gg.Parent = gl
+		local row = mkButton(entryScroll, { Size = UDim2.new(1, 0, 0, 46), BackgroundColor3 = e.color or Color3.fromRGB(248, 240, 250), Text = "", ZIndex = 2, LayoutOrder = i })
+		mkCorner(row, 10)
+			if e.readyDot then mkCrateDot(row, crateReadyDots) end
+			if e.tasksDot then mkCrateDot(row, taskPendingDots) end
+		if e.image then
+			local im = Instance.new("ImageLabel"); im.BackgroundTransparency = 1; im.Image = e.image; im.ScaleType = Enum.ScaleType.Fit
+			im.Size = UDim2.new(0, 30, 0, 30); im.Position = UDim2.new(0, 8, 0.5, 0); im.AnchorPoint = Vector2.new(0, 0.5); im.ZIndex = 3; im.Parent = row
+		else
+			mkLabel(row, { Text = e.emoji or "", Font = Enum.Font.Gotham, TextSize = 22, Size = UDim2.new(0, 30, 1, 0), Position = UDim2.new(0, 8, 0, 0), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
 		end
-		-- SHINE: a narrow bright band that sweeps across on hover. Parked off the left edge until then.
-		local shineG = Instance.new("UIGradient")
-		do
-			local sh = mkFrame(row, { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, ZIndex = 5 })
-			-- Rounded to the card's own radius. ClipsDescendants on the card clips to its RECTANGULAR bounds,
-			-- not to its UICorner, so without this the shine's square corners flash white over the card's
-			-- rounded ones every time the sweep runs -- the same square-corner artefact the shadow had.
-			mkCorner(sh, 16)
-			shineG.Rotation = 18
-			shineG.Transparency = NumberSequence.new({
-				NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.42, 1),
-				NumberSequenceKeypoint.new(0.5, 0.74), NumberSequenceKeypoint.new(0.58, 1),
-				NumberSequenceKeypoint.new(1, 1) })
-			shineG.Offset = Vector2.new(-1, 0); shineG.Parent = sh
-		end
-		-- ICON in its own coloured rounded square -- the one spot of per-feature colour on an otherwise
-		-- uniform pink tile, which is what lets the eye find a row without reading any of the labels.
-		do
-			local sq = mkFrame(row, { Size = UDim2.new(0, 62, 0, 62), Position = UDim2.new(0, 16, 0.5, 0),
-				AnchorPoint = Vector2.new(0, 0.5), BackgroundColor3 = e.tint or Color3.fromRGB(255, 175, 45), ZIndex = 6 })
-			mkCorner(sq, 14); mkStroke(sq, Color3.fromRGB(140, 20, 100), 2)
-			if e.image then
-				local im = Instance.new("ImageLabel"); im.BackgroundTransparency = 1; im.Image = e.image; im.ScaleType = Enum.ScaleType.Fit
-				im.Size = UDim2.new(1, -12, 1, -12); im.Position = UDim2.new(0, 6, 0, 6); im.ZIndex = 7; im.Parent = sq
-			else
-				mkLabel(sq, { Text = e.emoji or "", Font = Enum.Font.Gotham, TextSize = 32, Size = UDim2.new(1, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 7 })
-			end
-		end
-		-- TITLE + DESCRIPTION, both left-aligned to the same x so every card reads down one column.
-		mkLabel(row, { Text = e.label, Font = Enum.Font.GothamBold, TextSize = 21, TextColor3 = Color3.new(1, 1, 1),
-			Size = UDim2.new(0, w - 126, 0, 24), Position = UDim2.new(0, 92, 0, e.full and 14 or 18),
-			TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 6 })
-		mkLabel(row, { Text = e.desc or "", Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = Color3.fromRGB(255, 205, 238),
-			Size = UDim2.new(0, w - 126, 0, e.full and 24 or 36), Position = UDim2.new(0, 92, 0, e.full and 42 or 44),
-			TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true, ZIndex = 6 })
-		-- ARROW: this opens another menu rather than doing something on the spot.
-		mkLabel(row, { Text = "\xE2\x9D\xAF", Font = Enum.Font.FredokaOne, TextSize = 20, TextColor3 = Color3.fromRGB(255, 190, 232),
-			Size = UDim2.new(0, 24, 1, 0), Position = UDim2.new(0, w - 34, 0, 0), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 6 })
-		-- BADGES, inside the card's own bounds (it clips) and side by side rather than stacked -- the crate dot
-		-- and the tasks dot are independent, and stacking them hid whichever drew second.
-		if e.readyDot then mkCrateDot(row, crateReadyDots).Position = UDim2.new(1, -10, 0, 10) end
-		if e.tasksDot then mkCrateDot(row, taskPendingDots).Position = UDim2.new(1, -32, 0, 10) end
-		-- HOVER: lift the tile 3% and sweep the shine across it. UIScale (not a Size tween) so the card grows
-		-- from its centre and every child scales with it -- icon square, type and arrow stay in proportion.
-		do
-			local sc = Instance.new("UIScale"); sc.Scale = 1; sc.Parent = row
-			local qi = TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-			row.MouseEnter:Connect(function()
-				TweenService:Create(sc, qi, { Scale = 1.03 }):Play()
-				shineG.Offset = Vector2.new(-1, 0)
-				TweenService:Create(shineG, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Offset = Vector2.new(1, 0) }):Play()
-			end)
-			row.MouseLeave:Connect(function() TweenService:Create(sc, qi, { Scale = 1 }):Play() end)
-		end
+		mkLabel(row, { Text = e.label, Font = Enum.Font.GothamBold, TextSize = 18, TextColor3 = Color3.fromRGB(70, 40, 65), Size = UDim2.new(1, -50, 1, 0), Position = UDim2.new(0, 46, 0, 0), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3 })
 		row.MouseButton1Click:Connect(function() playUIClick(); setMoreOpen(false); pcall(e.action) end)
 	end
 		mkCrateDot(stomachSideFrame, crateReadyDots) -- "!" dot on the MORE button itself
@@ -1273,14 +1116,14 @@ do
 	task.spawn(function() -- print AFTER the layout has measured (frameY vs contentY); scrolls when contentY > frameY
 		task.wait(0.3)
 		print(string.format("[MOREMENU] scroll: frameY=%d contentY=%d canvasY=%d entries=%d (scrolls if contentY>frameY)",
-			math.floor(entryScroll.AbsoluteSize.Y), math.floor(entryScroll.AbsoluteCanvasSize.Y), math.floor(entryScroll.AbsoluteCanvasSize.Y), #MORE_ENTRIES))
+			math.floor(entryScroll.AbsoluteSize.Y), math.floor(entryListLayout.AbsoluteContentSize.Y), math.floor(entryScroll.AbsoluteCanvasSize.Y), #MORE_ENTRIES))
 	end)
 
 	setMoreOpen = function(open)
 		moreOpenState = open and true or false
 		if moreOpenState then
-			-- No repositioning any more: the panel is a centred 700x520 window like every other menu, so it opens
-			-- in the same place regardless of where the rail button ended up on this device.
+			local ap, asz = stomachSideFrame.AbsolutePosition, stomachSideFrame.AbsoluteSize
+			panel.Position = UDim2.fromOffset(ap.X + asz.X + 10, ap.Y) -- appears just to the RIGHT of the MORE+ button (any layout)
 			panel.Visible = true; catcher.Visible = true
 		else
 			panel.Visible = false; catcher.Visible = false
@@ -2571,20 +2414,6 @@ task.spawn(function()
 				else
 					showFloatingText("\xF0\x9F\x94\x92 " .. msg, Color3.fromRGB(255,190,60))
 				end
-			elseif reason == "food_locked" then
-				-- ISLAND LOCK: this food belongs to an island the player has not climbed to yet. The third arg
-				-- is the ISLAND NUMBER for this reason (the same slot carries a pet id for pet_quest_locked).
-				-- Needs its own branch rather than falling through: the generic branch below pops the GUT shop
-				-- open, which is the wrong advice entirely -- a bigger stomach does not unlock this food.
-				local isl = tonumber(needPet) or 0
-				local msg = isl > 0
-					and ("Reach Island " .. isl .. " to unlock " .. tostring(foodName) .. "!")
-					or  "You have not reached this food's island yet!"
-				if _G.NotifyCenter and _G.NotifyCenter.push then
-					_G.NotifyCenter.push({ top = "\xF0\x9F\x94\x92 Food Locked", text = msg, color = Color3.fromRGB(255,190,60), priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.PURCHASE or nil, duration = 3.5 })
-				else
-					showFloatingText("\xF0\x9F\x94\x92 " .. msg, Color3.fromRGB(255,190,60))
-				end
 			elseif reason == "not_enough_room" then
 				-- HAS room but this food is too big to fit -> distinct message; nudge to a bigger gut.
 				showFloatingText("\xe2\x9a\xa0 Not Enough Room!", Color3.fromRGB(255,100,100))
@@ -3049,13 +2878,9 @@ RunService.Heartbeat:Connect(function(dt)
 				local ppos = p.Position
 				table.remove(_G.activeGasPockets, i)
 				if _G.popGasPocket then _G.popGasPocket(p) end   -- VISUAL pop
-				-- GAS BUBBLE BOOST. The meter is 0-100 and currentPower = (gasMeter / maxGasMeter) * stomachMax,
-				-- so at the base Tiny Gut (100 max power) 1 meter point IS 1 fart power -- this grants exactly
-				-- +2 fart power there, and stays 2% of the tank on bigger guts so a bubble does not become
-				-- worthless the moment you upgrade. For a flat +2 power at EVERY tier instead, this would have to
-				-- be (2 / stomachMax) * 100 -- which pays 0.06 of a meter point on an Iron Gut, i.e. nothing.
-				-- Fires whether the player is RISING or FALLING (this loop runs OUTSIDE the isFlying block).
-				local BUBBLE_GAS_BOOST = 2
+				-- GAS BUBBLE BOOST: +15 on a 100 max = 15% (noticeable but moderate). Fires whether the
+				-- player is RISING or FALLING (this loop runs OUTSIDE the isFlying block, verified).
+				local BUBBLE_GAS_BOOST = 15
 				local gasBefore = gasMeter
 				gasMeter = math.min(maxGasMeter, gasMeter + BUBBLE_GAS_BOOST)
 				updateMeter()
@@ -3561,107 +3386,5 @@ task.spawn(function()
 	local req = RS:WaitForChild("RequestPlayerState", 30)
 	if req then req:FireServer() end
 end)
-
--- ===== PET WHEEL REMOVAL SWEEP =====
--- The wheel's source files are deleted, but Rojo only adds -- the LocalScript and the PetWheelGui already
--- saved into this place keep running and keep showing a spin panel that no longer belongs to anything. Kill
--- the GUI, kill the script, and clear the _G hook so any stale caller that still reaches for it does nothing
--- rather than opening a half-dead panel.
-do
-	_G.togglePetWheel = nil
-	local function sweepWheel()
-		for _, inst in ipairs(player:GetDescendants()) do
-			local n = inst.Name
-			if n == "PetWheelGui" or n == "PetWheelReveal" or (n == "PetWheel" and inst:IsA("LocalScript")) then
-				pcall(function()
-					if inst:IsA("BaseScript") then inst.Disabled = true end
-					inst:Destroy()
-				end)
-			end
-		end
-	end
-	sweepWheel()
-	task.delay(2, sweepWheel); task.delay(8, sweepWheel)
-	-- and catch a wheel GUI rebuilt later by a stale script that survived the pass above
-	player.ChildAdded:Connect(function(c)
-		if c.Name == "PlayerGui" then task.delay(1, sweepWheel) end
-	end)
-end
-
--- ===== BOTTOM-HUD AUTHORITY: ONE script decides whether BottomStackGui is on =====
--- BottomStackGui holds the gut pill, the gas meter and the BUY FOOD FIRST / TAP TO FART button, and roughly a
--- dozen scripts used to switch it off and switch it back on again by their own bookkeeping. That works right up
--- until two of them disagree, or until one of them never gets to run its restore -- and then the player is left
--- with no gut pill, no gas meter and no buy button, with nothing on screen that can bring them back.
---
--- That is exactly what the marshmallow stick hit. Campfire.client hid the HUD on pick-up and restored it on
--- drop, but STALE DUPLICATE copies of that script are baked into the place (MenuBackdropGuard lists Campfire
--- among 20 duplicated LocalScripts). The duplicates run their own older hide/restore, so the fixed copy's
--- restore was being overwritten by a copy that cannot be edited from here. Patching Campfire again could not
--- win that race.
---
--- So the decision moves HERE instead, into the one script with no duplicate, and it is RE-ASSERTED on a timer
--- rather than written once on an edge. A stale script can still write Enabled=false; it just gets corrected a
--- quarter-second later. Whoever writes last no longer decides -- this does.
---
--- The HUD is off only while something real wants it off:
---   * a main menu is open (MainMenuManager.current), EXCEPT the food stand, which deliberately keeps the HUD
---     up because you need the gut pill + BUY FOOD button to actually use the stand (see standHudPin);
---   * a script has claimed a hold via _G.hudHold(tag, true) -- currently the meteor crate reveal;
---   * you are genuinely roasting: holding the stick AND standing at a fire. Both, not either. Holding alone
---     meant walking away with the stick still equipped left the HUD gone with no way to get it back.
--- Anything else and the bottom buttons come back, whoever turned them off and for whatever reason.
-do
-	_G.hudHolds = _G.hudHolds or {}
-	function _G.hudHold(tag, on)          -- claim/release a named reason to keep the bottom HUD hidden
-		if not tag then return end
-		_G.hudHolds[tag] = on and true or nil
-	end
-
-	local function anyHold()
-		for _ in pairs(_G.hudHolds) do return true end
-		return false
-	end
-
-	-- The garden cinematic hides every ScreenGui and re-hides anything that turns itself back on, so asserting
-	-- against it would just be churn. It restores the HUD itself when it ends; stand down while it's on screen.
-	local function introRunning()
-		for _, g in ipairs(PlayerGui:GetChildren()) do
-			if g:IsA("ScreenGui") and g.Name:sub(1, 11) == "GardenIntro" then return true end
-		end
-		return false
-	end
-
-	local function roasting()
-		local char = player.Character
-		if not (char and char:FindFirstChild("Marshmallow Stick")) then return false end
-		local root = char:FindFirstChild("HumanoidRootPart")
-		if not root then return false end
-		for _, m in ipairs(workspace:GetChildren()) do   -- the server parents every built fire to Workspace as 'Campfire'
-			if m.Name == "Campfire" and m:IsA("Model") then
-				local pivot = m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart", true)
-				if pivot and (pivot.Position - root.Position).Magnitude <= 45 then return true end
-			end
-		end
-		return false
-	end
-
-	task.spawn(function()
-		while true do
-			task.wait(0.25)
-			pcall(function()
-				if not hudRevealed or introRunning() then return end -- pre-spawn + cinematic own the screen
-				local g = PlayerGui:FindFirstChild("BottomStackGui")
-				if not (g and g:IsA("ScreenGui")) then return end
-				local mm = _G.MainMenuManager
-				local menuOpen = mm ~= nil and mm.current ~= nil and mm.current ~= "FoodShop"
-				local want = not (menuOpen or anyHold() or roasting())
-				if g.Enabled ~= want then g.Enabled = want end
-			end)
-		end
-	end)
-	print("[HUD] bottom-stack authority armed -- re-asserts BottomStackGui 4x/sec (beats stale duplicate scripts)")
-end
-
 print("DONE")
 print("FIXED")

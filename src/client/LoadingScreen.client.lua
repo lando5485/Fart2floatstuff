@@ -27,7 +27,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 -- \xE2\x9A\xA0 TEST: these accounts get ALL 14 islands unlocked + selectable on the island-select page (the
 -- server's SelectIslandEvent handler has a matching bypass so they can actually spawn anywhere). Matched by
 -- USERNAME (case-insensitive); mirrors the server's ALLOWED_TEST_USERS list. REMOVE BEFORE LAUNCH.
-local TEST_ACCOUNTS = { ["lando5485"] = true, ["broskie310111"] = true }
+local TEST_ACCOUNTS = { ["lando5485"] = true, ["broskie310111"] = true, ["itsmaddmax1"] = true, ["itsmaddmax2"] = true }
 
 -- ⚠ TEST-UNLOCK TOGGLE -- default OFF, so a test account sees the REAL new-player island picker (2-14 locked 🔒).
 --

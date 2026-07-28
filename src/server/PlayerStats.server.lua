@@ -79,24 +79,25 @@ local foods = {
 	{name="Pizza",    price=518,  power=750, island=14},
 }
 
--- FOOD STAND -> PET QUEST LOCK. A food stand on an island THAT HAS A PET QUEST stays LOCKED until the player has
--- completed that quest (owns the pet, normal or rare). Islands with NO pet quest are never gated (open as normal);
--- island 1 (Beans) is always open. Keyed by island number -> the petId the player must own to unlock that stand.
--- (These are the 5 quest islands from PetSystem's PETS table: Broccoli Bluff(2), Coconut Cove(5), Popcorn(8),
--- Butter Swamp(10), Burrito Barrens(13).) Ownership is read live from _G.playerOwnedPets (populated by PetSystem).
-local FOOD_PET_GATE = {
-	[2]  = "BroccoliPet",
-	[5]  = "CoconutCrab",
-	[8]  = "PopcornSheep",
-	[10] = "ButterDuck",
-	[13] = "BurritoArmadillo",
-}
--- true once the player owns the gating pet for `island` (or the island isn't gated at all).
-local function foodStandUnlocked(player, island)
-	local petId = FOOD_PET_GATE[island]
-	if not petId then return true end -- island has no pet quest -> never locked
-	local owned = _G.playerOwnedPets and _G.playerOwnedPets[player]
-	return (owned ~= nil and (owned[petId] ~= nil or owned[petId .. "#R"] ~= nil)) -- normal OR rare variant counts
+-- FOOD STANDS ARE ALL UNLOCKED. Every stand sells all 14 foods to everybody, from the first join.
+--
+-- Two gates used to sit on top of the coin price, and BOTH are gone:
+--   1. this one -- a PET QUEST lock on the 5 quest islands (Broccoli Bluff 2, Coconut Cove 5, Popcorn 8,
+--      Butter Swamp 10, Burrito Barrens 13): the stand stayed shut until you owned that island's pet;
+--   2. an ISLAND-REACHED lock in the shop clients (see isUnlocked in ShopClient / Shop_AllInOne).
+--
+-- THE PRICE IS THE GATE NOW. Beans 10 -> Pizza 900,000 is a 90,000x spread, and coins come from HEIGHT --
+-- so you still cannot skip ahead: reaching a food you can afford is the same climb it always was. What is
+-- gone is being told 'no' at a stand you already flew to.
+--
+-- NOTE FOR BALANCE: this removes two brakes on the 65-70 minute target in CLAUDE.md. Pet quests are now
+-- optional content rather than a required step in the climb -- worth re-timing island 1->2 and the 3 min
+-- per-island baseline before launch.
+--
+-- Kept as a function returning true (rather than deleting the call site) so there is ONE obvious place to
+-- put a gate back if the pacing needs it.
+local function foodStandUnlocked()
+	return true
 end
 
 -- getMaxHeight(maxPower) = 50 + maxPower*14. Iron is the top of the free path and
@@ -159,9 +160,12 @@ local loadedStomachMax = {} -- [player] = the StomachMax value read from disk on
 -- if they're already at Infinite Gut it no-ops. Touches ONLY this player's stomach — no coins, no other
 -- tiers, no other system.
 local INFINITE_GUT_MAX = 9999
-local function applyInfiniteGut(player)
+-- `force` is the DEV path only (/infinitegut). FORCE_BASE_STOMACH is a balance-test switch that pins every gut
+-- to base, which also makes this a no-op on join and on a real purchase -- so without a bypass the dev command
+-- would appear to do nothing at all. Every other caller passes no argument and is gated exactly as before.
+local function applyInfiniteGut(player, force)
 	if not player then return end
-	if FORCE_BASE_STOMACH then print("[STOMACH RESET] applyInfiniteGut SKIPPED for "..player.Name.." (FORCE_BASE_STOMACH on -- gut stays base)"); return end -- never grant the Infinite Gut tier while the reset is on (join or purchase)
+	if FORCE_BASE_STOMACH and not force then print("[STOMACH RESET] applyInfiniteGut SKIPPED for "..player.Name.." (FORCE_BASE_STOMACH on -- gut stays base)"); return end -- never grant the Infinite Gut tier while the reset is on (join or purchase)
 	local ls = player:FindFirstChild("leaderstats"); if not ls then return end
 	local sm = ls:FindFirstChild("StomachMax"); if not sm then return end
 	-- Flag ownership FIRST. The client reads HasInfiniteGut to lock the fart meter full (never drains), so
@@ -187,6 +191,13 @@ local function applyInfiniteGut(player)
 	pcall(function() RegenEvent:FireClient(player, 0, sm.Value, sm.Value) end)
 	print("INFINITE GUT applied to "..player.Name.." (StomachMax="..sm.Value..", CurrentPower=FULL)")
 end
+
+-- [REMOVE BEFORE LAUNCH] Dev grant for /infinitegut. Bypasses FORCE_BASE_STOMACH (see above) and otherwise runs
+-- the IDENTICAL path a real gamepass purchase takes -- same attribute, same tier promotion, same full-meter sync.
+_G.devGrantInfiniteGut = function(player)
+	applyInfiniteGut(player, true)
+end
+
 local PRODUCT_IDS  = {TwoXOneHour=3600302990, MidAirRecharge=3600303163, SkipIsland=3600303265, BirdNuke=3600303082}
 -- 2x Fart Power pass/product: with it active, each food is worth this multiple of its power as
 -- REAL flight fuel, and the effective stomach tank grows by the same multiple. (Client mirrors
@@ -251,9 +262,17 @@ local TEST_ACCOUNT_USERID = 1086836724  -- lando5485
 -- \xE2\x9A\xA0 TEST: shared allow-list for ALL test/debug features (test chat commands AND the island-select
 -- all-islands-unlock below). Matched by USERNAME (case-insensitive). Defined early so every handler can use
 -- it. REMOVE BEFORE LAUNCH.
-local ALLOWED_TEST_USERS = { ["lando5485"] = true, ["broskie310111"] = true } -- \xE2\x9A\xA0 REMOVE BEFORE LAUNCH
+local ALLOWED_TEST_USERS = { ["lando5485"] = true, ["broskie310111"] = true,
+	["itsmaddmax1"] = true, ["itsmaddmax2"] = true } -- \xE2\x9A\xA0 REMOVE BEFORE LAUNCH
 local function isAllowedTestUser(player) -- \xE2\x9A\xA0 TEST: shared gate for all test/debug features. REMOVE BEFORE LAUNCH.
-	return ALLOWED_TEST_USERS[string.lower(player.Name)] == true
+	local key = string.lower(player.Name)
+	if ALLOWED_TEST_USERS[key] == true then return true end
+	-- Say WHY, and print the exact key that was compared. A bare `return` makes 'your username isn't what
+	-- you think it is', 'the entry is missing' and 'the command never reached the server' all look
+	-- identical in the log. Matched on Name (the @username), NOT DisplayName -- the usual culprit.
+	print(string.format("[TEST] DENIED '%s' (UserId %d) -- not in ALLOWED_TEST_USERS. Add exactly this "
+		.. "lower-cased key to the list in PlayerStats.", key, player.UserId))
+	return false
 end
 _G.isAllowedTestUser = isAllowedTestUser -- \xE2\x9A\xA0 TEST: shared with PetSystem (pet-skip test path). REMOVE BEFORE LAUNCH.
 -- =====================================================================================================
@@ -302,6 +321,21 @@ _G.playerEquippedGutSkin = _G.playerEquippedGutSkin or {}
 -- TOTAL cumulative playtime in SECONDS (all sessions). GutSkinService increments + auto-grants playtime skins;
 -- PlayerStats just persists it (saved.playtimeSeconds). Single source of truth lives on the server.
 _G.playerPlaytimeSec = _G.playerPlaytimeSec or {}
+-- PET SKIN CRATES (cosmetic, additive). Owned by SkinCrateService, which is the ONLY script that writes them;
+-- PlayerStats just persists them (saved.crateTokens / saved.petSkins / saved.equippedSkins).
+--   playerCrateTokens[player]   = number                    -- the COSMETIC currency. Never Food Coins.
+--   playerPetSkins[player]      = { ["Pet|Skin|Trait"]=n }  -- one entry per pet+skin+trait, n = duplicates stacked
+--   playerEquippedSkins[player] = { Pet = {skin=,trait=} }  -- which skin each pet is wearing
+-- Declared here as well as in SkinCrateService because server script load ORDER is not guaranteed: if this join
+-- handler ran before that service had created the tables, indexing them would error out the whole load path.
+_G.playerCrateTokens   = _G.playerCrateTokens   or {}
+_G.playerPetSkins      = _G.playerPetSkins      or {}
+_G.playerEquippedSkins = _G.playerEquippedSkins or {}
+--   playerCollection[player]    = { completedPets, titles, auras, activeTitle, activeAura, full }
+--       Collection Book progress + the badge/title/aura rewards it pays out. Derived from petSkins, but stored
+--       rather than recomputed so a reward already announced is never announced twice, and so a title the player
+--       chose survives a rejoin.
+_G.playerCollection    = _G.playerCollection    or {}
 -- Discovered pet QUESTS (cosmetic, additive). Persisted under saved.discoveredQuests; shared with PetSystem.
 _G.playerDiscoveredQuests = _G.playerDiscoveredQuests or {}
 -- PERMANENT "ever completed pet quest X" flags (additive). Persisted under saved.everCompletedQuests; shared
@@ -462,6 +496,10 @@ local function savePlayerData(player, trigger)
 		seenGardenIntro  = player:GetAttribute("SeenGardenIntro") == true, -- one-time Community Garden cinematic: true once the player has watched it
 		ownedGutSkins    = _G.playerOwnedGutSkins[player] or { Default = true },  -- cosmetic gut skins owned (always includes Default)
 		equippedGutSkin  = _G.playerEquippedGutSkin[player] or "Default",         -- currently equipped gut skin id
+		crateTokens      = math.floor(tonumber(_G.playerCrateTokens[player]) or 0), -- COSMETIC currency (skin crates only; never buys food)
+		petSkins         = _G.playerPetSkins[player] or {},                       -- pet skin inventory: ["Pet|Skin|Trait"] = duplicate count
+		equippedSkins    = _G.playerEquippedSkins[player] or {},                  -- which skin+trait each pet is wearing
+		collection       = _G.playerCollection[player] or {},                     -- collection-book completion + earned titles/auras
 		playtimeSeconds  = _G.playerPlaytimeSec[player] or 0,                     -- total cumulative playtime (drives skin unlocks)
 		islandTimeSec    = _G.playerIslandTimeSec[player] or 0,                   -- playtime(s) at which they reached their highest island (FASTEST CLIMB board)
 		petMilestones    = _G.playerPetMilestones[player] or {},                  -- collection milestones already paid out ({"3"=true,...}; string keys = JSON-safe)
@@ -936,6 +974,9 @@ Players.PlayerAdded:Connect(function(player)
 	local island = Instance.new("IntValue"); island.Name = "Island";         island.Value = math.max(saved.island or DEFAULT_ISLAND, saved.highestIsland or DEFAULT_ISLAND); island.Parent = ls
 	local tfp    = Instance.new("IntValue"); tfp.Name    = "TotalFartPower"; tfp.Value    = saved.totalFartPower or 0;           tfp.Parent    = ls
 	local tce    = Instance.new("IntValue"); tce.Name    = "TotalCoinsEarned"; tce.Value  = saved.totalCoinsEarned or 0;         tce.Parent    = ls
+	-- CRATE TOKENS: the COSMETIC currency, deliberately a separate stat from Coins so the two economies can never
+	-- be confused for one another. Tokens buy skin crates and nothing else; Coins buy food/guts and nothing else.
+	local ctok   = Instance.new("IntValue"); ctok.Name   = "CrateTokens";     ctok.Value = math.floor(tonumber(saved.crateTokens) or 0); ctok.Parent = ls
 	-- [STOMACH RESET] StomachMax: remember the REAL on-disk value (preserved through save), then force the live gut to
 	-- the BASE starting value while FORCE_BASE_STOMACH is on (don't trust a stored 9999 / any saved upgrade). Clear the
 	-- Infinite-Gut flag so the meter never locks full. When the reset is off, load the saved tier as normal.
@@ -1001,6 +1042,16 @@ Players.PlayerAdded:Connect(function(player)
 	_G.playerOwnedGutSkins[player].Default = true -- safety: everyone always owns Default
 	_G.playerEquippedGutSkin[player] = saved.equippedGutSkin or "Default"
 	_G.playerPlaytimeSec[player] = tonumber(saved.playtimeSeconds) or 0 -- restore total playtime (new players = 0)
+	-- PET SKIN CRATES: a new player (and every legacy save) starts with 0 tokens and an empty skin inventory, so
+	-- nothing here can retroactively hand out cosmetics. SkinCrateService reads these; its skinCrateApplyOnJoin
+	-- (called below, after the pet state loads) mirrors the balance onto the leaderstat and pushes the client state.
+	_G.playerCrateTokens[player]   = math.floor(tonumber(saved.crateTokens) or 0)
+	_G.playerPetSkins[player]      = saved.petSkins or {}
+	_G.playerEquippedSkins[player] = saved.equippedSkins or {}
+	-- A save written before the collection existed loads as an empty table; SkinCrateService's collection()
+	-- back-fills the missing fields, then its first pushState re-derives completion from the inventory -- so an
+	-- existing player who already owns a full set is credited on their next join rather than having to re-earn it.
+	_G.playerCollection[player]    = saved.collection or {}
 	-- Snapshot the SAVED playtime as this session's baseline. totalPlaytimeSec() adds live session seconds on top,
 	-- so it must know where the session started from -- reading _G.playerPlaytimeSec later would double-count the
 	-- minutes GutSkinService has already added to it.
@@ -1015,6 +1066,9 @@ Players.PlayerAdded:Connect(function(player)
 	_G.playerPetMilestones[player] = saved.petMilestones or {}
 	_G.playerTitle[player] = saved.title -- nil = no title yet; PetSystem re-applies the "Title" attribute on join
 	if _G.petsApplyOnJoin then pcall(function() _G.petsApplyOnJoin(player) end) end
+	-- SKIN CRATES: run AFTER petsApplyOnJoin so the pet-ownership table is populated -- the pushed state includes
+	-- which pets are unlocked, which is what decides whether a skin reads as equippable or "Unlock <Pet> to equip".
+	if _G.skinCrateApplyOnJoin then pcall(function() _G.skinCrateApplyOnJoin(player) end) end
 	-- FREE STARTER PET (retention): a brand-new player is handed a Bean Buddy immediately -- owned, auto-equipped,
 	-- following them from their first spawn -- so they OWN something before they have earned anything. Runs AFTER
 	-- petsApplyOnJoin so the pet state is loaded and the grant's sendState/sendInventory is the last word. Guarded
@@ -1152,13 +1206,34 @@ BuyFoodEvent.OnServerEvent:Connect(function(player, foodName)
 		print("FOOD NOT FOUND:", foodName)
 		return
 	end
-	-- FAILURE CHECK 0 (PET-QUEST LOCK): a food stand on a quest island is locked until that island's pet quest is
-	-- done. Checked BEFORE coins so a locked stand never takes money and gives the real reason. Islands without a
-	-- pet quest (and island 1) always pass. Forces players to complete each pet quest to progress the climb.
-	if not foodStandUnlocked(player, food.island) then
-		local needPet = FOOD_PET_GATE[food.island]
-		print("[FoodLock] " .. player.Name .. " blocked from buying " .. food.name .. " (island " .. tostring(food.island) .. ") -- needs pet quest: " .. tostring(needPet))
-		pcall(function() StomachFullEvent:FireClient(player, "pet_quest_locked", food.name, needPet) end)
+	-- FAILURE CHECK 0 (ISLAND LOCK): a food unlocks when the player has REACHED its island. Pizza is island
+	-- 14, so it stays unbuyable until they have physically stood on island 14 -- and the same for every
+	-- island above the one they have climbed to.
+	--
+	-- This is NOT the old stand/pet-quest lock, which is still gone (foodStandUnlocked() is a permanent
+	-- `true`; every stand opens for everybody and lists the whole menu). That gate asked "may you shop
+	-- here"; this one asks "have you earned this rung".
+	--
+	-- Checked BEFORE the coin check on purpose: a locked food must say "locked", not "not enough coins" --
+	-- and it must never fall through to the generic branch on the client, which opens the gut shop.
+	--
+	-- READ BOTH MARKERS AND TAKE THE HIGHER. There are two, they are raised by different events, and they
+	-- legitimately disagree for a while:
+	--   * highestIslandReached -- raised only by the Heartbeat's PHYSICAL landing detection (flying past an
+	--     island does not count);
+	--   * the Island leaderstat -- raised by UnlockIslandEvent when the player's PEAK clears the island.
+	-- UnlockIslandEvent does NOT touch highestIslandReached, and the food shop's client reads the Island
+	-- stat. So gating on highestIslandReached alone would refuse a food the grid is showing as unlocked,
+	-- with no visible reason -- the precise failure the client comment warns about. The max of the two is
+	-- what the player has been shown, so that is what gets honoured.
+	--
+	-- Still server-authoritative: both values are written only by server code, never by client input.
+	local lsIslandStat  = stats:FindFirstChild("Island")
+	local reachedIsland = math.max(highestIslandReached[player] or 1, (lsIslandStat and lsIslandStat.Value) or 1)
+	local foodIsland    = tonumber(food.island) or 1
+	if foodIsland > reachedIsland then
+		print("FOOD LOCKED:", player.Name, food.name, "needs island", foodIsland, "reached", reachedIsland)
+		pcall(function() StomachFullEvent:FireClient(player, "food_locked", food.name, foodIsland) end)
 		return
 	end
 	-- FAILURE CHECK 1 (COINS FIRST — the common blocker): not enough coins -> "not_enough_coins".
@@ -1903,11 +1978,13 @@ MarketplaceService.ProcessReceipt = function(info)
 		pcall(function() granted = _G.petsHandleReceipt(player, info.ProductId) end)
 		if granted then return Enum.ProductPurchaseDecision.PurchaseGranted end
 	end
-	-- PET WHEEL spin packs (Developer Products): PetWheel handles it + credits the purchased spins. Owns its own
-	-- disjoint set of product IDs (see PetWheelConfig.PRODUCTS). Credits spins only on a confirmed receipt.
-	if _G.wheelHandleReceipt then
+	-- (PET WHEEL spin packs are gone with the wheel. Its Developer Product ids were never created -- the wheel
+	-- shipped in TEST_MODE -- so no live receipt can arrive for them and nothing needs a compatibility path.)
+	-- CRATE TOKEN packs (Developer Products): SkinCrateService handles it + credits the purchased tokens. Owns its
+	-- own disjoint set of product IDs (see SkinCrates.TOKEN_PACKS). Credits only on a confirmed receipt.
+	if _G.skinCrateHandleReceipt then
 		local granted = false
-		pcall(function() granted = _G.wheelHandleReceipt(player, info.ProductId) end)
+		pcall(function() granted = _G.skinCrateHandleReceipt(player, info.ProductId) end)
 		if granted then return Enum.ProductPurchaseDecision.PurchaseGranted end
 	end
 	return Enum.ProductPurchaseDecision.NotProcessedYet
@@ -2015,12 +2092,9 @@ local function giveGut(player, gutName)
 	print("[TEST] gave "..player.Name.." "..tier.name.." (maxPower "..tier.maxPower..")")
 end
 
-local function hookTestStormChat(player) -- \xE2\x9A\xA0 TEST: /thunderstorm chat trigger. REMOVE BEFORE LAUNCH.
-	-- \xE2\x9A\xA0 TEST: on lando5485's join, print their userId so it can be hardcoded by id later. REMOVE BEFORE LAUNCH.
-	if string.lower(player.Name) == "lando5485" then
-		print("[TEST] lando5485 joined - userId = " .. player.UserId .. " (can hardcode this in the allowed list)")
-	end
-	player.Chatted:Connect(function(msg)
+-- â  TEST command body, lifted out of the Chatted closure so the TextChatService registration below can
+-- route into the SAME code. REMOVE BEFORE LAUNCH.
+local function handleTestChat(player, msg)
 		local cmd = string.lower(tostring(msg or "")):match("^%s*(.-)%s*$") -- trim + lowercase
 		if cmd == "/thunderstorm" then
 			if not isAllowedTestUser(player) then return end -- shared test-user allow-list (lando5485 + the two test accounts)
@@ -2028,12 +2102,26 @@ local function hookTestStormChat(player) -- \xE2\x9A\xA0 TEST: /thunderstorm cha
 			fireThunderstormNow()
 		elseif cmd == "/allpets" then -- \xE2\x9A\xA0 TEST COMMAND /allpets - grants all pets to test accounts. REMOVE BEFORE LAUNCH.
 			if not isAllowedTestUser(player) then return end -- same allow-list as the other test commands (non-test players: ignored)
-			if _G.petsGrantAll then pcall(function() _G.petsGrantAll(player) end) end -- grant every pet (PetSystem owns the data); they appear owned + equippable instantly
-			print("[TEST] /allpets used by " .. player.Name .. " - granted all pets. REMOVE BEFORE LAUNCH.")
+			-- Report what actually happened: the old form pcall'd the grant then printed success
+			-- unconditionally, so a missing global or an error inside PetSystem still read as 'granted'.
+			if not _G.petsGrantAll then
+				warn("[TEST] /allpets: _G.petsGrantAll is not defined -- PetSystem did not load or failed early.")
+			else
+				local okGrant, errGrant = pcall(_G.petsGrantAll, player)
+				if okGrant then print("[TEST] /allpets used by " .. player.Name .. " - granted all pets. REMOVE BEFORE LAUNCH.")
+				else warn("[TEST] /allpets FAILED for " .. player.Name .. ": " .. tostring(errGrant)) end
+			end
 		elseif cmd == "/rarepets" then -- \xE2\x9A\xA0 TEST COMMAND /rarepets - grants every pet as its RARE variant. REMOVE BEFORE LAUNCH.
 			if not isAllowedTestUser(player) then return end
-			if _G.petsGrantRare then pcall(function() _G.petsGrantRare(player) end) end -- grant all pets RARE + pre-maxed so all 5 rare looks are visible
-			print("[TEST] /rarepets used by " .. player.Name .. " - granted all RARE pets. REMOVE BEFORE LAUNCH.")
+			-- Report what actually happened: the old form pcall'd the grant then printed success
+			-- unconditionally, so a missing global or an error inside PetSystem still read as 'granted'.
+			if not _G.petsGrantRare then
+				warn("[TEST] /rarepets: _G.petsGrantRare is not defined -- PetSystem did not load or failed early.")
+			else
+				local okGrant, errGrant = pcall(_G.petsGrantRare, player)
+				if okGrant then print("[TEST] /rarepets used by " .. player.Name .. " - granted all RARE pets. REMOVE BEFORE LAUNCH.")
+				else warn("[TEST] /rarepets FAILED for " .. player.Name .. ": " .. tostring(errGrant)) end
+			end
 		elseif cmd == "/offline" or cmd:match("^/offline%s+%d+$") then
 			-- \xE2\x9A\xA0 TEST COMMAND /offline - simulate a rejoin after being away, and show the welcome-back HUD.
 			-- REMOVE BEFORE LAUNCH.
@@ -2067,10 +2155,50 @@ local function hookTestStormChat(player) -- \xE2\x9A\xA0 TEST: /thunderstorm cha
 				giveGut(player, gutName)
 			end
 		end
-	end)
+end
+
+local function hookTestStormChat(player) -- â  TEST: legacy-chat path. REMOVE BEFORE LAUNCH.
+	-- â  TEST: on lando5485's join, print their userId so it can be hardcoded by id later. REMOVE BEFORE LAUNCH.
+	if string.lower(player.Name) == "lando5485" then
+		print("[TEST] lando5485 joined - userId = " .. player.UserId .. " (can hardcode this in the allowed list)")
+	end
+	player.Chatted:Connect(function(msg) handleTestChat(player, msg) end)
 end
 for _, p in ipairs(Players:GetPlayers()) do hookTestStormChat(p) end
 Players.PlayerAdded:Connect(hookTestStormChat)
+
+-- â  TEST: the modern chat (TextChatService) does NOT fire Player.Chatted, so every command above was
+-- dead on this place -- /allpets and /rarepets included. Register them as real slash commands too, the same way
+-- RealmPortals and DevCommands do. Both paths call handleTestChat, so there is one implementation.
+-- NOTE: the no-slash spellings ("goisland3", "getlargegut") only ever worked on the legacy chat; use the slash
+-- forms registered here. REMOVE BEFORE LAUNCH.
+do
+	local ok, err = pcall(function()
+		local TextChatService = game:GetService("TextChatService")
+		local function reg(name, primary, secondary)
+			local c = Instance.new("TextChatCommand")
+			c.Name = name; c.PrimaryAlias = primary
+			if secondary then c.SecondaryAlias = secondary end
+			c.Parent = TextChatService
+			c.Triggered:Connect(function(source, text)
+				local plr = source and Players:GetPlayerByUserId(source.UserId)
+				-- Printed BEFORE the allow-list check, so the log separates 'never reached the server' from
+				-- 'server got it and refused'. Those two need completely different fixes.
+				print(string.format("[TEST] slash %q from %s", tostring(text), plr and plr.Name or "<unknown>"))
+				if plr then handleTestChat(plr, text) end
+			end)
+		end
+		reg("TestPetsCommand",       "/allpets",      "/rarepets")
+		reg("TestCollectionCommand", "/10pets",       "/thunderstorm")
+		reg("TestOfflineCommand",    "/offline",      "/goisland")
+		reg("TestGutCommand1",       "/gettinygut",   "/getsmallgut")
+		reg("TestGutCommand2",       "/getmediumgut", "/getlargegut")
+		reg("TestGutCommand3",       "/getxlgut",     "/getirongut")
+		reg("TestGutCommand4",       "/getinfinitegut")
+	end)
+	if ok then print("[TEST] chat commands registered with TextChatService (/allpets /rarepets /10pets /thunderstorm /offline /goisland /get*gut)")
+	else warn("[TEST] TextChatService command registration failed: " .. tostring(err)) end
+end
 
 -- (Daily Rewards claim handler removed.)
 
@@ -2170,7 +2298,19 @@ BuyStomachEvent.OnServerEvent:Connect(function(player, newMax, cost)
 			valid = true; break
 		end
 	end
-	if not valid or coins.Value < costN then return end
+	if not valid then return end
+	-- MUST BE AN UPGRADE. The loop above only proves the (maxPower, cost) pair is a REAL tier — it never checked
+	-- the tier is bigger than the one already owned, so a player could re-buy their current gut, or even a
+	-- SMALLER one, and the server would happily take the coins and shrink StomachMax.
+	--
+	-- That is also the one and only path on which the next-island fill below turns into a FULL STOMACH: the fill
+	-- is clamped to the new tank, so asking for a tank that cannot hold the power the next island needs pins the
+	-- meter at 100%. On the real ladder every upgrade lands between 53% and 70% (Small 70, Medium 53, Large 60,
+	-- XL 63, Iron 59), but re-buying Large at island 11 wants 1343 into a 1075 tank -> clamped -> free full tank
+	-- for 5,200 coins, which is cheaper than the food. Requiring a strict increase removes the exploit and the
+	-- downgrade in one line, and leaves the fill unable to reach 100% at all.
+	if newMaxN <= stomachMaxStat.Value then return end
+	if coins.Value < costN then return end
 	local coinsBeforeBuy = coins.Value -- [BALANCE LOGGING] snapshot before deducting
 	coins.Value = coins.Value - costN
 	coinsSpentOnGuts[player] = (coinsSpentOnGuts[player] or 0) + costN -- [BALANCE LOGGING] track gut spend

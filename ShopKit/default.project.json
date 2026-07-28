@@ -1,0 +1,15 @@
+{
+  "name": "ShopKit",
+  "tree": {
+    "$className": "DataModel",
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "ShopKit": {
+          "$path": "ShopKit_AllInOne.client.lua"
+        }
+      }
+    }
+  }
+}

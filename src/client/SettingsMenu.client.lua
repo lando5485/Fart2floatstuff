@@ -16,6 +16,13 @@
 -- All of this is local to THIS player — one player muting never affects anyone else.
 --======================================================================
 
+-- ONE GEAR ONLY. This file was never listed in default.project.json, so for its whole life it could only
+-- have been running as a copy baked into the place. Registering it with Rojo (done in the same pass) means
+-- a synced copy and any baked-in copy can now both be alive at once -- two gears, two panels, two SFX
+-- groups, and the second one to load silently wins every toggle. Same guard the campfire scripts use.
+if _G.__SettingsMenuClient then return end
+_G.__SettingsMenuClient = true
+
 local Players      = game:GetService("Players")
 local SoundService = game:GetService("SoundService")
 local Workspace    = game:GetService("Workspace")
@@ -75,21 +82,57 @@ sg.Name = "SettingsGui"; sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true; sg.D
 -- size/position are set relative to the coin pill (see placeNextToCoins at the bottom) so it tucks in
 -- beside the coins on every screen size. The values here are a sensible top-right FALLBACK used only if
 -- the coin pill can't be found.
+-- SPACE REALM GEAR. Same button as SpaceRealm_SettingsButton/01_button_gear -- dark navy fill, corner 12,
+-- white-blue glyph, a gloss sheen over the top half and a cyan->blue neon border. The exact values are
+-- lifted from SpaceTheme.luau (StarfieldFill 12,16,42 / TextPrimary 230,238,255 / NeonCyan 64,224,255),
+-- rebuilt inline rather than by pulling SpaceTheme in: this button is the only thing here that would use
+-- it, and the module drags along starfields, planet tints and panel-depth helpers this game has no use for.
+--
+-- TWO DIFFERENCES FROM THE SNIPPET, both deliberate:
+--   * the snippet adds addNeonEdge (a UIStroke) AND a second black UIStroke for glyph crispness. A
+--     GuiObject only honours ONE UIStroke, so the second was doing nothing. The neon edge is the border,
+--     and the glyph gets its outline from the button's own TextStroke, which does not collide.
+--   * no fixed 44x44 / top-right position: size and position come from the coin pill below, so the gear
+--     matches the coins' row height on every device.
 local gearBtn = Instance.new("TextButton")
 gearBtn.Name = "SettingsGearBtn"
 gearBtn.AnchorPoint = Vector2.new(1, 0)
 gearBtn.Size = UDim2.new(0, 46, 0, 46)
 gearBtn.Position = UDim2.new(1, -198, 0, 10)
-gearBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-gearBtn.Text = "\xE2\x9A\x99\xEF\xB8\x8F"  -- gear icon
-gearBtn.TextScaled = true
+gearBtn.BackgroundColor3 = Color3.fromRGB(12, 16, 42)   -- SpaceTheme.StarfieldFill
+gearBtn.Text = "\xE2\x9A\x99"                          -- U+2699 with NO variation selector, so it renders as
+gearBtn.TextScaled = true                               -- a TINTED glyph instead of the fixed-colour emoji
 gearBtn.Font = Enum.Font.GothamBold
-gearBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+gearBtn.TextColor3 = Color3.fromRGB(230, 238, 255)      -- SpaceTheme.TextPrimary
+gearBtn.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)      -- crisp glyph (the snippet's dead 2nd UIStroke, done properly)
+gearBtn.TextStrokeTransparency = 0.35
+gearBtn.AutoButtonColor = true
 gearBtn.ZIndex = 20
 gearBtn.Parent = sg
-do local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,10); c.Parent=gearBtn end
-do local s=Instance.new("UIStroke"); s.Color=Color3.fromRGB(0,0,0); s.Thickness=2; s.Parent=gearBtn end
-do local p=Instance.new("UIPadding"); p.PaddingTop=UDim.new(0,6); p.PaddingBottom=UDim.new(0,6); p.PaddingLeft=UDim.new(0,6); p.PaddingRight=UDim.new(0,6); p.Parent=gearBtn end
+do local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,12); c.Parent=gearBtn end
+-- GLOSS: white sheen over the top 52%, fading out downward (SpaceTheme.addGloss). Not Active, so it never
+-- eats the click meant for the button underneath it.
+do
+	local hi=Instance.new("Frame"); hi.Name="Gloss"; hi.BackgroundColor3=Color3.fromRGB(255,255,255)
+	hi.BorderSizePixel=0; hi.Position=UDim2.fromScale(0,0); hi.Size=UDim2.new(1,0,0.52,0); hi.ZIndex=gearBtn.ZIndex
+	local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,12); c.Parent=hi
+	local g=Instance.new("UIGradient"); g.Rotation=90
+	g.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0.8), NumberSequenceKeypoint.new(1,1)})
+	g.Parent=hi; hi.Parent=gearBtn
+end
+-- NEON EDGE: cyan -> blue gradient border (SpaceTheme.addNeonEdge).
+do
+	local s=Instance.new("UIStroke"); s.Thickness=2; s.Color=Color3.fromRGB(255,255,255)
+	s.ApplyStrokeMode=Enum.ApplyStrokeMode.Border
+	local g=Instance.new("UIGradient"); g.Rotation=90
+	g.Color=ColorSequence.new({
+		ColorSequenceKeypoint.new(0,   Color3.fromRGB(120,235,255)),
+		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(64,224,255)),
+		ColorSequenceKeypoint.new(1,   Color3.fromRGB(56,120,255)),
+	})
+	g.Parent=s; s.Parent=gearBtn
+end
+do local p=Instance.new("UIPadding"); p.PaddingTop=UDim.new(0,5); p.PaddingBottom=UDim.new(0,5); p.PaddingLeft=UDim.new(0,5); p.PaddingRight=UDim.new(0,5); p.Parent=gearBtn end
 
 -- Panel (hidden until the gear is clicked); opens just below the gear, right-aligned to the coins (its
 -- exact position is set relative to the coin pill in placeNextToCoins). Fallback values here.
@@ -182,7 +225,9 @@ task.spawn(function()
 		if not coinPill then task.wait(0.1) end
 	until coinPill or os.clock() > deadline
 	if not coinPill then return end -- keep the top-right fallback position
-	local GAP = 8
+	-- A COUPLE OF PIXELS between the gear and the coins -- close enough to read as one cluster rather than
+	-- two unrelated widgets, without the rounded corners touching.
+	local GAP = 4
 	local function place()
 		local cSize = coinPill.AbsoluteSize       -- coins' rendered size, in real screen pixels
 		if cSize.X <= 0 or cSize.Y <= 0 then return end -- not rendered yet; listeners re-run once it is
