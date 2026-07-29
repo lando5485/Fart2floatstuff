@@ -2889,7 +2889,7 @@ local function applyLevelVisual(pet, level, petId, isRare, lite)
 		end
 		bb.L.Text = petDisplayName(petId, isRare)
 		bb.L.TextColor3 = isVariant and tierColor or Color3.new(1,1,1)
-		bb.Tag.Text = isVariant and tierName or (tierName .. "  Lv " .. tostring(level))
+		bb.Tag.Text = isVariant and tierName or (tierName .. "  Age " .. tostring(level))
 		bb.Tag.BackgroundColor3 = tierColor
 		local stk = bb.Tag:FindFirstChildOfClass("UIStroke")
 		if stk then
@@ -3991,19 +3991,19 @@ do
 	bar.BackgroundTransparency = 1; bar.Parent = panel
 	local ll = Instance.new("UIListLayout"); ll.FillDirection = Enum.FillDirection.Horizontal
 	ll.Padding = UDim.new(0,8); ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Parent = bar
-	-- THREE tabs, not five. CRATES and TOKENS left this bar when Skin Crates became its own menu
-	-- again (opened from MORE+): five tabs -- several with their own sub-page rows underneath --
-	-- read as overwhelming, and two different menu buttons landing in "the same GUI, different
-	-- tab" felt broken. showPage still handles "crates"/"tokens" by handing off to the crate
-	-- panel, so putting a tab back is a one-line re-add here. 220 wide: three tabs + two 8px
-	-- gaps fill the same 676px the five 129s did.
+	-- FOUR tabs: pets and crates are ONE hub again, entered through the PETS rail button. The
+	-- de-overwhelm vs the old five-tab bar is TOKENS -- no longer top-level, it lives inside the
+	-- CRATES page (its shop, not a collection). CRATES hands off to the crate panel via showPage,
+	-- which draws the SAME four-tab bar, so the swap reads as one menu changing pages.
+	-- 163 wide: four tabs + three 8px gaps fill the same 676px the five 129s did.
 	for i, t in ipairs({
 		{ id = "pets",   label = "\xF0\x9F\x90\xBE PETS"   },
+		{ id = "crates", label = "\xF0\x9F\x93\xA6 CRATES" },
 		{ id = "trade",  label = "\xF0\x9F\x94\x84 TRADE"  },
 		{ id = "quests", label = "\xF0\x9F\x93\x9C QUESTS" },
 	}) do
 		local b = Instance.new("TextButton")
-		b.Size = UDim2.new(0,220,1,0); b.LayoutOrder = i
+		b.Size = UDim2.new(0,163,1,0); b.LayoutOrder = i
 		b.BackgroundColor3 = Color3.fromRGB(18,66,150); b.Text = t.label
 		b.Font = Enum.Font.FredokaOne; b.TextSize = 15; b.TextScaled = true
 		b.TextColor3 = Color3.fromRGB(255,215,0); b.Parent = bar
@@ -4161,6 +4161,39 @@ toggleEvent.Event:Connect(function()
 	print("[MenuMgr] PetInv click - current open menu = " .. tostring(current) .. ", panel open = " .. tostring(isOpen) .. " -> " .. (isOpen and "closing" or "opening (proceeding)"))
 	openPanel(not isOpen)
 end)
+-- THE UNAMBIGUOUS DOOR. Buttons that can should call this instead of firing a found event -- see below.
+-- On _G, not a local: this file sits at the edge of Luau's 200-locals ceiling.
+_G.togglePetHub = function()
+	local isOpen = false; pcall(function() isOpen = panel.Visible == true end)
+	openPanel(not isOpen)
+end
+-- ===== KILL THE IMPOSTOR =====
+-- A copy of PetHub_AllInOne (the standalone export kit) is baked into the place. It builds its OWN
+-- ScreenGui named PetInventoryUI and its OWN PetInvToggle BindableEvent -- a complete second Pet Hub.
+-- Every button that opens the hub does FindFirstChild("PetInvToggle"), which returns whichever of the
+-- two events sits first in PlayerGui -- a load-order race. When the kit's copy won, the paw button
+-- toggled the kit's dead panel and "the pet menu stopped opening". So: any same-named event or hub gui
+-- that is not OURS is destroyed/retired, at load AND whenever one appears later (the kit can load after
+-- us), and our MainMenuManager registration is re-asserted since the kit overwrites that too.
+-- The real fix is deleting PetHub_AllInOne inside Studio -- this keeps the game correct until then.
+do
+	local ownGui = panel:FindFirstAncestorOfClass("ScreenGui")
+	local function killImpostor(ch)
+		if ch == toggleEvent or ch == ownGui then return end
+		if ch:IsA("BindableEvent") and ch.Name == "PetInvToggle" then
+			ch:Destroy()
+			warn("[PetInv] destroyed a STALE duplicate PetInvToggle (baked-in PetHub_AllInOne kit -- delete it in Studio)")
+			pcall(function() _G.MainMenuManager.register("PetInv", function() panel.Visible = false; dim.Visible = false end) end)
+		elseif ch:IsA("ScreenGui") and ch.Name == "PetInventoryUI" then
+			ch.Enabled = false
+			ch.Name = "PetInventoryUI_STALE" -- renamed so no finder (BACK, guards, verify nets) can grab it
+			warn("[PetInv] retired a STALE duplicate PetInventoryUI gui (baked-in PetHub_AllInOne kit -- delete it in Studio)")
+			pcall(function() _G.MainMenuManager.register("PetInv", function() panel.Visible = false; dim.Visible = false end) end)
+		end
+	end
+	for _, ch in ipairs(pg:GetChildren()) do killImpostor(ch) end
+	pg.ChildAdded:Connect(function(ch) task.defer(killImpostor, ch) end)
+end
 
 -- ===== 3D VIEWPORT ICONS: each owned pet card's icon is a CLONE of the real pet model at its current-level
 -- look (accessories/colors/variant), slowly auto-rotating. Clones never touch the real follow pets. =====
@@ -4829,7 +4862,7 @@ local function buildPetCard(key, p, order)
 	end
 	local lv = Instance.new("TextLabel"); lv.Size = UDim2.new(1,-16,0,16); lv.Position = UDim2.new(0,8,0,182)
 	lv.BackgroundTransparency = 1; lv.Font = Enum.Font.GothamBold; lv.TextSize = 13
-	lv.Text = (isVariant and tierName or (tierName .. "  Lv " .. p.level)) .. (p.equipped and "  \xE2\x80\xA2 EQUIPPED" or ""); lv.Parent = card
+	lv.Text = (isVariant and tierName or (tierName .. "  Age " .. p.level)) .. (p.equipped and "  \xE2\x80\xA2 EQUIPPED" or ""); lv.Parent = card
 	lv.TextColor3 = tierColor
 	-- XP PROGRESS BAR (current XP / XP needed for the next level)
 	local barBG = Instance.new("Frame"); barBG.Size = UDim2.new(1,-16,0,14); barBG.Position = UDim2.new(0,8,0,200)
@@ -5155,7 +5188,7 @@ local function makeOfferCard(parent, brief, order, onClick)
 	local lv = Instance.new("TextLabel"); lv.BackgroundTransparency = 1; lv.Font = Enum.Font.GothamBold; lv.TextSize = 12
 	lv.TextColor3 = tcol; lv.TextXAlignment = Enum.TextXAlignment.Left
 	lv.Position = UDim2.new(0,108,0,32); lv.Size = UDim2.new(1,-114,0,18)
-	lv.Text = isVariant and tname or (tname .. "  Lv " .. tostring(brief.level)); lv.Parent = card
+	lv.Text = isVariant and tname or (tname .. "  Age " .. tostring(brief.level)); lv.Parent = card
 	if onClick then
 		local h = Instance.new("TextLabel"); h.BackgroundTransparency = 1; h.Font = Enum.Font.Gotham; h.TextSize = 11; h.TextColor3 = Color3.fromRGB(255,190,190)
 		h.TextXAlignment = Enum.TextXAlignment.Left; h.Position = UDim2.new(0,108,0,52); h.Size = UDim2.new(1,-114,0,16); h.Text = "Click to remove \xE2\x9C\x95"; h.Parent = card

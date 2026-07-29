@@ -330,7 +330,6 @@ _G.playerPlaytimeSec = _G.playerPlaytimeSec or {}
 -- handler ran before that service had created the tables, indexing them would error out the whole load path.
 _G.playerCrateTokens   = _G.playerCrateTokens   or {}
 _G.playerPetSkins      = _G.playerPetSkins      or {}
-_G.playerPetTraits     = _G.playerPetTraits     or {} -- trait collection (skin/trait split): { unapplied, bound }
 _G.playerEquippedSkins = _G.playerEquippedSkins or {}
 --   playerCollection[player]    = { completedPets, titles, auras, activeTitle, activeAura, full }
 --       Collection Book progress + the badge/title/aura rewards it pays out. Derived from petSkins, but stored
@@ -498,8 +497,7 @@ local function savePlayerData(player, trigger)
 		ownedGutSkins    = _G.playerOwnedGutSkins[player] or { Default = true },  -- cosmetic gut skins owned (always includes Default)
 		equippedGutSkin  = _G.playerEquippedGutSkin[player] or "Default",         -- currently equipped gut skin id
 		crateTokens      = math.floor(tonumber(_G.playerCrateTokens[player]) or 0), -- COSMETIC currency (skin crates only; never buys food)
-		petSkins         = _G.playerPetSkins[player] or {},                       -- pet skin inventory: ["Pet|Skin|"] = duplicate count (trait-less since the split)
-		petTraits        = _G.playerPetTraits and _G.playerPetTraits[player] or {}, -- trait collection: { unapplied = {trait=count}, bound = { [petId]={trait=true} } }
+		petSkins         = _G.playerPetSkins[player] or {},                       -- pet skin inventory: ["Pet|Skin|Trait"] = duplicate count
 		equippedSkins    = _G.playerEquippedSkins[player] or {},                  -- which skin+trait each pet is wearing
 		collection       = _G.playerCollection[player] or {},                     -- collection-book completion + earned titles/auras
 		playtimeSeconds  = _G.playerPlaytimeSec[player] or 0,                     -- total cumulative playtime (drives skin unlocks)
@@ -1049,10 +1047,6 @@ Players.PlayerAdded:Connect(function(player)
 	-- (called below, after the pet state loads) mirrors the balance onto the leaderstat and pushes the client state.
 	_G.playerCrateTokens[player]   = math.floor(tonumber(saved.crateTokens) or 0)
 	_G.playerPetSkins[player]      = saved.petSkins or {}
-	-- Trait collection (post skin/trait split). A pre-split save has no petTraits; SkinCrateService's lazy
-	-- migration then derives it from the fused petSkins keys on first inventory touch.
-	_G.playerPetTraits = _G.playerPetTraits or {}
-	_G.playerPetTraits[player]     = saved.petTraits or {}
 	_G.playerEquippedSkins[player] = saved.equippedSkins or {}
 	-- A save written before the collection existed loads as an empty table; SkinCrateService's collection()
 	-- back-fills the missing fields, then its first pushState re-derives completion from the inventory -- so an

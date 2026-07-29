@@ -34,13 +34,14 @@ local MORE, REWARDS = "more", "rewards"
 local PANELS = {
 	RebirthGui       = MORE,
 	RewardsHubGui    = MORE,
-	SkinCrateGui     = MORE,
 	WormholeMenu     = MORE,  -- moved into MORE+ when Pets took its rail slot
 	-- These two are opened FROM the Rewards hub, so back means the hub, not the menu.
 	DailyTasksGui    = REWARDS,
 	SocialRewardsGui = REWARDS,
 	-- PetInventoryUI is NOT here: Pets opens from the rail now, and rail menus (Shop,
 	-- Stomach) have no BACK -- there is nothing to go back TO.
+	-- SkinCrateGui is NOT here either: crates are a page of the pet hub, opened from its
+	-- tab bar, and the crate panel's own BACK button already returns to the hub.
 }
 
 local BACK_W, BACK_H = 92, 36
@@ -76,7 +77,6 @@ local function stroke(o, col, t) local s = Instance.new("UIStroke"); s.Color = c
 local CLOSERS = {
 	RebirthGui       = function() if _G.toggleRebirth       then _G.toggleRebirth();       return true end end,
 	RewardsHubGui    = function() if _G.toggleRewardsHub    then _G.toggleRewardsHub();    return true end end,
-	SkinCrateGui     = function() if _G.toggleSkinCrates    then _G.toggleSkinCrates();    return true end end,
 	DailyTasksGui    = function() if _G.toggleDailyTasks    then _G.toggleDailyTasks();    return true end end,
 	SocialRewardsGui = function() if _G.toggleSocialRewards then _G.toggleSocialRewards(); return true end end,
 	WormholeMenu     = function() if _G.toggleWormhole      then _G.toggleWormhole();      return true end end,

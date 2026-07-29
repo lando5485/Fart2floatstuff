@@ -35,7 +35,7 @@ gui.Parent = PlayerGui
 local pill = Instance.new("TextButton")
 pill.Name = "TokenPill"
 pill.Size = UDim2.fromOffset(PILL_W, PILL_H)
-pill.Position = UDim2.new(1, -12 - PILL_W, 0, 64)   -- fallback slot; re-glued under the coin pill below
+pill.Position = UDim2.new(1, -12 - PILL_W, 0, 8)    -- fallback slot; re-glued left of the coin pill below
 pill.BackgroundColor3 = Color3.fromRGB(12, 44, 104) -- HubTokens chip blue
 pill.AutoButtonColor = false
 pill.Text = ""
@@ -81,10 +81,13 @@ task.spawn(function()
 			if f and f:IsA("GuiObject") and f.Visible then coinFrame = f end
 		end
 		if coinFrame then
-			-- right-aligned with the coin pill, 6px below it. AbsolutePosition is in the
-			-- same space for both guis (neither ignores the inset).
+			-- To the LEFT of the coin pill, vertically centred on it. NOT below: the STATS panel
+			-- (RightPanelGui) starts directly under the coin counter, so a pill glued underneath
+			-- sat on top of the stats header -- the token/coin/stats overlap on the right side.
+			-- Left of the coins is the one direction on that edge with nothing in it.
+			-- AbsolutePosition is in the same space for both guis (neither ignores the inset).
 			local ap, as = coinFrame.AbsolutePosition, coinFrame.AbsoluteSize
-			pill.Position = UDim2.fromOffset(ap.X + as.X - PILL_W, ap.Y + as.Y + 6)
+			pill.Position = UDim2.fromOffset(ap.X - PILL_W - 8, ap.Y + math.floor((as.Y - PILL_H) / 2))
 		end
 		task.wait(1)
 	end

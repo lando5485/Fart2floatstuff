@@ -199,7 +199,10 @@
       "Bash(powershell -NoProfile -Command 'try { Get-Content default.project.json -Raw | ConvertFrom-Json | Out-Null; '\\\\''JSON OK'\\\\'' } catch { '\\\\''JSON BAD: '\\\\'' + $_.Exception.Message }')",
       "Bash(grep -n 'Text = \"\\\\\\\\xE2\\\\\\\\x9C\\\\\\\\xA8\"' src/client/SkinCrateClient.client.lua)",
       "Bash(grep -cn 'Text = \"\\\\\\\\xE2' src/client/SkinCrateClient.client.lua)",
-      "Bash(grep -n '\\\\\\\\\\\\\\\\xE2' src/client/SkinCrateClient.client.lua)"
+      "Bash(grep -n '\\\\\\\\\\\\\\\\xE2' src/client/SkinCrateClient.client.lua)",
+      "Read(//c/Users/riley/AppData/Local/Temp/**)",
+      "Bash(curl -sL -o luau.zip \"https://github.com/luau-lang/luau/releases/download/0.706/luau-windows.zip\")",
+      "Bash(unzip -o -q luau.zip -d luau-bin)"
     ]
   }
 }

@@ -129,15 +129,10 @@ local ENTRIES = {
 		end
 	  end },
 
-	-- SKIN CRATES is its own menu again (it briefly lived as a page inside the Pet Hub's shared
-	-- tab bar -- five tabs plus sub-tabs read as overwhelming, so the hub kept PETS/TRADE/QUESTS
-	-- and this row is the door to the CRATES/TOKENS panel). The badge is your unspent token
-	-- count: "you have crates to open" sits on the tile itself.
-	{ key = "crates", label = "Skin Crates", desc = "Open crates to unlock pet skins and traits.",
-	  tint = Color3.fromRGB(170, 130, 255), emoji = "\xF0\x9F\x93\xA6", badge = true, gui = "SkinCrateGui",
-	  action = function() if _G.toggleSkinCrates then _G.toggleSkinCrates() end end },
-
-	-- PETS is NOT here: it is on the rail now, always visible.
+	-- SKIN CRATES is NOT here: crates are the CRATES page of the pet hub (the PETS rail button),
+	-- one combined interface -- pets and crates go hand in hand. The token pill under the coin
+	-- counter is the on-screen "you have tokens" signal.
+	-- PETS is NOT here either: it is on the rail, always visible.
 	-- SEASONAL PETS moved to the treasure box beside the Global Garden (SeasonalPetsChest).
 	-- SEASON PASS was removed from this menu entirely.
 }
@@ -282,8 +277,15 @@ local function claimPetsTile(frame)
 		if now - last < 0.35 then return end
 		last = now
 		if _G.playUIClick then pcall(_G.playUIClick) end
-		local ev = PlayerGui:FindFirstChild("PetInvToggle")
-		if ev then ev:Fire() end
+		-- _G.togglePetHub is PetFollow's own toggle -- unambiguous. The event lookup is only the
+		-- fallback, because a baked-in PetHub_AllInOne kit creates a SECOND event with this name
+		-- and FindFirstChild can return the impostor (PetFollow also destroys those on sight).
+		if _G.togglePetHub then
+			pcall(_G.togglePetHub)
+		else
+			local ev = PlayerGui:FindFirstChild("PetInvToggle")
+			if ev then ev:Fire() end
+		end
 	end)
 	warn("[RailGuard] converted the WORMHOLE rail tile into PETS (Wormhole now lives in MORE+)")
 end
@@ -889,7 +891,6 @@ end)
 --
 --   Rewards      -- how many of the two free sources have something (daily crate, daily tasks).
 --                   Counting BOTH means claiming one does not hide the other.
---   Skin Crates  -- unspent crate tokens, i.e. how many crates you can open right now.
 local function setBadge(key, n)
 	local r = badgeRefs[key]
 	if not (r and r.frame and r.frame.Parent) then return end
@@ -903,7 +904,6 @@ task.spawn(function()
 		if (_G.crateIsClaimable  and _G.crateIsClaimable())  == true then rewards += 1 end
 		if (_G.dailyTasksPending and _G.dailyTasksPending()) == true then rewards += 1 end
 		setBadge("rewards", rewards)
-		setBadge("crates", tonumber(_G.crateTokenBalance) or 0)
 		task.wait(1)
 	end
 end)

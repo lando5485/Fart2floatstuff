@@ -719,9 +719,14 @@ shopSideClick.MouseButton1Click:Connect(function()
 end)
 inviteSideClick.MouseButton1Click:Connect(function()
 	playUIClick()
-	-- PETS button toggles the Pet Hub via the same PetInvToggle BindableEvent the old MORE+ row fired.
-	local ev = PlayerGui:FindFirstChild("PetInvToggle")
-	if ev then ev:Fire() end
+	-- _G.togglePetHub (PetFollow's own toggle) first: a baked-in PetHub_AllInOne kit creates a SECOND
+	-- BindableEvent named PetInvToggle, and FindFirstChild can return the impostor. Event = fallback only.
+	if _G.togglePetHub then
+		pcall(_G.togglePetHub)
+	else
+		local ev = PlayerGui:FindFirstChild("PetInvToggle")
+		if ev then ev:Fire() end
+	end
 end)
 dailySideClick.MouseButton1Click:Connect(function()
 	playUIClick()
@@ -1159,10 +1164,9 @@ do
 		--  opens is unchanged (LockerGui, below); only the door moved. See SeasonalPetsChest.client.luau,
 		--  which calls _G.openLocker -- exposed just after openLocker is defined.)
 		-- (SEASON PASS removed from this menu entirely.)
-		-- PET SKIN CRATES (cosmetic): the CS:GO-style crate shop + skin inventory. SkinCrateClient owns the panel;
-		-- this row is just the way in, so the whole system is reachable without another HUD button.
-		{ label = "Skin Crates", desc = "Open crates to unlock skins and traits.", tint = Color3.fromRGB(170, 130, 255),
-		emoji = "\xF0\x9F\x93\xA6", order = 4, action = function() if _G.toggleSkinCrates then _G.toggleSkinCrates() end end },
+		-- (SKIN CRATES removed from this menu: crates are the CRATES page of the pet hub now -- pets and
+		--  crates are one combined interface behind the PETS rail button. SkinCrateClient still owns the
+		--  panel; the hub's tab bar is the way in.)
 		-- (FREE REWARDS merged INTO the "Rewards" row above -- it is the FREE section of RewardsHub now.
 		--  SocialRewards.client still owns that panel; only the way in changed.)
 		-- (the "Codes" entry lives in the Season Pass panel -- bottom-left CODES button.)

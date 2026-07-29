@@ -317,7 +317,7 @@ local function applyLevelVisual(pet, level, petId, isRare)
 		local tierName, tierColor, isVariant, flashy = petTier(level, isRare, petId)
 		bb.L.Text = petDisplayName(petId, isRare)
 		bb.L.TextColor3 = isVariant and tierColor or Color3.new(1,1,1)
-		bb.Tag.Text = isVariant and tierName or (tierName .. "  Lv " .. tostring(level))
+		bb.Tag.Text = isVariant and tierName or (tierName .. "  Age " .. tostring(level))
 		bb.Tag.BackgroundColor3 = tierColor
 		local stk = bb.Tag:FindFirstChildOfClass("UIStroke")
 		if stk then

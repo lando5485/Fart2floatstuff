@@ -41,7 +41,6 @@ local SkinRemotes    = ReplicatedStorage:WaitForChild("SkinRemotes", 30)
 local GetSkinState   = SkinRemotes:WaitForChild("GetSkinState")
 local OpenCrate      = SkinRemotes:WaitForChild("OpenCrate")
 local EquipSkin      = SkinRemotes:WaitForChild("EquipSkin")
-local ApplyTrait     = SkinRemotes:WaitForChild("ApplyTrait")   -- (petId, traitId): bind one unapplied trait to a pet, permanently
 local BuyTokens      = SkinRemotes:WaitForChild("BuyTokens")
 local SkinStateEvent = SkinRemotes:WaitForChild("SkinStateEvent")
 local GoldAnnounce   = SkinRemotes:WaitForChild("GoldAnnounce")
@@ -374,7 +373,7 @@ end
 -- ============================================================================================================
 -- STATE (a local mirror of the server's push; never used to decide what the player owns)
 -- ============================================================================================================
-local state = { tokens = 0, skins = {}, traits = { unapplied = {}, bound = {} }, equipped = {}, unlocked = {}, collection = {} }
+local state = { tokens = 0, skins = {}, equipped = {}, unlocked = {}, collection = {} }
 local refreshTabs -- forward
 -- FORWARD DECL. The tab-click handler (which hands PETS/TRADE/QUESTS back to the Pet Hub) has to close
 -- this panel, but setOpen is defined ~1000 lines below with the rest of the open/close plumbing. Without
@@ -386,15 +385,9 @@ local function applyState(s)
 	if type(s) ~= "table" then return end
 	state.tokens   = tonumber(s.tokens) or 0
 	state.skins    = s.skins    or {}
-	state.traits   = s.traits   or { unapplied = {}, bound = {} }
-	state.traits.unapplied = state.traits.unapplied or {}
-	state.traits.bound     = state.traits.bound or {}
 	state.equipped = s.equipped or {}
 	state.unlocked = s.unlocked or {}
 	state.collection = s.collection or {}
-	-- Published for the Pet Hub's pet-detail page, so its trait UI renders from the same server
-	-- push this panel does.
-	_G.crateTraitState = state.traits
 	-- Publish the balance so the Pet Hub header can show the same number this panel does. Pushed on the
 	-- SERVER's state, not on a local guess, so the two headers cannot drift apart.
 	_G.crateTokenBalance = state.tokens
@@ -482,11 +475,19 @@ do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 14; c.Parent 
 -- different tab", which felt broken. Crates is its own menu again -- it hosts exactly the two
 -- pages it owns, and the Pet Hub keeps its three. The `hub` field / TAB_TO_HUB machinery below
 -- still works if a cross-tab is ever wanted back: add the entry, done.
+-- ===== ONE HUB, FOUR PAGES =====
+-- Pets and crates are ONE interface again, entered through the PETS rail button: this bar mirrors the
+-- Pet Hub's bar exactly (same four tabs, same geometry) and the two panels hand off to each other, so
+-- tabbing feels like one menu changing pages. The de-overwhelm vs the old five-tab bar is TOKENS: it is
+-- no longer a top-level destination -- it is a page INSIDE Crates (the GET TOKENS button and the token
+-- chip lead there), because it is a shop for the crates page, not a collection of its own.
 local TABS = {
+	{ id = "pets",   label = "\xF0\x9F\x90\xBE PETS",   hub = "pets"   },
 	{ id = "crates", label = "\xF0\x9F\x93\xA6 CRATES" },
-	{ id = "tokens", label = "\xF0\x9F\x8E\x9F TOKENS" },
+	{ id = "trade",  label = "\xF0\x9F\x94\x84 TRADE",  hub = "trade"  },
+	{ id = "quests", label = "\xF0\x9F\x93\x9C QUESTS", hub = "quests" },
 }
--- id -> the Pet Hub page to jump to, for tabs this panel does not host (none right now)
+-- id -> the Pet Hub page to jump to, for the tabs this panel does not host
 local TAB_TO_HUB = {}
 for _, t in ipairs(TABS) do if t.hub then TAB_TO_HUB[t.id] = t.hub end end
 -- Fill the same 677px the five 129px tabs used to occupy: n tabs + 8px gaps between them.
@@ -551,9 +552,12 @@ local function buildCratesTab()
 			{ id = "inventory",  label = "\xF0\x9F\x91\x95 MY SKINS" },
 			{ id = "tradeup",    label = "\xE2\x86\x91 TRADE UP"    },
 			{ id = "collection", label = "\xF0\x9F\x93\x96 COLLECTION" },
+			-- TOKENS lives here now, not on the top bar: it is the crates page's shop, not a
+			-- collection of its own -- one fewer top-level tab is the whole de-overwhelm.
+			{ id = "tokens",     label = "\xF0\x9F\x8E\x9F TOKENS" },
 		}) do
 			local b = mkButton(row, {
-				Size = UDim2.new(0, 168, 1, 0), LayoutOrder = j, BackgroundColor3 = CARD, Text = sub.label,
+				Size = UDim2.new(0, 128, 1, 0), LayoutOrder = j, BackgroundColor3 = CARD, Text = sub.label,
 				Font = Enum.Font.FredokaOne, TextSize = 14, TextScaled = true, TextColor3 = GOLD,
 			})
 			mkCorner(b, 8); mkStroke(b, WHITE, 1.5)
@@ -671,7 +675,7 @@ local function buildCratesTab()
 	})
 	do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 15; c.Parent = noteTitle end
 	local noteBody = mkLabel(note, {
-		Text = "Rarity rolls first, then a random item from that band.",
+		Text = "Rarity rolls first, then a random item from it, then the trait.",
 		Font = Enum.Font.Gotham, TextSize = 12, TextScaled = true, TextColor3 = Color3.fromRGB(196, 214, 250),
 		Size = UDim2.new(1, -20, 0, 18), Position = UDim2.new(0, 10, 0, 33),
 		TextXAlignment = Enum.TextXAlignment.Center,
@@ -703,163 +707,11 @@ local function buildInventoryTab()
 		return (a.trait or "") < (b.trait or "")
 	end)
 
-	-- ========================================================================================================
-	-- TRAIT COLLECTION (renders ABOVE the skins via negative LayoutOrder)
-	-- ========================================================================================================
-	-- Since the split, a rolled trait is NOT welded to the skin it arrived with: it lands here UNAPPLIED, the
-	-- player picks which pet to put it on, and once applied it is bound to that pet for good (a duplicate copy
-	-- can go to a different pet). This section is those two lists: waiting-to-place, and placed-where.
-	local hasTraits = false
-	do
-		local unapplied = {}
-		for traitId, n in pairs(state.traits.unapplied or {}) do
-			if (tonumber(n) or 0) > 0 and PetTraits.exists(traitId) then
-				unapplied[#unapplied + 1] = { id = traitId, count = tonumber(n) or 1 }
-			end
-		end
-		table.sort(unapplied, function(a, b) return PetTraits.displayName(a.id) < PetTraits.displayName(b.id) end)
-
-		local boundRows = {}
-		for petId, set in pairs(state.traits.bound or {}) do
-			for traitId in pairs(set or {}) do
-				if PetTraits.exists(traitId) then boundRows[#boundRows + 1] = { pet = petId, id = traitId } end
-			end
-		end
-		table.sort(boundRows, function(a, b)
-			if a.pet ~= b.pet then return a.pet < b.pet end
-			return a.id < b.id
-		end)
-
-		hasTraits = (#unapplied + #boundRows) > 0
-		if hasTraits then
-			local hdr = mkFrame(body, { Size = UDim2.new(1, -8, 0, 30), BackgroundColor3 = HEADER, LayoutOrder = -100 })
-			mkCorner(hdr, 10); mkStroke(hdr, GOLD, 1.5)
-			mkLabel(hdr, {
-				Text = "\xE2\x9C\xA8 TRAIT COLLECTION \xE2\x80\x94 traits are yours, pick the pet",
-				Font = Enum.Font.FredokaOne, TextSize = 15, TextScaled = true, TextColor3 = GOLD,
-				Size = UDim2.new(1, -16, 1, -8), Position = UDim2.new(0, 8, 0, 4),
-				TextXAlignment = Enum.TextXAlignment.Center,
-			})
-
-			-- UNAPPLIED: one row per trait, APPLY opens the pet picker. One-way, so the picker says so.
-			for i, tr in ipairs(unapplied) do
-				local row = mkFrame(body, { Size = UDim2.new(1, -8, 0, 52), BackgroundColor3 = CARD, LayoutOrder = -99 + i })
-				mkCorner(row, 12); mkStroke(row, PetTraits.color(tr.id) or GOLD, 2)
-				mkLabel(row, {
-					Text = PetTraits.displayName(tr.id) .. (tr.count > 1 and ("  x" .. tr.count) or ""),
-					Font = Enum.Font.FredokaOne, TextSize = 17, TextScaled = true,
-					TextColor3 = PetTraits.color(tr.id) or WHITE,
-					Size = UDim2.new(0, 220, 0, 24), Position = UDim2.new(0, 14, 0, 5),
-					TextXAlignment = Enum.TextXAlignment.Left,
-				})
-				mkLabel(row, {
-					Text = "Ready to place \xE2\x80\x94 applying is permanent (one pet forever).",
-					Font = Enum.Font.Gotham, TextSize = 12, TextScaled = true,
-					TextColor3 = Color3.fromRGB(196, 214, 250),
-					Size = UDim2.new(1, -180, 0, 16), Position = UDim2.new(0, 14, 0, 30),
-					TextXAlignment = Enum.TextXAlignment.Left,
-				})
-				local ap = mkButton(row, {
-					Size = UDim2.new(0, 130, 0, 36), Position = UDim2.new(1, -142, 0.5, 0),
-					AnchorPoint = Vector2.new(0, 0.5), BackgroundColor3 = LIME,
-					Text = "APPLY TO PET", Font = Enum.Font.FredokaOne, TextSize = 14, TextScaled = true, TextColor3 = WHITE,
-				})
-				mkCorner(ap, 10); mkStroke(ap, LIME_DARK, 2)
-				ap.MouseButton1Click:Connect(function()
-					playUIClick()
-					-- PET PICKER overlay: unlocked pets only (the server refuses unknown ids; a
-					-- locked pet could take the trait but couldn't wear it, which reads as a lost item).
-					local old = panel:FindFirstChild("TraitPickOverlay"); if old then old:Destroy() end
-					local ov = mkFrame(panel, { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.fromRGB(6, 22, 56) })
-					ov.Name = "TraitPickOverlay"; ov.ZIndex = 40; ov.BackgroundTransparency = 0.06
-					mkCorner(ov, 20)
-					mkLabel(ov, {
-						Text = "Apply " .. PetTraits.displayName(tr.id) .. " to which pet?\nThis is PERMANENT \xE2\x80\x94 it stays on that pet.",
-						Font = Enum.Font.FredokaOne, TextSize = 20, TextScaled = true, TextColor3 = GOLD,
-						Size = UDim2.new(1, -40, 0, 54), Position = UDim2.new(0, 20, 0, 14),
-						TextXAlignment = Enum.TextXAlignment.Center, TextWrapped = true, ZIndex = 41,
-					})
-					local pets = {}
-					for petId, on in pairs(state.unlocked or {}) do if on == true then pets[#pets + 1] = petId end end
-					table.sort(pets)
-					for pi, petId in ipairs(pets) do
-						local col = (pi - 1) % 2
-						local rowi = math.floor((pi - 1) / 2)
-						local pb = mkButton(ov, {
-							Size = UDim2.new(0, 310, 0, 42),
-							Position = UDim2.new(0, 26 + col * 324, 0, 84 + rowi * 50),
-							BackgroundColor3 = CARD, Text = PetSkins.prettyPet(petId),
-							Font = Enum.Font.FredokaOne, TextSize = 16, TextScaled = true, TextColor3 = WHITE,
-						})
-						pb.ZIndex = 41; mkCorner(pb, 10); mkStroke(pb, GOLD, 1.5)
-						-- already has this trait -> can't take a second copy; say so instead of failing silently
-						local has = state.traits.bound[petId] and state.traits.bound[petId][tr.id]
-						if has then
-							pb.Text = PetSkins.prettyPet(petId) .. "  (already has it)"
-							pb.BackgroundColor3 = Color3.fromRGB(70, 84, 110)
-						else
-							pb.MouseButton1Click:Connect(function()
-								playUIClick()
-								ApplyTrait:FireServer(petId, tr.id)
-								ov:Destroy() -- server push rebuilds this tab with the trait bound
-							end)
-						end
-					end
-					local cancel = mkButton(ov, {
-						Size = UDim2.new(0, 160, 0, 38), Position = UDim2.new(0.5, 0, 1, -52),
-						AnchorPoint = Vector2.new(0.5, 0), BackgroundColor3 = Color3.fromRGB(210, 60, 55),
-						Text = "CANCEL", Font = Enum.Font.FredokaOne, TextSize = 15, TextScaled = true, TextColor3 = WHITE,
-					})
-					cancel.ZIndex = 41; mkCorner(cancel, 10); mkStroke(cancel, Color3.new(0, 0, 0), 2)
-					cancel.MouseButton1Click:Connect(function() playUIClick(); ov:Destroy() end)
-				end)
-			end
-
-			-- BOUND: where each placed trait lives, with a wear/remove toggle (needs a skin equipped
-			-- to ride on -- the renderer draws traits as part of the skinned look).
-			for i, br in ipairs(boundRows) do
-				local eqB = state.equipped[br.pet]
-				-- TRAITS STACK: `worn` = membership in the equipped traits LIST, and the toggle adds
-				-- or removes just this one -- an aura AND a trail together is the point of collecting.
-				local wornList = (eqB and (eqB.traits or (eqB.trait and { eqB.trait }))) or {}
-				local worn = false
-				for _, t in ipairs(wornList) do if t == br.id then worn = true break end end
-				local row = mkFrame(body, { Size = UDim2.new(1, -8, 0, 44), BackgroundColor3 = CARD, LayoutOrder = -60 + i })
-				mkCorner(row, 12); mkStroke(row, worn and LIME or (PetTraits.color(br.id) or WHITE), worn and 3 or 1.5)
-				mkLabel(row, {
-					Text = PetTraits.displayName(br.id) .. "  \xE2\x80\xA2  on " .. PetSkins.prettyPet(br.pet),
-					Font = Enum.Font.GothamBold, TextSize = 14, TextScaled = true,
-					TextColor3 = PetTraits.color(br.id) or WHITE,
-					Size = UDim2.new(1, -190, 1, -8), Position = UDim2.new(0, 14, 0, 4),
-					TextXAlignment = Enum.TextXAlignment.Left,
-				})
-				local canWear = eqB and eqB.skin ~= nil
-				local wb = mkButton(row, {
-					Size = UDim2.new(0, 120, 0, 30), Position = UDim2.new(1, -132, 0.5, 0),
-					AnchorPoint = Vector2.new(0, 0.5),
-					BackgroundColor3 = worn and Color3.fromRGB(120, 160, 110) or (canWear and LIME or Color3.fromRGB(70, 84, 110)),
-					Text = worn and "WEARING \xE2\x9C\x93" or (canWear and "WEAR" or "Equip a skin first"),
-					Font = Enum.Font.FredokaOne, TextSize = 12, TextScaled = true, TextColor3 = WHITE,
-				})
-				mkCorner(wb, 8); mkStroke(wb, LIME_DARK, 1.5)
-				wb.MouseButton1Click:Connect(function()
-					if not canWear then return end
-					playUIClick()
-					local newList = {}
-					for _, t in ipairs(wornList) do if t ~= br.id then newList[#newList + 1] = t end end
-					if not worn then newList[#newList + 1] = br.id end
-					EquipSkin:FireServer(br.pet, eqB.skin, newList)
-				end)
-			end
-		end
-	end
-
 	if #items == 0 then
 		local empty = mkFrame(body, { Size = UDim2.new(1, -8, 0, 120), BackgroundColor3 = CARD, LayoutOrder = 1 })
 		mkCorner(empty, 14); mkStroke(empty, WHITE, 2)
 		mkLabel(empty, {
-			Text = hasTraits and "No skins yet \xE2\x80\x94 but your traits are safe above!\nOpen a crate for skins."
-				or "No skins yet!\nOpen a crate to start your collection.", Font = Enum.Font.FredokaOne,
+			Text = "No skins yet!\nOpen a crate to start your collection.", Font = Enum.Font.FredokaOne,
 			TextSize = 20, TextScaled = true, TextColor3 = WHITE, Size = UDim2.new(1, -20, 1, -20),
 			Position = UDim2.new(0, 10, 0, 10), TextXAlignment = Enum.TextXAlignment.Center, TextWrapped = true,
 		})
@@ -870,9 +722,7 @@ local function buildInventoryTab()
 		local tierCol = PetSkins.tierColor(it.tier)
 		local unlockedPet = state.unlocked[it.pet] == true
 		local eq = state.equipped[it.pet]
-		-- SKIN-ONLY match since the split: the trait is its own equip slot now, so wearing Galaxy
-		-- counts as wearing Galaxy whatever trait is riding along.
-		local isEquipped = eq and eq.skin == it.skin
+		local isEquipped = eq and eq.skin == it.skin and (eq.trait or nil) == (it.trait or nil)
 
 		local row = mkFrame(body, { Size = UDim2.new(1, -8, 0, 72), BackgroundColor3 = CARD, LayoutOrder = i })
 		mkCorner(row, 12)
@@ -929,9 +779,7 @@ local function buildInventoryTab()
 				if isEquipped then
 					EquipSkin:FireServer(it.pet, false)          -- toggle off -> back to the pet's natural look
 				else
-					-- Switching skins KEEPS the pet's equipped traits: traits belong to the pet
-					-- now, not to the skin, so changing outfits must not silently strip them.
-					EquipSkin:FireServer(it.pet, it.skin, (eq and (eq.traits or (eq.trait and { eq.trait }))) or false)
+					EquipSkin:FireServer(it.pet, it.skin, it.trait or false)
 				end
 			end)
 		end
@@ -1462,7 +1310,7 @@ refreshTabs = function()
 	tokenLbl.Text = CrateTokens.ICON .. " " .. CrateTokens.format(state.tokens)
 	-- A sub-page keeps its PARENT tab lit: sitting on Collection with no tab highlighted reads as being lost.
 	local litTab = activeTab
-	if litTab == "inventory" or litTab == "tradeup" or litTab == "collection" then litTab = "crates" end
+	if litTab == "inventory" or litTab == "tradeup" or litTab == "collection" or litTab == "tokens" then litTab = "crates" end
 	for id, b in pairs(tabButtons) do
 		local on = (id == litTab)
 		-- Selected = yellow, unselected = blue, matching the Pet Hub's tab styling.
