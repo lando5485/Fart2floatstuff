@@ -11,10 +11,20 @@
 -- STYLE: the same dark-blue chip + gold text as the Pet Hub's header token chip
 -- (HubTokens), so "this is the token colour" stays one consistent statement.
 --
--- POSITION: glued under the coin pill by reading its on-screen box every second
--- (the same cadence every badge poll in this game uses). Computed, not hardcoded,
--- because the coin pill moves with viewport size / mobile scale -- and if CoinGui is
--- ever missing, the pill falls back to a fixed top-right slot instead of vanishing.
+-- ===== THIS FILE ALSO OWNS THE TOP-RIGHT ROW LAYOUT =====
+-- Three scripts used to guess at the same corner independently: the stale CoreClient parks the
+-- coin pill at the right edge, SettingsMenu parks the gear at a HAND-TUNED x offset (-198), and
+-- this pill glued itself "left of the coins" -- which IS the gear's spot. Nobody measured anybody
+-- else, so the pill sat on the gear and the pill's red sale badge drew underneath it.
+-- Now ONE pass lays the row out as a chain, right to left, with a fixed gap:
+--
+--     [ token pill ] <-GAP-> [ gear ] <-GAP-> [ coin pill ]   (coin stays where CoreClient puts it)
+--
+-- Each element is placed by its RIGHT edge from the measured ABSOLUTE left edge of the element
+-- before it, so nothing can touch regardless of viewport, mobile scale, or the per-element
+-- UIScale the HUD pass adds (offsets position the ANCHOR, which UIScale does not move).
+-- It also clamps the coin pill's red discount/sale badge (baked-in, no synced source) back inside
+-- the pill's bounds -- straddling the pill's TOP edge, never poking sideways into a neighbour.
 --
 -- TAP: opens the Skin Crates panel -- the place tokens are spent.
 --======================================================================
@@ -24,18 +34,27 @@ local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
 
 local PILL_W, PILL_H = 104, 30
+local GAP = 10 -- the fixed breathing room between every element in the top-right row
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "TokenHudGui"
 gui.ResetOnSpawn = false
 gui.DisplayOrder = 6                      -- with the HUD, under every menu (menus sit at 100)
+-- SAME coordinate space as CoinGui and SettingsGui (both IgnoreGuiInset=true). Without this the
+-- pill computed its Y from CoinGui's full-screen coords but rendered in inset coords -- ~40px low,
+-- into the stats panel.
+gui.IgnoreGuiInset = true
 gui:SetAttribute("NoTextSweep", true)     -- precise 16px type; CoreClient's TextScaled sweep must skip it
 gui.Parent = PlayerGui
 
 local pill = Instance.new("TextButton")
 pill.Name = "TokenPill"
 pill.Size = UDim2.fromOffset(PILL_W, PILL_H)
-pill.Position = UDim2.new(1, -12 - PILL_W, 0, 8)    -- fallback slot; re-glued left of the coin pill below
+-- Anchored by its RIGHT-CENTRE: the layout pass positions right edges, and the per-element UIScale
+-- the HUD pass adds scales the box AROUND the anchor -- so the right edge holds exactly where placed
+-- at every scale, and the chain's gaps never compress.
+pill.AnchorPoint = Vector2.new(1, 0.5)
+pill.Position = UDim2.new(1, -12, 0, 33)            -- fallback slot; re-laid from the coin pill below
 pill.BackgroundColor3 = Color3.fromRGB(12, 44, 104) -- HubTokens chip blue
 pill.AutoButtonColor = false
 pill.Text = ""
@@ -65,10 +84,44 @@ pill.MouseButton1Click:Connect(function()
 	if _G.toggleSkinCrates then _G.toggleSkinCrates() end
 end)
 
--- Track the balance AND stay glued under the coin pill. One loop, 1s, matching the
--- badge-poll pattern the rest of the UI uses. _G.crateTokenBalance is pushed by
--- SkinCrateClient every time the server sends a new state, so this is never stale by
--- more than a second.
+-- ===== THE LAYOUT PASS =====
+-- Balance + the whole top-right row, twice a second (cheap: a handful of property reads).
+--
+-- The chain is measured, not authored: each element's right edge = the previous element's
+-- MEASURED absolute left edge minus GAP. Absolute coords are comparable across all three guis
+-- because all three are IgnoreGuiInset = true.
+local badgeClamped = {} -- [GuiObject] = true, so each rescued badge is logged once
+
+local function clampCoinBadges(coinFrame)
+	-- The red discount/sale badge on the coin pill is baked into the place (no synced source), and
+	-- it hangs off the pill's edge -- which put it underneath whatever neighbours the pill. Any
+	-- small red thing in CoinGui that pokes OUTSIDE the pill sideways gets snapped to straddle the
+	-- pill's top-right corner: fully inside horizontally, above it vertically, drawn on top.
+	local pl = coinFrame.AbsolutePosition.X
+	local pr = pl + coinFrame.AbsoluteSize.X
+	for _, d in ipairs(coinFrame.Parent:GetDescendants()) do
+		if (d:IsA("Frame") or d:IsA("TextLabel") or d:IsA("ImageLabel") or d:IsA("TextButton"))
+			and d.Visible and d.BackgroundTransparency < 0.5
+			and d.AbsoluteSize.X > 0 and d.AbsoluteSize.X <= 90 and d.AbsoluteSize.Y <= 60
+		then
+			local c = d.BackgroundColor3
+			if c.R > 0.7 and c.G < 0.45 and c.B < 0.45 then -- red, badge-sized
+				local dl = d.AbsolutePosition.X
+				local dr = dl + d.AbsoluteSize.X
+				if dl < pl - 2 or dr > pr + 2 then -- pokes sideways out of the pill into a neighbour
+					d.AnchorPoint = Vector2.new(1, 0.5)
+					d.Position = UDim2.new(1, -6, 0, 0) -- straddles the parent's top edge, inside its right end
+					d.ZIndex = 12                       -- above the pill, never behind a neighbour
+					if not badgeClamped[d] then
+						badgeClamped[d] = true
+						warn("[TokenHud] clamped a badge that hung outside the coin pill: " .. d:GetFullName())
+					end
+				end
+			end
+		end
+	end
+end
+
 task.spawn(function()
 	while true do
 		local n = math.floor(tonumber(_G.crateTokenBalance) or 0)
@@ -81,16 +134,32 @@ task.spawn(function()
 			if f and f:IsA("GuiObject") and f.Visible then coinFrame = f end
 		end
 		if coinFrame then
-			-- To the LEFT of the coin pill, vertically centred on it. NOT below: the STATS panel
-			-- (RightPanelGui) starts directly under the coin counter, so a pill glued underneath
-			-- sat on top of the stats header -- the token/coin/stats overlap on the right side.
-			-- Left of the coins is the one direction on that edge with nothing in it.
-			-- AbsolutePosition is in the same space for both guis (neither ignores the inset).
 			local ap, as = coinFrame.AbsolutePosition, coinFrame.AbsoluteSize
-			pill.Position = UDim2.fromOffset(ap.X - PILL_W - 8, ap.Y + math.floor((as.Y - PILL_H) / 2))
+			local midY = ap.Y + math.floor(as.Y / 2)
+			local nextRight = ap.X - GAP -- where the next element's right edge goes
+
+			-- (1) GEAR: right edge a fixed GAP left of the pill, vertically centred on the coin
+			-- row. Its authored -198 was tuned for one viewport and is exactly what the pill and
+			-- badge were colliding with; measured placement replaces it.
+			local sgui = PlayerGui:FindFirstChild("SettingsGui")
+			local gear = sgui and sgui:FindFirstChild("SettingsGearBtn")
+			if gear and gear:IsA("GuiObject") and gear.Visible then
+				gear.AnchorPoint = Vector2.new(1, 0.5)
+				gear.Position = UDim2.fromOffset(nextRight, midY)
+				-- derive the next slot from the gear's SIZE, not a same-frame AbsolutePosition
+				-- read (which may not have recomputed yet): left edge = right edge - width.
+				nextRight = nextRight - gear.AbsoluteSize.X - GAP
+			end
+
+			-- (2) TOKEN PILL: right edge a fixed GAP left of whatever came before (gear if
+			-- present, else the coin pill).
+			pill.Position = UDim2.fromOffset(nextRight, midY)
+
+			-- (3) the red badge stays inside the pill it belongs to
+			pcall(clampCoinBadges, coinFrame)
 		end
-		task.wait(1)
+		task.wait(0.5)
 	end
 end)
 
-print("[TokenHud] ready -- crate-token pill under the coin counter (tap = open Skin Crates)")
+print("[TokenHud] ready -- token pill + top-right row layout (pill | gear | coins, fixed gaps; tap = Skin Crates)")

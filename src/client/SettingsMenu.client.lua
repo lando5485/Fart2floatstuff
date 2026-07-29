@@ -98,6 +98,10 @@ local gearBtn = Instance.new("TextButton")
 gearBtn.Name = "SettingsGearBtn"
 gearBtn.AnchorPoint = Vector2.new(1, 0)
 gearBtn.Size = UDim2.new(0, 46, 0, 46)
+-- NOTE: this x offset is only the FIRST-FRAME position. TokenHud.client.luau owns the top-right
+-- row layout ([token pill] gap [gear] gap [coin pill]) and re-places this button from the coin
+-- pill's MEASURED left edge twice a second -- the hand-tuned -198 here was right for one viewport
+-- and overlapped the coin pill (and its sale badge) on others, which is why the layouter exists.
 gearBtn.Position = UDim2.new(1, -198, 0, 10)
 gearBtn.BackgroundColor3 = Color3.fromRGB(12, 16, 42)   -- SpaceTheme.StarfieldFill
 gearBtn.Text = "\xE2\x9A\x99"                          -- U+2699 with NO variation selector, so it renders as
