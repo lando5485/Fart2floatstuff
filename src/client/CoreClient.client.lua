@@ -696,9 +696,10 @@ end
 local setMoreOpen, openLocker  -- MORE+ popup toggler + Locker opener (assigned after the sidebar, below)
 local moreOpenState = false    -- is the MORE+ popup currently open?
 local shopSideFrame,shopSideClick=mkSideBtn(-90*scale,Color3.fromRGB(50,180,50),"\xF0\x9F\x9b\x92","SHOP")
--- WORMHOLE button (was REBIRTH -> was INVITE). Var names kept (inviteSideFrame/inviteSideClick) so the HUD layout +
--- restyle passes still target this slot. Rebirth moved into the MORE+ menu. Opens the wormhole travel menu.
-local inviteSideFrame,inviteSideClick=mkSideBtn(0,Color3.fromRGB(140,86,226),"\xF0\x9F\x8C\x80","WORMHOLE")
+-- PETS button (was WORMHOLE -> was REBIRTH -> was INVITE). Var names kept (inviteSideFrame/inviteSideClick) so the
+-- HUD layout + restyle passes still target this slot. Wormhole moved into the MORE+ menu -- fast travel is a
+-- sometimes action; the pet hub is an every-minute one, so Pets holds the always-visible slot.
+local inviteSideFrame,inviteSideClick=mkSideBtn(0,Color3.fromRGB(80,170,70),"\xF0\x9F\x90\xBE","PETS")
 -- SWAP: the STOMACH button now lives here on the main screen, in the PETS button's OLD slot (same anchor/position/
 -- size/styling). It keeps its OWN icon (GUT_IMAGE), label ("Stomach"), and click action (opens the stomach shop).
 -- Var names dailySideFrame/dailySideClick are kept so the existing HUD layout + restyle code still target this slot.
@@ -718,15 +719,9 @@ shopSideClick.MouseButton1Click:Connect(function()
 end)
 inviteSideClick.MouseButton1Click:Connect(function()
 	playUIClick()
-	-- WORMHOLE button opens the wormhole travel menu (WormholeClient). Falls back to the OpenWormhole BindableEvent
-	-- signal if _G.toggleWormhole isn't up yet (script load order).
-	if _G.toggleWormhole then
-		_G.toggleWormhole()
-	else
-		local sig = ReplicatedStorage:FindFirstChild("OpenWormhole")
-		if not sig then sig = Instance.new("BindableEvent"); sig.Name = "OpenWormhole"; sig.Parent = ReplicatedStorage end
-		sig:Fire()
-	end
+	-- PETS button toggles the Pet Hub via the same PetInvToggle BindableEvent the old MORE+ row fired.
+	local ev = PlayerGui:FindFirstChild("PetInvToggle")
+	if ev then ev:Fire() end
 end)
 dailySideClick.MouseButton1Click:Connect(function()
 	playUIClick()
@@ -1147,8 +1142,18 @@ do
 				ev:Fire()
 			end
 		end },
-		{ label = "Pets", desc = "Manage your pets and equipped skins.", tint = Color3.fromRGB(120, 225, 120), order = 3,
-		emoji = "\xF0\x9F\x90\xBE", action = function() print("[MenuMgr] button PetInv clicked while "..tostring(_G.MainMenuManager and _G.MainMenuManager.current).." open"); local ev = PlayerGui:FindFirstChild("PetInvToggle"); if ev then ev:Fire() end end }, -- SWAP: the PETS button now lives in the More+ menu, in the Stomach entry's OLD slot (keeps the paw icon, label + pet-inventory action)
+		-- WORMHOLE moved here FROM the rail: the PETS button took its always-visible slot (players open the
+		-- pet hub constantly; fast travel is a sometimes action). Same door, same panel -- only the entrance moved.
+		{ label = "Wormhole", desc = "Fast travel to any island you've unlocked.", tint = Color3.fromRGB(140, 86, 226), order = 3,
+		emoji = "\xF0\x9F\x8C\x80", action = function()
+			if _G.toggleWormhole then _G.toggleWormhole()
+			else
+				local sig = ReplicatedStorage:FindFirstChild("OpenWormhole")
+				if not sig then sig = Instance.new("BindableEvent"); sig.Name = "OpenWormhole"; sig.Parent = ReplicatedStorage end
+				sig:Fire()
+			end
+		end },
+		-- (PETS is a RAIL button now, not a menu row -- inviteSideFrame above, firing PetInvToggle.)
 		-- (SEASONAL PETS removed from this menu. It is a limited-time GARDEN reward, and a menu row made it
 		--  read as a settings entry -- so it moved to a treasure box beside the Global Garden. The panel it
 		--  opens is unchanged (LockerGui, below); only the door moved. See SeasonalPetsChest.client.luau,
@@ -3459,12 +3464,12 @@ end)()
 	local shS = shopSideFrame:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
 	shS.Color = Color3.fromRGB(30,120,30); shS.Thickness = 3; shS.Parent = shopSideFrame
 
-	-- REBIRTH BUTTON  (variable kept as inviteSideFrame)
-	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(140,86,226) -- WORMHOLE button
+	-- PETS BUTTON  (variable kept as inviteSideFrame; was WORMHOLE, which moved into MORE+)
+	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70) -- pets green, matching the paw button
 	local inC = inviteSideFrame:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
 	inC.CornerRadius = UDim.new(0,16); inC.Parent = inviteSideFrame
 	local inS = inviteSideFrame:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
-	inS.Color = Color3.fromRGB(90,40,160); inS.Thickness = 3; inS.Parent = inviteSideFrame
+	inS.Color = Color3.fromRGB(40,110,40); inS.Thickness = 3; inS.Parent = inviteSideFrame
 
 	-- PETS BUTTON  (variable kept as dailySideFrame; repurposed paw button)
 	dailySideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70)
@@ -3557,7 +3562,7 @@ end)()
 		ColorSequenceKeypoint.new(1,   Color3.fromRGB(0,255,80)),
 	}) end
 	shopSideFrame.BackgroundColor3 = Color3.fromRGB(50,220,50)
-	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(140,86,226) -- WORMHOLE button
+	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70) -- PETS button (Wormhole moved into MORE+)
 	dailySideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70)
 	shopSideFrame.Size = UDim2.new(0,95,0,95)
 	inviteSideFrame.Size = UDim2.new(0,95,0,95)

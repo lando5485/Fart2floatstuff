@@ -30,7 +30,13 @@ local RSx          = game:GetService("ReplicatedStorage")
 --======================================================================
 -- RAIL CONFIG
 --======================================================================
-local KEEP = { shop = true, wormhole = true, stomach = true, more = true }
+-- ===== THE RAIL IS: SHOP / STOMACH / PETS / MORE =====
+-- Pets earned an always-visible slot (players live in that menu); Wormhole moved into MORE+
+-- to make room -- it is a sometimes action, not an every-minute one. The running (stale)
+-- CoreClient still BUILDS a WORMHOLE tile, so sweepRail converts that tile into the PETS
+-- button in place (see claimPetsTile) rather than hiding it and conjuring a new one -- the
+-- tile keeps its slot, its scale and its restyle passes that way.
+local KEEP = { shop = true, stomach = true, pets = true, more = true }
 local NEVER_TOUCH = {
 	SidebarGui = true, ReturnIslandGui = true, MoreMenuGui = true,
 	BottomStackGui = true, GasMeterGui = true, FartButtonGui = true, StomachGui = true,
@@ -108,31 +114,32 @@ local ENTRIES = {
 		end
 	  end },
 
-	-- ONE door into the pet hub, crates included.
-	--
-	-- ===== WHY "SKIN CRATES" IS NO LONGER ITS OWN ROW =====
-	-- The Pet Hub and the crate panel are not two menus. They are ONE interface of five pages --
-	-- PETS / CRATES / TOKENS / TRADE / QUESTS -- split across two ScreenGuis that render the same
-	-- tab bar pixel-for-pixel and hand off to each other (SkinCrateClient's TABS table says so in
-	-- as many words). Listing two of those five pages as separate menu rows is what made pressing
-	-- two different buttons land you on "the same GUI, different tab": correct behaviour, wrong menu.
-	--
-	-- CRATES DID NOT GET DEMOTED. It is still its own full-screen page with its own roll, reveal and
-	-- token shop -- it is simply reached the same way the other four pages are, from the tab bar that
-	-- is the first thing you see when the hub opens. And it now ADVERTISES itself: the badge below
-	-- carries your unspent crate tokens, so "you have crates to open" is on the menu tile itself
-	-- rather than behind a row a player might never press.
-	{ key = "pets", label = "Pets & Crates", desc = "Pets, skins, crates, tokens and trading.",
-	  tint = Color3.fromRGB(120, 225, 120), emoji = "\xF0\x9F\x90\xBE", badge = true, gui = "PetInventoryUI",
+	-- WORMHOLE moved here FROM the rail: Pets took its slot (players live in the pet menu;
+	-- fast travel is a sometimes action). Same door, same panel -- only the entrance moved.
+	{ key = "wormhole", label = "Wormhole", desc = "Fast travel to any island you've unlocked.",
+	  tint = Color3.fromRGB(140, 86, 226), emoji = "\xF0\x9F\x8C\x80", gui = "WormholeMenu",
 	  action = function()
-		local ev = PlayerGui:FindFirstChild("PetInvToggle")
-		if ev then ev:Fire() end
+		if _G.toggleWormhole then
+			_G.toggleWormhole()
+		else
+			-- same fallback the rail button used: WormholeClient may not have defined its _G yet
+			local sig = RSx:FindFirstChild("OpenWormhole")
+			if not sig then sig = Instance.new("BindableEvent"); sig.Name = "OpenWormhole"; sig.Parent = RSx end
+			sig:Fire()
+		end
 	  end },
 
+	-- SKIN CRATES is its own menu again (it briefly lived as a page inside the Pet Hub's shared
+	-- tab bar -- five tabs plus sub-tabs read as overwhelming, so the hub kept PETS/TRADE/QUESTS
+	-- and this row is the door to the CRATES/TOKENS panel). The badge is your unspent token
+	-- count: "you have crates to open" sits on the tile itself.
+	{ key = "crates", label = "Skin Crates", desc = "Open crates to unlock pet skins and traits.",
+	  tint = Color3.fromRGB(170, 130, 255), emoji = "\xF0\x9F\x93\xA6", badge = true, gui = "SkinCrateGui",
+	  action = function() if _G.toggleSkinCrates then _G.toggleSkinCrates() end end },
+
+	-- PETS is NOT here: it is on the rail now, always visible.
 	-- SEASONAL PETS moved to the treasure box beside the Global Garden (SeasonalPetsChest).
 	-- SEASON PASS was removed from this menu entirely.
-	-- SKIN CRATES is the CRATES page of the row above (_G.toggleSkinCrates still exists for /crates
-	-- and for the hub's own tab bar -- only the duplicate menu row went away).
 }
 
 --======================================================================
@@ -239,6 +246,46 @@ local function claimMoreButton(frame)
 		if _G.playUIClick then pcall(_G.playUIClick) end
 		setMoreOpen(not isMoreOpen())
 	end)
+end
+
+-- Convert the stale build's WORMHOLE tile into the PETS button, IN PLACE. Hiding it and
+-- building a fresh tile would drop it out of CoreClient's layout/restyle passes (they hold
+-- references to this frame); converting keeps the slot, the scale and the spacing for free.
+-- Everything is idempotent: RG_PetsClick marks a converted tile.
+local function claimPetsTile(frame)
+	-- LOOK re-asserted on EVERY sweep, not just the first: the stale CoreClient's restyle
+	-- passes repaint this tile wormhole-purple after we have claimed it, so green + the
+	-- dark-green stroke are re-stamped each pass (1s heartbeat). Wiring below is once-only.
+	frame.BackgroundColor3 = Color3.fromRGB(80, 170, 70)
+	local st = frame:FindFirstChildOfClass("UIStroke")
+	if st then st.Color = Color3.fromRGB(40, 110, 40) end
+	if frame:FindFirstChild("RG_PetsClick") then return end
+	for _, ch in ipairs(frame:GetChildren()) do
+		if ch:IsA("TextButton") then ch.Visible = false end          -- the old wormhole-open handler
+		if ch:IsA("ImageLabel") then ch.Visible = false end          -- any image icon
+		if ch:IsA("TextLabel") then
+			if ch.Name == "Label" then ch.Text = "PETS"
+			else ch.Text = "\xF0\x9F\x90\xBE" end                    -- the icon glyph slot
+		end
+	end
+	frame.BackgroundColor3 = Color3.fromRGB(80, 170, 70)             -- the pets green the paw button used
+	local b = Instance.new("TextButton")
+	b.Name = "RG_PetsClick"
+	b.Size = UDim2.new(1, 0, 1, 0)
+	b.BackgroundTransparency = 1
+	b.Text = ""
+	b.ZIndex = 20
+	b.Parent = frame
+	local last = 0
+	b.MouseButton1Click:Connect(function()
+		local now = os.clock()
+		if now - last < 0.35 then return end
+		last = now
+		if _G.playUIClick then pcall(_G.playUIClick) end
+		local ev = PlayerGui:FindFirstChild("PetInvToggle")
+		if ev then ev:Fire() end
+	end)
+	warn("[RailGuard] converted the WORMHOLE rail tile into PETS (Wormhole now lives in MORE+)")
 end
 
 local function norm(s) return (tostring(s):lower():gsub("[%s_%-%+]", "")) end
@@ -753,7 +800,12 @@ local function sweepRail(sidebar)
 		if child:IsA("GuiObject") then
 			local lbl = labelOf(child)
 			if lbl then
-				if not KEEP[lbl] then
+				if lbl == "wormhole" or lbl == "pets" then
+					-- NOT hidden: converted. This tile IS the pets button now; after the
+					-- relabel it reads as "pets" and the claim re-runs each sweep so the
+					-- stale restyle passes can never repaint it purple.
+					claimPetsTile(child)
+				elseif not KEEP[lbl] then
 					hide(child, ("rail button %q -> MORE+"):format(lbl))
 				elseif lbl == "more" then
 					claimMoreButton(child)
@@ -837,8 +889,7 @@ end)
 --
 --   Rewards      -- how many of the two free sources have something (daily crate, daily tasks).
 --                   Counting BOTH means claiming one does not hide the other.
---   Pets&Crates  -- unspent crate tokens, i.e. how many crates you can open right now. This is what
---                   keeps crates visible now that they are a page inside the hub instead of a menu row.
+--   Skin Crates  -- unspent crate tokens, i.e. how many crates you can open right now.
 local function setBadge(key, n)
 	local r = badgeRefs[key]
 	if not (r and r.frame and r.frame.Parent) then return end
@@ -852,7 +903,7 @@ task.spawn(function()
 		if (_G.crateIsClaimable  and _G.crateIsClaimable())  == true then rewards += 1 end
 		if (_G.dailyTasksPending and _G.dailyTasksPending()) == true then rewards += 1 end
 		setBadge("rewards", rewards)
-		setBadge("pets", tonumber(_G.crateTokenBalance) or 0)
+		setBadge("crates", tonumber(_G.crateTokenBalance) or 0)
 		task.wait(1)
 	end
 end)

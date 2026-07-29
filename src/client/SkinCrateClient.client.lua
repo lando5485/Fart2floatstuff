@@ -467,17 +467,23 @@ do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 14; c.Parent 
 -- INVENTORY / TRADE UP / COLLECTION are no longer top-level tabs. They are sub-pages now, reached from the
 -- page they belong to (View Collection on a crate, Trade Up from the crate list, skins from a pet), which
 -- is what gives each top-level page one job instead of five competing ones.
+-- ===== TWO TABS, NOT FIVE =====
+-- This bar used to mirror the Pet Hub's five pages (PETS/CRATES/TOKENS/TRADE/QUESTS) and hand
+-- three of them off to the hub, so the two panels read as one interface. That was reversed on
+-- purpose: five tabs of which several have their OWN sub-page rows underneath read as
+-- overwhelming, and pressing Pets vs Crates from the menu landed players in "the same GUI,
+-- different tab", which felt broken. Crates is its own menu again -- it hosts exactly the two
+-- pages it owns, and the Pet Hub keeps its three. The `hub` field / TAB_TO_HUB machinery below
+-- still works if a cross-tab is ever wanted back: add the entry, done.
 local TABS = {
-	{ id = "pets",   label = "\xF0\x9F\x90\xBE PETS",   hub = "pets"   },
 	{ id = "crates", label = "\xF0\x9F\x93\xA6 CRATES" },
 	{ id = "tokens", label = "\xF0\x9F\x8E\x9F TOKENS" },
-	{ id = "trade",  label = "\xF0\x9F\x94\x84 TRADE",  hub = "trade"  },
-	{ id = "quests", label = "\xF0\x9F\x93\x9C QUESTS", hub = "quests" },
 }
--- id -> the Pet Hub page to jump to, for the three this panel does not host
+-- id -> the Pet Hub page to jump to, for tabs this panel does not host (none right now)
 local TAB_TO_HUB = {}
 for _, t in ipairs(TABS) do if t.hub then TAB_TO_HUB[t.id] = t.hub end end
-local TAB_W = 129
+-- Fill the same 677px the five 129px tabs used to occupy: n tabs + 8px gaps between them.
+local TAB_W = math.floor((677 - 8 * (#TABS - 1)) / #TABS)
 local activeTab = "crates"
 local tabBar = mkFrame(panel, { Size = UDim2.new(1, -20, 0, 38), Position = UDim2.new(0, 10, 0, 66), BackgroundTransparency = 1 })
 do

@@ -34,11 +34,13 @@ local MORE, REWARDS = "more", "rewards"
 local PANELS = {
 	RebirthGui       = MORE,
 	RewardsHubGui    = MORE,
-	PetInventoryUI   = MORE,
 	SkinCrateGui     = MORE,
+	WormholeMenu     = MORE,  -- moved into MORE+ when Pets took its rail slot
 	-- These two are opened FROM the Rewards hub, so back means the hub, not the menu.
 	DailyTasksGui    = REWARDS,
 	SocialRewardsGui = REWARDS,
+	-- PetInventoryUI is NOT here: Pets opens from the rail now, and rail menus (Shop,
+	-- Stomach) have no BACK -- there is nothing to go back TO.
 }
 
 local BACK_W, BACK_H = 92, 36
@@ -77,12 +79,7 @@ local CLOSERS = {
 	SkinCrateGui     = function() if _G.toggleSkinCrates    then _G.toggleSkinCrates();    return true end end,
 	DailyTasksGui    = function() if _G.toggleDailyTasks    then _G.toggleDailyTasks();    return true end end,
 	SocialRewardsGui = function() if _G.toggleSocialRewards then _G.toggleSocialRewards(); return true end end,
-	PetInventoryUI   = function()
-		local ev = PlayerGui:FindFirstChild("PetInvToggle")
-		if not ev then return false end
-		ev:Fire()
-		return true
-	end,
+	WormholeMenu     = function() if _G.toggleWormhole      then _G.toggleWormhole();      return true end end,
 }
 
 -- The panel frame, by shape. Declared here because both closeGui and the injector need it.
@@ -161,11 +158,15 @@ local function findPanelAndHeader(gui)
 	-- STRICTLY a Frame. An earlier version accepted any GuiObject and landed the button on
 	-- RebirthGui's 680x68 shadow ImageLabel -- which is not the header, sits at its own
 	-- offset, and put BACK in the wrong place entirely.
+	-- Position tolerance is 20, not 4: Rebirth's header band sits at y=14 (it is inset inside
+	-- the panel). With the tight bound it was missed, BACK fell back to the panel's top-left --
+	-- x=14, exactly where that header band starts -- and landed ON TOP of the title. Finding
+	-- the header instead puts the button inside it and clearRoom shifts the title over.
 	local header
 	for _, ch in ipairs(panel:GetChildren()) do
 		if ch.ClassName == "Frame" and ch.Size.X.Scale >= 1
 			and ch.Size.Y.Offset >= 44 and ch.Size.Y.Offset <= 90
-			and ch.Position.Y.Offset <= 4 then
+			and ch.Position.Y.Offset <= 20 then
 			header = ch; break
 		end
 	end

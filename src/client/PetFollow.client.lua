@@ -3950,15 +3950,19 @@ do
 	bar.BackgroundTransparency = 1; bar.Parent = panel
 	local ll = Instance.new("UIListLayout"); ll.FillDirection = Enum.FillDirection.Horizontal
 	ll.Padding = UDim.new(0,8); ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Parent = bar
+	-- THREE tabs, not five. CRATES and TOKENS left this bar when Skin Crates became its own menu
+	-- again (opened from MORE+): five tabs -- several with their own sub-page rows underneath --
+	-- read as overwhelming, and two different menu buttons landing in "the same GUI, different
+	-- tab" felt broken. showPage still handles "crates"/"tokens" by handing off to the crate
+	-- panel, so putting a tab back is a one-line re-add here. 220 wide: three tabs + two 8px
+	-- gaps fill the same 676px the five 129s did.
 	for i, t in ipairs({
 		{ id = "pets",   label = "\xF0\x9F\x90\xBE PETS"   },
-		{ id = "crates", label = "\xF0\x9F\x93\xA6 CRATES" },
-		{ id = "tokens", label = "\xF0\x9F\x8E\x9F TOKENS" },
 		{ id = "trade",  label = "\xF0\x9F\x94\x84 TRADE"  },
 		{ id = "quests", label = "\xF0\x9F\x93\x9C QUESTS" },
 	}) do
 		local b = Instance.new("TextButton")
-		b.Size = UDim2.new(0,129,1,0); b.LayoutOrder = i
+		b.Size = UDim2.new(0,220,1,0); b.LayoutOrder = i
 		b.BackgroundColor3 = Color3.fromRGB(18,66,150); b.Text = t.label
 		b.Font = Enum.Font.FredokaOne; b.TextSize = 15; b.TextScaled = true
 		b.TextColor3 = Color3.fromRGB(255,215,0); b.Parent = bar

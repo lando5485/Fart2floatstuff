@@ -318,6 +318,9 @@
         "MenuBackButton": {
           "$path": "src/client/MenuBackButton.client.luau"
         },
+        "TokenHud": {
+          "$path": "src/client/TokenHud.client.luau"
+        },
         "BlackBarKiller": {
           "$path": "src/client/BlackBarKiller.client.luau"
         },
