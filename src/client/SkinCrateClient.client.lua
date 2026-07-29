@@ -671,7 +671,7 @@ local function buildCratesTab()
 	})
 	do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 15; c.Parent = noteTitle end
 	local noteBody = mkLabel(note, {
-		Text = "Rarity rolls first, then a random item from it, then the trait.",
+		Text = "Rarity rolls first, then a random item from that band.",
 		Font = Enum.Font.Gotham, TextSize = 12, TextScaled = true, TextColor3 = Color3.fromRGB(196, 214, 250),
 		Size = UDim2.new(1, -20, 0, 18), Position = UDim2.new(0, 10, 0, 33),
 		TextXAlignment = Enum.TextXAlignment.Center,
@@ -819,7 +819,11 @@ local function buildInventoryTab()
 			-- to ride on -- the renderer draws traits as part of the skinned look).
 			for i, br in ipairs(boundRows) do
 				local eqB = state.equipped[br.pet]
-				local worn = eqB and eqB.trait == br.id
+				-- TRAITS STACK: `worn` = membership in the equipped traits LIST, and the toggle adds
+				-- or removes just this one -- an aura AND a trail together is the point of collecting.
+				local wornList = (eqB and (eqB.traits or (eqB.trait and { eqB.trait }))) or {}
+				local worn = false
+				for _, t in ipairs(wornList) do if t == br.id then worn = true break end end
 				local row = mkFrame(body, { Size = UDim2.new(1, -8, 0, 44), BackgroundColor3 = CARD, LayoutOrder = -60 + i })
 				mkCorner(row, 12); mkStroke(row, worn and LIME or (PetTraits.color(br.id) or WHITE), worn and 3 or 1.5)
 				mkLabel(row, {
@@ -841,7 +845,10 @@ local function buildInventoryTab()
 				wb.MouseButton1Click:Connect(function()
 					if not canWear then return end
 					playUIClick()
-					EquipSkin:FireServer(br.pet, eqB.skin, worn and false or br.id)
+					local newList = {}
+					for _, t in ipairs(wornList) do if t ~= br.id then newList[#newList + 1] = t end end
+					if not worn then newList[#newList + 1] = br.id end
+					EquipSkin:FireServer(br.pet, eqB.skin, newList)
 				end)
 			end
 		end
@@ -922,9 +929,9 @@ local function buildInventoryTab()
 				if isEquipped then
 					EquipSkin:FireServer(it.pet, false)          -- toggle off -> back to the pet's natural look
 				else
-					-- Switching skins KEEPS the pet's equipped trait: the trait belongs to the pet
-					-- now, not to the skin, so changing outfits must not silently strip it.
-					EquipSkin:FireServer(it.pet, it.skin, (eq and eq.trait) or false)
+					-- Switching skins KEEPS the pet's equipped traits: traits belong to the pet
+					-- now, not to the skin, so changing outfits must not silently strip them.
+					EquipSkin:FireServer(it.pet, it.skin, (eq and (eq.traits or (eq.trait and { eq.trait }))) or false)
 				end
 			end)
 		end
@@ -1836,6 +1843,43 @@ local function buildCell(parent, x, item)
 		return cell
 	end
 
+	-- A TRAIT CRATE cell. Like the level cell there is no pet to draw -- the reward IS the effect -- so the
+	-- cell is the trait's name in the trait's own colour. Not masked at Gold either: the crate holds exactly
+	-- one trait per band, so there is no which-item secret to protect.
+	if item.trait then
+		local plate = mkFrame(cell, {
+			Size = UDim2.new(1, -24, 0, 222), Position = UDim2.new(0, 12, 0, 20),
+			BackgroundColor3 = isTop and Color3.fromRGB(46, 34, 8) or Color3.fromRGB(18, 34, 66),
+		})
+		mkCorner(plate, 12); mkStroke(plate, tierCol, 3)
+		local disc = mkFrame(plate, {
+			Size = UDim2.fromOffset(132, 132), Position = UDim2.new(0.5, 0, 0.5, 0),
+			AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = PetTraits.color(item.trait) or tierCol,
+		})
+		do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(1, 0); c.Parent = disc end
+		mkStroke(disc, Color3.fromRGB(12, 24, 48), 2)
+		do local g = Instance.new("UIGradient"); g.Rotation = 90; g.Parent = disc
+			g.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), PetTraits.color(item.trait) or tierCol) end
+		mkLabel(disc, {
+			Text = "â¨", Font = Enum.Font.FredokaOne, TextSize = 56, TextScaled = true,
+			TextColor3 = Color3.fromRGB(18, 34, 66), Size = UDim2.new(1, -22, 1, -22),
+			Position = UDim2.new(0, 11, 0, 11),
+		})
+		mkLabel(cell, {
+			Text = PetTraits.displayName(item.trait), Font = Enum.Font.FredokaOne, TextSize = 15, TextScaled = true,
+			TextColor3 = PetTraits.color(item.trait) or (isTop and GOLD or WHITE),
+			Size = UDim2.new(1, -16, 0, 44), Position = UDim2.new(0, 8, 0, 250),
+			TextXAlignment = Enum.TextXAlignment.Center,
+		})
+		mkLabel(cell, {
+			Text = "TRAIT", Font = Enum.Font.Gotham, TextSize = 20, TextScaled = true,
+			TextColor3 = Color3.fromRGB(205, 224, 255), Size = UDim2.new(1, -16, 0, 28),
+			Position = UDim2.new(0, 8, 0, 292), TextXAlignment = Enum.TextXAlignment.Center, TextWrapped = true,
+		})
+		applyRarityFlair(cell, item.rarity, true)
+		return cell
+	end
+
 	if isTop then
 		local plate = mkFrame(cell, {
 			Size = UDim2.new(1, -24, 0, 222), Position = UDim2.new(0, 12, 0, 20),
@@ -1972,7 +2016,11 @@ local function openReveal(crate, result)
 	local cells = {} -- by strip index, for the per-frame focus pass
 	-- Identity for the no-two-alike pass. A level crate has no pet, so keying on e.pet alone would make every
 	-- cell look identical, empty the eligible set, and drop the reel back to a blind random pick.
-	local function keyOf(e) return e.levels and ("lvl" .. tostring(e.levels)) or tostring(e.pet) end
+	local function keyOf(e)
+		if e.levels then return "lvl" .. tostring(e.levels) end
+		if e.trait  then return "trt" .. tostring(e.trait)  end
+		return tostring(e.pet)
+	end
 	local function remember(e)
 		recent[#recent + 1] = keyOf(e)
 		if #recent > windowCells then table.remove(recent, 1) end
@@ -2193,6 +2241,8 @@ local function openReveal(crate, result)
 	-- took the levels (it spills across pets so none are wasted at the cap), so the player never has to guess.
 	if result.kind == "levels" then
 		resultName.Text = "+" .. tostring(result.levels) .. (result.levels == 1 and " Pet Level" or " Pet Levels")
+	elseif result.kind == "trait" then
+		resultName.Text = PetTraits.displayName(result.trait) .. " Trait"
 	else
 		resultName.Text = PetSkins.displayName(result.skin, PetSkins.prettyPet(result.pet))
 	end
@@ -2206,6 +2256,9 @@ local function openReveal(crate, result)
 		local g = result.grants and result.grants[1]
 		resultTrait.Text = g and (g.name .. "  Lv " .. g.from .. " -> " .. g.to) or "Pet levelled up!"
 		resultTrait.TextColor3 = Color3.fromRGB(150, 255, 170)
+	elseif result.kind == "trait" then
+		resultTrait.Text = "A permanent effect â stacks with other traits"
+		resultTrait.TextColor3 = PetTraits.color(result.trait) or Color3.fromRGB(150, 255, 170)
 	elseif PetTraits.isNone(result.trait) then
 		resultTrait.Text = "Trait: None"
 		resultTrait.TextColor3 = Color3.fromRGB(180, 190, 205)
@@ -2218,6 +2271,9 @@ local function openReveal(crate, result)
 		-- Say plainly where the rest went when a pull spilled across more than one pet.
 		local n = result.grants and #result.grants or 0
 		resultNote.Text = (n > 1) and ("Levelled " .. n .. " pets") or "Levelled up!"
+		resultNote.TextColor3 = Color3.fromRGB(150, 255, 170)
+	elseif result.kind == "trait" then
+		resultNote.Text = "In your Trait Collection â open INVENTORY to pick its pet"
 		resultNote.TextColor3 = Color3.fromRGB(150, 255, 170)
 	elseif result.locked then
 		-- prettyPet, not the raw id: "Unlock Burrito Armadillo", never "Unlock BurritoArmadillo".
@@ -2437,8 +2493,13 @@ end)
 GoldAnnounce.OnClientEvent:Connect(function(info)
 	if type(info) ~= "table" then return end
 	local mine = (info.playerName == player.Name)
+	-- A Gold from the TRAIT crate has no pet/skin -- the item is the trait itself.
+	local what
+	if info.skin then what = PetSkins.displayName(info.skin, info.pet)
+	elseif info.trait then what = "the " .. PetTraits.displayName(info.trait) .. " Trait"
+	else what = "a Gold pull" end
 	local text = string.format("\xE2\xAD\x90 %s pulled %s from the %s!",
-		tostring(info.playerName), PetSkins.displayName(info.skin, info.pet), tostring(info.crateName or "crate"))
+		tostring(info.playerName), what, tostring(info.crateName or "crate"))
 	if _G.showHudBanner then
 		_G.showHudBanner(text, Color3.fromRGB(255, 214, 90), 6)
 	else

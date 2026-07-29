@@ -24,6 +24,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local PetSkins = require(Shared:WaitForChild("PetSkins"))
+local PetTraits = require(Shared:WaitForChild("PetTraits")) -- the Trait Crate's entries are validated against the real trait list
 
 local SkinCrates = {}
 
@@ -95,6 +96,30 @@ SkinCrates.CRATES = {
 			Epic      = { { levels = 5  } },
 			Legendary = { { levels = 7  } },
 			Gold      = { { levels = 10 } },
+		},
+	},
+	-- THE TRAIT CRATE. Traits used to ride along on every skin roll (85% nothing); now they are their own
+	-- pull, because a trait is its own KIND of item -- a permanent effect the player places on one pet
+	-- (see SkinCrateService's trait-collection header). Same machinery as every other crate; the only
+	-- difference is the entry shape: `trait = <traitId>`. kind = "traits" is what the roll, the validator,
+	-- the server grant and the reel branch on.
+	--
+	-- ODDS keep the old traits' RELATIVE feel (Sparkly commonest -> Crowned rarest) but every pull now pays
+	-- SOMETHING -- a paid crate that can whiff "None" would be a scam. Priced between Gift and Premium:
+	-- a trait is permanent and pet-bound, so it should cost real tokens, but it must stay reachable.
+	{
+		id = "Traits", displayName = "Trait Crate",
+		blurb = "Nothing but traits. Permanent effects -- you choose which pet keeps it.",
+		price = 900, color = Color3.fromRGB(255, 205, 60), icon = "ð", -- sparkler
+		kind = "traits", -- entries are { trait = <traitId> }, NOT { pet, skin }
+		odds = { Common = 40.00, Uncommon = 25.00, Rare = 18.00, Epic = 11.00, Legendary = 5.00, Gold = 1.00 },
+		contents = {
+			Common    = { { trait = "Sparkly" } },
+			Uncommon  = { { trait = "Smoky" } },
+			Rare      = { { trait = "Flaming" }, { trait = "Frozen" } },
+			Epic      = { { trait = "Charged" }, { trait = "Glowing" } },
+			Legendary = { { trait = "CosmicAura" } },
+			Gold      = { { trait = "Crowned" } },
 		},
 	},
 	{
@@ -266,8 +291,9 @@ end
 function SkinCrates.tradeUpPool(tier)
 	local seen, out = {}, {}
 	for _, crate in ipairs(SkinCrates.CRATES) do
-		-- A level crate stocks no skins, so it can neither feed nor receive a trade-up contract.
-		for _, e in ipairs((not SkinCrates.isLevelCrate(crate)) and crate.contents[tier] or {}) do
+		-- Only SKIN crates feed a trade-up: the level crate stocks no skins, and the trait crate's entries
+		-- have no pet/skin either (concatenating them here was a nil crash waiting for the first contract).
+		for _, e in ipairs((crate.kind == nil) and crate.contents[tier] or {}) do
 			local k = e.pet .. "|" .. e.skin
 			if not seen[k] then seen[k] = true; out[#out + 1] = { pet = e.pet, skin = e.skin } end
 		end
@@ -284,6 +310,12 @@ for _, c in ipairs(SkinCrates.CRATES) do SkinCrates.ById[c.id] = c end
 function SkinCrates.isLevelCrate(crateOrId)
 	local c = type(crateOrId) == "table" and crateOrId or SkinCrates.getCrate(crateOrId)
 	return c ~= nil and c.kind == "levels"
+end
+
+-- Does this crate pay out TRAITS? Same contract as isLevelCrate: branch through here, never on `kind`.
+function SkinCrates.isTraitCrate(crateOrId)
+	local c = type(crateOrId) == "table" and crateOrId or SkinCrates.getCrate(crateOrId)
+	return c ~= nil and c.kind == "traits"
 end
 
 function SkinCrates.getCrate(id)
@@ -306,7 +338,7 @@ function SkinCrates.flatContents(crateId)
 	if not crate then return out end
 	for _, rarity in ipairs(SkinCrates.RARITY_ORDER) do
 		for _, e in ipairs(crate.contents[rarity] or {}) do
-			out[#out + 1] = { pet = e.pet, skin = e.skin, levels = e.levels, rarity = rarity }
+			out[#out + 1] = { pet = e.pet, skin = e.skin, levels = e.levels, trait = e.trait, rarity = rarity }
 		end
 	end
 	return out
@@ -377,12 +409,14 @@ function SkinCrates.roll(rng, crateId)
 	-- 3) the entry's index in the flattened list, for the client's reel
 	local idx = 0
 	local isLevels = SkinCrates.isLevelCrate(crate)
+	local isTraits = SkinCrates.isTraitCrate(crate)
 	for i, e in ipairs(SkinCrates.flatContents(crateId)) do
-		-- Match on whichever payload this crate uses. A level crate has no pet/skin, so comparing those would
-		-- compare nil to nil, match the FIRST entry of the band every time, and land the reel on the wrong cell.
+		-- Match on whichever payload this crate uses. A level/trait crate has no pet/skin, so comparing those
+		-- would compare nil to nil, match the FIRST entry of the band every time, and land the reel wrong.
 		local same = false
 		if e.rarity == chosen then
 			if isLevels then same = (e.levels == entry.levels)
+			elseif isTraits then same = (e.trait == entry.trait)
 			else same = (e.pet == entry.pet and e.skin == entry.skin) end
 		end
 		if same then idx = i; break end
@@ -412,6 +446,12 @@ do
 					assert(type(e.levels) == "number" and e.levels > 0 and e.levels % 1 == 0,
 						string.format("[SkinCrates] crate '%s' / %s: level entries need a positive whole `levels`",
 							crate.id, rarity))
+				elseif SkinCrates.isTraitCrate(crate) then
+					-- a trait entry must be a REAL trait and never the "None" filler -- a paid crate that can
+					-- roll nothing is a scam, and a typo'd id would be an unobtainable reward
+					assert(type(e.trait) == "string" and PetTraits.exists(e.trait) and not PetTraits.isNone(e.trait),
+						string.format("[SkinCrates] crate '%s' / %s: trait '%s' is not in PetTraits",
+							crate.id, rarity, tostring(e.trait)))
 				else
 					assert(type(e.pet) == "string" and e.pet ~= "",
 						string.format("[SkinCrates] crate '%s' / %s has an entry with no pet", crate.id, rarity))

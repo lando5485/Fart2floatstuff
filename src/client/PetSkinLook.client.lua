@@ -277,7 +277,14 @@ _G.applyPetSkinLook = function(model, petId, lite)
 	if not e or not e.skin then return end -- no skin equipped: the pet keeps its natural look
 
 	applySkin(model, e.skin)
-	if not lite then applyTrait(model, e.trait) end
+	-- TRAITS STACK: every bound trait the player has switched on renders together (an aura AND a
+	-- trail is the point of collecting them). clearLook above wiped the previous set, so this can
+	-- never pile up across repaints.
+	if not lite then
+		for _, tid in ipairs(e.traits or (e.trait and { e.trait }) or {}) do
+			applyTrait(model, tid)
+		end
+	end
 end
 
 -- Paint a model with an ARBITRARY skin + trait, independent of what the player has EQUIPPED. This is what the
@@ -309,6 +316,18 @@ _G.applyPetSkinPreview = function(model, skinId, traitId, static)
 		if skin.material then part.Material = skin.material end
 		part.Reflectance = skin.refl or 0
 	end
+end
+
+-- BADGE HELPER: the equipped skin's RARITY for a pet, for the overhead nameplate ("Baby \xC2\xB7 Epic").
+-- Rarity comes from the SKIN since the split (the level ladder is age); no skin equipped = nil, and the
+-- badge shows age alone. On _G so PetFollow can read it without requiring PetSkins itself -- that file
+-- sits at the edge of Luau's 200-locals ceiling.
+_G.petSkinRarityOf = function(petId)
+	local e = equipped[petId]
+	if not (e and e.skin) then return nil, nil end
+	local tier = PetSkins.tierOf(e.skin)
+	if not tier then return nil, nil end
+	return tier, PetSkins.tierColor(tier)
 end
 
 -- Repaint every model we've already painted. Called when the server pushes a new equip state -- there's no level
@@ -417,7 +436,8 @@ local function applyState(state)
 	equipped = {}
 	for petId, e in pairs(state.equipped or {}) do
 		if type(e) == "table" and type(e.skin) == "string" then
-			equipped[petId] = { skin = e.skin, trait = e.trait }
+			local list = type(e.traits) == "table" and e.traits or (e.trait and { e.trait }) or {}
+			equipped[petId] = { skin = e.skin, traits = list, trait = list[1] }
 		end
 	end
 	_G.petSkinEquipped = equipped

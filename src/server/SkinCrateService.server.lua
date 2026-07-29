@@ -419,7 +419,13 @@ _G.skinCheckCollection = checkCollection
 local function buildState(player)
 	local equipped = {}
 	for petId, e in pairs(_G.playerEquippedSkins[player] or {}) do
-		if type(e) == "table" then equipped[petId] = { skin = e.skin, trait = e.trait } end
+		if type(e) == "table" then
+			-- `traits` = the stacking list; `trait` kept for legacy readers. An old save's single-trait
+			-- entry is normalized into a list here so the client only ever handles one shape.
+			local list = e.traits
+			if type(list) ~= "table" then list = e.trait and { e.trait } or {} end
+			equipped[petId] = { skin = e.skin, traits = list, trait = list[1] }
+		end
 	end
 	local c = collection(player)
 	local T = traitsOf(player)
@@ -466,7 +472,11 @@ end
 --     unlocked through its normal quest, this check starts passing with no migration step: nothing about the
 --     stored skin changes, so it "becomes usable automatically".
 --   * skinId = false/nil clears the pet back to its default look.
-local function equipSkin(player, petId, skinId, traitId)
+-- `traitsArg` accepts every historical shape: nil/false (no traits), a single traitId string (the old
+-- one-trait calls), or an ARRAY of traitIds -- traits STACK now (an aura and a trail on one pet is the
+-- point of collecting them). Every named trait must be bound to this pet; one bad id refuses the whole
+-- call rather than silently equipping a subset the player didn't ask for.
+local function equipSkin(player, petId, skinId, traitsArg)
 	if type(petId) ~= "string" then return false, "bad_pet" end
 
 	local eq = _G.playerEquippedSkins[player]
@@ -480,21 +490,34 @@ local function equipSkin(player, petId, skinId, traitId)
 	end
 
 	if not PetSkins.exists(skinId) then return false, "bad_skin" end
-	if traitId == false then traitId = nil end
-	if traitId ~= nil and not PetTraits.exists(traitId) then return false, "bad_trait" end
 
-	-- SPLIT MODEL: you own the SKIN (trait-less key) and, separately, the trait must be BOUND to this pet
-	-- (see the trait-collection header above). No more exact-fusion ownership.
+	-- normalize traits to a deduped array
+	local list = {}
+	if type(traitsArg) == "string" then list = { traitsArg }
+	elseif type(traitsArg) == "table" then
+		local seenT = {}
+		for _, tid in ipairs(traitsArg) do
+			if type(tid) == "string" and not seenT[tid] then seenT[tid] = true; list[#list + 1] = tid end
+		end
+	end
+	for _, tid in ipairs(list) do
+		if not PetTraits.exists(tid) or PetTraits.isNone(tid) then return false, "bad_trait" end
+	end
+
+	-- SPLIT MODEL: you own the SKIN (trait-less key) and, separately, every trait must be BOUND to this
+	-- pet (see the trait-collection header above). No more exact-fusion ownership.
 	if countOf(player, PetSkins.makeKey(petId, skinId, nil)) <= 0 then return false, "not_owned" end
-	if traitId ~= nil then
-		local T = traitsOf(player)
-		if not (T.bound[petId] and T.bound[petId][traitId]) then return false, "trait_not_on_pet" end
+	local T = traitsOf(player)
+	for _, tid in ipairs(list) do
+		if not (T.bound[petId] and T.bound[petId][tid]) then return false, "trait_not_on_pet" end
 	end
 	if not ownsPetSpecies(player, petId) then return false, "pet_locked" end
 
-	eq[petId] = { skin = skinId, trait = traitId }
+	-- `trait` (singular, = first of the list) is kept alongside `traits` so anything still reading the
+	-- old field keeps working through the transition.
+	eq[petId] = { skin = skinId, traits = list, trait = list[1] }
 	print(string.format("[SkinCrate] %s equipped %s on %s%s", player.Name, skinId, petId,
-		traitId and (" (" .. traitId .. ")") or ""))
+		#list > 0 and (" (" .. table.concat(list, "+") .. ")") or ""))
 	-- pushState is what makes the pet repaint: the client's applyState calls repaintAll on every push, so the
 	-- follower re-skins the moment this lands. No separate render hook is needed.
 	pushState(player)
@@ -590,7 +613,9 @@ local function openCrate(player, crateId, noSave)
 	-- ROLL FIRST, so a crate that turns out to be unopenable (all bands empty) costs nothing.
 	local rarity, entry, reelIndex = SkinCrates.roll(rng, crateId)
 	if not rarity or not entry then return { ok = false, reason = "empty_crate" } end
-	local traitId = PetTraits.roll(rng)
+	-- Traits no longer ride along on skin rolls -- they have their OWN crate (the Trait Crate below).
+	-- "" = None everywhere downstream, so the reveal simply shows no trait line.
+	local traitId = ""
 
 	-- SPEND then GRANT, synchronously.
 	if not spendTokens(player, crate.price) then
@@ -620,13 +645,33 @@ local function openCrate(player, crateId, noSave)
 		}
 	end
 
-	-- SPLIT: the skin banks trait-less; a rolled trait banks UNAPPLIED in the trait collection, where the
-	-- player chooses which pet it goes on. The reveal still shows both (the result carries `trait`).
-	local key, newCount = addSkinEntry(player, entry.pet, entry.skin, nil, 1)
-	if not PetTraits.isNone(traitId) then
+	-- TRAIT CRATE: bank the trait UNAPPLIED in the trait collection (the player picks which pet it goes
+	-- on via ApplyTrait) and return early -- no skin inventory, no Collection Book involvement.
+	if SkinCrates.isTraitCrate(crate) then
 		local T = traitsOf(player)
-		T.unapplied[traitId] = (tonumber(T.unapplied[traitId]) or 0) + 1
+		T.unapplied[entry.trait] = (tonumber(T.unapplied[entry.trait]) or 0) + 1
+		local isGoldT = (rarity == SkinCrates.GOLD_TIER)
+		lastPullGold[player] = isGoldT -- [REMOVE BEFORE LAUNCH] /goldtest polls this
+		print(string.format("[SkinCrate] %s opened %s -> [%s] TRAIT %s (unapplied)%s",
+			player.Name, crate.id, rarity, entry.trait, isGoldT and "  *** GOLD ***" or ""))
+		pushState(player)
+		if isGoldT then
+			pcall(function()
+				GoldAnnounce:FireAllClients({
+					playerName = player.Name, crateId = crate.id, crateName = crate.displayName,
+					trait = entry.trait,
+				})
+			end)
+		end
+		if not noSave and _G.savePlayerData then pcall(function() _G.savePlayerData(player, "crate_open") end) end
+		return {
+			ok = true, crateId = crate.id, rarity = rarity, kind = "trait",
+			trait = entry.trait, reelIndex = reelIndex, isGold = isGoldT,
+			tokens = getTokens(player),
+		}
 	end
+
+	local key, newCount = addSkinEntry(player, entry.pet, entry.skin, nil, 1)
 
 	local isGold = (rarity == SkinCrates.GOLD_TIER)
 	local locked = not ownsPetSpecies(player, entry.pet)
@@ -718,19 +763,14 @@ local function doTradeUp(player, tier, keys)
 	local pool = SkinCrates.tradeUpPool(target)
 	if #pool == 0 then return { ok = false, reason = "empty_pool", target = target } end
 	local won = pool[rng:NextInteger(1, #pool)]
-	local traitId = PetTraits.roll(rng)
+	local traitId = "" -- traits no longer ride on skin rolls: they have their own crate
 
 	-- CONSUME, then GRANT. No yields in between.
 	lastTradeUp[player] = now
 	for _, key in ipairs(keys) do
 		removeSkinEntry(player, key)
 	end
-	-- SPLIT: skin trait-less, rolled trait to the unapplied collection (same as a crate open).
 	local newKey, newCount = addSkinEntry(player, won.pet, won.skin, nil, 1)
-	if not PetTraits.isNone(traitId) then
-		local T = traitsOf(player)
-		T.unapplied[traitId] = (tonumber(T.unapplied[traitId]) or 0) + 1
-	end
 
 	local isGold = (target == SkinCrates.GOLD_TIER)
 	local locked = not ownsPetSpecies(player, won.pet)

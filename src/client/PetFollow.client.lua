@@ -2803,23 +2803,18 @@ local function applyLevelVisual(pet, level, petId, isRare, lite)
 	local prevLevel = A and A.lastVisualLevel or nil
 	accScale = 1
 	clearEvo(pet, A) -- removes ONLY the added effects + EvoPart accessories; the BASE PET is never touched
-	-- ===== A TRAIT REPLACES THE LEVEL PARTICLE STACK =====
-	-- Age owns the PHYSICAL growth: size, accessories, gold trim at max -- those always apply. The
-	-- particle stack below (aura/trail/sparkles/orbs/ring/pulse/burst) is the pet's "own energy",
-	-- and an equipped crate TRAIT takes its place: two particle systems at once was soup (level-8
-	-- sparkles + the Sparkly trait literally doubled up). No trait equipped = level effects exactly
-	-- as before, so a player who never opens a crate keeps their whole progression.
-	local traitOn = false
-	do
-		local eqAll = _G.petSkinEquipped
-		local eq = eqAll and eqAll[petId]
-		traitOn = (eq and eq.skin and eq.trait) and true or false
-	end
+	-- ===== AGE IS SIZE; TRAITS ARE THE EFFECT SYSTEM =====
+	-- Levels drive the PHYSICAL side only: size growth, the accessory ladder and the Elder gold trim.
+	-- The level PARTICLE stack (aura/trail/sparkles/orbs/ring/pulse/burst) is retired outright --
+	-- particle effects come from crate TRAITS now, which stack freely (an aura AND a trail), and two
+	-- overlapping particle systems was exactly the soup this replaces. LEVEL_FX is a switch, not dead
+	-- code: flip it true and the whole ladder is back.
+	local LEVEL_FX = false
 	-- (1) SIZE: 60% at Lv1 -> 100% at Lv25 (+1.667%/level) -- the guaranteed visible change every level. (popMul = level-up bounce)
 	if A then A.sizeMul = 0.6 + 0.4 * frac end
 	local function ramp(startL) return math.clamp((level - startL) / (MAXL - startL), 0, 1) end
 	-- (2) AURA: appears at Lv2; brightens each level. BOLD = a bright themed Highlight glow + a PointLight + soft particles.
-	if level >= 2 and root and not lite and not traitOn then
+	if LEVEL_FX and level >= 2 and root and not lite then
 		local t = ramp(2)
 		local hl = Instance.new("Highlight"); hl.Name="LevelGlow"; hl.Adornee=pet
 		pcall(function() hl.DepthMode = Enum.HighlightDepthMode.Occluded end)
@@ -2832,7 +2827,7 @@ local function applyLevelVisual(pet, level, petId, isRare, lite)
 		ae.Transparency=NumberSequence.new({ NumberSequenceKeypoint.new(0,0.3), NumberSequenceKeypoint.new(1,1) }); ae.Parent=root
 	end
 	-- (3) TRAIL: appears at Lv5; lengthens/brightens each level. BOLD = long, wide, bright themed trail.
-	if level >= 5 and root and not lite and not traitOn then
+	if LEVEL_FX and level >= 5 and root and not lite then
 		local t = ramp(5)
 		local a0 = Instance.new("Attachment"); a0.Name="PTrailA0"; a0.Position=Vector3.new(0, 1.0, 0); a0.Parent=root
 		local a1 = Instance.new("Attachment"); a1.Name="PTrailA1"; a1.Position=Vector3.new(0,-1.0, 0); a1.Parent=root
@@ -2842,7 +2837,7 @@ local function applyLevelVisual(pet, level, petId, isRare, lite)
 		tr.Parent = root
 	end
 	-- (4) SPARKLES: appear at Lv8; density up each level. BOLD = dense themed sparkle particles.
-	if level >= 8 and root and not lite and not traitOn then
+	if LEVEL_FX and level >= 8 and root and not lite then
 		local t = ramp(8)
 		local pe = Instance.new("ParticleEmitter"); pe.Name="PetSparkle"
 		pe.Rate = 14 + 90*t; pe.LightEmission = 0.7; pe.Rotation = NumberRange.new(0,360)
@@ -2852,7 +2847,7 @@ local function applyLevelVisual(pet, level, petId, isRare, lite)
 		pe.Parent = root
 	end
 	-- (5) ANIMATED EFFECTS: orbs (11/14/19), energy ring (15), pulse (18), burst (24) -- built into petFX, animated by the FX loop.
-	if root and not lite and not traitOn then buildFX(pet, root, theme, level, atMax) end
+	if LEVEL_FX and root and not lite then buildFX(pet, root, theme, level, atMax) end
 	-- (6) ACCESSORIES: the per-pet list, each at its exact level (3/7/10/13/17/20/23), accumulating. GOLD trim at MAX.
 	if A and root then
 		for _, e in ipairs(theme.accs) do if level >= e[1] then buildAccessoryByKey(pet, A, root, theme, e[2], atMax) end end
@@ -2880,6 +2875,18 @@ local function applyLevelVisual(pet, level, petId, isRare, lite)
 			Instance.new("UICorner", tg).CornerRadius=UDim.new(0,4); Instance.new("UIStroke", tg)
 		end
 		local tierName, tierColor, isVariant, flashy = petTier(level, isRare, petId)
+		-- SKIN RARITY joins the badge: "Baby Epic  Lv 3" -- age from the level, rarity from the
+		-- EQUIPPED SKIN, colored by the skin's tier so rarity reads at a glance. petSkinRarityOf
+		-- lives in PetSkinLook (it owns the equipped state and the PetSkins table); nil when no
+		-- skin is worn, so an unskinned pet shows age alone exactly as before. Exotic/Mythical
+		-- variants keep their own badge -- that name outranks any skin.
+		if not isVariant and _G.petSkinRarityOf then
+			local okS, skTier, skCol = pcall(_G.petSkinRarityOf, petId)
+			if okS and skTier then
+				tierName = tierName .. " " .. tostring(skTier)
+				if skCol then tierColor = skCol end
+			end
+		end
 		bb.L.Text = petDisplayName(petId, isRare)
 		bb.L.TextColor3 = isVariant and tierColor or Color3.new(1,1,1)
 		bb.Tag.Text = isVariant and tierName or (tierName .. "  Lv " .. tostring(level))
