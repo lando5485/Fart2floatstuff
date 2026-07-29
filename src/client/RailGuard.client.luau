@@ -108,24 +108,36 @@ local ENTRIES = {
 		end
 	  end },
 
-	{ key = "pets", label = "Pets", desc = "Manage your pets and equipped skins.",
-	  tint = Color3.fromRGB(120, 225, 120), emoji = "\xF0\x9F\x90\xBE", gui = "PetInventoryUI",
+	-- ONE door into the pet hub, crates included.
+	--
+	-- ===== WHY "SKIN CRATES" IS NO LONGER ITS OWN ROW =====
+	-- The Pet Hub and the crate panel are not two menus. They are ONE interface of five pages --
+	-- PETS / CRATES / TOKENS / TRADE / QUESTS -- split across two ScreenGuis that render the same
+	-- tab bar pixel-for-pixel and hand off to each other (SkinCrateClient's TABS table says so in
+	-- as many words). Listing two of those five pages as separate menu rows is what made pressing
+	-- two different buttons land you on "the same GUI, different tab": correct behaviour, wrong menu.
+	--
+	-- CRATES DID NOT GET DEMOTED. It is still its own full-screen page with its own roll, reveal and
+	-- token shop -- it is simply reached the same way the other four pages are, from the tab bar that
+	-- is the first thing you see when the hub opens. And it now ADVERTISES itself: the badge below
+	-- carries your unspent crate tokens, so "you have crates to open" is on the menu tile itself
+	-- rather than behind a row a player might never press.
+	{ key = "pets", label = "Pets & Crates", desc = "Pets, skins, crates, tokens and trading.",
+	  tint = Color3.fromRGB(120, 225, 120), emoji = "\xF0\x9F\x90\xBE", badge = true, gui = "PetInventoryUI",
 	  action = function()
 		local ev = PlayerGui:FindFirstChild("PetInvToggle")
 		if ev then ev:Fire() end
 	  end },
 
-	{ key = "crates", label = "Skin Crates", desc = "Open crates to unlock skins and traits.",
-	  tint = Color3.fromRGB(170, 130, 255), emoji = "\xF0\x9F\x93\xA6", gui = "SkinCrateGui",
-	  action = function() if _G.toggleSkinCrates then _G.toggleSkinCrates() end end },
-
 	-- SEASONAL PETS moved to the treasure box beside the Global Garden (SeasonalPetsChest).
 	-- SEASON PASS was removed from this menu entirely.
+	-- SKIN CRATES is the CRATES page of the row above (_G.toggleSkinCrates still exists for /crates
+	-- and for the hub's own tab bar -- only the duplicate menu row went away).
 }
 
 --======================================================================
 local seen = {}
-local badgeRefs = {}   -- the single Rewards badge {frame, label}
+local badgeRefs = {}   -- [entry key] = { frame, label }; one per badged card, see the poll at the end
 
 --======================================================================
 -- WHO OWNS "IS THE MENU OPEN?"
@@ -215,12 +227,21 @@ end
 -- So the card checks, and repairs. This is a NET, not the mechanism: if it ever fires it
 -- prints who needed rescuing, so the real cause is findable rather than papered over.
 --======================================================================
+-- STRICTLY a Frame, never "any big GuiObject".
+--
+-- RebirthGui's children are, in order: `dim` (TextButton), `shadow` (ImageLabel, fromOffset(720, 546)) and
+-- THEN `panel`. Matching on size alone returned the SHADOW -- which RebirthClient keeps hidden forever
+-- ("shadow.Visible = false" runs on open AND close, line 281). So this read the panel as closed even with
+-- Rebirth on screen, and the repair below then switched the shadow ON: a 720x546 black radial at 0.62
+-- transparency, i.e. a faded sheet over the middle of the screen that nothing ever turns off again.
+--
+-- Every panel in this game is a Frame; the decoration around them is not.
 local function panelFrame(gui)
 	for _, ch in ipairs(gui:GetChildren()) do
-		if ch:IsA("GuiObject") and ch.Size.X.Offset >= 400 and ch.Size.Y.Offset >= 200 then return ch end
+		if ch.ClassName == "Frame" and ch.Size.X.Offset >= 400 and ch.Size.Y.Offset >= 200 then return ch end
 	end
 	for _, ch in ipairs(gui:GetChildren()) do
-		if ch:IsA("Frame") and ch.Size.X.Scale >= 0.5 then return ch end
+		if ch.ClassName == "Frame" and ch.Size.X.Scale >= 0.5 then return ch end
 	end
 	return nil
 end
@@ -261,7 +282,15 @@ end
 -- ONE CARD
 --======================================================================
 local function mkCard(parent, e, index)
-	local cx = OFF_X + ((index - 1) % 2) * (CARD_W + GAP) + CARD_W / 2
+	-- Two per row -- except a row that ends up with ONE card, which is centred instead of left-hanging.
+	-- With three entries the old formula parked the last card in the left column with a card-shaped hole
+	-- beside it, which reads as a row that failed to load rather than as a deliberate layout.
+	local col      = (index - 1) % 2
+	local rowStart = index - col
+	local inRow    = math.min(2, #ENTRIES - rowStart + 1)
+	local cx = (inRow == 1)
+		and (LIST_W / 2)
+		or  (OFF_X + col * (CARD_W + GAP) + CARD_W / 2)
 	local cy = OFF_Y + math.floor((index - 1) / 2) * (CARD_H + GAP) + CARD_H / 2
 
 	-- DROP SHADOW: a soft radial image, NOT a plain offset frame. A frame needs its own
@@ -423,7 +452,7 @@ local function mkCard(parent, e, index)
 			TweenInfo.new(0.75, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
 			{ Scale = 1.14 }):Play()
 
-		badgeRefs = { frame = b, label = n }
+		badgeRefs[e.key] = { frame = b, label = n }
 	end
 
 	-- HOVER + PRESS. UIScale (not a Size tween) so the card grows from its centre and every
@@ -446,13 +475,17 @@ local function mkCard(parent, e, index)
 		if _G.setMoreOpen then _G.setMoreOpen(false) end
 		pcall(e.action)
 		if not e.gui then return end
-		-- Deferred, not immediate: several of these panels notify MainMenuManager on open,
-		-- which closes the others in the same frame -- checking now would read a state that
-		-- is still settling. Two passes, because the Pet Hub builds its 3D icons on open and
-		-- can land a frame or two later than the rest.
+		-- POLLED, not sampled twice. Two widely-spaced samples can both miss a panel that opened
+		-- and was closed again in between -- and then the repair "fixes" a panel the player has
+		-- already shut. Checking every 0.1s means any open at all is seen, so the repair only ever
+		-- runs for a panel that never appeared once.
+		--
+		-- Deferred rather than immediate because several of these notify MainMenuManager on open,
+		-- which closes the others in the same frame; and it runs for ~1s because the Pet Hub builds
+		-- its 3D icons on open and can land a few frames after the rest.
 		task.spawn(function()
-			for _, wait_s in ipairs({ 0.25, 0.6 }) do
-				task.wait(wait_s)
+			for _ = 1, 10 do
+				task.wait(0.1)
 				if openedOk(e.gui) then return end
 			end
 			if forceOpen(e.gui) then
@@ -738,18 +771,26 @@ task.spawn(function()
 	end
 end)
 
--- ONE badge, counting BOTH sources. The crate and the daily tasks are independent, so the
--- count is how many of them are waiting -- not a single on/off that hides the second one.
+-- BADGES. A count, not a dot: "2" says how much is waiting, where a dot only says "something".
+--
+--   Rewards      -- how many of the two free sources have something (daily crate, daily tasks).
+--                   Counting BOTH means claiming one does not hide the other.
+--   Pets&Crates  -- unspent crate tokens, i.e. how many crates you can open right now. This is what
+--                   keeps crates visible now that they are a page inside the hub instead of a menu row.
+local function setBadge(key, n)
+	local r = badgeRefs[key]
+	if not (r and r.frame and r.frame.Parent) then return end
+	r.frame.Visible = n > 0
+	if n > 0 then r.label.Text = (n > 99) and "99+" or tostring(n) end
+end
+
 task.spawn(function()
 	while true do
-		local n = 0
-		if (_G.crateIsClaimable  and _G.crateIsClaimable())  == true then n += 1 end
-		if (_G.dailyTasksPending and _G.dailyTasksPending()) == true then n += 1 end
-		local b = badgeRefs.frame
-		if b and b.Parent then
-			b.Visible = n > 0
-			if n > 0 and badgeRefs.label then badgeRefs.label.Text = tostring(n) end
-		end
+		local rewards = 0
+		if (_G.crateIsClaimable  and _G.crateIsClaimable())  == true then rewards += 1 end
+		if (_G.dailyTasksPending and _G.dailyTasksPending()) == true then rewards += 1 end
+		setBadge("rewards", rewards)
+		setBadge("pets", tonumber(_G.crateTokenBalance) or 0)
 		task.wait(1)
 	end
 end)

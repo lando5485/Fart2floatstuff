@@ -86,12 +86,17 @@ local CLOSERS = {
 }
 
 -- The panel frame, by shape. Declared here because both closeGui and the injector need it.
+--
+-- STRICTLY a Frame. "Any big GuiObject" matched RebirthGui's drop SHADOW -- an ImageLabel sized
+-- fromOffset(720, 546) that sits before `panel` in the child list and is kept hidden forever. That put BACK
+-- on the shadow (the Output showed `RebirthGui.ImageLabel.RG_Back`) and made closeGui read the wrong Visible
+-- flag. Every panel in this game is a Frame; the decoration around them is not.
 local function bigFrame(gui)
 	for _, ch in ipairs(gui:GetChildren()) do
-		if ch:IsA("GuiObject") and ch.Size.X.Offset >= 400 and ch.Size.Y.Offset >= 200 then return ch end
+		if ch.ClassName == "Frame" and ch.Size.X.Offset >= 400 and ch.Size.Y.Offset >= 200 then return ch end
 	end
 	for _, ch in ipairs(gui:GetChildren()) do
-		if ch:IsA("Frame") and ch.Size.X.Scale >= 0.5 then return ch end
+		if ch.ClassName == "Frame" and ch.Size.X.Scale >= 0.5 then return ch end
 	end
 	return nil
 end
