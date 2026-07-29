@@ -147,30 +147,78 @@ local badgeRefs = {}   -- [entry key] = { frame, label }; one per badged card, s
 -- button toggled it to false, which changed nothing on screen. Every OTHER tap did
 -- nothing, which reads as "after a bit the buttons stop opening it".
 --
--- There is no way to keep two owners of one boolean in sync from the outside, so this
--- takes the state over outright: CoreClient's own click button is hidden (Visible=false
--- stops a GuiButton receiving input) and replaced with ours. One owner, no drift.
+-- ===== THE STATE IS THE PANEL, NOT A BOOLEAN =====
+-- The first version of this fix cached its own `moreState` bool -- which recreated the
+-- disease it was curing, just with a new owner: anything that hid the panel from outside
+-- (the menu manager's hider, a stale script, the catcher below) left the bool stale and
+-- the next tap dead. There is exactly one fact -- "is the panel on screen" -- and the
+-- panel itself already stores it. Everything here READS panel.Visible and never caches
+-- it, so an outside close self-heals on the very next tap instead of eating it.
+--
+-- ===== THE CATCHER STAYS DEAD =====
+-- MoreMenuGui has TWO children: the panel Frame and a full-screen transparent TextButton
+-- ("catcher") that the STALE CoreClient wired to close the menu on any tap
+-- (catcher.MouseButton1Click -> its own setMoreOpen(false), CoreClient:1298). Showing all
+-- children on open -- what this used to do -- re-armed that: one stray tap anywhere on
+-- screen closed the panel through the stale script's state, and the rail button went back
+-- to needing two taps. It also breaks the standing rule that menus close on the X ONLY,
+-- never on a stray screen tap. So: the panel is the only child that ever becomes visible.
 --======================================================================
-local moreState = false
-
 local function moreGui() return PlayerGui:FindFirstChild("MoreMenuGui") end
 
-local function setMoreOpen(open)
-	local gui = moreGui(); if not gui then return end
-	moreState = open and true or false
+local function morePanel()
+	local gui = moreGui()
+	if not gui then return nil, nil end
 	for _, ch in ipairs(gui:GetChildren()) do
-		if ch:IsA("GuiObject") then ch.Visible = moreState end
+		if ch.ClassName == "Frame" then return ch, gui end
+	end
+	return nil, gui
+end
+
+local function isMoreOpen()
+	local panel = morePanel()
+	return panel ~= nil and panel.Visible
+end
+
+-- Raw hide, NO manager notify. This is what gets registered as the manager's own hider
+-- for "More": notifyOpened(other) calls it while it is mid-switch, and notifying back
+-- into the manager from inside its own hider would clear `current` out from under it.
+local function hideMoreRaw()
+	local _, gui = morePanel()
+	if not gui then return end
+	for _, ch in ipairs(gui:GetChildren()) do
+		if ch:IsA("GuiObject") then ch.Visible = false end
+	end
+end
+
+local function setMoreOpen(open)
+	local panel, gui = morePanel()
+	if not (panel and gui) then return end
+	open = open and true or false
+	for _, ch in ipairs(gui:GetChildren()) do
+		if ch:IsA("GuiObject") then
+			-- panel shows/hides; the catcher (and anything else) is forced OFF either way
+			ch.Visible = open and (ch == panel)
+		end
 	end
 	-- Tell the menu manager, so opening MORE+ closes whatever else was up (and the other
 	-- panels' own registrations keep working).
 	if _G.MainMenuManager then
-		local fn = moreState and _G.MainMenuManager.notifyOpened or _G.MainMenuManager.notifyClosed
+		local fn = open and _G.MainMenuManager.notifyOpened or _G.MainMenuManager.notifyClosed
 		if fn then pcall(fn, "More") end
 	end
 end
 
+-- WITHOUT THIS, MENUS STACK. notifyOpened(other) closes the previous menu through
+-- mgr.hiders[current] -- and nothing anywhere registered a hider for "More" (the stale
+-- CoreClient's registrations don't include it). So MORE+ open + a tap on SHOP left the
+-- MORE panel sitting there underneath the Shop: two menus on screen at once.
+if _G.MainMenuManager and _G.MainMenuManager.register then
+	pcall(_G.MainMenuManager.register, "More", hideMoreRaw)
+end
+
 _G.setMoreOpen      = setMoreOpen
-_G.toggleMorePopup  = function() setMoreOpen(not moreState) end
+_G.toggleMorePopup  = function() setMoreOpen(not isMoreOpen()) end
 _G.railGuardOpenMore = function() setMoreOpen(true) end
 
 -- Take the rail's MORE button. CoreClient's click area is a full-size transparent
@@ -189,7 +237,7 @@ local function claimMoreButton(frame)
 	b.Parent = frame
 	b.MouseButton1Click:Connect(function()
 		if _G.playUIClick then pcall(_G.playUIClick) end
-		setMoreOpen(not moreState)
+		setMoreOpen(not isMoreOpen())
 	end)
 end
 
@@ -470,7 +518,15 @@ local function mkCard(parent, e, index)
 	row.MouseButton1Down:Connect(function() to(0.97, nil, PRESS_TI) end)
 	row.MouseButton1Up:Connect(function() to(hovering and 1.03 or 1.00, nil, PRESS_TI) end)
 
+	-- DEBOUNCED. Every action behind these cards is a TOGGLE (PetInvToggle, _G.toggleRebirth,
+	-- ...), so a fast double-tap -- routine on a phone -- fired open-then-close: the player
+	-- saw a flicker and nothing else, and the verify net below then "repaired" a panel they
+	-- never saw. 0.35s swallows the double-tap; a deliberate second press still works.
+	local lastClick = 0
 	row.MouseButton1Click:Connect(function()
+		local now = os.clock()
+		if now - lastClick < 0.35 then return end
+		lastClick = now
 		if _G.playUIClick then pcall(_G.playUIClick) end
 		if _G.setMoreOpen then _G.setMoreOpen(false) end
 		pcall(e.action)
@@ -768,6 +824,12 @@ task.spawn(function()
 		pcall(buildGrid)
 		local sidebar = PlayerGui:FindFirstChild("SidebarGui")
 		if sidebar then pcall(sweepRail, sidebar); pcall(respace, sidebar) end
+		-- Re-assert the "More" hider: the one-shot register above can run before CoreClient
+		-- has created MainMenuManager (script start order is not guaranteed). Overwriting the
+		-- same key with the same function is free, so this is pure insurance.
+		if _G.MainMenuManager and _G.MainMenuManager.register then
+			pcall(_G.MainMenuManager.register, "More", hideMoreRaw)
+		end
 	end
 end)
 

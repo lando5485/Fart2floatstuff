@@ -232,7 +232,13 @@ local function inject(gui, target)
 		TweenService:Create(b, ti, { BackgroundColor3 = Color3.fromRGB(58, 62, 92) }):Play()
 	end)
 
+	-- DEBOUNCED: closeGui goes through the panel's own TOGGLE, so a double-tap would close
+	-- and immediately re-open the panel the player is trying to leave.
+	local lastBack = 0
 	b.MouseButton1Click:Connect(function()
+		local now = os.clock()
+		if now - lastBack < 0.35 then return end
+		lastBack = now
 		if _G.playUIClick then pcall(_G.playUIClick) end
 		closeGui(gui)
 		-- Deferred: the panel we just closed may notify the menu manager, which can close
