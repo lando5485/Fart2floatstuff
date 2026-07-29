@@ -426,6 +426,11 @@ local function applyState(state)
 	-- THIS is the moment the server has confirmed the change -- the button only asks, and a request the
 	-- server refuses (pet still locked, skin not owned) must not flip the list to "ON".
 	if _G.petHubSkinsChanged then pcall(_G.petHubSkinsChanged) end -- the crate/inventory UI reads tokens + owned entries from here
+	-- FULL evo re-run BEFORE the repaint: a trait REPLACES the level particle stack (see the gate in
+	-- PetFollow.applyLevelVisual), so an equip/unequip must rebuild the level effects now, not on the
+	-- next level-up. petEvoRefresh ends by re-applying the skin itself, and repaintAll still covers
+	-- painted models that aren't live followers (viewport icons and the like).
+	if _G.petEvoRefresh then pcall(_G.petEvoRefresh) end
 	repaintAll()
 end
 

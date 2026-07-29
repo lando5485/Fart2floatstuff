@@ -45,6 +45,7 @@ local GetSkinState   = getOrCreate(SkinRemotes, "RemoteFunction", "GetSkinState"
 local OpenCrate      = getOrCreate(SkinRemotes, "RemoteFunction", "OpenCrate")      -- c->s RF: (crateId) -> result
 local TradeUp        = getOrCreate(SkinRemotes, "RemoteFunction", "TradeUp")        -- c->s RF: (tier, keys[]) -> result
 local EquipSkin      = getOrCreate(SkinRemotes, "RemoteEvent",    "EquipSkin")      -- c->s: (petId, skinId, traitId|false)
+local ApplyTrait     = getOrCreate(SkinRemotes, "RemoteEvent",    "ApplyTrait")     -- c->s: (petId, traitId) -- bind ONE unapplied trait to a pet, permanently
 local BuyTokens      = getOrCreate(SkinRemotes, "RemoteEvent",    "BuyTokens")      -- c->s: (packId)
 local SetTitle       = getOrCreate(SkinRemotes, "RemoteEvent",    "SetTitle")       -- c->s: (titleId|"")
 local SkinStateEvent = getOrCreate(SkinRemotes, "RemoteEvent",    "SkinStateEvent") -- s->c: (state) push
@@ -196,9 +197,62 @@ end
 -- ============================================================================================================
 -- INVENTORY
 -- ============================================================================================================
+-- ============================================================================================================
+-- THE SKIN / TRAIT SPLIT
+-- ============================================================================================================
+-- Skins and traits used to be WELDED at roll time into one inventory key ("PizzaDragon|Galaxy|Crowned") -- you
+-- did not own a Galaxy skin and a Crowned trait, you owned that exact fusion, and equipping demanded the exact
+-- combo. Since traits land on only ~15% of rolls, a player's favourite skin almost never carried the trait they
+-- wanted. They are now SEPARATE:
+--
+--   * Skins bank as "pet|skin|" (no trait part) and stack as before.
+--   * Traits bank into a TRAIT COLLECTION: unapplied first, then the PLAYER CHOOSES which pet to put one on
+--     (ApplyTrait). Once applied it is BOUND to that pet permanently -- toggle it on/off there, never move it.
+--     A second copy of the same trait can go to a different pet, which is what keeps duplicate trait drops
+--     worth pulling.
+--
+-- MIGRATION (lazy, once per player, on first inventory touch): every fused "pet|skin|trait" entry splits into
+-- its trait-less skin key (counts preserved) and the trait BINDS to that pet -- it rolled on that pet, and the
+-- player may be wearing the combo right now, so binding there keeps every equipped look valid with zero loss.
+_G.playerPetTraits = _G.playerPetTraits or {} -- [player] = { unapplied = { [traitId]=count }, bound = { [petId] = { [traitId]=true } } }
+
+local function traitsOf(player)
+	local t = _G.playerPetTraits[player]
+	if not t then t = {}; _G.playerPetTraits[player] = t end
+	t.unapplied = t.unapplied or {}
+	t.bound = t.bound or {}
+	return t
+end
+
+-- Keyed on the inventory TABLE, not the player: PlayerStats REPLACES _G.playerPetSkins[player] wholesale when
+-- the save loads, and a per-player flag set by an early touch (a join push racing the DataStore) would leave the
+-- swapped-in fused table unmigrated forever. A fresh table has no flag, so the swap re-triggers the walk.
+local invMigrated = setmetatable({}, { __mode = "k" })
+
 local function inv(player)
 	local t = _G.playerPetSkins[player]
 	if not t then t = {}; _G.playerPetSkins[player] = t end
+	if not invMigrated[t] then
+		invMigrated[t] = true -- set BEFORE the walk: traitsOf/inv re-entry is then a no-op
+		local T = traitsOf(player)
+		local moved = 0
+		for key, count in pairs(table.clone(t)) do
+			local petId, skinId, traitId = PetSkins.parseKey(key)
+			if petId and skinId and traitId then -- a fused pre-split entry
+				t[key] = nil
+				local base = PetSkins.makeKey(petId, skinId, nil)
+				t[base] = (tonumber(t[base]) or 0) + (tonumber(count) or 1)
+				local b = T.bound[petId]
+				if not b then b = {}; T.bound[petId] = b end
+				b[traitId] = true
+				moved = moved + 1
+			end
+		end
+		if moved > 0 then
+			print(string.format("[SkinCrate] MIGRATED %s: %d fused skin+trait entr%s split into skins + bound traits",
+				player.Name, moved, moved == 1 and "y" or "ies"))
+		end
+	end
 	return t
 end
 
@@ -368,9 +422,13 @@ local function buildState(player)
 		if type(e) == "table" then equipped[petId] = { skin = e.skin, trait = e.trait } end
 	end
 	local c = collection(player)
+	local T = traitsOf(player)
 	return {
 		tokens   = getTokens(player),
 		skins    = inv(player),
+		-- The trait collection: what's waiting to be placed, and what's bound where. The client's
+		-- inventory tab and the equip flow both render from this.
+		traits   = { unapplied = T.unapplied, bound = T.bound },
 		equipped = equipped,
 		unlocked = unlockedSet(player),
 		-- Collection Book + rewards. Sent on every push so the book, the completion ticks and the title/aura
@@ -425,8 +483,13 @@ local function equipSkin(player, petId, skinId, traitId)
 	if traitId == false then traitId = nil end
 	if traitId ~= nil and not PetTraits.exists(traitId) then return false, "bad_trait" end
 
-	local key = PetSkins.makeKey(petId, skinId, traitId)
-	if countOf(player, key) <= 0 then return false, "not_owned" end
+	-- SPLIT MODEL: you own the SKIN (trait-less key) and, separately, the trait must be BOUND to this pet
+	-- (see the trait-collection header above). No more exact-fusion ownership.
+	if countOf(player, PetSkins.makeKey(petId, skinId, nil)) <= 0 then return false, "not_owned" end
+	if traitId ~= nil then
+		local T = traitsOf(player)
+		if not (T.bound[petId] and T.bound[petId][traitId]) then return false, "trait_not_on_pet" end
+	end
 	if not ownsPetSpecies(player, petId) then return false, "pet_locked" end
 
 	eq[petId] = { skin = skinId, trait = traitId }
@@ -557,7 +620,13 @@ local function openCrate(player, crateId, noSave)
 		}
 	end
 
-	local key, newCount = addSkinEntry(player, entry.pet, entry.skin, traitId, 1)
+	-- SPLIT: the skin banks trait-less; a rolled trait banks UNAPPLIED in the trait collection, where the
+	-- player chooses which pet it goes on. The reveal still shows both (the result carries `trait`).
+	local key, newCount = addSkinEntry(player, entry.pet, entry.skin, nil, 1)
+	if not PetTraits.isNone(traitId) then
+		local T = traitsOf(player)
+		T.unapplied[traitId] = (tonumber(T.unapplied[traitId]) or 0) + 1
+	end
 
 	local isGold = (rarity == SkinCrates.GOLD_TIER)
 	local locked = not ownsPetSpecies(player, entry.pet)
@@ -656,7 +725,12 @@ local function doTradeUp(player, tier, keys)
 	for _, key in ipairs(keys) do
 		removeSkinEntry(player, key)
 	end
-	local newKey, newCount = addSkinEntry(player, won.pet, won.skin, traitId, 1)
+	-- SPLIT: skin trait-less, rolled trait to the unapplied collection (same as a crate open).
+	local newKey, newCount = addSkinEntry(player, won.pet, won.skin, nil, 1)
+	if not PetTraits.isNone(traitId) then
+		local T = traitsOf(player)
+		T.unapplied[traitId] = (tonumber(T.unapplied[traitId]) or 0) + 1
+	end
 
 	local isGold = (target == SkinCrates.GOLD_TIER)
 	local locked = not ownsPetSpecies(player, won.pet)
@@ -715,6 +789,45 @@ end
 
 EquipSkin.OnServerEvent:Connect(function(player, petId, skinId, traitId)
 	pcall(equipSkin, player, petId, skinId, traitId)
+end)
+
+-- ============================================================================================================
+-- APPLY A TRAIT (the one-way placement)
+-- ============================================================================================================
+-- Consumes ONE unapplied copy and binds the trait to the chosen pet permanently. Deliberately one-way: the
+-- choice of which pet gets a rare trait is the decision that makes the drop exciting, and making it reversible
+-- would reduce every trait to "globally owned" with extra steps. A duplicate drop can go to a second pet.
+--
+-- Refusals never consume: unknown trait, no unapplied copy, unknown pet, or the pet already has it.
+local function applyTrait(player, petId, traitId)
+	if type(petId) ~= "string" or type(traitId) ~= "string" then return end
+	if not PetTraits.exists(traitId) or PetTraits.isNone(traitId) then return end
+	-- validate the pet id against the real species list when the pet system is up (don't burn a
+	-- trait on a typo'd/forged id); if the list isn't available yet, refuse rather than guess
+	if _G.petAllSpecies then
+		local ok, list = pcall(_G.petAllSpecies)
+		if ok and type(list) == "table" then
+			local found = false
+			for _, id in ipairs(list) do if id == petId then found = true break end end
+			if not found then return end
+		end
+	end
+	local T = traitsOf(player)
+	if (tonumber(T.unapplied[traitId]) or 0) <= 0 then return end
+	local b = T.bound[petId]
+	if b and b[traitId] then return end -- already on this pet: refuse, keep the copy for another pet
+	local left = (tonumber(T.unapplied[traitId]) or 0) - 1
+	T.unapplied[traitId] = left > 0 and left or nil
+	if not b then b = {}; T.bound[petId] = b end
+	b[traitId] = true
+	print(string.format("[SkinCrate] %s applied trait %s to %s (bound; %d unapplied left)",
+		player.Name, traitId, petId, left))
+	pushState(player)
+	if _G.savePlayerData then pcall(function() _G.savePlayerData(player, "trait_apply") end) end
+end
+
+ApplyTrait.OnServerEvent:Connect(function(player, petId, traitId)
+	pcall(applyTrait, player, petId, traitId)
 end)
 
 -- Display title / aura. Both are cosmetic-only and must already be OWNED -- passing "" clears. Anything the
@@ -806,9 +919,14 @@ _G.skinGrant = function(player, petId, skinId, traitId, howMany)
 	if type(petId) ~= "string" or not PetSkins.exists(skinId) then return nil end
 	if traitId == nil then traitId = PetTraits.roll(rng) end
 	if traitId ~= "" and not PetTraits.exists(traitId) then traitId = "" end
-	local key, newCount = addSkinEntry(player, petId, skinId, traitId, howMany or 1)
+	-- SPLIT: skin trait-less, any trait to the unapplied collection (same as every roll path).
+	local key, newCount = addSkinEntry(player, petId, skinId, nil, howMany or 1)
+	if not PetTraits.isNone(traitId) then
+		local T = traitsOf(player)
+		T.unapplied[traitId] = (tonumber(T.unapplied[traitId]) or 0) + 1
+	end
 	print(string.format("[SkinCrate] granted %s %s %s%s (x%d)", player.Name, skinId, petId,
-		PetTraits.isNone(traitId) and "" or (" +" .. traitId), newCount))
+		PetTraits.isNone(traitId) and "" or (" +" .. traitId .. " (unapplied)"), newCount))
 	pushState(player)
 	if _G.savePlayerData then pcall(function() _G.savePlayerData(player, "skin_grant") end) end
 	return key, newCount

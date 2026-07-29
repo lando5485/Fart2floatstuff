@@ -68,11 +68,13 @@ local function petTier(level, isRare, petId)
 		if petId == "ButterDuck" then return "Mythical", Color3.fromRGB(255,70,230), true, true
 		else return "Exotic", Color3.fromRGB(40,235,225), true, true end
 	end
-	if level <= 5      then return "Common",    Color3.fromRGB(175,180,190), false, false
-	elseif level <= 10 then return "Uncommon",  Color3.fromRGB(90,210,90),   false, false
-	elseif level <= 15 then return "Rare",      Color3.fromRGB(70,140,255),  false, false
-	elseif level <= 20 then return "Epic",      Color3.fromRGB(180,90,235),  false, false
-	else                    return "Legendary", Color3.fromRGB(255,170,40),  false, false end
+	-- AGE stages, mirroring PetFollow's ladder exactly (rarity words belong to the skin crates now;
+	-- levels are growth). Change one and you must change the other.
+	if level <= 5      then return "Baby",  Color3.fromRGB(175,180,190), false, false
+	elseif level <= 10 then return "Kid",   Color3.fromRGB(90,210,90),   false, false
+	elseif level <= 15 then return "Teen",  Color3.fromRGB(70,140,255),  false, false
+	elseif level <= 20 then return "Adult", Color3.fromRGB(180,90,235),  false, false
+	else                    return "Elder", Color3.fromRGB(255,170,40),  false, false end
 end
 local function petDisplayName(petId, isRare) return (isRare and RARE_LOOK[petId] and RARE_LOOK[petId].name) or PET_DISPLAY[petId] or petId end
 

@@ -257,15 +257,15 @@ local upgradeReady    = {}                                            -- [player
 local PET_UPGRADE_PRODUCT_ID = 123456789 -- \xE2\x9A\xA0 (legacy, no longer used -- superseded by the TIER-SKIP products below)
 
 -- \xE2\x9A\xA0 REPLACE BEFORE LAUNCH: placeholder TIER-SKIP Developer Product IDs (4 prices). Each jumps the pet to
--- the FIRST level of the NEXT tier. Tiers: Common 1-5, Uncommon 6-10, Rare 11-15, Epic 16-20, Legendary 21-25.
+-- the FIRST level of the NEXT age stage. Stages: Baby 1-5, Kid 6-10, Teen 11-15, Adult 16-20, Elder 21-25.
 -- SERVER-AUTHORITATIVE: a receipt only applies if the pet is actually in that product's SOURCE tier (srcMin..
 -- srcMax) -- so a cheap product can NEVER be used to jump a higher tier. The matching ids live in
 -- PetFollow.client.lua (PET_SKIP_PRODUCTS). REPLACE ALL FOUR with the real Developer Product IDs before launch.
 local PET_SKIP_PRODUCTS = {
-	[123456701] = { target = 6,  srcMin = 1,  srcMax = 5,  price = 49,  to = "Uncommon"  }, -- Common  -> Uncommon
-	[123456702] = { target = 11, srcMin = 6,  srcMax = 10, price = 99,  to = "Rare"      }, -- Uncommon-> Rare
-	[123456703] = { target = 16, srcMin = 11, srcMax = 15, price = 299, to = "Epic"      }, -- Rare    -> Epic
-	[123456704] = { target = 21, srcMin = 16, srcMax = 20, price = 599, to = "Legendary" }, -- Epic    -> Legendary
+	[123456701] = { target = 6,  srcMin = 1,  srcMax = 5,  price = 49,  to = "Kid"   }, -- Baby -> Kid
+	[123456702] = { target = 11, srcMin = 6,  srcMax = 10, price = 99,  to = "Teen"  }, -- Kid  -> Teen
+	[123456703] = { target = 16, srcMin = 11, srcMax = 15, price = 299, to = "Adult" }, -- Teen -> Adult
+	[123456704] = { target = 21, srcMin = 16, srcMax = 20, price = 599, to = "Elder" }, -- Adult-> Elder
 }
 
 -- ============================================================================================
@@ -1085,12 +1085,12 @@ local function rareOdds(petId) return (petId == "ButterDuck") and 10000 or 750 e
 --
 -- ODDS SHOWN TO PLAYERS come from this exact table (HATCH_ODDS_TEXT below is derived from these weights, so the
 -- ladder can never drift from the real probabilities -- change a weight and the displayed odds change with it).
-local HATCH_TIERS = {
-	{ tier = "Common",    level = 1,  weight = 8260 }, -- 82.6%   = 1 in 1.2
-	{ tier = "Uncommon",  level = 6,  weight = 1250 }, -- 12.5%   = 1 in 8
-	{ tier = "Rare",      level = 11, weight = 400  }, -- 4%      = 1 in 25
-	{ tier = "Epic",      level = 16, weight = 80   }, -- 0.8%    = 1 in 125
-	{ tier = "Legendary", level = 21, weight = 10   }, -- 0.1%    = 1 in 1000
+local HATCH_TIERS = { -- age-stage names (the level ladder stopped using rarity words; those belong to skins)
+	{ tier = "Baby",  level = 1,  weight = 8260 }, -- 82.6%   = 1 in 1.2
+	{ tier = "Kid",   level = 6,  weight = 1250 }, -- 12.5%   = 1 in 8
+	{ tier = "Teen",  level = 11, weight = 400  }, -- 4%      = 1 in 25
+	{ tier = "Adult", level = 16, weight = 80   }, -- 0.8%    = 1 in 125
+	{ tier = "Elder", level = 21, weight = 10   }, -- 0.1%    = 1 in 1000
 }
 local HATCH_TOTAL = 0
 for _, t in ipairs(HATCH_TIERS) do HATCH_TOTAL = HATCH_TOTAL + t.weight end
@@ -1111,7 +1111,7 @@ local function rollHatchTier()
 		acc = acc + t.weight
 		if r <= acc then return t.level, t.tier end
 	end
-	return 1, "Common" -- unreachable (weights sum to HATCH_TOTAL); a safe floor rather than a nil level
+	return 1, "Baby" -- unreachable (weights sum to HATCH_TOTAL); a safe floor rather than a nil level
 end
 -- Normalize an owned entry to a {level,xp,height,time} table (legacy saves stored `true`; xp is ADDITIVE --
 -- missing pets/fields default to level 1, 0 XP so existing saves are never broken).
@@ -2062,7 +2062,7 @@ PetClaimEvent.OnServerEvent:Connect(function(player, petId)
 	end
 	_G.playerEverCompletedQuests[player][petId] = true -- PERMANENT: this quest has now been completed at least once
 	local data = { level = 1, xp = 0, height = 0, time = 0 }
-	local hatchTier = "Common"
+	local hatchTier = "Baby"
 	if isRare then
 		data.rare = true
 		data.level = PET_MAX_LEVEL -- pre-maxed: rares skip the grind, instantly at the full lvl-25 look

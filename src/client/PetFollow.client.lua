@@ -171,12 +171,13 @@ local PetTradePrompt  = RS:WaitForChild("PetTradeRequestPromptEvent", 30)
 -- ⚠ REPLACE BEFORE LAUNCH: placeholder TIER-SKIP Developer Product IDs (must match PET_SKIP_PRODUCTS in
 -- PetSystem.server.lua). Each jumps the pet to the FIRST level of the next tier; the Skip button prompts the
 -- one for the pet's current tier. Until the real products exist the prompt errors harmlessly for real players;
--- test accounts tier-skip instantly via the server test path. (Ordered 1=Common->Uncommon ... 4=Epic->Legendary.)
+-- test accounts tier-skip instantly via the server test path. (Ordered 1=Baby->Kid ... 4=Adult->Elder.
+-- `to` is the DISPLAY label on the skip button -- age names since the level ladder stopped using rarity words.)
 local PET_SKIP_PRODUCTS = {
-	{ to = "Uncommon",  price = 49,  id = 123456701 }, -- ⚠ placeholder product id -- REPLACE BEFORE LAUNCH
-	{ to = "Rare",      price = 99,  id = 123456702 }, -- ⚠ REPLACE BEFORE LAUNCH
-	{ to = "Epic",      price = 299, id = 123456703 }, -- ⚠ REPLACE BEFORE LAUNCH
-	{ to = "Legendary", price = 599, id = 123456704 }, -- ⚠ REPLACE BEFORE LAUNCH
+	{ to = "Kid",   price = 49,  id = 123456701 }, -- ⚠ placeholder product id -- REPLACE BEFORE LAUNCH
+	{ to = "Teen",  price = 99,  id = 123456702 }, -- ⚠ REPLACE BEFORE LAUNCH
+	{ to = "Adult", price = 299, id = 123456703 }, -- ⚠ REPLACE BEFORE LAUNCH
+	{ to = "Elder", price = 599, id = 123456704 }, -- ⚠ REPLACE BEFORE LAUNCH
 }
 
 -- ===== low-poly build helpers =====
@@ -2576,16 +2577,24 @@ local RARE_LOOK = {
 -- Normal pets: tier by LEVEL (Common->Legendary). Rare variants: special TOP tiers (Exotic, or Mythical for the
 -- 1/10000 Cosmic Duck). Ranked by REAL odds: Mythical > Legendary > Exotic > Epic > ... Escalating colors;
 -- Exotic/Mythical are the flashiest (glow) since they're variant LOOKS, not just level bands.
+-- ===== AGE STAGES, NOT RARITY WORDS =====
+-- This ladder used to say Common/Uncommon/Rare/Epic/Legendary -- the EXACT same words the skin
+-- crates use for skin rarity, so a young pet wearing a Legendary-rarity skin read "Common Lv 3"
+-- over its head. Levels are GROWTH (size + accessories), so the badge now says age: rarity
+-- vocabulary belongs to crates alone. Colors kept, so the escalation players know still reads.
+-- Rare hatch variants keep Exotic/Mythical -- those genuinely ARE rarity, not age.
+-- NOTE: RemotePets.client.lua has an identical copy of this ladder for other players' pets --
+-- change one and you must change the other.
 local function petTier(level, isRare, petId)
 	if isRare then
 		if petId == "ButterDuck" then return "Mythical", Color3.fromRGB(255,70,230), true, true  -- top tier, flashiest (magenta glow)
-		else return "Exotic", Color3.fromRGB(40,235,225), true, true end                          -- above Legendary (bright cyan/teal glow)
+		else return "Exotic", Color3.fromRGB(40,235,225), true, true end                          -- above everything (bright cyan/teal glow)
 	end
-	if level <= 5      then return "Common",    Color3.fromRGB(175,180,190), false, false
-	elseif level <= 10 then return "Uncommon",  Color3.fromRGB(90,210,90),   false, false
-	elseif level <= 15 then return "Rare",      Color3.fromRGB(70,140,255),  false, false
-	elseif level <= 20 then return "Epic",      Color3.fromRGB(180,90,235),  false, false
-	else                    return "Legendary", Color3.fromRGB(255,170,40),  false, false end
+	if level <= 5      then return "Baby",  Color3.fromRGB(175,180,190), false, false
+	elseif level <= 10 then return "Kid",   Color3.fromRGB(90,210,90),   false, false
+	elseif level <= 15 then return "Teen",  Color3.fromRGB(70,140,255),  false, false
+	elseif level <= 20 then return "Adult", Color3.fromRGB(180,90,235),  false, false
+	else                    return "Elder", Color3.fromRGB(255,170,40),  false, false end
 end
 local PET_DISPLAY = { BeanBuddy="Bean Buddy", PizzaDragon="Pizza Dragon", BroccoliPet="Broccoli Bunny", CoconutCrab="Coconut Crab", PopcornSheep="Popcorn Sheep", ButterDuck="Butter Duck", BurritoArmadillo="Burrito Armadillo",
 	SunflowerBee="Sunflower Bee", MapleFox="Maple Fox", FrostPenguin="Frost Penguin", BlossomBunny="Blossom Bunny" }
@@ -2794,11 +2803,23 @@ local function applyLevelVisual(pet, level, petId, isRare, lite)
 	local prevLevel = A and A.lastVisualLevel or nil
 	accScale = 1
 	clearEvo(pet, A) -- removes ONLY the added effects + EvoPart accessories; the BASE PET is never touched
+	-- ===== A TRAIT REPLACES THE LEVEL PARTICLE STACK =====
+	-- Age owns the PHYSICAL growth: size, accessories, gold trim at max -- those always apply. The
+	-- particle stack below (aura/trail/sparkles/orbs/ring/pulse/burst) is the pet's "own energy",
+	-- and an equipped crate TRAIT takes its place: two particle systems at once was soup (level-8
+	-- sparkles + the Sparkly trait literally doubled up). No trait equipped = level effects exactly
+	-- as before, so a player who never opens a crate keeps their whole progression.
+	local traitOn = false
+	do
+		local eqAll = _G.petSkinEquipped
+		local eq = eqAll and eqAll[petId]
+		traitOn = (eq and eq.skin and eq.trait) and true or false
+	end
 	-- (1) SIZE: 60% at Lv1 -> 100% at Lv25 (+1.667%/level) -- the guaranteed visible change every level. (popMul = level-up bounce)
 	if A then A.sizeMul = 0.6 + 0.4 * frac end
 	local function ramp(startL) return math.clamp((level - startL) / (MAXL - startL), 0, 1) end
 	-- (2) AURA: appears at Lv2; brightens each level. BOLD = a bright themed Highlight glow + a PointLight + soft particles.
-	if level >= 2 and root and not lite then
+	if level >= 2 and root and not lite and not traitOn then
 		local t = ramp(2)
 		local hl = Instance.new("Highlight"); hl.Name="LevelGlow"; hl.Adornee=pet
 		pcall(function() hl.DepthMode = Enum.HighlightDepthMode.Occluded end)
@@ -2811,7 +2832,7 @@ local function applyLevelVisual(pet, level, petId, isRare, lite)
 		ae.Transparency=NumberSequence.new({ NumberSequenceKeypoint.new(0,0.3), NumberSequenceKeypoint.new(1,1) }); ae.Parent=root
 	end
 	-- (3) TRAIL: appears at Lv5; lengthens/brightens each level. BOLD = long, wide, bright themed trail.
-	if level >= 5 and root and not lite then
+	if level >= 5 and root and not lite and not traitOn then
 		local t = ramp(5)
 		local a0 = Instance.new("Attachment"); a0.Name="PTrailA0"; a0.Position=Vector3.new(0, 1.0, 0); a0.Parent=root
 		local a1 = Instance.new("Attachment"); a1.Name="PTrailA1"; a1.Position=Vector3.new(0,-1.0, 0); a1.Parent=root
@@ -2821,7 +2842,7 @@ local function applyLevelVisual(pet, level, petId, isRare, lite)
 		tr.Parent = root
 	end
 	-- (4) SPARKLES: appear at Lv8; density up each level. BOLD = dense themed sparkle particles.
-	if level >= 8 and root and not lite then
+	if level >= 8 and root and not lite and not traitOn then
 		local t = ramp(8)
 		local pe = Instance.new("ParticleEmitter"); pe.Name="PetSparkle"
 		pe.Rate = 14 + 90*t; pe.LightEmission = 0.7; pe.Rotation = NumberRange.new(0,360)
@@ -2831,7 +2852,7 @@ local function applyLevelVisual(pet, level, petId, isRare, lite)
 		pe.Parent = root
 	end
 	-- (5) ANIMATED EFFECTS: orbs (11/14/19), energy ring (15), pulse (18), burst (24) -- built into petFX, animated by the FX loop.
-	if root and not lite then buildFX(pet, root, theme, level, atMax) end
+	if root and not lite and not traitOn then buildFX(pet, root, theme, level, atMax) end
 	-- (6) ACCESSORIES: the per-pet list, each at its exact level (3/7/10/13/17/20/23), accumulating. GOLD trim at MAX.
 	if A and root then
 		for _, e in ipairs(theme.accs) do if level >= e[1] then buildAccessoryByKey(pet, A, root, theme, e[2], atMax) end end
@@ -3037,6 +3058,19 @@ local function spawnFollowerPet(petId)
 	st.appliedLevel = st.level; st.appliedRare = st.rare
 	applyLevelVisual(st.pet, st.level or 1, petId, st.rare)
 	print("[Pet][DIAG] pet spawned, following player ("..petId..") at Lv "..tostring(st.level or 1))
+end
+
+-- FULL EVO RE-RUN for every live follower. PetSkinLook calls this when the server pushes a new
+-- equip state: equipping a trait must strip the level particle stack NOW (and unequipping must
+-- bring it back NOW) -- without this, the applyLevelVisual gate only re-evaluates on the next
+-- level-up or respawn, and the two effect systems visibly overlap until then. On _G, not a
+-- local: this file sits at the edge of Luau's 200-locals ceiling.
+_G.petEvoRefresh = function()
+	for petId, st in pairs(petState) do
+		if st.pet and st.pet.Parent then
+			pcall(applyLevelVisual, st.pet, st.level or 1, petId, st.rare)
+		end
+	end
 end
 
 -- Despawn the follower (used when a pet is UNEQUIPPED). Cosmetic-only.
@@ -5003,7 +5037,8 @@ local function rebuildInventory(payload)
 		-- LEGENDARY OUTRANKS EXOTIC -- a Legendary really is the rarer pull, so it sorts above it. (This was the
 		-- other way round while Exotic was 1/99; if you retune the odds again, re-check this table AND the ladder.)
 		-- All locals here are function-scoped (no new module-scope locals).
-		local rank = { Mythical = 7, Legendary = 6, Exotic = 5, Epic = 4, Rare = 3, Uncommon = 2, Common = 1 }
+		-- age names since the ladder rename (rarity words belong to skins now); Exotic/Mythical variants still top
+		local rank = { Mythical = 7, Exotic = 6, Elder = 5, Adult = 4, Teen = 3, Kid = 2, Baby = 1 }
 		-- `owned` is keyed by STORAGE KEY (petId or petId#R) -> a species can have two cards (normal + rare). Sort by
 		-- the SPECIES tier (p.petId), never the raw key, so the "#R" suffix never confuses petTier.
 		local ids = {}
