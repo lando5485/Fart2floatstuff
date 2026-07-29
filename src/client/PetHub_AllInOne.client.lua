@@ -664,8 +664,22 @@ end
 -- PETS HUD BUTTON -- the green paw button (matches CoreClient's repurposed
 -- daily-rewards button: 80,170,70 fill / 40,110,40 stroke / rounded 16). It
 -- fires the PetInvToggle BindableEvent, exactly like the in-game More+ menu.
+--
+-- ONLY WHEN THIS KIT IS RUNNING ALONE. In the real game the left rail is exactly
+-- four buttons (SHOP / WORMHOLE / Stomach / MORE) and Pets is a row INSIDE the
+-- MORE+ popup -- so this paw would be a fifth rail button landing between Stomach
+-- and MORE. If CoreClient's SidebarGui exists, the real rail is already up and the
+-- game already has a way into the Pet Hub, so the button is skipped and only the
+-- Hub itself is built. Standalone (no SidebarGui) it appears as before, because
+-- without it the kit has no way to open anything.
 -- ============================================================================
-local btnGui = Instance.new("ScreenGui"); btnGui.Name = "PetHubButton"; btnGui.ResetOnSpawn = false; btnGui.Parent = pg
+local railExists = pg:FindFirstChild("SidebarGui") ~= nil
+if railExists then
+	print("[PetHub] SidebarGui present -> skipping the paw button (Pets lives in the MORE+ menu)")
+end
+local btnGui = Instance.new("ScreenGui"); btnGui.Name = "PetHubButton"; btnGui.ResetOnSpawn = false
+btnGui.Enabled = not railExists
+btnGui.Parent = pg
 local petBtn = Instance.new("TextButton"); petBtn.Name = "PetsButton"; petBtn.Size = UDim2.new(0,70,0,70)
 petBtn.Position = UDim2.new(0,20,0.5,40); petBtn.AnchorPoint = Vector2.new(0,0.5)
 petBtn.BackgroundColor3 = Color3.fromRGB(80,170,70); petBtn.Font = Enum.Font.FredokaOne; petBtn.TextSize = 36

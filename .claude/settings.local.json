@@ -174,7 +174,26 @@
       "Bash(grep -rnE \"l1lI1l|I1lI|_0x[0-9a-f]|\\\\\\\\\\\\\\\\x[0-9a-f]{2}\\\\\\\\\\\\\\\\x[0-9a-f]{2}\\\\\\\\\\\\\\\\x[0-9a-f]{2}\\\\\\\\\\\\\\\\x[0-9a-f]{2}\\\\\\\\\\\\\\\\x[0-9a-f]{2}|do not delete|required for game to work|dont delete\" --include=*.lua --include=*.luau .)",
       "Bash(grep -viE \"\\\\\\\\\\\\\\\\xF0|\\\\\\\\\\\\\\\\xE2|\\\\\\\\\\\\\\\\xC2|\\\\\\\\\\\\\\\\xE3|emoji\")",
       "Bash(git fetch *)",
-      "Bash(git ls-remote *)"
+      "Bash(git ls-remote *)",
+      "Bash(awk 'NR>=804 && NR<=1000 && \\(/^local function playUIClick/ || /^end$/ || /^do$/ || /openLocker/\\)' src/client/CoreClient.client.lua)",
+      "Bash(awk 'NR>=800 && NR<=830 {printf \"%d\\\\t%s\\\\n\", NR, $0}' src/client/CoreClient.client.lua)",
+      "Bash(awk 'NR>=1288 && NR<=1296 {printf \"%d\\\\t%s\\\\n\", NR, $0}' src/client/CoreClient.client.lua)",
+      "PowerShell(Add-Type -AssemblyName System.IO.Compression.FileSystem; $z = [System.IO.Compression.ZipFile]::OpenRead\\(\"C:\\\\Users\\\\riley\\\\Downloads\\\\FartToFloat_MorePlus_Bundle.zip\"\\); \"Entries: \" + $z.Entries.Count; $z.Entries | Where-Object { $_.Length -gt 0 } | Sort-Object FullName | Select-Object -First 45 @{n='Path';e={$_.FullName}}, @{n='KB';e={[math]::Round\\($_.Length/1KB,1\\)}} | Format-Table -AutoSize; $z.Dispose\\(\\))",
+      "Bash(awk 'NR>=2830 && NR<=2900 {printf \"%d| %s\\\\n\", NR, $0}' src/client/PetFollow.client.lua)",
+      "Bash(grep -n \"^-- =\\\\{10,\\\\}\\\\|^-- PET INVENTORY\\\\|^-- PET HUB\\\\|VIEW MORE\\\\|viewMore\\\\|detailCard\\\\|HubNav\\\\|QuestsOverlay\\\\|TradeOverlay\\\\|PET_LORE\" src/client/PetFollow.client.lua)",
+      "Bash(awk 'NR>=5140 && NR<=5160 {printf \"%d| %s\\\\n\", NR, $0}' src/client/PetFollow.client.lua)",
+      "Bash(grep -n \"^-- =\\\\{6,\\\\}\\\\|ScreenGui\\\\|PremiumShopGui\\\\|FoodShopGui\\\\|UIFix\\\\|CurrencyOverlay\\\\|PremiumScroll\" src/client/ShopClient.client.lua)",
+      "Bash(grep -n \"^-- =\\\\{6,\\\\}\\\\|^-- [A-Z][A-Z ]\\\\{6,\\\\}\\\\|ScreenGui\\\\|toggleSkinCrates\\\\|SkinCrateGui\\\\|RevealGui\\\\|reel\\\\|Reel\" src/client/SkinCrateClient.client.lua)",
+      "Bash(awk 'NR>=1339&&NR<=1360 {printf \"%d| %s\\\\n\", NR, $0}' src/client/SkinCrateClient.client.lua)",
+      "Bash(awk 'NR>=401&&NR<=420 {printf \"%d| %s\\\\n\", NR, $0}' src/client/SkinCrateClient.client.lua)",
+      "PowerShell(Get-Item *)",
+      "PowerShell(Add-Type -AssemblyName System.IO.Compression.FileSystem; $z = [System.IO.Compression.ZipFile]::OpenRead\\(\"C:\\\\Users\\\\riley\\\\Downloads\\\\Shop_UI_Bundle.zip\"\\); $z.Entries | Where-Object { $_.Length -gt 0 } | Sort-Object FullName | Select-Object @{n='Path';e={$_.FullName}}, @{n='KB';e={[math]::Round\\($_.Length/1KB,1\\)}}, @{n='Modified';e={$_.LastWriteTime.ToString\\('MMM dd HH:mm'\\)}} | Format-Table -AutoSize; $z.Dispose\\(\\))",
+      "Bash(awk 'NR>=976&&NR<=984 {printf \"%d| %s\\\\n\", NR, $0}' src/client/CoreClient.client.lua)",
+      "Bash(awk 'NR>=1121&&NR<=1160' src/client/CoreClient.client.lua)",
+      "Bash(grep -rn '\\\\\\\\xF0\\\\\\\\x9F\\\\\\\\xAA\\\\\\\\x99' src/client/*.lua*)",
+      "Bash(awk 'NR>=30&&NR<=50 {printf \"%d| %s\\\\n\", NR, $0}' src/server/SeasonPass.server.lua)",
+      "Bash(grep -n \"coin\\\\|Coin\\\\|\\\\\\\\\\\\\\\\xF0\\\\\\\\\\\\\\\\x9F\" src/client/SeasonPass.client.luau)",
+      "Bash(awk 'NR>=270&&NR<=285 {printf \"%d| %s\\\\n\", NR, $0}' src/client/SeasonPass.client.luau)"
     ]
   }
 }

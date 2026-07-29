@@ -982,6 +982,13 @@ do
 		if _G.applyHudScaling then _G.applyHudScaling() end -- re-apply the SHOP's identical UIScale so this panel matches the Shop size exactly
 		task.defer(function() print("[UIFix] Locker AbsoluteSize=" .. tostring(lockPanel.AbsoluteSize) .. " AbsolutePosition=" .. tostring(lockPanel.AbsolutePosition)) end) -- resolved on-screen size, to compare vs the SHOP
 	end
+	-- EXPOSED for the garden treasure box (SeasonalPetsChest.client.luau), which is now the only
+	-- way in since Seasonal Pets left the MORE+ menu. It must be THIS function and not a bare
+	-- LockerGui.Enabled = true: this one re-requests ownership from the server first, so a player
+	-- who just earned a seasonal pet sees it instead of an out-of-date grid.
+	-- Assignment to the existing _G table -- deliberately NOT a new local, since this file sits at
+	-- ~187 of Luau's 200-local ceiling and one more would stop the whole script compiling.
+	_G.openLocker = openLocker
 
 	-- --- the MORE+ popup itself ---
 	local moreGui = Instance.new("ScreenGui"); moreGui.Name = "MoreMenuGui"; moreGui.ResetOnSpawn = false
@@ -1121,15 +1128,18 @@ do
 	local MORE_ENTRIES = { -- ADD MORE HERE later (each: label + an image OR emoji icon + an action)
 		{ label = "Rebirth", desc = "Reset your progress for permanent multipliers.", tint = Color3.fromRGB(90, 200, 255), order = 1,
 		emoji = "\xF0\x9F\x94\x84", action = function() if _G.toggleRebirth then _G.toggleRebirth() end end }, -- MOVED here from the side button (the WORMHOLE button took its slot)
-		-- ONE daily entry. "Daily Rewards" and "Daily Tasks" were two rows for one habit, and a player had to
-		-- already know they were different menus. The Daily Tasks panel now carries the crate as a DAILY REWARD
-		-- button in its bottom row, so this opens the panel and both dots ride on this single row.
-		{ label = "Daily Rewards", desc = "Claim free rewards every day.", tint = Color3.fromRGB(255, 175, 45), order = 2,
+		-- ONE "Rewards" entry. Daily and Free were two rows for the same idea -- things you claim for free --
+		-- and a player had to already know which menu held which. RewardsHub.client.luau is the single door;
+		-- DAILY and FREE are sections inside it. Both dots ride on this row, so a "!" means "something is
+		-- claimable" without having to say which side it is on.
+		{ label = "Rewards", desc = "Daily login rewards and free playtime rewards.", tint = Color3.fromRGB(255, 175, 45), order = 2,
 		emoji = "\xF0\x9F\x8E\x81", readyDot = true, tasksDot = true, action = function()
-			-- Eligible -> open the panel (the crate button is in it). Not eligible yet (a brand-new player has
-			-- no task list) -> the panel would refuse to open, so fire the crate directly instead. The daily
-			-- reward is never unreachable either way.
-			if _G.dailyTasksAvailable and _G.dailyTasksAvailable() then
+			if _G.toggleRewardsHub then
+				_G.toggleRewardsHub()
+			-- RewardsHub not loaded -> fall back to the daily panel directly. Not eligible yet (a brand-new
+			-- player has no task list) -> the panel would refuse to open, so fire the crate instead. The
+			-- daily reward is never unreachable either way.
+			elseif _G.dailyTasksAvailable and _G.dailyTasksAvailable() then
 				if _G.toggleDailyTasks then _G.toggleDailyTasks() end
 			else
 				local ev = RSx:FindFirstChild("OpenMeteorCrate")
@@ -1139,19 +1149,18 @@ do
 		end },
 		{ label = "Pets", desc = "Manage your pets and equipped skins.", tint = Color3.fromRGB(120, 225, 120), order = 3,
 		emoji = "\xF0\x9F\x90\xBE", action = function() print("[MenuMgr] button PetInv clicked while "..tostring(_G.MainMenuManager and _G.MainMenuManager.current).." open"); local ev = PlayerGui:FindFirstChild("PetInvToggle"); if ev then ev:Fire() end end }, -- SWAP: the PETS button now lives in the More+ menu, in the Stomach entry's OLD slot (keeps the paw icon, label + pet-inventory action)
-		{ label = "Seasonal Pets", desc = "Limited-time exclusive pets.", tint = Color3.fromRGB(110, 225, 240),
-		emoji = "\xE2\x9D\x84\xEF\xB8\x8F", order = 6, action = function() if openLocker then openLocker() end end },
+		-- (SEASONAL PETS removed from this menu. It is a limited-time GARDEN reward, and a menu row made it
+		--  read as a settings entry -- so it moved to a treasure box beside the Global Garden. The panel it
+		--  opens is unchanged (LockerGui, below); only the door moved. See SeasonalPetsChest.client.luau,
+		--  which calls _G.openLocker -- exposed just after openLocker is defined.)
+		-- (SEASON PASS removed from this menu entirely.)
 		-- PET SKIN CRATES (cosmetic): the CS:GO-style crate shop + skin inventory. SkinCrateClient owns the panel;
 		-- this row is just the way in, so the whole system is reachable without another HUD button.
 		{ label = "Skin Crates", desc = "Open crates to unlock skins and traits.", tint = Color3.fromRGB(170, 130, 255),
 		emoji = "\xF0\x9F\x93\xA6", order = 4, action = function() if _G.toggleSkinCrates then _G.toggleSkinCrates() end end },
-		-- (the "Codes" entry moved INTO the Season Pass panel -- bottom-left CODES button. One row for one
-		--  feature: both are "free rewards you claim", and Codes was a whole menu row for a rare action.)
-		{ label = "Free Rewards", desc = "Claim rewards just for playing.", tint = Color3.fromRGB(255, 105, 140), order = 5,
-		emoji = "\xF0\x9F\x8E\x81", action = function() if _G.toggleSocialRewards then _G.toggleSocialRewards() end end }, -- SocialRewards.client owns the panel (like/favourite/group -> +5 pet levels)
-		-- FULL WIDTH, last: the premium row, given its own band across the bottom of the dashboard.
-	{ label = "Season Pass", desc = "Unlock exclusive rewards and premium perks.", tint = Color3.fromRGB(255, 205, 50),
-		emoji = "\xE2\xAD\x90", full = true, order = 7, action = function() if _G.toggleSeasonPass then _G.toggleSeasonPass() end end }, -- SeasonPass.client owns the track UI (free + premium lanes, XP from daily tasks)
+		-- (FREE REWARDS merged INTO the "Rewards" row above -- it is the FREE section of RewardsHub now.
+		--  SocialRewards.client still owns that panel; only the way in changed.)
+		-- (the "Codes" entry lives in the Season Pass panel -- bottom-left CODES button.)
 		-- (the "MLR Group" entry was removed from the HUD; non-members are now nudged by a periodic banner that
 		--  opens the group window when tapped -- see RewardsClient)
 	}
@@ -1794,9 +1803,23 @@ local function repositionGUIs()
 	-- The Visible=true here is the nastier half of this pass: it force-SHOWS every label, including ones a menu
 	-- deliberately hid (a collapsed tab, a locked row, an empty state). Combined with TextScaled that is exactly
 	-- how the Pet Hub ended up with giant overlapping text on top of each other.
+	--
+	-- ===== IT MUST NOT FORCE-SHOW OVERLAYS =====
+	-- A menu's sub-sheets -- Rebirth's PETS overlay, the Season Pass "how it works" card, every "are you sure"
+	-- confirm -- are TextButtons authored Visible = false and sized fromScale(1, 1) so they cover their panel.
+	-- This loop switched all of them on, and a 700x520 rectangle at 20-25% opacity then hung over the middle of
+	-- the screen dimming everything, with nothing on screen to dismiss it. The tell was that the identical sheet
+	-- built as a Frame in the same panel stayed hidden -- the sweep only reaches text classes.
+	--
+	-- Filling the parent is the structural line between the two: a caption is never sized (1,1) scale over its
+	-- container, and a backdrop/dim/overlay always is. Those keep whatever Visible their owner set.
+	--
+	-- Skipping the force can only ever leave something hidden that its owner had already hidden -- it never hides
+	-- anything -- so this cannot break a label that was showing correctly.
 	for _, v in ipairs(PlayerGui:GetDescendants()) do
 		if (v:IsA("TextLabel") or v:IsA("TextButton")) and not _G.hudTextSweepSkip(v) then
-			v.TextScaled = true; v.Visible = true
+			v.TextScaled = true
+			if not (v.Size.X.Scale >= 1 and v.Size.Y.Scale >= 1) then v.Visible = true end
 		end
 	end
 	-- Tiny Gut pill + gas meter + fart button are ONE centered group (BottomStack + UIListLayout);

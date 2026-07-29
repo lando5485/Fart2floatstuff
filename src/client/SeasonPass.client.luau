@@ -210,11 +210,39 @@ local function mkCard(parent, y, h, colA, colB, edge)
 	return card
 end
 
+-- THE COIN IS AN IMAGE, NOT A GLYPH.
+--
+-- The coin emoji does not render on every platform -- it comes out as a blank/tofu box,
+-- which is exactly what these reward cards were showing next to the amounts. The coin pill
+-- at the top of the screen and the food shop's price rows both already solved this by
+-- drawing an uploaded image instead, so this uses the SAME asset rather than a second one:
+-- one coin in the game, one id.
+--
+-- _G.COIN_IMAGE is set by CoreClient; the literal is the fallback for the case where this
+-- panel builds before CoreClient has run.
+local COIN_EMOJI = "\xF0\x9F\xAA\x99"
+local COIN_IMAGE = "rbxassetid://106760789458573"
+
 local function mkReward(card, emoji, text, ink)
-	local ico = Instance.new("TextLabel")
-	ico.BackgroundTransparency = 1; ico.Position = UDim2.fromOffset(0, 12); ico.Size = UDim2.new(1, 0, 0, 40)
-	ico.Font = Enum.Font.GothamBold; ico.TextScaled = true; ico.Text = emoji; ico.Parent = card
-	do local ic = Instance.new("UITextSizeConstraint", ico); ic.MaxTextSize = 34 end
+	-- The icon box is 40 tall at y=12, so its centre is y=32. Both the image and the
+	-- emoji-fallback are centred on that line, which keeps the icon sitting on the same
+	-- baseline as the amount underneath it whichever one is drawn.
+	if emoji == COIN_EMOJI then
+		local img = Instance.new("ImageLabel")
+		img.Name = "CoinIcon"
+		img.BackgroundTransparency = 1
+		img.Image = (type(_G.COIN_IMAGE) == "string" and _G.COIN_IMAGE ~= "" and _G.COIN_IMAGE) or COIN_IMAGE
+		img.ScaleType = Enum.ScaleType.Fit          -- never stretches, whatever the source is
+		img.Size = UDim2.fromOffset(34, 34)         -- matches the emoji's MaxTextSize of 34
+		img.AnchorPoint = Vector2.new(0.5, 0.5)
+		img.Position = UDim2.new(0.5, 0, 0, 32)
+		img.Parent = card
+	else
+		local ico = Instance.new("TextLabel")
+		ico.BackgroundTransparency = 1; ico.Position = UDim2.fromOffset(0, 12); ico.Size = UDim2.new(1, 0, 0, 40)
+		ico.Font = Enum.Font.GothamBold; ico.TextScaled = true; ico.Text = emoji; ico.Parent = card
+		do local ic = Instance.new("UITextSizeConstraint", ico); ic.MaxTextSize = 34 end
+	end
 	local lbl = Instance.new("TextLabel")
 	lbl.BackgroundTransparency = 1; lbl.Position = UDim2.fromOffset(2, 52); lbl.Size = UDim2.new(1, -4, 0, 42)
 	lbl.Font = Enum.Font.FredokaOne; lbl.TextScaled = true; lbl.TextColor3 = ink; lbl.Text = text

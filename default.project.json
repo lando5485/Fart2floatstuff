@@ -306,6 +306,18 @@
         "MenuBackdropGuard": {
           "$path": "src/client/MenuBackdropGuard.client.lua"
         },
+        "RailGuard": {
+          "$path": "src/client/RailGuard.client.luau"
+        },
+        "RewardsHub": {
+          "$path": "src/client/RewardsHub.client.luau"
+        },
+        "SeasonalPetsChest": {
+          "$path": "src/client/SeasonalPetsChest.client.luau"
+        },
+        "MenuBackButton": {
+          "$path": "src/client/MenuBackButton.client.luau"
+        },
         "BlackBarKiller": {
           "$path": "src/client/BlackBarKiller.client.luau"
         },
