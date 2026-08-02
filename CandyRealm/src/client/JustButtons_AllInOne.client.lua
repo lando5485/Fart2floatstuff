@@ -8,9 +8,13 @@
 --
 --   LEFT RAIL (SidebarGui): 4 buttons, 95x95, top-left x=12, y 96/203/310/417
 --       SHOP (candy cane) -> PremiumShopGui       (Shop_AllInOne)
---       WORMHOLE (grape)  -> _G.toggleWormhole()  (WormholeClient)
+--       PETS (grape)      -> _G.togglePetHub()    (PetHub_AllInOne)
 --       Stomach (mint)    -> StomachShopGui
 --       MORE (bubblegum)  -> MORE+ popup
+--
+--   PETS took the WORMHOLE slot (same swap the main game made): players open the
+--   pet hub constantly, fast travel is a sometimes action -- so the Wormhole card
+--   moved into the MORE+ menu (MorePopup_AllInOne) and Pets holds the rail.
 --
 --   CANDY PASS: the rail reads as four WRAPPED SWEETS. It is PAINT ONLY -- every size,
 --   position, corner radius and stroke width is the same number it was before, so the
@@ -89,7 +93,7 @@ end
 
 --======================================================================
 -- LEFT RAIL -- 4 buttons, FINAL look: 95x95, top-left x=12, fixed Y grid.
---   frames order (from repositionGUIs): SHOP, WORMHOLE, Stomach, MORE
+--   frames order (from repositionGUIs): SHOP, PETS, Stomach, MORE
 --   Y grid (desktop): 96, 203, 310, 417   (107px pitch)
 --======================================================================
 local sidebarGui = Instance.new("ScreenGui")
@@ -152,9 +156,10 @@ end
 --    solid ones reads as a highlight, where four striped faces read as noise. Corner 16 (kept).
 local shopSide, shopClick, shopGrad = mkRailBtn(96, Color3.new(1,1,1), Color3.new(1,1,1), 16, Color3.fromRGB(205,45,70), 3, "\xF0\x9F\x8D\xAC", "SHOP")
 candyStripes(shopGrad, Color3.fromRGB(255,255,255), Color3.fromRGB(255,80,95), 6, 45)
--- 2) WORMHOLE -- GRAPE LOLLY. The lollipop glyph is a swirl, so it still reads as a portal
---    while being candy; swap back to "\xF0\x9F\x8C\x80" if you want the plain vortex.
-local wormSide, wormClick = mkRailBtn(203, Color3.fromRGB(200,140,255), Color3.fromRGB(140,70,225), 16, Color3.fromRGB(95,40,165), 3, "\xF0\x9F\x8D\xAD", "WORMHOLE")
+-- 2) PETS -- GRAPE. Same grape-lolly wrapper the slot always had (keeps the rail's candy
+--    palette: cane / grape / mint / bubblegum), now with the paw glyph and the PET HUB behind
+--    it. WORMHOLE gave up this slot and lives in the MORE+ menu (MorePopup_AllInOne).
+local petsSide, petsClick = mkRailBtn(203, Color3.fromRGB(200,140,255), Color3.fromRGB(140,70,225), 16, Color3.fromRGB(95,40,165), 3, "\xF0\x9F\x90\xBE", "PETS")
 -- 3) Stomach -- MINT. Corner 16, stroke w3 (kept); icon is still the GUT_IMAGE.
 local stomachSide, stomachClick = mkRailBtn(310, Color3.fromRGB(155,240,205), Color3.fromRGB(70,205,155), 16, Color3.fromRGB(35,140,110), 3, "", "Stomach")
 do
@@ -173,14 +178,16 @@ local moreSide, moreClick = mkRailBtn(417, Color3.fromRGB(255,150,215), Color3.f
 shopClick.MouseButton1Click:Connect(function()
 	_G.playUIClick(); toggleMainMenu("Premium","PremiumShopGui")
 end)
-wormClick.MouseButton1Click:Connect(function()
+petsClick.MouseButton1Click:Connect(function()
 	_G.playUIClick()
-	if _G.toggleWormhole then
-		_G.toggleWormhole()
+	-- _G.togglePetHub FIRST (the hub's own unambiguous door): a baked-in copy of the pet kit
+	-- can leave a SECOND BindableEvent named PetInvToggle behind, and FindFirstChild can return
+	-- the impostor. The found-event is fallback only, for load-order races.
+	if _G.togglePetHub then
+		pcall(_G.togglePetHub)
 	else
-		local sig = ReplicatedStorage:FindFirstChild("OpenWormhole")
-		if not sig then sig = Instance.new("BindableEvent"); sig.Name="OpenWormhole"; sig.Parent=ReplicatedStorage end
-		sig:Fire()
+		local ev = PlayerGui:FindFirstChild("PetInvToggle")
+		if ev and ev:IsA("BindableEvent") then ev:Fire() end
 	end
 end)
 stomachClick.MouseButton1Click:Connect(function()
@@ -309,4 +316,4 @@ do
 	fartClick.MouseButton1Click:Connect(function() if _G.toggleFart then _G.toggleFart() end end)
 end
 
-print("[JustButtons] CANDY rail WIRED: candy-cane SHOP / grape WORMHOLE / mint Stomach / bubblegum MORE + pill/gas/fart")
+print("[JustButtons] CANDY rail WIRED: candy-cane SHOP / grape PETS / mint Stomach / bubblegum MORE + pill/gas/fart")

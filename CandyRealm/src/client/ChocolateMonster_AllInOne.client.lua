@@ -947,6 +947,22 @@ stompRing = function(pos)
 	Debris:AddItem(ring, 0.55)
 end
 
+-- DOCILE UNTIL PROVOKED: the monster is on the island from the very start, but
+-- he only turns hostile 10 SECONDS AFTER the cookie quest is accepted. Until
+-- then every aggro check below is a no-op -- you can walk right past him to
+-- the NPC and he just sleeps and breathes.
+local HUNT_DELAY = 10
+local huntAfter = nil        -- set the first tick after the quest is accepted
+local idleTarget, idleNext = nil, 0   -- the off-duty amble (see the sleep state)
+local function huntAllowed()
+	if not _G.cookieQuestStarted then huntAfter = nil; return false end
+	if not huntAfter then
+		huntAfter = os.clock() + HUNT_DELAY
+		print(("[ChocMonster] quest accepted -- hostile in %d seconds..."):format(HUNT_DELAY))
+	end
+	return os.clock() >= huntAfter
+end
+
 RunService.RenderStepped:Connect(function(dt)
 	if not (monBody and monBody.Parent) then return end
 	local here = monBody.Position
@@ -971,11 +987,34 @@ RunService.RenderStepped:Connect(function(dt)
 	end
 
 	if state == "sleep" then
-		poseSwing = 0
+		-- NOT A STATUE. Even off-duty he ambles his patch of the island -- pacing,
+		-- sniffing, stamping melty footprints. A monster frozen mid-island reads
+		-- as broken scenery, and he's the first thing you see landing on island 3
+		-- now that he no longer waits for the quest to exist.
 		monBody.Size = BODY_BASE * (1 + math.sin(now * 1.5) * 0.035)   -- slow breathing
-		monBody.CFrame = CFrame.new(here.X, groundY(here) + 8.5 + math.sin(now) * 0.3, here.Z) * (monBody.CFrame - monBody.CFrame.Position)
-		-- wake if ANY player wanders into aggro range on the island
-		local near = pickTarget(false)
+		if now >= idleNext then
+			-- clock-derived stroll spot around home; no math.random anywhere else here
+			local a = (now * 0.61) % (math.pi * 2)
+			local r = 10 + (now * 7.7) % 30
+			idleTarget = homePos + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+			idleNext = now + 6 + (now % 5)     -- re-think in a while, arrived or not
+		end
+		local idir = idleTarget and (idleTarget - here) * Vector3.new(1, 0, 1) or Vector3.zero
+		if idir.Magnitude > 3 then
+			poseSwing = 0.35                    -- a mooch, nothing like the hunt gait
+			idir = idir.Unit
+			local np = here + idir * (WANDER_SPEED * 0.7) * dt
+			local y = groundY(np) + 8.5 + math.sin(now * 3) * 0.3
+			monBody.CFrame = CFrame.lookAt(Vector3.new(np.X, y, np.Z),
+				Vector3.new(idleTarget.X, y, idleTarget.Z)) * CFrame.Angles(0, 0, math.sin(now * 6) * 0.06)
+			dropFootprint(np)
+		else
+			poseSwing = 0                       -- reached the spot: stand and breathe
+			monBody.CFrame = CFrame.new(here.X, groundY(here) + 8.5 + math.sin(now) * 0.3, here.Z)
+				* (monBody.CFrame - monBody.CFrame.Position)
+		end
+		-- wake if ANY player wanders into aggro range -- but never while docile
+		local near = huntAllowed() and pickTarget(false) or nil
 		if near then
 			local hrp = hrpFor(near)
 			if hrp and (hrp.Position - here).Magnitude <= AGGRO_RANGE then
@@ -1034,9 +1073,12 @@ RunService.RenderStepped:Connect(function(dt)
 		end
 		-- the scare (knockback + shake) only fires for the LOCAL player -- other kids get
 		-- caught on their OWN client. It still LUNGES visibly at whoever it catches.
-		-- measure horizontally so its tall body doesn't make the grab too tight.
+		-- Horizontal for the reach, PLUS a vertical gate: his body is a 10-stud ball
+		-- centred 8.5 up, so the grab tops out around his head -- FLYING OVER HIM IS
+		-- SAFE. He has to actually touch you, not claim the airspace above.
 		local horiz = ((hrp.Position - here) * Vector3.new(1, 0, 1)).Magnitude
-		if horiz <= CATCH_RANGE then
+		local dy = hrp.Position.Y - here.Y
+		if horiz <= CATCH_RANGE and dy <= 8 and dy >= -12 then
 			if targetPlayer == player then catchPlayer(hrp) else lungeAt(hrp) end
 		end
 		poseMonster()
@@ -1059,8 +1101,8 @@ RunService.RenderStepped:Connect(function(dt)
 				* CFrame.Angles(0, 0, roll)
 			dropFootprint(np)
 		end
-		-- re-aggro if anyone comes close again
-		local near = pickTarget(false)
+		-- re-aggro if anyone comes close again (never while docile)
+		local near = huntAllowed() and pickTarget(false) or nil
 		if near then
 			local hrp = hrpFor(near)
 			if hrp and (hrp.Position - here).Magnitude <= AGGRO_RANGE * 0.7 then
@@ -1082,7 +1124,9 @@ task.spawn(function()
 			elseif state == "stunned" then
 				monTag.Text = "\xF0\x9F\x8D\xAB ...ow."; monTag.TextColor3 = Color3.fromRGB(200, 200, 210)
 			elseif state == "sleep" then
-				monTag.Text = "\xF0\x9F\x92\xA4"; monTag.TextColor3 = Color3.fromRGB(190, 165, 255)
+				-- he ambles now, so the tag reads "off duty", not "asleep"
+				monTag.Text = "\xF0\x9F\x8D\xAB sniff sniff..."
+				monTag.TextColor3 = Color3.fromRGB(190, 165, 255)
 			else
 				monTag.Text = "\xF0\x9F\x8D\xAB Chocolate Monster"; monTag.TextColor3 = Color3.fromRGB(255, 255, 255)
 			end
@@ -1264,16 +1308,20 @@ task.spawn(function()
 		return
 	end
 
-	-- HIDDEN UNTIL YOU TALK TO THE NPC: the island-3 Candy NPC's quest (CookieRepairQuest) sets
-	-- _G.cookieQuestStarted when you accept it. Hold here until then so the monster never appears
-	-- (or hunts) before the player has met the NPC.
-	while not _G.cookieQuestStarted do task.wait(0.5) end
-
+	-- ON THE ISLAND FROM THE START: he spawns asleep by his brick whether or not
+	-- you've met the NPC. huntAllowed() (up by the state machine) keeps every
+	-- aggro check dead until 10 seconds AFTER the cookie quest is accepted, so
+	-- until then he's scenery that snores.
 	buildMonster(homePos)
 	monBody.CFrame = CFrame.new(homePos.X, groundY(homePos) + 8.5, homePos.Z)
 	poseMonster()
-	-- big entrance ROAR the moment he appears
-	task.delay(0.2, function() pcall(roar) end)
+	-- the entrance ROAR now belongs to the moment he turns hostile, not spawn --
+	-- announce the danger exactly when it becomes real
+	task.spawn(function()
+		while not _G.cookieQuestStarted do task.wait(0.5) end
+		task.wait(10)
+		if monBody and monBody.Parent then pcall(roar) end
+	end)
 	print(("[ChocMonster] awake at %s (%.0f,%.0f,%.0f) -- hunts within %d studs"):format(
 		spawnPart and "'monsterspawn'" or "island centre", homePos.X, homePos.Y, homePos.Z, AGGRO_RANGE))
 end)

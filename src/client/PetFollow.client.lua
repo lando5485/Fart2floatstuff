@@ -3709,8 +3709,23 @@ if StarterPetEvent then
 		local name = tostring(displayName or (PETS[petId] and PETS[petId].displayName) or petId)
 		print(string.format("[StarterPet] granted %s (%s) -- waiting for the intro to finish, then welcoming", name, tostring(petId)))
 		task.spawn(function()
+			-- (1) THEY MUST ACTUALLY BE PLAYING FIRST. The pet is granted at JOIN, while the player is still sitting
+			-- on the loading screen's PLAY button -- and they can sit there as long as they like. The old bound
+			-- counted from the GRANT, so a player who took their time pressing PLAY had the card open and expire
+			-- behind the loading screen, and never saw their first pet announced at all. Nothing starts counting
+			-- until the character is in the world and the loading screen is gone.
+			local pg = player:WaitForChild("PlayerGui")
+			while not (player.Character and player.Character:FindFirstChild("HumanoidRootPart")) do task.wait(0.25) end
+			-- (CoreClient destroys the loading screen within a second of the spawn; the bound is only so a screen
+			-- that somehow never tears down can't suppress the card forever.)
+			local lsWait = 0
+			while pg:FindFirstChild("LoadingScreen") and lsWait < 20 do task.wait(0.25); lsWait = lsWait + 0.25 end
+			-- (2) THEN wait for the Garden Intro to be DONE -- watched to the end or SKIPPED, both count: the client
+			-- fires GardenIntroDoneEvent either way and the server flips SeenGardenIntro, which replicates back here.
+			-- A player who never gets the cinematic passes straight through. The bound is only a safety net for an
+			-- intro that never reports back, and it can no longer expire while nobody is looking at the screen.
 			local waited = 0
-			while player:GetAttribute("SeenGardenIntro") ~= true and waited < 90 do task.wait(0.5); waited = waited + 0.5 end
+			while player:GetAttribute("SeenGardenIntro") ~= true and waited < 300 do task.wait(0.25); waited = waited + 0.25 end
 			task.wait(1.0) -- let gameplay settle after the cutscene hands control back
 			local TW = game:GetService("TweenService")
 			local sg = Instance.new("ScreenGui"); sg.Name="StarterPetWelcome"; sg.ResetOnSpawn=false; sg.DisplayOrder=60; sg.IgnoreGuiInset=true
@@ -3728,6 +3743,13 @@ if StarterPetEvent then
 			local sub = Instance.new("TextLabel"); sub.BackgroundTransparency=1; sub.Position=UDim2.new(0,0,0,104); sub.Size=UDim2.new(1,0,0,32)
 			sub.Font=Enum.Font.Gotham; sub.TextScaled=true; sub.TextColor3=Color3.fromRGB(190,205,180); sub.TextTransparency=1
 			sub.Text="It follows you everywhere -- fly high to level it up"; sub.Parent=card
+			-- MOBILE SCALING. CoreClient's pass is what fits every panel to the screen (phones cap at 0.60, iPads
+			-- scale up), but it walks PlayerGui at HUD-build time -- and this card is created ~15s later, when the
+			-- intro ends, so the sweep had already run and missed it. On a phone that left the card at its authored
+			-- 460x150 while the whole HUD around it sat at 0.60, so it covered half the screen. Re-running the pass
+			-- fits it with the identical factor; it REUSES an element's existing UIScale rather than adding a second
+			-- one, so this cannot double-shrink the card if the sweep runs again later.
+			if _G.applyHudScaling then pcall(_G.applyHudScaling) end
 			local IN = TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 			TW:Create(card,   IN, {BackgroundTransparency=0.08}):Play()
 			TW:Create(stroke, IN, {Transparency=0}):Play()
@@ -3746,7 +3768,10 @@ if StarterPetEvent then
 				for _, l in ipairs({ title, who, sub }) do TW:Create(l, OUT, {TextTransparency=1}):Play() end
 				task.wait(0.6); sg:Destroy()
 			end)
-			print("[StarterPet] welcome card shown for "..name.." (waited "..waited.."s for the intro)")
+			-- Says WHY it fired: "intro done" is the normal path (watched or skipped); "TIMED OUT" means the
+			-- cinematic never reported back and the safety net fired, which is worth seeing in a test log.
+			print(string.format("[StarterPet] welcome card shown for %s -- in-world, %s (waited %.1fs on the intro)",
+				name, player:GetAttribute("SeenGardenIntro") == true and "intro done" or "intro TIMED OUT", waited))
 		end)
 	end)
 end

@@ -4,14 +4,20 @@
 -- A SELF-CONTAINED copy of the WHOLE pets feature from the main game, lifted
 -- VERBATIM from PetFollow.client.lua + CoreClient.client.lua:
 --
---   1. PET HUB TOGGLE-- opened via the PetInvToggle BindableEvent (fired by the
---                       More+ menu / server). The on-screen paw HUD button was
---                       removed; that toggle wiring is reproduced here.
---   2. PET HUB       -- the 700x520 blue panel: a grid of OWNED pet cards with
---                       3D auto-rotating viewport icons, name, rarity tier,
---                       level, XP bar, next-milestone hint, EQUIP + tier-SKIP.
---   3. QUESTS TAB    -- the discovered-quests overlay (island / status / how-to).
---   4. TRADE         -- full trade UI: pick a player -> request -> trade window
+--   1. PET HUB TOGGLE-- opened via the PetInvToggle BindableEvent / _G.togglePetHub
+--                       (fired by the More+ menu / PETS entry / server).
+--   2. PET HUB       -- the 700x520 blue panel: header with the "X / Y pets
+--                       unlocked" readout + gold TOKEN chip, and a grid of
+--                       OWNED pet cards with 3D auto-rotating viewport icons,
+--                       name, rarity tier, level, XP bar, next-milestone hint,
+--                       EQUIP + tier-SKIP.
+--   3. NAV BAR       -- the CURRENT four-tab bar under the header, verbatim
+--                       from the main game: PETS / CRATES / TRADE / QUESTS.
+--                       One page at a time via the _G.PetHub.showPage router
+--                       (selected tab = dark-on-gold, others gold-on-blue).
+--                       CRATES hands off to the crate panel (guarded).
+--   4. QUESTS PAGE   -- the discovered-quests overlay (island / status / how-to).
+--   5. TRADE PAGE    -- full trade UI: pick a player -> request -> trade window
 --                       (your offer / their offer / add list / confirm+cancel)
 --                       + the incoming-request ACCEPT/DECLINE popup.
 --
@@ -54,12 +60,13 @@ local PetTradeState   = remote("PetTradeStateEvent")
 local PetTradePrompt  = remote("PetTradeRequestPromptEvent")
 
 -- ⚠ REPLACE BEFORE LAUNCH: placeholder TIER-SKIP Developer Product IDs (must match PET_SKIP_PRODUCTS in
--- PetSystem.server.lua). Each jumps the pet to the FIRST level of the next tier. (Ordered 1=Common->Uncommon ... 4=Epic->Legendary.)
+-- PetSystem.server.lua -- these are the EXACT ids/prices/names the main game uses today). Each jumps the
+-- pet to the FIRST level of the next AGE. (Ordered 1=Baby->Kid ... 4=Adult->Elder.)
 local PET_SKIP_PRODUCTS = {
-	{ to = "Uncommon",  price = 49,  id = 123456701 },
-	{ to = "Rare",      price = 99,  id = 123456702 },
-	{ to = "Epic",      price = 299, id = 123456703 },
-	{ to = "Legendary", price = 599, id = 123456704 },
+	{ to = "Kid",   price = 49,  id = 123456701 }, -- ⚠ placeholder product id -- REPLACE BEFORE LAUNCH
+	{ to = "Teen",  price = 99,  id = 123456702 }, -- ⚠ REPLACE BEFORE LAUNCH
+	{ to = "Adult", price = 299, id = 123456703 }, -- ⚠ REPLACE BEFORE LAUNCH
+	{ to = "Elder", price = 599, id = 123456704 }, -- ⚠ REPLACE BEFORE LAUNCH
 }
 
 -- ============================================================================
@@ -67,16 +74,16 @@ local PET_SKIP_PRODUCTS = {
 -- ============================================================================
 local function petTier(level, isRare, petId)
 	if isRare then
-		if petId == "ButterDuck" then return "Mythical", Color3.fromRGB(255,70,230), true, true
-		else return "Exotic", Color3.fromRGB(40,235,225), true, true end
+		if petId == "ButterDuck" then return "Mythical", Color3.fromRGB(255,70,230), true, true  -- top tier, flashiest (magenta glow)
+		else return "Exotic", Color3.fromRGB(40,235,225), true, true end                          -- above everything (bright cyan/teal glow)
 	end
-	if level <= 5      then return "Common",    Color3.fromRGB(175,180,190), false, false
-	elseif level <= 10 then return "Uncommon",  Color3.fromRGB(90,210,90),   false, false
-	elseif level <= 15 then return "Rare",      Color3.fromRGB(70,140,255),  false, false
-	elseif level <= 20 then return "Epic",      Color3.fromRGB(180,90,235),  false, false
-	else                    return "Legendary", Color3.fromRGB(255,170,40),  false, false end
+	if level <= 5      then return "Baby",  Color3.fromRGB(175,180,190), false, false
+	elseif level <= 10 then return "Kid",   Color3.fromRGB(90,210,90),   false, false
+	elseif level <= 15 then return "Teen",  Color3.fromRGB(70,140,255),  false, false
+	elseif level <= 20 then return "Adult", Color3.fromRGB(180,90,235),  false, false
+	else                    return "Elder", Color3.fromRGB(255,170,40),  false, false end
 end
-local PET_DISPLAY = { BroccoliPet="Broccoli Bunny", CoconutCrab="Coconut Crab", PopcornSheep="Popcorn Sheep", ButterDuck="Butter Duck", BurritoArmadillo="Burrito Armadillo",
+local PET_DISPLAY = { BeanBuddy="Bean Buddy", PizzaDragon="Pizza Dragon", BroccoliPet="Broccoli Bunny", CoconutCrab="Coconut Crab", PopcornSheep="Popcorn Sheep", ButterDuck="Butter Duck", BurritoArmadillo="Burrito Armadillo",
 	SunflowerBee="Sunflower Bee", MapleFox="Maple Fox", FrostPenguin="Frost Penguin", BlossomBunny="Blossom Bunny" }
 
 -- ============================================================================
@@ -159,6 +166,10 @@ local PET_ICON_BUILDER = {
 -- ============================================================================
 local invGui = Instance.new("ScreenGui")
 invGui.Name = "PetInventoryUI"; invGui.ResetOnSpawn = false; invGui.DisplayOrder = 100
+-- HANDS OFF THE TEXT. Every label in this hub is authored with a deliberate TextSize -- 18pt
+-- headings, 12pt captions -- and a blanket TextScaled sweep throws that away. NoTextSweep is
+-- the sweep's own documented opt-out (same attribute the main game's hub sets).
+invGui:SetAttribute("NoTextSweep", true)
 invGui.Parent = pg
 local function uicorner(o, r) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r); c.Parent = o; return c end
 local function uistroke(o, col, t) local s = Instance.new("UIStroke"); s.Color = col; s.Thickness = t or 2; s.Parent = o; return s end
@@ -179,12 +190,79 @@ title.TextColor3 = Color3.fromRGB(255,215,0); title.Text = "\xF0\x9F\x90\xBE PET
 title.Size = UDim2.new(1,-60,0,34); title.Position = UDim2.new(0,14,0,5); title.Parent = header
 uistroke(title, Color3.new(0,0,0), 2)
 local subtitle = Instance.new("TextLabel"); subtitle.BackgroundTransparency = 1; subtitle.Font = Enum.Font.Gotham; subtitle.TextSize = 13
-subtitle.TextColor3 = Color3.new(1,1,1); subtitle.Text = "Your pets & quest progress"; subtitle.TextXAlignment = Enum.TextXAlignment.Left
-subtitle.Size = UDim2.new(1,-60,0,16); subtitle.Position = UDim2.new(0,14,0,40); subtitle.Parent = header
+-- The subtitle is the PETS-UNLOCKED progress readout. Every page in the hub shows the same
+-- header, so this and the token chip beside it are the two numbers always on screen.
+subtitle.TextColor3 = Color3.new(1,1,1); subtitle.Text = "0 / 0 pets unlocked"; subtitle.TextXAlignment = Enum.TextXAlignment.Left
+subtitle.Size = UDim2.new(0,300,0,16); subtitle.Position = UDim2.new(0,14,0,40); subtitle.Parent = header
+subtitle.Name = "HubProgress"
+
+-- TOKEN COUNTER, sat left of the close button. Same chip treatment the crate panel uses for
+-- its own token readout, so the two panels read as one interface when you tab between them.
+do
+	local tokChip = Instance.new("Frame"); tokChip.Name = "HubTokens"
+	tokChip.Size = UDim2.new(0,126,0,28); tokChip.Position = UDim2.new(1,-182,0,16)
+	tokChip.BackgroundColor3 = Color3.fromRGB(12,44,104); tokChip.Parent = header
+	uicorner(tokChip, 8); uistroke(tokChip, Color3.fromRGB(255,215,0), 1.5)
+	local tl = Instance.new("TextLabel"); tl.Name = "Value"; tl.BackgroundTransparency = 1
+	tl.Size = UDim2.new(1,-10,1,0); tl.Position = UDim2.new(0,5,0,0)
+	tl.Font = Enum.Font.GothamBold; tl.TextSize = 14; tl.TextColor3 = Color3.fromRGB(255,215,0)
+	tl.Text = "\xF0\x9F\xAA\x99 0"; tl.Parent = tokChip
+	-- cap the size so a long balance can't grow even if a TextScaled sweep touches it
+	do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 14; c.Parent = tl; tl.TextScaled = true end
+end
 local closeBtn = Instance.new("TextButton"); closeBtn.Size = UDim2.new(0,40,0,40); closeBtn.Position = UDim2.new(1,-48,0,10)
 closeBtn.BackgroundColor3 = Color3.fromRGB(220,50,50); closeBtn.Text = "X"; closeBtn.Font = Enum.Font.GothamBold; closeBtn.TextSize = 22
 closeBtn.TextColor3 = Color3.new(1,1,1); closeBtn.Parent = header
 uicorner(closeBtn, 8); uistroke(closeBtn, Color3.new(0,0,0), 2)
+
+-- ===== NAVIGATION: the pages of the hub (VERBATIM from the main game) =====
+-- One horizontal bar directly under the header (bar at y=66, 38 tall). FOUR tabs: pets and
+-- crates are ONE hub, entered through the PETS door. CRATES hands off to the crate panel via
+-- showPage. 163 wide: four tabs + three 8px gaps fill 676px.
+_G.PetHub = _G.PetHub or {}
+do
+	_G.PetHub.navButtons = {}
+	-- HEADER READOUTS, defined HERE and not down with the router: the pet grid calls
+	-- setProgress while the script is still LOADING, long before the router block runs.
+	_G.PetHub.setProgress = function(owned, total)
+		local lbl = header:FindFirstChild("HubProgress")
+		if lbl then lbl.Text = tostring(owned) .. " / " .. tostring(total) .. " pets unlocked" end
+	end
+	_G.PetHub.setTokens = function(n)
+		local chip = header:FindFirstChild("HubTokens")
+		local lbl = chip and chip:FindFirstChild("Value")
+		if lbl then lbl.Text = "\xF0\x9F\xAA\x99 " .. tostring(math.floor(tonumber(n) or 0)) end
+	end
+	-- the crate panel calls this whenever the server pushes a new balance, so the hub header
+	-- and the crate panel can never show two different token counts.
+	_G.petHubTokensChanged = function(n) pcall(_G.PetHub.setTokens, n) end
+	local bar = Instance.new("Frame"); bar.Name = "HubNav"
+	bar.Size = UDim2.new(1,-20,0,38); bar.Position = UDim2.new(0,10,0,66)
+	bar.BackgroundTransparency = 1; bar.Parent = panel
+	local ll = Instance.new("UIListLayout"); ll.FillDirection = Enum.FillDirection.Horizontal
+	ll.Padding = UDim.new(0,8); ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Parent = bar
+	for i, t in ipairs({
+		{ id = "pets",   label = "\xF0\x9F\x90\xBE PETS"   },
+		{ id = "crates", label = "\xF0\x9F\x93\xA6 CRATES" },
+		{ id = "trade",  label = "\xF0\x9F\x94\x84 TRADE"  },
+		{ id = "quests", label = "\xF0\x9F\x93\x9C QUESTS" },
+	}) do
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.new(0,163,1,0); b.LayoutOrder = i
+		b.BackgroundColor3 = Color3.fromRGB(18,66,150); b.Text = t.label
+		b.Font = Enum.Font.FredokaOne; b.TextSize = 15; b.TextScaled = true
+		b.TextColor3 = Color3.fromRGB(255,215,0); b.Parent = bar
+		uicorner(b, 10); uistroke(b, Color3.new(1,1,1), 1.5)
+		do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 15; c.Parent = b end
+		_G.PetHub.navButtons[t.id] = b
+		-- showPage is defined further down (it needs the trade + quest overlays to exist
+		-- first). Looked up at CLICK time, not now, so the ordering is fine.
+		b.MouseButton1Click:Connect(function()
+			if _G.playUIClick then pcall(_G.playUIClick) end
+			if _G.PetHub.showPage then _G.PetHub.showPage(t.id) end
+		end)
+	end
+end
 
 -- PETS section (fills the panel width: 2 big cards/row)
 local function makeSection(x, w, titleText)
@@ -200,7 +278,8 @@ local function makeSection(x, w, titleText)
 	return sec, sc
 end
 local petsSection, petsScroll = makeSection(12, 676, "\xF0\x9F\x90\xBe PETS")
-petsSection.Size = UDim2.new(1, -24, 1, -74); petsSection.Position = UDim2.new(0, 12, 0, 68)
+-- y=110, not 68: the four-tab nav bar owns 66..104 directly under the header.
+petsSection.Size = UDim2.new(1, -24, 1, -116); petsSection.Position = UDim2.new(0, 12, 0, 110)
 local petsGrid = Instance.new("UIGridLayout"); petsGrid.CellSize = UDim2.new(0,322,0,252); petsGrid.CellPadding = UDim2.new(0,10,0,12)
 petsGrid.HorizontalAlignment = Enum.HorizontalAlignment.Center; petsGrid.Parent = petsScroll
 do
@@ -210,7 +289,7 @@ do
 end
 
 -- QUESTS overlay
-local questsOverlay = Instance.new("Frame"); questsOverlay.Name = "QuestsOverlay"; questsOverlay.Size = UDim2.new(1,-24,1,-74); questsOverlay.Position = UDim2.new(0,12,0,68)
+local questsOverlay = Instance.new("Frame"); questsOverlay.Name = "QuestsOverlay"; questsOverlay.Size = UDim2.new(1,-24,1,-116); questsOverlay.Position = UDim2.new(0,12,0,110)
 questsOverlay.BackgroundColor3 = Color3.fromRGB(16,60,140); questsOverlay.Visible = false; questsOverlay.Parent = panel; uicorner(questsOverlay, 12); uistroke(questsOverlay, Color3.fromRGB(10,40,100), 2)
 local qoTitle = Instance.new("TextLabel"); qoTitle.Size = UDim2.new(1,-120,0,28); qoTitle.Position = UDim2.new(0,12,0,8); qoTitle.BackgroundTransparency = 1
 qoTitle.Font = Enum.Font.GothamBold; qoTitle.TextSize = 18; qoTitle.TextColor3 = Color3.fromRGB(255,215,0); qoTitle.TextXAlignment = Enum.TextXAlignment.Left; qoTitle.Text = "\xF0\x9F\x97\xBA Pet Quests"; qoTitle.Parent = questsOverlay
@@ -254,7 +333,15 @@ local function openPanel(open)
 	if not okShow then warn("[PetInv] ERROR opening: panel reference invalid"); return end
 	local ok, err = pcall(function()
 		if open then
+			-- a fresh open lands on the pet cards, not a stuck sub-tab
 			pcall(function() questsOverlay.Visible = false end)
+			pcall(function() local t = panel:FindFirstChild("TradeOverlay"); if t then t.Visible = false end end)
+			-- A fresh open always lands on PETS, and the nav has to SAY so. Without this the
+			-- bar keeps whatever tab was lit when you last closed, while the panel actually
+			-- shows the pet grid -- the exact drift the router exists to prevent.
+			pcall(function() _G.PetHub.activePage = "pets"; _G.PetHub.syncNav() end)
+			-- header token chip: show the balance the crate panel last had from the server
+			pcall(function() _G.PetHub.setTokens(_G.crateTokenBalance or 0) end)
 			_G.MainMenuManager.notifyOpened("PetInv")
 			local nOwned = 0; for _ in pairs(latestInv.owned or {}) do nOwned = nOwned + 1 end
 			print("[PetInv] inventory opened - owned: " .. nOwned)
@@ -262,6 +349,7 @@ local function openPanel(open)
 		else
 			_G.MainMenuManager.notifyClosed("PetInv")
 			pcall(function() questsOverlay.Visible = false end)
+			pcall(function() local t = panel:FindFirstChild("TradeOverlay"); if t then t.Visible = false end end)
 		end
 	end)
 	if not ok then
@@ -270,15 +358,52 @@ local function openPanel(open)
 	end
 end
 closeBtn.MouseButton1Click:Connect(function() openPanel(false) end)
-dim.InputBegan:Connect(function(io)
-	if io.UserInputType == Enum.UserInputType.MouseButton1 or io.UserInputType == Enum.UserInputType.Touch then openPanel(false) end
-end)
+-- NOTE: there is deliberately NO click-outside-to-close handler (same as the main game). `dim`
+-- spans the whole screen, so a click anywhere off the panel used to slam the Hub shut, which
+-- made the menu feel like it was closing at random. The Hub closes ONLY on an explicit action:
+-- the X button, the toggle firing again, or MainMenuManager closing it for another menu.
 -- this panel is toggled via the PetInvToggle event (fired by the More+ menu / server)
 local toggleEvent = Instance.new("BindableEvent"); toggleEvent.Name = "PetInvToggle"; toggleEvent.Parent = pg
 toggleEvent.Event:Connect(function()
 	local isOpen = false; pcall(function() isOpen = panel.Visible == true end)
 	openPanel(not isOpen)
 end)
+-- THE UNAMBIGUOUS DOOR (same as the main game). Buttons that can should call this instead of
+-- firing a found event -- FindFirstChild("PetInvToggle") can return a stale baked-in impostor.
+_G.togglePetHub = function()
+	local isOpen = false; pcall(function() isOpen = panel.Visible == true end)
+	openPanel(not isOpen)
+end
+-- ===== KILL THE IMPOSTOR (VERBATIM pattern from the main game, aimed the other way) =====
+-- CandyRealm's PetFollow.client.lua is an older snapshot that, once its 30s remote timeouts
+-- lapse, builds its OWN ScreenGui named PetInventoryUI and its OWN PetInvToggle BindableEvent
+-- -- a complete second (tab-less) Pet Hub. Every opener that falls back to
+-- FindFirstChild("PetInvToggle") would then race on load order, and its
+-- MainMenuManager.register("PetInv") overwrites ours. So: any same-named event or hub gui that
+-- is not OURS is destroyed/retired, at load AND whenever one appears later, and our
+-- registration + _G.togglePetHub are re-asserted.
+do
+	local ownGui = invGui
+	local function killImpostor(ch)
+		if ch == toggleEvent or ch == ownGui then return end
+		if ch:IsA("BindableEvent") and ch.Name == "PetInvToggle" then
+			ch:Destroy()
+			warn("[PetInv] destroyed a STALE duplicate PetInvToggle (second pet hub -- old PetFollow copy)")
+			pcall(function() _G.MainMenuManager.register("PetInv", function() panel.Visible = false; dim.Visible = false end) end)
+			_G.togglePetHub = function()
+				local isOpen = false; pcall(function() isOpen = panel.Visible == true end)
+				openPanel(not isOpen)
+			end
+		elseif ch:IsA("ScreenGui") and ch.Name == "PetInventoryUI" then
+			ch.Enabled = false
+			ch.Name = "PetInventoryUI_STALE" -- renamed so no finder can grab it
+			warn("[PetInv] retired a STALE duplicate PetInventoryUI gui (second pet hub -- old PetFollow copy)")
+			pcall(function() _G.MainMenuManager.register("PetInv", function() panel.Visible = false; dim.Visible = false end) end)
+		end
+	end
+	for _, ch in ipairs(pg:GetChildren()) do killImpostor(ch) end
+	pg.ChildAdded:Connect(function(ch) task.defer(killImpostor, ch) end)
+end
 
 -- ===== 3D VIEWPORT ICONS (auto-rotating clone of the pet) =====
 local iconSpins = {}
@@ -462,7 +587,7 @@ local function rebuildInventory(payload)
 		table.clear(iconSpins)
 		for _, c in ipairs(petsScroll:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
 		local ownedCount, order = 0, 0
-		local rank = { Mythical = 7, Exotic = 6, Legendary = 5, Epic = 4, Rare = 3, Uncommon = 2, Common = 1 }
+		local rank = { Mythical = 7, Exotic = 6, Elder = 5, Adult = 4, Teen = 3, Kid = 2, Baby = 1 } -- AGE tiers (matches the live petTier)
 		local ids = {}
 		for skey in pairs(owned) do ids[#ids + 1] = skey end
 		table.sort(ids, function(a, b)
@@ -481,6 +606,8 @@ local function rebuildInventory(payload)
 			local em = Instance.new("Frame"); em.Name = "PetsEmpty"; em.Size = UDim2.new(1,-20,0,90); em.Position = UDim2.new(0,10,0,8); em.BackgroundTransparency = 1; em.Parent = petsScroll
 			local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1,0,1,0); lbl.BackgroundTransparency = 1; lbl.Font = Enum.Font.GothamBold; lbl.TextSize = 20; lbl.TextWrapped = true; lbl.TextColor3 = Color3.fromRGB(190,210,255); lbl.Text = "No Pets Unlocked\nComplete pet quests on the islands to hatch your first pet!"; lbl.Parent = em
 		end
+		-- header readout: "X / Y pets unlocked" (Y = the catalog size the server reports)
+		pcall(function() _G.PetHub.setProgress(ownedCount, latestInv.totalPets or 0) end)
 		petsScroll.CanvasSize = UDim2.new(0,0,0, math.ceil(ownedCount / 2) * 264 + 20)
 		for _, c in ipairs(questsScroll:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
 		local qCount = 0
@@ -532,11 +659,10 @@ local function makeOfferCard(parent, brief, order, onClick)
 	return card
 end
 
-local tradeBtn = Instance.new("TextButton"); tradeBtn.Size = UDim2.new(0,96,0,34); tradeBtn.Position = UDim2.new(1,-150,0,13)
-tradeBtn.BackgroundColor3 = Color3.fromRGB(80,160,255); tradeBtn.Font = Enum.Font.GothamBold; tradeBtn.TextSize = 14; tradeBtn.TextColor3 = Color3.new(1,1,1)
-tradeBtn.Text = "\xF0\x9F\x94\x81 TRADE"; tradeBtn.Parent = header; uicorner(tradeBtn, 8); uistroke(tradeBtn, Color3.new(0,0,0), 2)
+-- (the old header "TRADE" chip is gone -- TRADE is a tab in the HubNav bar now, exactly like
+--  the main game; its open logic lives in the showPage router below)
 
-local tradeOverlay = Instance.new("Frame"); tradeOverlay.Name = "TradeOverlay"; tradeOverlay.Size = UDim2.new(1,-24,1,-74); tradeOverlay.Position = UDim2.new(0,12,0,68)
+local tradeOverlay = Instance.new("Frame"); tradeOverlay.Name = "TradeOverlay"; tradeOverlay.Size = UDim2.new(1,-24,1,-116); tradeOverlay.Position = UDim2.new(0,12,0,110)
 tradeOverlay.BackgroundColor3 = Color3.fromRGB(16,60,140); tradeOverlay.Visible = false; tradeOverlay.Parent = panel; uicorner(tradeOverlay, 12); uistroke(tradeOverlay, Color3.fromRGB(10,40,100), 2)
 local ovTitle = Instance.new("TextLabel"); ovTitle.Size = UDim2.new(1,-120,0,28); ovTitle.Position = UDim2.new(0,12,0,8); ovTitle.BackgroundTransparency = 1
 ovTitle.Font = Enum.Font.GothamBold; ovTitle.TextSize = 18; ovTitle.TextColor3 = Color3.fromRGB(255,215,0); ovTitle.TextXAlignment = Enum.TextXAlignment.Left; ovTitle.Text = "Trade"; ovTitle.Parent = tradeOverlay
@@ -554,7 +680,7 @@ local function colScroll(x, y, h) local s = Instance.new("ScrollingFrame"); s.Si
 colTitle("YOUR OFFER (click to remove)", 0)
 local yourOfferScroll = colScroll(0, 20, 150)
 local addTitleLbl = colTitle("YOUR PETS (click to add)", 0); addTitleLbl.Position = UDim2.new(0,0,0,176)
-local addScroll = colScroll(0, 196, 200)
+local addScroll = colScroll(0, 196, 160) -- 160, not 200: the overlay starts at y=110 now (nav bar), so 200 would run past the panel's bottom edge
 colTitle("THEIR OFFER", 330)
 local theirOfferScroll = colScroll(330, 20, 150)
 local statusLbl = Instance.new("TextLabel"); statusLbl.Size = UDim2.new(0,310,0,108); statusLbl.Position = UDim2.new(0,330,0,178); statusLbl.BackgroundTransparency = 1
@@ -604,25 +730,74 @@ local function renderTradeWindow(state)
 	confirmBtn.Text = state.myConfirm and "\xE2\x9C\x94 CONFIRMED" or "CONFIRM"
 	confirmBtn.BackgroundColor3 = state.myConfirm and Color3.fromRGB(120,120,120) or Color3.fromRGB(50,200,50)
 end
-ovBack.MouseButton1Click:Connect(function() tradeOverlay.Visible = false end)
+ovBack.MouseButton1Click:Connect(function() if _G.PetHub.showPage then _G.PetHub.showPage("pets") end end)
 cancelBtn.MouseButton1Click:Connect(function() if PetTradeCancel then pcall(function() PetTradeCancel:FireServer() end) end end)
 confirmBtn.MouseButton1Click:Connect(function() if PetTradeConfirm then pcall(function() PetTradeConfirm:FireServer() end) end end)
-tradeBtn.MouseButton1Click:Connect(function()
-	questsOverlay.Visible = false
-	if tradeState and tradeState.active then tradeOverlay.Visible = true; renderTradeWindow(tradeState)
-	else tradeOverlay.Visible = not tradeOverlay.Visible; if tradeOverlay.Visible then showPicker() end end
-end)
 
-local questsBtn = Instance.new("TextButton"); questsBtn.Size = UDim2.new(0,96,0,34); questsBtn.Position = UDim2.new(1,-252,0,13)
-questsBtn.BackgroundColor3 = Color3.fromRGB(120,170,60); questsBtn.Font = Enum.Font.GothamBold; questsBtn.TextSize = 14; questsBtn.TextColor3 = Color3.new(1,1,1)
-questsBtn.Text = "\xF0\x9F\x97\xBA QUESTS"; questsBtn.Parent = header; uicorner(questsBtn, 8); uistroke(questsBtn, Color3.new(0,0,0), 2)
-questsBtn.MouseButton1Click:Connect(function() tradeOverlay.Visible = false; questsOverlay.Visible = not questsOverlay.Visible end)
-qoBack.MouseButton1Click:Connect(function() questsOverlay.Visible = false end)
+-- ===== HUB ROUTER: one page at a time (VERBATIM from the main game) =====
+-- Defined HERE, not up beside the nav bar, because it drives the real trade + quest overlays
+-- and they do not exist yet at that point in the file. The nav buttons look showPage up at
+-- CLICK time, so the order is fine.
+--
+-- Every page is mutually exclusive: the old header chips TOGGLED, which let you end up with
+-- the pet grid showing while the nav claimed you were on Quests. A router that SETS state
+-- instead of flipping it cannot drift out of step with the highlighted tab.
+_G.PetHub.activePage = "pets"
+
+_G.PetHub.syncNav = function()
+	local cur = _G.PetHub.activePage or "pets"
+	for id, b in pairs(_G.PetHub.navButtons or {}) do
+		local on = (id == cur)
+		-- selected = dark-on-gold, unselected = gold-on-blue. Same two states the crate panel uses.
+		b.BackgroundColor3 = on and Color3.fromRGB(255,215,0) or Color3.fromRGB(18,66,150)
+		b.TextColor3 = on and Color3.fromRGB(92,58,8) or Color3.fromRGB(255,215,0)
+		local st = b:FindFirstChildOfClass("UIStroke")
+		if st then
+			st.Color = on and Color3.fromRGB(180,122,20) or Color3.new(1,1,1)
+			st.Thickness = on and 2.5 or 1.5
+		end
+	end
+end
+
+_G.PetHub.showPage = function(id)
+	id = id or "pets"
+	-- CRATES (and TOKENS, a page inside it) belong to the crate panel. Hand off rather than
+	-- rebuild: that panel already owns the roll, the reveal and the token purchase, and a
+	-- second copy of any of those is a second thing that can disagree with the server.
+	if id == "crates" or id == "tokens" then
+		openPanel(false) -- close the hub first: both panels are DisplayOrder 100, so they'd overlap
+		if _G.toggleSkinCrates then
+			-- `true` = opened from the hub, which makes the crate panel show its BACK button
+			_G.toggleSkinCrates(true, id)
+		else
+			-- no skin-crate panel in this realm yet -> the daily crate panel is the crate door
+			local ev = RS:FindFirstChild("OpenMeteorCrate")
+			if ev and ev:IsA("BindableEvent") then ev:Fire()
+			else
+				print("[PetHub] no crate panel in this realm yet (_G.toggleSkinCrates / OpenMeteorCrate missing)")
+				openPanel(true) -- reopen the hub (lands back on PETS) so the player isn't dropped to nothing
+			end
+		end
+		return
+	end
+	questsOverlay.Visible = (id == "quests")
+	tradeOverlay.Visible  = (id == "trade")
+	if id == "trade" then
+		-- a live session shows the trade window; otherwise the picker
+		if tradeState and tradeState.active then renderTradeWindow(tradeState) else showPicker() end
+	end
+	_G.PetHub.activePage = id
+	_G.PetHub.syncNav()
+end
+_G.PetHub.syncNav() -- paint the initial state (PETS lit)
+
+qoBack.MouseButton1Click:Connect(function() if _G.PetHub.showPage then _G.PetHub.showPage("pets") end end)
 
 if PetTradeState then PetTradeState.OnClientEvent:Connect(function(state)
 	tradeState = state
 	if state and state.active then
-		openPanel(true); tradeOverlay.Visible = true; renderTradeWindow(state)
+		openPanel(true) -- ensure the Hub is open so both players see the trade window
+		if _G.PetHub.showPage then _G.PetHub.showPage("trade") else tradeOverlay.Visible = true; renderTradeWindow(state) end
 	else
 		local reason = state and state.reason
 		print("[Trade] window closed (" .. tostring(reason) .. ")")
@@ -673,8 +848,8 @@ if not PetInventoryEvent then
 	rebuildInventory({
 		totalPets = 5,
 		owned = {
-			BroccoliPet  = { petId="BroccoliPet",  displayName="Broccoli Bunny", level=4,  xp=120, xpNeed=200, maxLevel=25, equipped=true,  milestone="Lv 5 -> Uncommon tier" },
-			CoconutCrab  = { petId="CoconutCrab",  displayName="Coconut Crab",   level=12, xp=80,  xpNeed=300, maxLevel=25, milestone="Lv 15 -> Epic" },
+			BroccoliPet  = { petId="BroccoliPet",  displayName="Broccoli Bunny", level=4,  xp=120, xpNeed=200, maxLevel=25, equipped=true,  milestone="Lv 6 -> Kid age" },
+			CoconutCrab  = { petId="CoconutCrab",  displayName="Coconut Crab",   level=12, xp=80,  xpNeed=300, maxLevel=25, milestone="Lv 16 -> Adult age" },
 			PopcornSheep = { petId="PopcornSheep", displayName="Popcorn Sheep",  level=22, xp=40,  xpNeed=400, maxLevel=25, count=2, milestone="Lv 25 -> MAX" },
 			["ButterDuck#R"] = { petId="ButterDuck", displayName="Butter Duck", rareName="Cosmic Duck", rare=true, level=25, xp=0, xpNeed=0, maxLevel=25, milestone="Maxed Mythical" },
 		},
@@ -684,7 +859,7 @@ if not PetInventoryEvent then
 			p = { islandName="Popcorn Pinnacle",status="available",  desc="Find 6 film reels, load the projector, watch the show." },
 		},
 	})
-	print("[PetHub] no server remotes found -> showing DEMO inventory. Click the paw button to open.")
+	print("[PetHub] no server remotes found -> showing DEMO inventory. Open via the More+ menu's Pets card.")
 end
 
-print("[PetHub] ready -- Pet Hub opens via the PetInvToggle event (paw button removed)")
+print("[PetHub] ready -- 4-tab hub (PETS/CRATES/TRADE/QUESTS) opens via _G.togglePetHub / the PetInvToggle event")

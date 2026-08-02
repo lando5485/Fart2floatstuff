@@ -134,26 +134,48 @@ task.spawn(function()
 			if f and f:IsA("GuiObject") and f.Visible then coinFrame = f end
 		end
 		if coinFrame then
-			local ap, as = coinFrame.AbsolutePosition, coinFrame.AbsoluteSize
-			local midY = ap.Y + math.floor(as.Y / 2)
-			local nextRight = ap.X - GAP -- where the next element's right edge goes
+			-- ===== EDGE-ANCHORED, NEVER COORDINATE-PLACED =====
+			-- The first version of this pass placed the gear and the pill at MEASURED absolute
+			-- coordinates. The stale CoreClient's safe-area/scale passes re-shift these same
+			-- elements, so two writers compounded and walked the row off-screen. This version
+			-- uses the idiom that provably survives those passes -- the coin pill's own: anchor
+			-- to the RIGHT EDGE with a scale-1 X and a negative offset. An element anchored
+			-- (1, y) at (1, -off) physically cannot leave the right edge, and the row is too
+			-- short to reach the left one. Only WIDTHS are measured (AbsoluteSize is scale-true
+			-- and writer-independent); each next offset = previous offset + width + GAP.
+			local vpY = gui.AbsoluteSize.Y
 
-			-- (1) GEAR: right edge a fixed GAP left of the pill, vertically centred on the coin
-			-- row. Its authored -198 was tuned for one viewport and is exactly what the pill and
-			-- badge were colliding with; measured placement replaces it.
+			-- coin pill width, sanity-clamped in case the measure lands mid-rebuild
+			local coinW = coinFrame.AbsoluteSize.X
+			if coinW < 40 or coinW > 400 then coinW = 180 end
+
+			-- vertical centre of the coin row; if the read is nonsense (pill mid-move, gui
+			-- half-built), fall back to a row that clears the Roblox top bar -- this gui is
+			-- IgnoreGuiInset, so the safe margin must be added by hand
+			local midY = coinFrame.AbsolutePosition.Y + math.floor(coinFrame.AbsoluteSize.Y / 2)
+			if midY < 4 or midY > vpY * 0.3 then
+				local inset = game:GetService("GuiService"):GetGuiInset()
+				midY = inset.Y + 23
+			end
+
+			local RIGHT_MARGIN = 10                 -- the coin pill's own authored inset from the edge
+			local off = RIGHT_MARGIN + coinW + GAP  -- right-edge offset for the NEXT element leftward
+
+			-- (1) GEAR: right edge a fixed GAP left of the coin pill. Its authored -198 was
+			-- tuned for one viewport width; this follows the pill's real width instead.
 			local sgui = PlayerGui:FindFirstChild("SettingsGui")
 			local gear = sgui and sgui:FindFirstChild("SettingsGearBtn")
 			if gear and gear:IsA("GuiObject") and gear.Visible then
+				local gearW = gear.AbsoluteSize.X
+				if gearW < 20 or gearW > 120 then gearW = 46 end
 				gear.AnchorPoint = Vector2.new(1, 0.5)
-				gear.Position = UDim2.fromOffset(nextRight, midY)
-				-- derive the next slot from the gear's SIZE, not a same-frame AbsolutePosition
-				-- read (which may not have recomputed yet): left edge = right edge - width.
-				nextRight = nextRight - gear.AbsoluteSize.X - GAP
+				gear.Position = UDim2.new(1, -off, 0, midY)
+				off = off + gearW + GAP
 			end
 
 			-- (2) TOKEN PILL: right edge a fixed GAP left of whatever came before (gear if
 			-- present, else the coin pill).
-			pill.Position = UDim2.fromOffset(nextRight, midY)
+			pill.Position = UDim2.new(1, -off, 0, midY)
 
 			-- (3) the red badge stays inside the pill it belongs to
 			pcall(clampCoinBadges, coinFrame)

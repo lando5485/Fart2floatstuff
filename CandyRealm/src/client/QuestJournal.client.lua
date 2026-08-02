@@ -40,6 +40,9 @@ local ROWS = {
 		return false, (st > 0) and ("step %d of 3"):format(math.min(st, 3)) or nil
 	end },
 	{ 14, "Pizza Palms",     "Camp S'mores",    function() return _G.smoresQuestComplete end },
+	{ 15, "Bakery Isle",     "The Great Bake-Off", function()
+		return _G.bakeryQuestComplete == true, _G.bakeryQuestStep
+	end },
 }
 
 local FILL   = Color3.fromRGB(255, 245, 250)

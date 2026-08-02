@@ -178,6 +178,7 @@ local surfaceReturnCF          -- where you pop out on top when you leave the mi
 local crateSlots = {}          -- world CFrames the placed crates snap to
 local placePrompt              -- the "Plant Dynamite" prompt on the blast zone
 local heldCrate, heldGem       -- welded-to-hand props
+local heldPick                 -- your world "Pickaxe" model, held all mine phase
 local groundCrates = {}        -- the grabbable dynamite crates by the blast zone
 local tntBrick, tntPrompt      -- the world brick named "tnt" you grab charges from (if placed)
 
@@ -290,9 +291,14 @@ end
 -- ============================================================================
 -- CARRY-IN-HAND  (weld a prop into the player's hand; reused for crates + gems)
 -- ============================================================================
-local function weldToHand(model, drop)
+local function weldToHand(model, drop, whichHand)
 	local char = player.Character
-	local hand = char and (char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm"))
+	local hand
+	if whichHand == "Left" then
+		hand = char and (char:FindFirstChild("LeftHand") or char:FindFirstChild("Left Arm"))
+	else
+		hand = char and (char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm"))
+	end
 	if not (hand and hand:IsA("BasePart")) then model:Destroy(); return false end
 	local prim = model.PrimaryPart
 	if not prim then model:Destroy(); return false end
@@ -308,6 +314,104 @@ local function weldToHand(model, drop)
 	end
 	model.Parent = char
 	return true
+end
+
+-- ============================================================================
+-- THE HELD PICKAXE -- your world model, carried the whole mine phase. The same
+-- part/model named "Pickaxe" that skins the Crystal Mine tool: cloned, scaled
+-- to hand size, and welded into the RIGHT hand (diamonds ride the left). Found
+-- by a poller because it can stream in late; no model found = simply no prop.
+-- ============================================================================
+local worldPickaxe = nil
+task.spawn(function()
+	for _ = 1, 60 do
+		for _, d in ipairs(Workspace:GetDescendants()) do
+			if (d:IsA("BasePart") or d:IsA("Model")) and norm(d.Name) == "pickaxe"
+				and not d:FindFirstAncestorOfClass("Tool") then
+				local inChar = false
+				for _, pl in ipairs(Players:GetPlayers()) do
+					if pl.Character and d:IsDescendantOf(pl.Character) then inChar = true; break end
+				end
+				if not inChar and (d:IsA("BasePart") or d:FindFirstChildWhichIsA("BasePart", true)) then
+					worldPickaxe = d
+					print("[TunnelQuest] world 'Pickaxe' found: " .. d:GetFullName())
+					return
+				end
+			end
+		end
+		task.wait(3)
+	end
+end)
+
+-- longest axis = the shaft, head = the volume-heavy end (the island-14 axe's
+-- trick). Returns a grip frame (-Z up the shaft toward the head) + shaft length.
+local function pickaxeGrip(model)
+	local bcf, bsz
+	if model:IsA("BasePart") then bcf, bsz = model.CFrame, model.Size
+	else bcf, bsz = model:GetBoundingBox() end
+	local axes = { { Vector3.new(1, 0, 0), bsz.X }, { Vector3.new(0, 1, 0), bsz.Y },
+	               { Vector3.new(0, 0, 1), bsz.Z } }
+	table.sort(axes, function(a, b) return a[2] > b[2] end)
+	local ax, len = axes[1][1], axes[1][2]
+	local sum, tot = 0, 0
+	for _, d in ipairs(model:IsA("BasePart") and { model } or model:GetDescendants()) do
+		if d:IsA("BasePart") then
+			local v = math.max(0.001, d.Size.X * d.Size.Y * d.Size.Z)
+			sum += bcf:PointToObjectSpace(d.Position):Dot(ax) * v
+			tot += v
+		end
+	end
+	local headSide = ((tot > 0 and sum / tot or 0) >= 0) and 1 or -1
+	local gripPos = (bcf * CFrame.new(ax * (-headSide * len * 0.12))).Position
+	local headDir = (bcf - bcf.Position) * (ax * headSide)
+	if headDir.Magnitude < 0.01 then headDir = Vector3.new(0, 1, 0) end
+	return CFrame.lookAt(gripPos, gripPos + headDir), len
+end
+
+local function biggestPartOf(inst)
+	if inst:IsA("BasePart") then return inst end
+	local best, bv
+	for _, d in ipairs(inst:GetDescendants()) do
+		if d:IsA("BasePart") then
+			local v = d.Size.X * d.Size.Y * d.Size.Z
+			if not bv or v > bv then best, bv = d, v end
+		end
+	end
+	return best
+end
+
+local function givePickaxe()
+	if heldPick and heldPick.Parent then return end
+	local src = worldPickaxe
+	if not (src and src.Parent) then return end
+	local wasArch = src.Archivable
+	src.Archivable = true
+	local c = src:Clone()
+	src.Archivable = wasArch
+	if not c then return end
+	for _, d in ipairs(c:GetDescendants()) do
+		if d:IsA("LuaSourceContainer") or d:IsA("ProximityPrompt") or d:IsA("ClickDetector") then
+			d:Destroy()
+		end
+	end
+	local wrap = c
+	if c:IsA("BasePart") then wrap = Instance.new("Model"); c.Parent = wrap end
+	wrap.Name = "HeldPickaxe"
+	local root = biggestPartOf(wrap)
+	if not root then wrap:Destroy(); return end
+	wrap.PrimaryPart = root
+	local _, len = pickaxeGrip(wrap)
+	local s = math.clamp(4.0 / math.max(len, 0.5), 0.05, 20)
+	if math.abs(s - 1) > 0.1 then pcall(function() wrap:ScaleTo(s) end) end
+	-- pivot AT the grip point, -Z up the shaft: weldToHand pivots the model by
+	-- this frame, so the hold angle below reads exactly like the Smores axe
+	wrap.WorldPivot = pickaxeGrip(wrap)
+	heldPick = wrap
+	weldToHand(wrap, CFrame.new(0, -0.35, 0) * CFrame.Angles(math.rad(-110), 0, math.rad(-10)))
+end
+
+local function takePickaxe()
+	if heldPick then heldPick:Destroy(); heldPick = nil end
 end
 
 -- ============================================================================
@@ -363,7 +467,8 @@ local function refreshHeldGem()
 	if heldGem then heldGem:Destroy(); heldGem = nil end
 	if carriedDiam > 0 and phase == "mine" then
 		heldGem = buildHeldGem()
-		weldToHand(heldGem, CFrame.new(0.2, -1.6, -0.4))
+		-- LEFT hand: the right one is carrying the pickaxe all mine phase
+		weldToHand(heldGem, CFrame.new(-0.2, -1.6, -0.4), "Left")
 	end
 end
 
@@ -2120,6 +2225,8 @@ end
 -- dying underground must not leave the whole game dark
 player.CharacterAdded:Connect(function()
 	if phase ~= "mine" then caveDark(false) end
+	heldPick = nil              -- the weld died with the old character
+	if phase == "mine" then task.delay(1.2, givePickaxe) end
 end)
 
 function enterMine()
@@ -2136,6 +2243,7 @@ function enterMine()
 	if char and caveEntryCF then char:PivotTo(caveEntryCF) end
 	phase = "mine"
 	caveDark(true)
+	givePickaxe()             -- your Pickaxe model rides the right hand down here
 	updateObjective()
 	task.wait(0.15)
 	TweenService:Create(ff, TweenInfo.new(0.4), { BackgroundTransparency = 1 }):Play()
@@ -2179,6 +2287,7 @@ leaveMine = function()
 	if char and surfaceReturnCF then char:PivotTo(surfaceReturnCF) end
 	caveDark(false)
 	phase = "descend"
+	takePickaxe()             -- tools stay in the mine
 	updateObjective()
 	task.wait(0.15)
 	TweenService:Create(ff, TweenInfo.new(0.4), { BackgroundTransparency = 1 }):Play()
@@ -2204,6 +2313,7 @@ function completeQuest()
 	grantRewards()
 	_G.tunnelQuestComplete = true   -- unlocks the island-11 stand (Shop_AllInOne)
 	if heldGem then heldGem:Destroy(); heldGem = nil end
+	takePickaxe()
 	showCard(("✅ QUEST COMPLETE!\n+%d Coins   +%d XP   +%d Gems"):format(COIN_REWARD, XP_REWARD, GEM_REWARD), 4.5)
 	notify(("🏆 Tunnel cleared! +%d Coins, +%d XP, +%d Gems"):format(COIN_REWARD, XP_REWARD, GEM_REWARD), GOLD)
 

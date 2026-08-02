@@ -553,6 +553,99 @@ local function getRightShoulder(char)
 end
 
 -- ============================================================================
+-- YOUR PICKAXE FROM THE WORLD. A part or model named "Pickaxe" placed on one of
+-- the Studio models is cloned onto the Tool in place of the code-built head --
+-- the same model the Tunnel Blast mine holds. The original stays put as set
+-- dressing. Cached by a poller because it may STREAM IN late; if the tool is
+-- granted before it arrives, the code-built pickaxe is the fallback.
+-- ============================================================================
+local worldPickaxe = nil
+task.spawn(function()
+	for _ = 1, 60 do          -- ~3 minutes of looking, then give up quietly
+		for _, d in ipairs(Workspace:GetDescendants()) do
+			if (d:IsA("BasePart") or d:IsA("Model")) and loose(d.Name) == "pickaxe"
+				and not d:FindFirstAncestorOfClass("Tool") then
+				local inChar = false
+				for _, pl in ipairs(Players:GetPlayers()) do
+					if pl.Character and d:IsDescendantOf(pl.Character) then inChar = true; break end
+				end
+				if not inChar and (d:IsA("BasePart") or d:FindFirstChildWhichIsA("BasePart", true)) then
+					worldPickaxe = d
+					print("[CrystalMine] world 'Pickaxe' found: " .. d:GetFullName())
+					return
+				end
+			end
+		end
+		task.wait(3)
+	end
+end)
+
+-- longest axis = the shaft; the head is whichever end carries most of the part
+-- volume (the island-14 axe's trick). Returns a world frame at the hand's grip
+-- point with -Z running up the shaft toward the head, plus the shaft length.
+local function pickaxeGrip(model)
+	local bcf, bsz
+	if model:IsA("BasePart") then bcf, bsz = model.CFrame, model.Size
+	else bcf, bsz = model:GetBoundingBox() end
+	local axes = { { Vector3.new(1, 0, 0), bsz.X }, { Vector3.new(0, 1, 0), bsz.Y },
+	               { Vector3.new(0, 0, 1), bsz.Z } }
+	table.sort(axes, function(a, b) return a[2] > b[2] end)
+	local ax, len = axes[1][1], axes[1][2]
+	local sum, tot = 0, 0
+	for _, d in ipairs(model:IsA("BasePart") and { model } or model:GetDescendants()) do
+		if d:IsA("BasePart") then
+			local v = math.max(0.001, d.Size.X * d.Size.Y * d.Size.Z)
+			sum += bcf:PointToObjectSpace(d.Position):Dot(ax) * v
+			tot += v
+		end
+	end
+	local headSide = ((tot > 0 and sum / tot or 0) >= 0) and 1 or -1
+	local gripPos = (bcf * CFrame.new(ax * (-headSide * len * 0.12))).Position
+	local headDir = (bcf - bcf.Position) * (ax * headSide)
+	if headDir.Magnitude < 0.01 then headDir = Vector3.new(0, 1, 0) end
+	return CFrame.lookAt(gripPos, gripPos + headDir), len
+end
+
+-- clone the world pickaxe onto the tool: scaled to hand size, every part welded
+-- to the Handle so the existing Grip/swing animation drives it unchanged
+local function skinToolWithWorldPickaxe(tool, handle)
+	local src = worldPickaxe
+	if not (src and src.Parent) then return false end
+	local wasArch = src.Archivable
+	src.Archivable = true
+	local c = src:Clone()
+	src.Archivable = wasArch
+	if not c then return false end
+	for _, d in ipairs(c:GetDescendants()) do
+		if d:IsA("LuaSourceContainer") or d:IsA("ProximityPrompt") or d:IsA("ClickDetector") then
+			d:Destroy()
+		end
+	end
+	local wrap = c
+	if c:IsA("BasePart") then
+		wrap = Instance.new("Model"); c.Parent = wrap; wrap.PrimaryPart = c
+	end
+	local _, len = pickaxeGrip(wrap)
+	local s = math.clamp(3.2 / math.max(len, 0.5), 0.05, 20)
+	if math.abs(s - 1) > 0.1 then pcall(function() wrap:ScaleTo(s) end) end
+	local gripCF = pickaxeGrip(wrap)
+	local R = CFrame.Angles(math.rad(90), 0, 0)   -- grip's -Z (up the shaft) -> Handle's +Y
+	for _, d in ipairs(wrap:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.Anchored = false; d.CanCollide = false; d.CanQuery = false; d.Massless = true
+			d:SetAttribute("WorldSkin", true)
+			local C0 = R * gripCF:ToObjectSpace(d.CFrame)
+			d.Parent = tool
+			local w = Instance.new("Weld"); w.Part0 = handle; w.Part1 = d; w.C0 = C0; w.Parent = d
+		end
+	end
+	wrap:Destroy()
+	tool:SetAttribute("WorldSkin", true)
+	print("[CrystalMine] tool skinned with your world 'Pickaxe' -- code-built head skipped")
+	return true
+end
+
+-- ============================================================================
 -- PICKAXE  (built in code; swing animates the Grip + the arm + mines the crystal)
 -- ============================================================================
 local function buildPickaxe()
@@ -572,16 +665,21 @@ local function buildPickaxe()
 		local w = Instance.new("Weld"); w.Part0 = handle; w.Part1 = p; w.C0 = c0; w.Parent = p
 		return p
 	end
-	-- compact steel head near the top: eye, cross bar, a pointed pick tip + a flat adze
-	weldPart(Vector3.new(0.4, 0.4, 0.38),   STEEL, Enum.Material.Metal, CFrame.new(0, 1.28, 0)).Reflectance = 0.12       -- eye
-	weldPart(Vector3.new(1.5, 0.3, 0.36),   STEEL, Enum.Material.Metal, CFrame.new(0, 1.28, 0)).Reflectance = 0.12       -- cross bar
-	weldPart(Vector3.new(0.46, 0.32, 0.4),  STEEL, Enum.Material.Metal, CFrame.new(-0.95, 1.28, 0)).Reflectance = 0.12   -- flat adze (-X)
-	weldPart(Vector3.new(0.58, 0.34, 0.34), STEEL, Enum.Material.Metal, CFrame.new(0.9, 1.24, 0) * CFrame.Angles(0,0,math.rad(20))).Reflectance = 0.12 -- pick shoulder (+X)
-	weldPart(Vector3.new(0.4, 0.3, 0.34),   STEEL, Enum.Material.Metal, CFrame.new(1.32, 1.1, 0) * CFrame.Angles(0,0,math.rad(90)), Enum.PartType.Wedge).Reflectance = 0.15 -- pointed pick tip
-	-- candy touches: gold collar + pink grip wrap + gold pommel
-	weldPart(Vector3.new(0.3, 0.34, 0.3), GOLD, Enum.Material.Metal, CFrame.new(0, 1.02, 0))
-	weldPart(Vector3.new(0.3, 0.75, 0.3), Color3.fromRGB(210, 70, 120), Enum.Material.SmoothPlastic, CFrame.new(0, -0.85, 0)) -- grip wrap
-	weldPart(Vector3.new(0.3, 0.2, 0.3),  GOLD, Enum.Material.Metal, CFrame.new(0, -1.32, 0))                                -- pommel cap
+	-- YOUR pickaxe if the world provides one; the code-built head only otherwise
+	if skinToolWithWorldPickaxe(tool, handle) then
+		handle.Transparency = 1     -- the model IS the pickaxe; the shaft stays as the grip bone
+	else
+		-- compact steel head near the top: eye, cross bar, a pointed pick tip + a flat adze
+		weldPart(Vector3.new(0.4, 0.4, 0.38),   STEEL, Enum.Material.Metal, CFrame.new(0, 1.28, 0)).Reflectance = 0.12       -- eye
+		weldPart(Vector3.new(1.5, 0.3, 0.36),   STEEL, Enum.Material.Metal, CFrame.new(0, 1.28, 0)).Reflectance = 0.12       -- cross bar
+		weldPart(Vector3.new(0.46, 0.32, 0.4),  STEEL, Enum.Material.Metal, CFrame.new(-0.95, 1.28, 0)).Reflectance = 0.12   -- flat adze (-X)
+		weldPart(Vector3.new(0.58, 0.34, 0.34), STEEL, Enum.Material.Metal, CFrame.new(0.9, 1.24, 0) * CFrame.Angles(0,0,math.rad(20))).Reflectance = 0.12 -- pick shoulder (+X)
+		weldPart(Vector3.new(0.4, 0.3, 0.34),   STEEL, Enum.Material.Metal, CFrame.new(1.32, 1.1, 0) * CFrame.Angles(0,0,math.rad(90)), Enum.PartType.Wedge).Reflectance = 0.15 -- pointed pick tip
+		-- candy touches: gold collar + pink grip wrap + gold pommel
+		weldPart(Vector3.new(0.3, 0.34, 0.3), GOLD, Enum.Material.Metal, CFrame.new(0, 1.02, 0))
+		weldPart(Vector3.new(0.3, 0.75, 0.3), Color3.fromRGB(210, 70, 120), Enum.Material.SmoothPlastic, CFrame.new(0, -0.85, 0)) -- grip wrap
+		weldPart(Vector3.new(0.3, 0.2, 0.3),  GOLD, Enum.Material.Metal, CFrame.new(0, -1.32, 0))                                -- pommel cap
+	end
 
 	-- rest pose (held ready). Extra 90° clockwise roll on top of the 180° flip. Tweak if odd.
 	local rest = CFrame.new(0, -0.35, 0) * CFrame.Angles(math.rad(-12), math.rad(180), 0) * CFrame.Angles(0, 0, math.rad(-90))
@@ -766,15 +864,27 @@ upgradePickaxe = function()
 		end
 	end
 
-	-- beef up the head on whichever copy of the tool the player has
+	-- beef up the head on whichever copy of the tool the player has. A tool
+	-- skinned with the player's own world "Pickaxe" keeps ITS look -- it gets a
+	-- golden glow instead of being recoloured neon and inflated part by part
+	-- (which would shred a modelled pickaxe into gaps).
 	local function reforge(tool)
 		if not tool then return end
-		for _, p in ipairs(tool:GetChildren()) do
-			if p:IsA("BasePart") and p.Name ~= "Handle" then
-				p.Color = Color3.fromRGB(214, 226, 246)
-				p.Material = Enum.Material.Neon
-				p.Reflectance = 0.25
-				p.Size = p.Size * 1.25
+		if tool:GetAttribute("WorldSkin") then
+			if not tool:FindFirstChild("ReforgeGlow") then
+				local hl = Instance.new("Highlight")
+				hl.Name = "ReforgeGlow"; hl.FillColor = Color3.fromRGB(255, 214, 120)
+				hl.FillTransparency = 0.75; hl.OutlineColor = Color3.fromRGB(255, 226, 150)
+				hl.OutlineTransparency = 0.2; hl.Adornee = tool; hl.Parent = tool
+			end
+		else
+			for _, p in ipairs(tool:GetChildren()) do
+				if p:IsA("BasePart") and p.Name ~= "Handle" then
+					p.Color = Color3.fromRGB(214, 226, 246)
+					p.Material = Enum.Material.Neon
+					p.Reflectance = 0.25
+					p.Size = p.Size * 1.25
+				end
 			end
 		end
 		tool.ToolTip = "Re-forged! Mines crystals faster."

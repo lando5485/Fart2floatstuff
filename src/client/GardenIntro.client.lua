@@ -715,7 +715,7 @@ local function playIntro()
 		credit.Size = UDim2.fromScale(0.5, 0.05)
 		credit.BackgroundTransparency = 1
 		credit.Font = Enum.Font.FredokaOne
-		credit.Text = "By: L.R. Studios"
+		credit.Text = "By: M.L.R. Studios"
 		credit.TextColor3 = Color3.fromRGB(255, 255, 255)
 		credit.TextScaled = true
 		credit.TextTransparency = 1
@@ -726,7 +726,7 @@ local function playIntro()
 		TweenService:Create(black, TweenInfo.new(1, Enum.EasingStyle.Quad), {BackgroundTransparency = 0}):Play()
 		if sleep(1) then return end
 		-- 2) title + credit fade in just after black (~0.6s)
-		print("[GARDEN INTRO] segment: TITLE CARD (\"Welcome To Fart To Float\" / By: L.R. Studios)")
+		print("[GARDEN INTRO] segment: TITLE CARD (\"Welcome To Fart To Float\" / By: M.L.R. Studios)")
 		TweenService:Create(title,  TweenInfo.new(0.6), {TextTransparency = 0}):Play()
 		TweenService:Create(credit, TweenInfo.new(0.6), {TextTransparency = 0}):Play()
 		-- 3) hold the title card on black (~3s)

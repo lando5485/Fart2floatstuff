@@ -202,7 +202,26 @@
       "Bash(grep -n '\\\\\\\\\\\\\\\\xE2' src/client/SkinCrateClient.client.lua)",
       "Read(//c/Users/riley/AppData/Local/Temp/**)",
       "Bash(curl -sL -o luau.zip \"https://github.com/luau-lang/luau/releases/download/0.706/luau-windows.zip\")",
-      "Bash(unzip -o -q luau.zip -d luau-bin)"
+      "Bash(unzip -o -q luau.zip -d luau-bin)",
+      "Bash(curl *)",
+      "Bash(command -v luau luau-analyze lua lua5.1 luajit)",
+      "Bash(grep -rn \"MAIN_PLACE\\\\|FOOD_REALM_PLACE\\\\|game.PlaceId ==\\\\|PlaceId = 1[0-9]\\\\{10,\\\\}\\\\|1[0-9]\\\\{11,\\\\}\" src/server src/client/LoadingScreen.client.lua)",
+      "PowerShell($dest = \"C:\\\\Users\\\\riley\\\\Downloads\\\\DinoRealm_Scripts.zip\"; if \\(Test-Path $dest\\) { Write-Output \"EXISTS ALREADY:\"; Get-ChildItem $dest | Select-Object FullName, Length, LastWriteTime } else { Write-Output \"no existing file at $dest\" })",
+      "PowerShell(Copy-Item)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Get-CimInstance *)",
+      "PowerShell(Get-NetTCPConnection *)",
+      "PowerShell($a = \"src\\\\client\\\\SkinCrateClient.client.lua\"; $b = \"CandyRealm\\\\src\\\\client\\\\SkinCrateClient.client.lua\"; \\(Get-Content $a | Measure-Object -Line\\).Lines; \\(Get-Content $b | Measure-Object -Line\\).Lines; $diff = Compare-Object \\(Get-Content $a\\) \\(Get-Content $b\\); \"diff lines: $\\($diff.Count\\)\"; $diff | Select-Object -First 40 | ForEach-Object { \"{0} {1}\" -f $_.SideIndicator, $_.InputObject })",
+      "PowerShell(Copy-Item *)",
+      "PowerShell(Stop-Process *)",
+      "PowerShell($a=\"src\\\\client\\\\GardenDonationClient.client.lua\"; $b=\"CandyRealm\\\\src\\\\client\\\\GardenDonationClient.client.lua\"; $d = Compare-Object \\(Get-Content $a\\) \\(Get-Content $b\\); \"diff lines: $\\($d.Count\\)\"; $d | Where-Object { $_.SideIndicator -eq '<=' } | Measure-Object | ForEach-Object { \"only in root: $\\($_.Count\\)\" }; $d | Where-Object { $_.SideIndicator -eq '=>' } | Select-Object -First 12 | ForEach-Object { \"CANDY-ONLY: $\\($_.InputObject\\)\" }2)",
+      "PowerShell($lines = Get-Content \"src\\\\client\\\\PetFollow.client.lua\"; 3711..3714 | ForEach-Object { $l = $lines[$_-1]; $vis = $l -replace \"`t\",\"<TAB>\"; \"$\\($_\\): [$vis]\" })",
+      "PowerShell($lines = Get-Content \"src\\\\client\\\\PetFollow.client.lua\"; 3736..3746 | ForEach-Object { $l = $lines[$_-1]; $vis = $l -replace \"`t\",\"<TAB>\"; \"$\\($_\\): [$vis]\" })",
+      "PowerShell(Select-String -Path \"CandyRealm\\\\src\\\\client\\\\PetFollow.client.lua\" -Pattern 'SeenGardenIntro|StarterPet\\\\] welcome' | ForEach-Object { \"line $\\($_.LineNumber\\): $\\($_.Line.Trim\\(\\)\\)\" })",
+      "Bash(git -C \"C:/Users/riley/Downloads/Fart2floatstuff\" status --short)",
+      "Bash(git -C \"C:/Users/riley/Downloads/Fart2floatstuff\" remote -v)",
+      "Bash(git -C \"C:/Users/riley/Downloads/Fart2floatstuff\" log --oneline -3)",
+      "Bash(git -C \"C:/Users/riley/Downloads/Fart2floatstuff\" status -sb)"
     ]
   }
 }

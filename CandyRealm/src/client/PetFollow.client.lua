@@ -2706,7 +2706,12 @@ local function applyLevelVisual(pet, level, petId, isRare, lite)
 	local root = pet.PrimaryPart
 	local A = petAnims[pet]
 	local theme = PET_THEME[petId] or PET_THEME[pet.Name]
-	if not theme then return end -- only the 5 known pets have upgrade visuals
+	if not theme then
+		-- No upgrade theme -- but a SKIN + TRAIT still applies to every pet, so paint it before
+		-- bailing out. Guarded: PetSkinLook.client defines this.
+		if _G.applyPetSkinLook then pcall(_G.applyPetSkinLook, pet, petId, lite) end
+		return -- only the 5 known pets have upgrade visuals
+	end
 	if isRare then level = 25 end -- RARE pets display PRE-MAXED (full lvl-25 look) regardless of stored level
 	local MAXL = 25
 	local frac = math.clamp((level - 1) / (MAXL - 1), 0, 1) -- 0 at Lv1 -> 1 at Lv25
@@ -2805,6 +2810,10 @@ local function applyLevelVisual(pet, level, petId, isRare, lite)
 		end
 	end
 	if A then A.lastVisualLevel = level end
+	-- SKIN + TRAIT go on LAST, after clearEvo and every level effect, so a repaint can never be stripped by the
+	-- evolution pass. Placed BEFORE the `lite` return so inventory/trade icon clones show the skin too. Guarded:
+	-- PetSkinLook.client defines this and owns its own cleanup, so calling it repeatedly is safe.
+	if _G.applyPetSkinLook then pcall(_G.applyPetSkinLook, pet, petId, lite) end
 	if lite then return end -- icon clones: size + accessories + rare recolor only; skip the level-up pop + diagnostics
 	-- DIAGNOSTICS
 	local nAcc = 0; for _, e in ipairs(theme.accs) do if level >= e[1] then nAcc = nAcc + 1 end end
@@ -2931,6 +2940,9 @@ local function buildPetModel(petId)
 	end
 	return fallback
 end
+-- Exposed for SkinCrateClient, which needs real pet models for its crate-reel and reveal thumbnails.
+-- An assignment, NOT a `local` -- this file sits near Luau's 200-registers-per-scope ceiling.
+_G.petBuildModel = buildPetModel
 local function spawnFollowerPet(petId)
 	local st = petState[petId]
 	if st.pet then -- already following: just refresh the visual if the level OR the rare flag changed

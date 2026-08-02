@@ -92,7 +92,7 @@ local REALMS = {
 		reqText  = "Complete the Space Realm",
 	},
 	candy = {
-		name = "Candy Realm", placeId = 0,               -- TEMPORARY: place not built yet
+		name = "Candy Realm", placeId = 133591422694132, -- FART TO FLOAT [CANDY REALM] (same universe)
 		requires = "locked",                             -- LOCKED, same as Space -> 🔒 + "not unlocked" message
 		reqText  = "Not unlocked yet",
 	},
@@ -102,8 +102,8 @@ local CHAIN = { "space", "dino", "candy" } -- progression order == left-to-right
 -- TESTER BYPASS -- who may use the /unlock command. UserId first; name (case-INSENSITIVE) as a fallback so
 -- a Roblox rename or a casing mismatch can't lock them out. Studio always counts, so you can test there.
 local RunService   = game:GetService("RunService")
-local TESTER_IDS   = { [1086836724] = true, [1418148401] = true }   -- lando5485, Broskie310111
-local TESTER_NAMES = { ["lando5485"] = true, ["broskie310111"] = true } -- lowercase keys; compared against Name:lower()
+local TESTER_IDS   = { [1086836724] = true, [1418148401] = true, [3911540303] = true }   -- lando5485, Broskie310111, Itsmaddmax1
+local TESTER_NAMES = { ["lando5485"] = true, ["broskie310111"] = true, ["itsmaddmax1"] = true } -- lowercase keys; compared against Name:lower()
 local function isTester(plr)
 	return RunService:IsStudio()
 		or TESTER_IDS[plr.UserId] == true
@@ -355,6 +355,48 @@ end
 
 local teleporting = {} -- [player] = true -- server-side debounce: never double-teleport
 
+--======================================================================
+-- THE PAYLOAD
+--======================================================================
+-- Defined ONCE in ReplicatedStorage/Shared/RealmTransfer, shared with DinoRealmTeleport.server.lua -- a
+-- player can reach the Dino Realm through either door, and the receivers over there must see the same shape
+-- whichever one they used. See that module for what travels, what deliberately doesn't, and the size guard.
+--
+-- `realm` is passed as an extra because the existing receivers already read that key by name.
+--
+-- FALLBACK: if the module can't load we still teleport, with the old pets-only payload. A broken require must
+-- not strand players at a portal that refuses to open; the worst it should cost is their cosmetics.
+local RealmTransfer
+do
+	local ok, mod = pcall(function()
+		local shared = ReplicatedStorage:WaitForChild("Shared", 20)
+		return shared and require(shared:WaitForChild("RealmTransfer", 20))
+	end)
+	if ok then RealmTransfer = mod
+	else warn("[RealmPortals] RealmTransfer module unavailable (" .. tostring(mod) .. ") -- falling back to a pets-only payload") end
+end
+
+local function buildTransferPayload(player, realmKey)
+	if RealmTransfer then
+		local ok, payload = pcall(function()
+			return RealmTransfer.build(player, realmKey, { realm = realmKey })
+		end)
+		if ok and type(payload) == "table" then return payload end
+		warn("[RealmPortals] RealmTransfer.build failed (" .. tostring(payload) .. ") -- falling back to a pets-only payload")
+	end
+	return { -- the pre-module payload: enough for the pets to arrive, just without their cosmetics
+		fromFartToFloat = true,
+		payloadVersion  = 1,
+		fromPlaceId     = game.PlaceId,
+		homePlaceId     = game.PlaceId,
+		realm           = realmKey,
+		toRealm         = realmKey,
+		userId          = player.UserId,
+		ownedPets   = (_G.playerOwnedPets   and _G.playerOwnedPets[player])   or {},
+		equippedPet = (_G.playerEquippedPet and _G.playerEquippedPet[player]) or nil,
+	}
+end
+
 enterEvent.OnServerEvent:Connect(function(player, key)
 	if not player or teleporting[player] then return end
 
@@ -390,13 +432,7 @@ enterEvent.OnServerEvent:Connect(function(player, key)
 		-- (SpaceRealm/PetReceiver, DinoRealm/ArrivalReceiver) check `fromFartToFloat` to tell a real portal
 		-- arrival from someone who opened that place directly.
 		local options = Instance.new("TeleportOptions")
-		options:SetTeleportData({
-			fromFartToFloat = true,
-			fromPlaceId     = game.PlaceId,
-			realm           = key,
-			ownedPets   = (_G.playerOwnedPets   and _G.playerOwnedPets[player])   or {},
-			equippedPet = (_G.playerEquippedPet and _G.playerEquippedPet[player]) or nil,
-		})
+		options:SetTeleportData(buildTransferPayload(player, key))
 		TeleportService:TeleportAsync(realm.placeId, { player }, options)
 	end)
 

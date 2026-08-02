@@ -22,7 +22,7 @@ local SPACE_REALM_PLACE_ID = 125063266868039 -- Space Realm place (within the Ft
 
 -- ⚠ TESTER LOCK -- flip to false to open Space Realm to everyone; REMOVE/OPEN BEFORE PUBLIC LAUNCH. ⚠
 local SPACE_REALM_TESTERS_ONLY = true
-local TESTER_IDS   = { [1086836724] = true, [1418148401] = true }  -- lando5485, Broskie310111
+local TESTER_IDS   = { [1086836724] = true, [1418148401] = true, [3911540303] = true }  -- lando5485, Broskie310111, Itsmaddmax1
 -- Keys are LOWER-CASE and the lookup lower-cases too. The previous version compared plr.Name directly
 -- against mixed-case keys, so anyone whose account capitalisation differed by a single letter was refused
 -- with no message -- which is exactly how a tester ends up locked out of Space Realm for no visible reason.

@@ -158,6 +158,11 @@ local function worldHalfHeight(part)
 	)
 end
 
+-- One plume per part, ever. Both the named specs and the Bean Farm chimney sweep below funnel through attach(),
+-- and the stale places this game finds parts in (recursive FindFirstChild, a rescan after an event) can hand the
+-- same brick over twice. Claimed hosts are refused, so a chimney never gets two overlapping columns.
+local claimed = {}
+
 local attach
 function attach(spec, target)
 	local host = target
@@ -165,6 +170,7 @@ function attach(spec, target)
 		host = target.PrimaryPart or target:FindFirstChildWhichIsA("BasePart")
 	end
 	if not (host and host:IsA("BasePart")) then return false end
+	if claimed[host] then return false end
 
 	-- ===== WHERE THE PLUME STARTS =====
 	-- Two bugs lived here, and both of them put the smoke UNDER the brick instead of on top of it:
@@ -253,6 +259,7 @@ function attach(spec, target)
 	e.ZOffset = 0.4 -- nudge the puffs toward the camera so the roof/brick cannot z-fight through the column
 	e.LockedToPart = false                          -- puffs are left behind in the air rather than dragged along
 	e.Parent = anchor
+	claimed[host] = true
 
 	-- INSTANT re-enable. Big events / thunderstorms flip ambient emitters OFF; the once-a-second watchdog below
 	-- would leave a visible gap. This fires the MOMENT anything disables it (or zeroes its rate) and turns it
@@ -340,4 +347,59 @@ task.spawn(function()
 			.. " -- no plume on those. (Names are matched exactly; tell me the real name and it is a one-line fix.)")
 	end
 	print(("[Smoke] ready -- %d/%d plumes attached"):format(#PLUMES - #pending, #PLUMES))
+end)
+
+-- ============================================================================================================
+-- BEAN FARM CHIMNEY SWEEP
+--
+-- The two named bricks above (SmokeBrick / SmokeBrick1) are matched EXACTLY -- but chimney blocks get renamed
+-- and duplicated in Studio ("smoke", "Smoke2", "smoke brick", ...), and a renamed chimney silently gets no
+-- plume while the log still says "attached" (to the OLD marker). So on top of the named specs, sweep Bean Farm
+-- for ANY part or model with "smoke" in its name and give each one the standard chimney plume.
+--
+-- Scoped to the Island_1 model only, so a "smoke" prop on some other island doesn't suddenly become a chimney.
+-- Hosts are real scenery, so they stay visible; the claimed-set in attach() stops double plumes on the two
+-- bricks the named specs already handled.
+-- ============================================================================================================
+task.spawn(function()
+	local CHIMNEY = {
+		hideHost = false,
+		rate = 16, speed = { 1.2, 2.6 }, lifetime = { 4.5, 8 }, spread = 14,
+		accel = Vector3.new(1.6, 2.2, 0.6),
+		size = { 1.6, 11 },
+		trans = { 0.12, 1 },
+		color = ColorSequence.new(Color3.fromRGB(120, 118, 122), Color3.fromRGB(64, 62, 68)),
+		offsetY = 0.6,
+	}
+
+	-- "^island_1%D" and not just "^island_1": Island_10..14 also start with "island_1".
+	local function beanFarm()
+		for _, m in ipairs(Workspace:GetChildren()) do
+			if m:IsA("Model") and string.lower(m.Name):match("^island_1%D") then return m end
+		end
+		return nil
+	end
+
+	local found = 0
+	for _ = 1, 120 do -- keep sweeping for 2 minutes: the island streams/positions late on join
+		local isl = beanFarm()
+		if isl then
+			for _, d in ipairs(isl:GetDescendants()) do
+				if (d:IsA("BasePart") or d:IsA("Model")) and d.Name ~= "PlumeAnchor" then
+					local n = string.lower(d.Name)
+					if n:find("smoke", 1, true) then
+						local spec = table.clone(CHIMNEY)
+						spec.find = d.Name -- the watchdog re-resolves by this name after events/rebuilds
+						spec.label = ("chimney smoke ('%s')"):format(d.Name)
+						if attach(spec, d) then
+							found += 1
+							print("[Smoke] chimney sweep attached " .. spec.label)
+						end
+					end
+				end
+			end
+		end
+		task.wait(2)
+	end
+	print(("[Smoke] chimney sweep done -- %d extra chimney(s) smoking on Bean Farm"):format(found))
 end)

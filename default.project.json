@@ -162,6 +162,9 @@
       },
       "SkinCrateService": {
         "$path": "src/server/SkinCrateService.server.lua"
+      },
+      "RealmReturnReceiver": {
+        "$path": "src/server/RealmReturnReceiver.server.lua"
       }
     },
     "ReplicatedStorage": {
@@ -197,6 +200,9 @@
         },
         "PetCollection": {
           "$path": "src/shared/PetCollection.luau"
+        },
+        "RealmTransfer": {
+          "$path": "src/shared/RealmTransfer.luau"
         }
       },
       "PhoneHUD": {

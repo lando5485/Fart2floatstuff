@@ -77,6 +77,44 @@ local gui, panel, noticeLbl
 local buildHUD, openHUD, promptDonate, setNotice, showThanks
 
 --======================================================================
+-- ONE CHEST, ONE HUD
+--======================================================================
+-- An OLD copy of this LocalScript is baked into the place, so Rojo adds this one BESIDE it and both run: two
+-- scripts hook the same DonationChestPrompt and each builds its own "GardenDonationGui", which is why holding E
+-- opened two donation panels stacked on each other. THIS file is the newer panel (gold title bar, 2x2 tier grid),
+-- so it wins: the stale script and any donation GUI it built get removed.
+--
+-- SURGICAL ON PURPOSE. It only ever touches LocalScripts with this script's exact name and ScreenGuis named
+-- exactly GardenDonationGui that this script did not create -- never a blanket PlayerGui sweep, which has broken
+-- unrelated HUDs here before.
+local function claimDonationHud()
+	for _, container in ipairs({ script.Parent, player:FindFirstChild("PlayerScripts"), PlayerGui }) do
+		if container then
+			for _, inst in ipairs(container:GetDescendants()) do
+				if inst ~= script and inst:IsA("LocalScript") and inst.Name == script.Name then
+					pcall(function() inst.Disabled = true; inst:Destroy() end)
+					warn("[GardenDonate] removed a STALE duplicate GardenDonationClient -- delete it in Studio for good")
+				end
+			end
+		end
+	end
+	for _, inst in ipairs(PlayerGui:GetChildren()) do
+		if inst ~= gui and inst:IsA("ScreenGui") and inst.Name == "GardenDonationGui" then
+			pcall(function() inst:Destroy() end)
+		end
+	end
+end
+claimDonationHud()
+-- The stale copy can build its panel later than we run (it waits on the same remote, then on the prompt), so
+-- re-check on the same cadence the other duplicate guards in this game use, and watch for one appearing.
+task.delay(1, claimDonationHud); task.delay(4, claimDonationHud)
+PlayerGui.ChildAdded:Connect(function(inst)
+	if inst ~= gui and inst:IsA("ScreenGui") and inst.Name == "GardenDonationGui" then
+		task.defer(function() if inst ~= gui and inst.Parent then pcall(function() inst:Destroy() end) end end)
+	end
+end)
+
+--======================================================================
 -- LID HINGE (per-client, purely visual): swing the DonationChest's "Lid" model open about its "LidHinge" attachment,
 -- then closed. Anchored server parts are moved locally (renders for us only) and RESTORED to their captured CFrames on
 -- close, so nothing is left displaced. Fully pcall-guarded; if the lid/hinge is missing it silently no-ops.
@@ -300,6 +338,7 @@ function openHUD(promptPart, chestModel)
 	if not gui then buildHUD() end
 	activeChest = chestModel
 	gui.Enabled = true
+	claimDonationHud() -- the stale copy opens on this same prompt; drop its panel the instant ours is up
 	setNotice("")
 	-- pop in, like every other menu: starting slightly small and settling reads as a panel arriving rather than
 	-- blinking into existence

@@ -14,22 +14,22 @@
 --   4. SERVER calls TeleportService:TeleportAsync with a TeleportData payload.
 --      The DINO REALM place reads it back via player:GetJoinData().TeleportData.
 --
--- ⚠ SET DINO_REALM_PLACE_ID BELOW. Until it is non-zero this script refuses to teleport (it warns).
+-- DINO_REALM_PLACE_ID is set below; if it is ever reset to 0 this script refuses to teleport (it warns).
 --======================================================================
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TeleportService   = game:GetService("TeleportService")
 
--- ⚠ FILL THIS IN: the Dino Realm place's ID (must be a place inside the SAME universe/experience).
--- Find it in Studio: the place's "..." menu -> Copy Place ID. (Space Realm is 125063266868039.)
-local DINO_REALM_PLACE_ID = 0
+-- FART TO FLOAT [DINO REALM] -- a place inside the SAME universe/experience (Space Realm is 125063266868039).
+local DINO_REALM_PLACE_ID = 110777788409412
 
 -- ⚠ TESTER LOCK -- same shape as the Space Realm gate. Flip to false to open it to everyone.
 --   ★ OPEN / REMOVE THIS GATE BEFORE PUBLIC LAUNCH. ★
 local DINO_REALM_TESTERS_ONLY = true
-local TESTER_IDS   = { [1086836724] = true, [1418148401] = true }                                 -- lando5485, Broskie310111
-local TESTER_NAMES = { ["lando5485"] = true, ["Broskie310111"] = true }
-local function isTester(plr) return TESTER_IDS[plr.UserId] == true or TESTER_NAMES[plr.Name] == true end
+local TESTER_IDS   = { [1086836724] = true, [1418148401] = true, [3911540303] = true }            -- lando5485, Broskie310111, Itsmaddmax1
+-- lowercase keys, lookup lower-cases too -- a casing mismatch in the account name must not lock a tester out
+local TESTER_NAMES = { ["lando5485"] = true, ["broskie310111"] = true, ["itsmaddmax1"] = true }
+local function isTester(plr) return TESTER_IDS[plr.UserId] == true or TESTER_NAMES[string.lower(plr.Name)] == true end
 local function allowed(plr) return (not DINO_REALM_TESTERS_ONLY) or isTester(plr) end
 
 -- getOrCreate, so a missing project.json entry can't break the remote. The client WaitForChild's this name.
@@ -39,6 +39,43 @@ if not enterEvent then
 end
 
 local teleporting = {} -- [player] = true -- server-side debounce: never double-teleport
+
+--======================================================================
+-- THE PAYLOAD
+--======================================================================
+-- Defined ONCE in ReplicatedStorage/Shared/RealmTransfer, shared with RealmPortals.server.lua so both doors
+-- into the Dino Realm send the same shape (the receiver over there should never have to guess which door a
+-- player used). See that module for what travels, what deliberately doesn't, and the size guard.
+--
+-- FALLBACK: if the module can't load, we still teleport -- with the old pets-only payload. A broken require
+-- must not strand players at a portal that refuses to open; the worst it should cost is their cosmetics.
+local RealmTransfer
+do
+	local ok, mod = pcall(function()
+		local shared = ReplicatedStorage:WaitForChild("Shared", 20)
+		return shared and require(shared:WaitForChild("RealmTransfer", 20))
+	end)
+	if ok then RealmTransfer = mod
+	else warn("[DinoRealm] RealmTransfer module unavailable (" .. tostring(mod) .. ") -- falling back to a pets-only payload") end
+end
+
+local function buildTransferPayload(player, realmKey)
+	if RealmTransfer then
+		local ok, payload = pcall(function() return RealmTransfer.build(player, realmKey) end)
+		if ok and type(payload) == "table" then return payload end
+		warn("[DinoRealm] RealmTransfer.build failed (" .. tostring(payload) .. ") -- falling back to a pets-only payload")
+	end
+	return { -- the pre-module payload: enough for the pets to arrive, just without their cosmetics
+		fromFartToFloat = true,
+		payloadVersion  = 1,
+		fromPlaceId     = game.PlaceId,
+		homePlaceId     = game.PlaceId,
+		toRealm         = realmKey,
+		userId          = player.UserId,
+		ownedPets   = (_G.playerOwnedPets   and _G.playerOwnedPets[player])   or {},
+		equippedPet = (_G.playerEquippedPet and _G.playerEquippedPet[player]) or nil,
+	}
+end
 
 enterEvent.OnServerEvent:Connect(function(player)
 	if not player or teleporting[player] then return end
@@ -65,12 +102,7 @@ enterEvent.OnServerEvent:Connect(function(player)
 		-- player:GetJoinData().TeleportData. `fromFartToFloat` is the marker the receiver checks so it
 		-- can tell a real portal arrival from someone who just joined the Dino place directly.
 		local options = Instance.new("TeleportOptions")
-		options:SetTeleportData({
-			fromFartToFloat = true,
-			fromPlaceId     = game.PlaceId, -- lets the Dino Realm know which realm they came FROM
-			ownedPets   = (_G.playerOwnedPets   and _G.playerOwnedPets[player])   or {},
-			equippedPet = (_G.playerEquippedPet and _G.playerEquippedPet[player]) or nil,
-		})
+		options:SetTeleportData(buildTransferPayload(player, "dino"))
 		TeleportService:TeleportAsync(DINO_REALM_PLACE_ID, { player }, options)
 	end)
 
