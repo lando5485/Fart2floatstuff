@@ -26,8 +26,8 @@ local PETS = {
 	BroccoliPet = {
 		displayName  = "Broccoli Bunny",
 		islandName   = "Broccoli Bluff",
-		questDesc    = "Find 3 broccoli pieces hidden on the island",
-		questType    = "find",                -- find 3 pieces -> egg -> hatch
+		questDesc    = "Pull 3 broccoli out of the dirt on the island",
+		questType    = "find",                -- pull 3 planted broccoli (hold/release minigame) -> egg -> hatch
 		islandPrefix = "Island_2_",          -- the Workspace island model this pet's markers live in
 		eggMarker    = "I2PetBlock",          -- where the egg appears
 		pieceMarkers = { "BroccoliPiece1", "BroccoliPiece2", "BroccoliPiece3" },
@@ -1343,13 +1343,26 @@ end
 local function buildEquipPayload(player)
 	local skey = _G.playerEquippedPet[player]
 	local petId, level, isRare, variant = nil, 1, false, nil
+	local skin, trait = nil, nil
 	if skey and ownsPet(player, skey) then
 		local d = getPetData(player, skey)
 		petId = speciesOf(skey) -- remote clients render by SPECIES (+ the rare flag/variant below)
 		if d then level = d.level or 1; isRare = d.rare and true or false end
 		if isRare then variant = RARE_NAMES[petId] end
+		-- THE SKIN TRAVELS WITH THE PET.
+		-- Without these two fields the payload described a SPECIES and nothing else, so every remote viewer
+		-- rendered the plain base pet: you saw your Cosmic-skinned duck with its trait effects, and everyone
+		-- else saw an ordinary duck. The whole point of a cosmetic is that other people can see it -- a skin
+		-- only the owner can see is a skin nobody has a reason to buy.
+		-- Read through skinEquippedFor rather than poking _G.playerEquippedSkins directly, so the entry's
+		-- shape stays SkinCrateService's business and this cannot drift from it.
+		if _G.skinEquippedFor then
+			local ok, s, t = pcall(_G.skinEquippedFor, player, petId)
+			if ok then skin, trait = s, t end
+		end
 	end
-	return { userId = player.UserId, petId = petId, level = level, isRare = isRare, variant = variant }
+	return { userId = player.UserId, petId = petId, level = level, isRare = isRare, variant = variant,
+		skin = skin, trait = trait }
 end
 local function broadcastEquip(player, reason)
 	if not player then return end
@@ -1358,6 +1371,13 @@ local function broadcastEquip(player, reason)
 	print(string.format("[RemotePets] broadcast %s pet=%s lvl=%d rare=%s (reason=%s)",
 		player.Name, tostring(payload.petId), payload.level, payload.isRare and "y" or "n", tostring(reason)))
 end
+-- Published so OTHER systems can re-announce a player's look when they change something this file does not
+-- own. SkinCrateService calls it after equipping or clearing a skin: that push only reaches the owner, so
+-- without a re-broadcast every other player keeps rendering the previous look.
+_G.petRebroadcastEquip = function(player, reason)
+	if player and player.Parent then broadcastEquip(player, reason or "external") end
+end
+
 -- Send the CURRENT equipped pet of everyone ALREADY in the server to ONE (newly-joined) client, so late
 -- joiners immediately see existing players' pets (existing players don't re-broadcast just because one joins).
 local function sendAllEquipsTo(target)
@@ -1720,6 +1740,18 @@ _G.grantStarterPet = function(player)
 	if _G.playerEquippedPet[player] == petId then broadcastEquip(player, "equip") end -- other players see it too
 	pcall(function() StarterPetEvent:FireClient(player, petId, PETS[petId].displayName) end) -- welcome card
 	print("[Pet] STARTER "..petId.." granted to "..player.Name.." (free first-join gift, auto-equipped)")
+	-- RE-PUSH. The grant lands ~0.5s BEFORE PetFollow connects its OnClientEvent handlers, so the sendState
+	-- above is fired into a client with no listener. Roblox queues an unheard remote only briefly and then
+	-- DISCARDS it -- which is why the starter pet renders on a fast join and silently doesn't on a slow one.
+	-- Repeat the push over the next ~9s; whichever copy lands after the listeners exist is the one that works.
+	-- sendState is idempotent (it just describes current ownership), so extra copies cost nothing.
+	task.spawn(function()
+		for _ = 1, 4 do
+			task.wait(3)
+			if not player.Parent then return end -- left
+			sendState(player); sendInventory(player)
+		end
+	end)
 	checkCollectionMilestones(player) -- the starter counts as 1/10 toward the collection
 	return true
 end
@@ -1766,9 +1798,23 @@ _G.grantRebirthPet = function(player, petId)
 end
 
 -- ===== MARKERS: locate + hide the raw marker parts (kept in place so clients can read positions) =====
+-- The islands are NOT always named "Island_2_BroccoliBluff" -- in this place they can be plain "island2".
+-- Try the literal prefix first, then a NORMALIZED prefix ("island2", case/underscore-insensitive) with a
+-- digit guard so "island1" can never match "island14". A miss here isn't fatal (markers still resolve at
+-- Workspace level), it just costs the island-first lookup + the position diagnostic.
 local function findIsland(prefix)
 	for _, m in ipairs(Workspace:GetChildren()) do
 		if m:IsA("Model") and string.find(m.Name, prefix, 1, true) then return m end
+	end
+	local want = (tostring(prefix):lower():gsub("[%s_%-%.]", ""))
+	for _, m in ipairs(Workspace:GetChildren()) do
+		if m:IsA("Model") then
+			local n = (m.Name:lower():gsub("[%s_%-%.]", ""))
+			if n:sub(1, #want) == want and not tonumber(n:sub(#want + 1, #want + 1)) then
+				print("[Pet][DIAG] island prefix '"..prefix.."' matched Workspace model '"..m.Name.."' (normalized)")
+				return m
+			end
+		end
 	end
 	return nil
 end
@@ -1806,6 +1852,40 @@ local function captureMarkerPos(inst)
 	end
 	return nil -- some other instance type (Folder/Attachment/etc) -- not positionable as a marker
 end
+-- LOOSE marker resolve. resolveMarker() is EXACT + case-sensitive, so one marker named "Broccoli Piece 3",
+-- "broccolipiece3" or "BroccoliPiece_3" (or one that got GROUPED into a Model) silently goes missing and that
+-- piece never exists in the world -- an uncompletable quest. This falls back to a normalized-name match
+-- (lowercased, spaces/underscores/dashes/dots stripped) over the island, then Workspace, and reports HOW it
+-- matched so the log names the real instance to rename.
+local function normName(s) return (tostring(s):lower():gsub("[%s_%-%.]", "")) end
+local function resolveMarkerLoose(island, name)
+	local p = resolveMarker(island, name)
+	if p then return p, "exact" end
+	local want = normName(name)
+	local function scan(list)
+		for _, m in ipairs(list) do
+			if (m:IsA("BasePart") or m:IsA("Model")) and normName(m.Name) == want then return m end
+		end
+		return nil
+	end
+	local hit
+	pcall(function()
+		if island then hit = scan(island:GetDescendants()) end
+		if not hit then hit = scan(Workspace:GetChildren()) end
+		if not hit then hit = scan(Workspace:GetDescendants()) end
+	end)
+	if hit then return hit, "fuzzy" end
+	return nil, nil
+end
+local function posStr(p) return p and string.format("(%.0f,%.0f,%.0f)", p.X, p.Y, p.Z) or "nil" end
+-- Ground under a point (for the missing-marker fallback below): drop a ray from well above it.
+local function groundAt(p)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = {}
+	local hit = Workspace:Raycast(p + Vector3.new(0, 80, 0), Vector3.new(0, -200, 0), params)
+	return hit and (hit.Position + Vector3.new(0, 1.2, 0)) or nil
+end
 task.spawn(function()
 	-- TIMING (critical): PlayerStats REPOSITIONS the islands at runtime (e.g. Island_2 -> Y=790). The
 	-- markers are now CHILDREN of the island model, so they MOVE WITH IT. We must capture positions
@@ -1833,9 +1913,46 @@ task.spawn(function()
 		-- CAPTURE its post-positioning world position (the client builds from these coords), and hide it.
 		local foundN = 0
 		local piecePos = {}
+		local missingPieces = {}
 		for i, name in ipairs(def.pieceMarkers) do
-			local p = resolveMarker(island, name)
-			if hideMarker(p) then foundN = foundN + 1; piecePos[i] = p.Position else warn("[Pet] piece marker '"..name.."' MISSING (not in island OR Workspace)") end
+			local inst, how = resolveMarkerLoose(island, name)
+			local pos = captureMarkerPos(inst) -- Part OR Model (hideMarker alone silently skipped grouped markers)
+			if pos then
+				foundN = foundN + 1; piecePos[i] = pos
+				if how == "fuzzy" then
+					warn("[Pet] piece marker '"..name.."' matched LOOSELY to '"..inst.Name.."' ("..inst.ClassName..") at "
+						..inst:GetFullName().." -- rename it to '"..name.."' exactly")
+				end
+			else
+				missingPieces[#missingPieces+1] = { i = i, name = name }
+				warn("[Pet] piece marker '"..name.."' MISSING (not in island OR Workspace)")
+			end
+		end
+		-- RETRY for late-parented/late-moved markers (something added to the island after StandsReady), then
+		-- DUMP every candidate so a typo'd name is visible in the log.
+		if #missingPieces > 0 then
+			task.wait(5)
+			for idx = #missingPieces, 1, -1 do
+				local m = missingPieces[idx]
+				local inst = resolveMarkerLoose(island, m.name)
+				local pos = captureMarkerPos(inst)
+				if pos then
+					piecePos[m.i] = pos; foundN = foundN + 1; table.remove(missingPieces, idx)
+					print("[Pet] piece marker '"..m.name.."' appeared on RETRY at "..posStr(pos))
+				end
+			end
+			if #missingPieces > 0 then
+				local key = normName(def.pieceMarkers[1]):gsub("%d+$", "") -- e.g. "broccolipiece"
+				local function dumpLike(list, where)
+					for _, m in ipairs(list) do
+						if (m:IsA("BasePart") or m:IsA("Model")) and normName(m.Name):find(key, 1, true) then
+							print("[Pet][DIAG] piece-like found: '"..m.Name.."' ("..m.ClassName..") at "..m:GetFullName().." ["..where.."]")
+						end
+					end
+				end
+				pcall(function() if island then dumpLike(island:GetDescendants(), "island") end end)
+				pcall(function() dumpLike(Workspace:GetChildren(), "Workspace top") end)
+			end
 		end
 		local eggPos = nil
 		if def.eggMarker then -- fishing has NO egg marker (the egg appears where caught) -> skip the egg lookup entirely
@@ -1858,6 +1975,24 @@ task.spawn(function()
 			pcall(function() scanList(Workspace:GetChildren(), "Workspace top") end)
 		end
 		end -- close: if def.eggMarker
+		-- LAST RESORT for a piece marker that still can't be found: place it near the ones that DID resolve
+		-- (ring around the anchor, raycast down onto the island surface) so the count can still reach N/N and
+		-- the quest is never dead. Loud warn -- this is a band-aid, the marker should still be fixed/renamed.
+		for _, m in ipairs(missingPieces) do
+			local anchor
+			for j = 1, #def.pieceMarkers do if piecePos[j] then anchor = piecePos[j]; break end end
+			anchor = anchor or eggPos
+			if anchor then
+				local a = (m.i - 1) * (2 * math.pi / math.max(1, #def.pieceMarkers)) + 0.7
+				local guess = anchor + Vector3.new(math.cos(a) * 26, 0, math.sin(a) * 26)
+				local pos = groundAt(guess) or (guess + Vector3.new(0, 2, 0))
+				piecePos[m.i] = pos
+				warn("[Pet] piece marker '"..m.name.."' NOT FOUND -- using a FALLBACK spot at "..posStr(pos)
+					.." so the quest stays completable. Add/rename a Part called '"..m.name.."' on the island to fix it.")
+			else
+				warn("[Pet] piece marker '"..m.name.."' NOT FOUND and no anchor to fall back to -- that piece will not exist")
+			end
+		end
 		-- EXTRA (non-collectible) markers -- fixed props like the projector + screen. Capture positions the same
 		-- way (resolve island-first then Workspace; hide the raw marker; the client rebuilds the visuals). These
 		-- may be MODELS (the user's PopcornProjector is a built Model), so use captureMarkerPos (Part OR Model).

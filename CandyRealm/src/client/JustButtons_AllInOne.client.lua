@@ -20,8 +20,9 @@
 --   position, corner radius and stroke width is the same number it was before, so the
 --   mobile rail repitch and all the click wiring below are untouched. Only colour,
 --   gradient and two icon glyphs changed.
---   BOTTOM STACK (BottomStackGui): Stomach pill / Gas meter / Fart button
---       (cosmetic; the live flight loop drives the gas fill + fart text in-game)
+--   BOTTOM STACK (BottomStackGui): no longer built here -- BottomMeterPanel.client.luau
+--       owns it, as one candy card instead of three slabs. It keeps the same ScreenGui
+--       name, so mgr.setHud below still finds it. Only _G.HUD is still created here.
 --
 -- All wiring is GUARDED: it no-ops cleanly if a target menu/event isn't in this
 -- realm yet, and starts working the moment it is. Values below are the DESKTOP
@@ -168,9 +169,13 @@ do
 	gutIcon.Size=UDim2.new(0,math.floor(40*scale),0,math.floor(40*scale)); gutIcon.Position=UDim2.new(0.5,0,0,6); gutIcon.AnchorPoint=Vector2.new(0.5,0)
 	gutIcon.ZIndex=3; gutIcon.Parent=stomachSide
 end
--- 4) MORE -- BUBBLEGUM. Keeps its ORIGINAL corner 14 + WHITE stroke w2, exactly as before
---    (the old restyle pass never touched MORE, and that difference is deliberate).
-local moreSide, moreClick = mkRailBtn(417, Color3.fromRGB(255,150,215), Color3.fromRGB(240,80,175), 14, Color3.new(1,1,1), 2, "+", "MORE")
+-- 4) MORE -- STATS PINK. Was a lighter bubblegum (255,150,215 -> 240,80,175); now the exact
+--    CANDY.bodyTop/bodyBot the stats panel is built from (StatsPanelKit_AllInOne, `local CANDY`),
+--    so the button and the panel it sits beside are one pink rather than two that nearly match.
+--    That pink is also the CONTRAST-MEASURED one: the stats panel notes a first draft of
+--    (238,116,186) measured 2.7:1 against white text, where this reads ~4.7:1. Keeps its
+--    ORIGINAL corner 14 + WHITE stroke w2 (the old restyle pass never touched MORE, deliberately).
+local moreSide, moreClick = mkRailBtn(417, Color3.fromRGB(196,66,148), Color3.fromRGB(158,48,140), 14, Color3.new(1,1,1), 2, "+", "MORE")
 
 --======================================================================
 -- WIRING (all guarded) -- verbatim CoreClient behavior
@@ -251,69 +256,19 @@ do
 end
 
 --======================================================================
--- BOTTOM STACK -- pill / gas meter / fart button, bottom-center.
--- The gas fill + fart button are driven by the flight engine (PropelSystem):
--- it reads _G.HUD.gasFill / _G.HUD.gasPct / _G.HUD.fartLabel and the fart
--- button routes taps through _G.toggleFart(). Colors are the FINAL restyled
--- values; positions owned by a UIListLayout.
+-- BOTTOM STACK -- MOVED OUT. BottomMeterPanel.client.luau owns it now.
 --======================================================================
+-- This file used to build "BottomStackGui" as THREE stacked slabs bottom-centre: a pink
+-- "Stomach" pill, a blue GAS METER panel and a green HOLD TO FART button, about 200px of
+-- screen. BottomMeterPanel.client.luau replaces all three with ONE 144px candy card --
+-- badge, title, meter and button in a single rounded panel -- and keeps both contracts
+-- this code had:
+--   * its ScreenGui is still named "BottomStackGui", so MainMenuManager.setHud below and
+--     the four other scripts that hide the HUD by that name need no change at all;
+--   * it publishes _G.HUD.gasFill / .gasPct / .fartLabel off its own parts, so the flight
+--     engine (PropelSystem_AllInOne) writes exactly the handles it always wrote.
+-- Only the _G.HUD table itself stays here, created empty for load order -- either file may
+-- run first, and both fill it non-destructively.
 _G.HUD = _G.HUD or {} -- shared handles the flight engine drives (gas bar + fart label)
-local bottomStackGui = Instance.new("ScreenGui")
-bottomStackGui.Name = "BottomStackGui"; bottomStackGui.ResetOnSpawn = false
-bottomStackGui.IgnoreGuiInset = true; bottomStackGui.DisplayOrder = 5; bottomStackGui.Parent = PlayerGui
 
-local bottomStack = Instance.new("Frame")
-bottomStack.Name = "BottomStack"; bottomStack.AnchorPoint = Vector2.new(0.5, 1)
-bottomStack.Position = UDim2.new(0.5, 0, 1, -12); bottomStack.Size = UDim2.new(0, 480, 0, 0)
-bottomStack.AutomaticSize = Enum.AutomaticSize.Y; bottomStack.BackgroundTransparency = 1; bottomStack.Parent = bottomStackGui
-do
-	local sl = Instance.new("UIListLayout")
-	sl.FillDirection = Enum.FillDirection.Vertical; sl.SortOrder = Enum.SortOrder.LayoutOrder
-	sl.HorizontalAlignment = Enum.HorizontalAlignment.Center; sl.VerticalAlignment = Enum.VerticalAlignment.Bottom
-	sl.Padding = UDim.new(0, 8); sl.Parent = bottomStack
-end
-
--- (1) STOMACH / GUT PILL -- 300x40 pink (never restyled), corner 20, stroke 140,20,100 w3
-local stomachHud = mkFrame(bottomStack,{Name="StomachHud",Size=UDim2.new(0,300,0,40),LayoutOrder=1,BackgroundColor3=Color3.fromRGB(220,80,180),BorderSizePixel=0,ZIndex=10})
-mkCorner(stomachHud,20); mkStroke(stomachHud,Color3.fromRGB(140,20,100),3)
-do
-	local ic=Instance.new("TextLabel"); ic.Name="GutIcon"; ic.BackgroundTransparency=1; ic.Text="\xF0\x9F\x91\xB6"; ic.Font=Enum.Font.GothamBold; ic.TextScaled=true
-	ic.Size=UDim2.new(0,32,0,32); ic.Position=UDim2.new(0,6,0.5,0); ic.AnchorPoint=Vector2.new(0,0.5); ic.ZIndex=12; ic.Parent=stomachHud
-	local lb=mkLabel(stomachHud,{Name="StomachHudLabel",Size=UDim2.new(1,-44,1,0),Position=UDim2.new(0,40,0,0),ZIndex=11,Text="Stomach",Font=Enum.Font.FredokaOne,TextScaled=true,TextColor3=Color3.fromRGB(255,255,255),TextXAlignment=Enum.TextXAlignment.Center})
-	mkStroke(lb,Color3.fromRGB(0,0,0),2)
-end
-
--- (2) GAS METER -- 480 wide, FINAL: container 20,140,255 corner 16 stroke 20,40,120 w3,
---     title 255,255,100, bar bg 20,20,80 corner 12, fill green corner 12
-local gasPanel = mkFrame(bottomStack,{Size=UDim2.new(0,480,0,85),LayoutOrder=2,BackgroundColor3=Color3.fromRGB(20,140,255)})
-mkCorner(gasPanel,16); mkStroke(gasPanel,Color3.fromRGB(20,40,120),3)
-do
-	local title=mkLabel(gasPanel,{Text="GAS METER",Font=Enum.Font.FredokaOne,TextSize=math.floor(17*scale),TextColor3=Color3.fromRGB(255,255,100),Size=UDim2.new(1,0,0,math.floor(28*scale)),Position=UDim2.new(0,0,0,math.floor(6*scale)),TextXAlignment=Enum.TextXAlignment.Center})
-	mkStroke(title,Color3.fromRGB(0,0,0),2)
-	local barTop = math.floor(6*scale) + math.floor(28*scale) + 2
-	local bg=mkFrame(gasPanel,{Name="gasBg",Size=UDim2.new(1,-20,0,40),Position=UDim2.new(0,10,0,barTop),BackgroundColor3=Color3.fromRGB(20,20,80)})
-	mkCorner(bg,12)
-	local fill=mkFrame(bg,{Name="Fill",Size=UDim2.new(0,0,1,0),BackgroundColor3=Color3.fromRGB(60,210,90),ZIndex=2}) -- flat green (flattenGasGradient final look); size driven by the flight engine
-	mkCorner(fill,12)
-	local pct=mkLabel(bg,{Size=UDim2.new(1,0,1,0),Text="0%",Font=Enum.Font.FredokaOne,TextSize=math.floor(18*scale),TextColor3=Color3.fromRGB(255,255,255),ZIndex=3,TextXAlignment=Enum.TextXAlignment.Center})
-	mkStroke(pct,Color3.fromRGB(0,0,0),2)
-	gasPanel.Size = UDim2.new(0,480,0, barTop + 40 + math.floor(6*scale)) -- tighten to hug content
-	_G.HUD.gasFill = fill; _G.HUD.gasPct = pct -- the flight engine drives these live
-end
-
--- (3) FART BUTTON -- 480x62, FINAL: bright green 50,220,50, corner 16, stroke 30,130,30 w4,
---     gradient 50,220,50 -> 30,190,30
-local fartFrame = mkFrame(bottomStack,{Size=UDim2.new(0,480,0,62),LayoutOrder=3,BackgroundColor3=Color3.fromRGB(50,220,50)})
-mkCorner(fartFrame,16); mkStroke(fartFrame,Color3.fromRGB(30,130,30),4)
-do
-	local grad=Instance.new("UIGradient"); grad.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromRGB(50,220,50)),ColorSequenceKeypoint.new(1,Color3.fromRGB(30,190,30))}); grad.Rotation=90; grad.Parent=fartFrame
-	mkLabel(fartFrame,{Text="\xe2\x98\x81",Font=Enum.Font.GothamBold,TextSize=math.floor(28*scale),TextColor3=Color3.fromRGB(255,255,255),Size=UDim2.new(0,55,1,0),Position=UDim2.new(0,12,0,0),TextXAlignment=Enum.TextXAlignment.Left,ZIndex=3,RichText=false})
-	local txt=mkLabel(fartFrame,{Size=UDim2.new(1,-70,1,0),Position=UDim2.new(0,60,0,0),Text="HOLD TO FART!",Font=Enum.Font.GothamBold,TextSize=math.floor(22*scale),TextColor3=Color3.fromRGB(255,255,255),ZIndex=3,TextXAlignment=Enum.TextXAlignment.Left})
-	mkStroke(txt,Color3.fromRGB(0,80,0),2)
-	_G.HUD.fartLabel = txt -- the flight engine flips this between idle / FARTING
-	-- transparent overlay makes the button tappable; taps route through the flight engine (PropelSystem)
-	local fartClick=mkButton(fartFrame,{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",ZIndex=5})
-	fartClick.MouseButton1Click:Connect(function() if _G.toggleFart then _G.toggleFart() end end)
-end
-
-print("[JustButtons] CANDY rail WIRED: candy-cane SHOP / grape PETS / mint Stomach / bubblegum MORE + pill/gas/fart")
+print("[JustButtons] CANDY rail WIRED: candy-cane SHOP / grape PETS / mint Stomach / bubblegum MORE (bottom stack -> BottomMeterPanel)")

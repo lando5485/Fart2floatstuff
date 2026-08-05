@@ -179,6 +179,9 @@ end
 -- HUD
 --======================================================================
 local activeChest
+-- Set by buildHUD once the tab bar exists; openHUD calls it so the chest always opens on
+-- DONATE rather than on whichever tab you happened to close it on.
+local resetTabs
 
 local function closePanel()
 	if gui then gui.Enabled = false end
@@ -271,14 +274,176 @@ function buildHUD()
 	do local cp = Instance.new("UIPadding", closeBtn); for _, s in ipairs({"PaddingTop","PaddingBottom","PaddingLeft","PaddingRight"}) do cp[s] = UDim.new(0, 9) end end
 	closeBtn.MouseButton1Click:Connect(closePanel)
 
+
+	--======================================================================
+	-- TABS -- DONATE | SEASONAL PETS
+	--
+	-- Seasonal Pets used to be its own treasure box standing beside this one in the garden:
+	-- two near-identical chests, three studs apart, and no way to tell from across the lawn
+	-- which one did what. It is a tab in here now. The garden has ONE chest again.
+	--
+	-- The seasonal page deliberately does NOT rebuild the seasonal grid. That panel already
+	-- exists as CoreClient's LockerGui and it re-asks the SERVER who owns what before it
+	-- shows -- a second copy of the grid built here would be a second thing that can
+	-- disagree with the server about which pets you own. This page is a door to the real one.
+	--======================================================================
+	local donatePage = mkFrame(panel, { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, ZIndex = 3 })
+
+	-- SEASONAL PETS IS A DOOR, NOT A PAGE. The tab used to show a card with an "OPEN SEASONAL
+	-- PETS" button on it -- a page whose only purpose was to make you press one more thing.
+	-- Pressing the tab now opens the real panel directly.
+	--
+	-- It still does NOT rebuild the seasonal grid: that panel already exists as CoreClient's
+	-- LockerGui and it re-asks the SERVER who owns what before it shows, so a copy built here
+	-- would be a second thing that can be wrong about which pets you own.
+	-- BACK, INSIDE THE SEASONAL PANEL. Going through the tab used to be a one-way door: the chest
+	-- closed, LockerGui opened, and the only way out was its X and a second walk to the chest.
+	-- A BACK button is injected into LockerGui itself, so the two panels behave like one flow.
+	--
+	-- It is built ONCE and re-shown, and only ever appears when you arrived FROM the chest -- opening
+	-- Seasonal Pets any other way has nothing to go back TO, and a button that lies about where it
+	-- leads is worse than no button. LockerGui belongs to CoreClient, so this adds a child and
+	-- touches nothing else about it.
+	-- ROUND EVERY INNER RECTANGLE. Run over LockerGui rather than authored into it, because that panel
+	-- belongs to CoreClient and a stale duplicate of that script can be the one that actually built it --
+	-- so patching only the source would fix the copy we can see and miss the one on screen.
+	--
+	-- Full-width bars are SKIPPED. The header and footer strips run edge to edge and are clipped by the
+	-- panel's own rounded corners; rounding them as well would carve visible notches out of the middle
+	-- of the panel where the strip meets the straight side wall.
+	local function roundCorners(root)
+		local panelW = (root.AbsoluteSize and root.AbsoluteSize.X) or 700
+		for _, d in ipairs(root:GetDescendants()) do
+			if (d:IsA("Frame") or d:IsA("ViewportFrame") or d:IsA("ScrollingFrame")
+				or d:IsA("TextButton") or d:IsA("TextLabel") or d:IsA("ImageLabel"))
+				and d.BackgroundTransparency < 0.95
+				and not d:FindFirstChildOfClass("UICorner")
+			then
+				local sz = d.AbsoluteSize
+				if sz.X > 0 and sz.Y > 0 and (panelW <= 0 or sz.X < panelW * 0.95) then
+					local c = Instance.new("UICorner")
+					c.CornerRadius = UDim.new(0, math.clamp(math.floor(math.min(sz.X, sz.Y) / 2), 4, 12))
+					c.Parent = d
+				end
+			end
+		end
+	end
+
+	-- BACK, IN THE HEADER NEXT TO THE X. It used to sit at the panel's top-left, straight on top of the
+	-- "Seasonal Pets" title. It is now mirrored off the X button found at runtime -- same size, same
+	-- corner radius, same baseline -- and placed one gap to its left, so the two read as a pair.
+	--
+	-- Its FILL is deliberately not the X's red. Two red buttons side by side both say "leave", and the
+	-- one that goes back would be indistinguishable from the one that closes. It takes the header's own
+	-- brown instead: matched in shape and weight, distinct in meaning.
+	local seasonalBack
+	local function ensureSeasonalBack()
+		if seasonalBack and seasonalBack.Parent then return seasonalBack end
+		local g = PlayerGui:FindFirstChild("LockerGui")
+		local host = g and g:FindFirstChild("Frame")
+		if not (host and host:IsA("GuiObject")) then return nil end
+
+		-- find the close button: the small square TextButton reading "X" nearest the top-right
+		local x
+		for _, d in ipairs(host:GetDescendants()) do
+			if d:IsA("TextButton") and (d.Text == "X" or d.Text == "\xE2\x9C\x95")
+				and d.AbsoluteSize.X <= 60 and (not x or d.AbsolutePosition.Y < x.AbsolutePosition.Y) then
+				x = d
+			end
+		end
+		local parent = (x and x.Parent) or host
+		local size   = (x and x.Size) or UDim2.new(0, 34, 0, 34)
+		local w      = (x and x.AbsoluteSize.X > 0 and x.AbsoluteSize.X) or 34
+		local radius = 9
+		if x then
+			local xc = x:FindFirstChildOfClass("UICorner")
+			if xc then radius = xc.CornerRadius.Offset end
+		end
+
+		seasonalBack = mkButton(parent, {
+			Name = "ChestBack", AnchorPoint = (x and x.AnchorPoint) or Vector2.new(1, 0.5),
+			Size = size, Position = (x and UDim2.new(x.Position.X.Scale, x.Position.X.Offset - w - 8,
+				x.Position.Y.Scale, x.Position.Y.Offset)) or UDim2.new(1, -54, 0.5, 0),
+			BackgroundColor3 = Color3.fromRGB(120, 78, 40), Text = "\xE2\x97\x80",
+			Font = Enum.Font.FredokaOne, TextSize = 20, TextColor3 = Color3.fromRGB(255, 244, 214),
+			ZIndex = 50, Visible = false,
+		})
+		mkCorner(seasonalBack, radius)
+		seasonalBack.MouseButton1Click:Connect(function()
+			seasonalBack.Visible = false
+			local lg = PlayerGui:FindFirstChild("LockerGui")
+			if lg then lg.Enabled = false end
+			openHUD(nil, activeChest)   -- straight back to the chest panel, on the DONATE tab
+		end)
+		return seasonalBack
+	end
+
+	local function openSeasonal()
+		closePanel()
+		local opener = _G.openSeasonalPets or _G.openLocker
+		if type(opener) == "function" then pcall(opener) end
+		local g = PlayerGui:FindFirstChild("LockerGui")
+		if g then
+			g.Enabled = true    -- harmless if the opener already did it; required if there was none
+			local b = ensureSeasonalBack()
+			if b then b.Visible = true end
+			-- The panel rebuilds its season cards on every refresh, so one sweep is not enough: run it
+			-- now, again once the refresh has landed, and keep watching while the panel is up.
+			local host = g:FindFirstChild("Frame")
+			if host then
+				roundCorners(host)
+				task.delay(0.15, function() if g.Enabled then roundCorners(host) end end)
+				task.delay(0.6,  function() if g.Enabled then roundCorners(host) end end)
+			end
+		else
+			warn("[GardenDonate] Seasonal Pets panel (LockerGui) is not built yet")
+		end
+	end
+
+	local tabBar = mkFrame(panel, { Size = UDim2.new(0, 420, 0, 36), Position = UDim2.new(0.5, 0, 0, 88), AnchorPoint = Vector2.new(0.5, 0), BackgroundColor3 = Color3.fromRGB(16, 56, 148), ZIndex = 4 })
+	mkCorner(tabBar, 18); mkStroke(tabBar, Color3.fromRGB(120, 180, 250), 1)
+	do
+		local tabs = {}
+		local function selectTab(which)
+			-- the seasonal tab is an ACTION: it opens the other panel and leaves this one on
+			-- DONATE, so re-opening the chest never lands you on a blank tab
+			if which == "season" then openSeasonal(); which = "donate" end
+			donatePage.Visible = true
+			for name, btn in pairs(tabs) do
+				local on = (name == which)
+				btn.BackgroundColor3 = on and Color3.fromRGB(255, 200, 60) or Color3.fromRGB(16, 56, 148)
+				btn.BackgroundTransparency = on and 0 or 1
+				btn.TextColor3 = on and Color3.fromRGB(84, 48, 4) or Color3.fromRGB(206, 232, 255)
+			end
+		end
+		local function mkTab(key, text, xScale)
+			local b = mkButton(tabBar, {
+				Size = UDim2.new(0.5, -6, 1, -6), Position = UDim2.new(xScale, xScale == 0 and 3 or -3, 0.5, 0),
+				AnchorPoint = Vector2.new(xScale, 0.5), Text = text, Font = Enum.Font.FredokaOne, TextSize = 18,
+				BackgroundColor3 = Color3.fromRGB(16, 56, 148), AutoButtonColor = false, ZIndex = 5,
+			})
+			mkCorner(b, 15); juice(b)
+			b.MouseButton1Click:Connect(function() selectTab(key) end)
+			tabs[key] = b
+			return b
+		end
+		mkTab("donate", "\xF0\x9F\x92\x9B  DONATE", 0)
+		mkTab("season", "\xE2\x9D\x84\xEF\xB8\x8F  SEASONAL PETS", 1)
+		selectTab("donate")
+		-- openHUD() resets to the DONATE tab every time the chest is opened, so the panel never
+		-- re-opens on whatever page you happened to leave it on.
+		resetTabs = function() selectTab("donate") end
+	end
+
 	-- SUBTITLE + the honesty chip. One line each: the old two grey lines read as small print.
-	mkLabel(panel, { Text = "Love the garden? Chip in to help keep it growing! \xF0\x9F\x8C\xBB", Font = Enum.Font.FredokaOne, TextSize = 21, TextColor3 = Color3.new(1, 1, 1), Size = UDim2.new(1, -40, 0, 26), Position = UDim2.new(0.5, 0, 0, 90), AnchorPoint = Vector2.new(0.5, 0), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
-	local chip = mkFrame(panel, { Size = UDim2.new(0, 372, 0, 28), Position = UDim2.new(0.5, 0, 0, 120), AnchorPoint = Vector2.new(0.5, 0), BackgroundColor3 = Color3.fromRGB(16, 56, 148), ZIndex = 3 })
+	-- Both moved DOWN to clear the tab bar, and both live on the donate page now.
+	mkLabel(donatePage, { Text = "Love the garden? Chip in to help keep it growing! \xF0\x9F\x8C\xBB", Font = Enum.Font.FredokaOne, TextSize = 21, TextColor3 = Color3.new(1, 1, 1), Size = UDim2.new(1, -40, 0, 26), Position = UDim2.new(0.5, 0, 0, 134), AnchorPoint = Vector2.new(0.5, 0), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
+	local chip = mkFrame(donatePage, { Size = UDim2.new(0, 372, 0, 28), Position = UDim2.new(0.5, 0, 0, 162), AnchorPoint = Vector2.new(0.5, 0), BackgroundColor3 = Color3.fromRGB(16, 56, 148), ZIndex = 3 })
 	mkCorner(chip, 14); mkStroke(chip, Color3.fromRGB(120, 180, 250), 1)
 	mkLabel(chip, { Text = "\xF0\x9F\x92\x9B Pure support \xE2\x80\x94 no boosts, just our thanks", Font = Enum.Font.GothamBold, TextSize = 15, TextColor3 = Color3.fromRGB(206, 232, 255), Size = UDim2.new(1, 0, 1, 0), ZIndex = 4 })
 
-	-- 2x2 PRESET GRID
-	local gridFrame = mkFrame(panel, { Size = UDim2.new(0, 620, 0, 250), Position = UDim2.new(0.5, 0, 0, 158), AnchorPoint = Vector2.new(0.5, 0), BackgroundTransparency = 1, ZIndex = 3 })
+	-- 2x2 PRESET GRID  (also nudged down by the tab bar's height)
+	local gridFrame = mkFrame(donatePage, { Size = UDim2.new(0, 620, 0, 246), Position = UDim2.new(0.5, 0, 0, 196), AnchorPoint = Vector2.new(0.5, 0), BackgroundTransparency = 1, ZIndex = 3 })
 	local grid = Instance.new("UIGridLayout")
 	grid.CellSize = UDim2.new(0.5, -8, 0.5, -8); grid.CellPadding = UDim2.new(0, 16, 0, 16)
 	grid.HorizontalAlignment = Enum.HorizontalAlignment.Center; grid.VerticalAlignment = Enum.VerticalAlignment.Center
@@ -323,8 +488,8 @@ function buildHUD()
 	end
 
 	-- NOTICE line (setup / personal thank-you) + FOOTER
-	noticeLbl = mkLabel(panel, { Text = "", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = Color3.fromRGB(255, 235, 140), Size = UDim2.new(1, -40, 0, 22), Position = UDim2.new(0.5, 0, 1, -52), AnchorPoint = Vector2.new(0.5, 1), TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
-	mkLabel(panel, { Text = "\xF0\x9F\x92\x9B Thank you for helping our garden grow! \xF0\x9F\x92\x9B", Font = Enum.Font.FredokaOne, TextSize = 20, TextColor3 = Color3.fromRGB(255, 245, 200), Size = UDim2.new(1, -40, 0, 30), Position = UDim2.new(0.5, 0, 1, -16), AnchorPoint = Vector2.new(0.5, 1), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
+	noticeLbl = mkLabel(donatePage, { Text = "", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = Color3.fromRGB(255, 235, 140), Size = UDim2.new(1, -40, 0, 22), Position = UDim2.new(0.5, 0, 1, -52), AnchorPoint = Vector2.new(0.5, 1), TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
+	mkLabel(donatePage, { Text = "\xF0\x9F\x92\x9B Thank you for helping our garden grow! \xF0\x9F\x92\x9B", Font = Enum.Font.FredokaOne, TextSize = 20, TextColor3 = Color3.fromRGB(255, 245, 200), Size = UDim2.new(1, -40, 0, 30), Position = UDim2.new(0.5, 0, 1, -16), AnchorPoint = Vector2.new(0.5, 1), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3 })
 end
 
 function showThanks(donorName, robux)
@@ -337,6 +502,15 @@ end
 function openHUD(promptPart, chestModel)
 	if not gui then buildHUD() end
 	activeChest = chestModel
+	if resetTabs then pcall(resetTabs) end
+	-- the BACK button injected into the Seasonal Pets panel belongs to that trip only -- opening the
+	-- chest again starts a fresh one, so it must not be left showing behind us
+	do
+		local lg = PlayerGui:FindFirstChild("LockerGui")
+		local host = lg and lg:FindFirstChild("Frame")
+		local b = host and host:FindFirstChild("ChestBack")
+		if b then b.Visible = false end
+	end
 	gui.Enabled = true
 	claimDonationHud() -- the stale copy opens on this same prompt; drop its panel the instant ours is up
 	setNotice("")

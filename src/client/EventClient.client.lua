@@ -115,11 +115,41 @@ local glowEdges  = {glowLeft,glowRight}
 -- banner has slid away (see showCountPillAfterBanner), so it can sit in the SAME prime top-center spot the banner
 -- used (Y=12) without ever overlapping it. The coin counter is top-RIGHT, so there's no conflict there either.
 local countSg=Instance.new("ScreenGui"); countSg.Name="EventCountGui"; countSg.ResetOnSpawn=false; countSg.ZIndexBehavior=Enum.ZIndexBehavior.Global; countSg.Parent=PlayerGui
--- TOP-RIGHT STATUS COLUMN (under the coin pill at y=10), NOT top-centre. It used to sit at
--- UDim2.new(0.5,0,0,12) -- the identical spot RocketUI's teleport button hard-codes, so an active
--- rocket event simply covered this countdown. Top-centre is now reserved for transient banners
--- (NotifyCenter's hero lane) and the objective card; persistent status lives down the right edge.
-local countPill=mkFrame(countSg,{Size=UDim2.new(0,280,0,44),Position=UDim2.new(1,-10,0,66),AnchorPoint=Vector2.new(1,0),BackgroundColor3=Color3.fromRGB(180,60,220),Visible=false,ZIndex=14,BorderSizePixel=0})
+-- THE QUEST-PILL LANE. Every event pill -- the thunderstorm / windstorm countdown here and the
+-- milestone pills further down -- now opens in the EXACT spot the pet-quest tracker uses, so all of them
+-- land in one place instead of each script picking its own corner.
+--
+-- The number is not copied: it is read off the tracker's own LaneY attribute (PetFollow sets it), so
+-- retuning the quest lane moves the event pills with it and the two can never drift apart. -20 is the
+-- fallback for a realm with no pet quests, or for the first frames before PetQuestUI exists.
+local function questLaneY()
+	local q=PlayerGui:FindFirstChild("PetQuestUI")
+	local t=q and q:FindFirstChild("Tracker")
+	local y=t and t:GetAttribute("LaneY")
+	return tonumber(y) or -20
+end
+
+-- EVENT PILLS OWN THE LANE WHILE THEY ARE UP.
+-- Now that they open in the quest tracker's exact spot, something has to give when both want it, and the
+-- event wins: a storm countdown is time-critical and self-expiring, a quest tracker is persistent and will
+-- still be there afterwards. So this publishes a flag on _G and PetFollow's tracker gate stands down for
+-- it -- the same courtesy that gate already pays NotifyCenter's hero banner.
+--
+-- FLAGS BY TAG, not a counter. Several pills can be up at once (a batch of milestones during a storm), they
+-- retire in an unpredictable order, and a stray extra "off" against a counter would wrongly free the lane
+-- while another pill is still on screen. A tag can only clear its own claim, so it cannot go wrong.
+-- On _G rather than as locals: this file is long and a new top-level local is not worth the risk.
+_G.eventPillFlags = _G.eventPillFlags or {}
+_G.eventPillHold = function(tag, on)
+	_G.eventPillFlags[tag] = on and true or nil
+	local any = false
+	for _ in pairs(_G.eventPillFlags) do any = true break end
+	_G.eventPillActive = any
+end
+-- This countdown previously sat top-RIGHT under the coin pill, because at its older top-centre position
+-- of y=12 it was covered by RocketUI's teleport button, which hard-codes that same spot. The quest lane
+-- sits ABOVE that (-20 vs 12), so the collision that drove it to the corner no longer applies.
+local countPill=mkFrame(countSg,{Size=UDim2.new(0,280,0,44),Position=UDim2.new(0.5,0,0,questLaneY()),AnchorPoint=Vector2.new(0.5,0),BackgroundColor3=Color3.fromRGB(180,60,220),Visible=false,ZIndex=14,BorderSizePixel=0})
 mkCorner(countPill,20); mkStroke(countPill,Color3.fromRGB(120,20,160),3)
 local countLabel=mkLabel(countPill,{Text="",Font=Enum.Font.FredokaOne,TextScaled=true,TextColor3=Color3.fromRGB(255,255,255),Size=UDim2.new(1,-10,1,0),Position=UDim2.new(0,5,0,0),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=15})
 mkStroke(countLabel,Color3.fromRGB(0,0,0),2)
@@ -785,19 +815,39 @@ RunService.Heartbeat:Connect(function(dt)
 end)
 
 -- ===== MILESTONE SYSTEM =====
+-- THE EVENT / STORM PILLS LIVE IN THE TOP-CENTRE LANE, like the quest tracker.
+-- They used to stack from 0.45 scale -- the dead centre of the screen, straight over the player and the
+-- thing they were flying toward. Two changes:
+--
+--   * Y is the QUEST LANE (questLaneY(), read off the tracker's LaneY attribute) instead of 45% down.
+--     45% of a 1044px desktop screen is 470px; of a 372px phone screen it is 167px. A scale-based Y does
+--     not mean "the same place", it means a different place on every device -- the same trap the quest
+--     popup was in. Reading the lane also means these land in the exact spot the quest pills do rather
+--     than in a second, separate spot that has to be kept in sync by hand.
+--   * X is AnchorPoint 0.5 rather than a hand-computed (0.5, -140) offset. That -140 is half the pill's
+--     280px width, so it only centred the pill while the pill was exactly 280 wide -- and the responsive
+--     pass scales that width on phones, which left it off-centre by however much it had shrunk.
 local function showMilestonePills(milestones)
+	local MS_TOP = questLaneY()   -- read per batch, so a retuned lane is picked up without a rejoin
 	for i,m in ipairs(milestones) do
 		task.delay((i-1)*0.35,function()
+			-- a tag unique to THIS pill, so its retirement can only free its own claim on the lane and
+			-- never one belonging to a pill from an overlapping batch
+			_G.__msTag = (_G.__msTag or 0) + 1
+			local tag = "ms" .. _G.__msTag
+			_G.eventPillHold(tag, true)
 			local mSg=Instance.new("ScreenGui"); mSg.ResetOnSpawn=false; mSg.Parent=PlayerGui
-			local pill=Instance.new("Frame"); pill.Size=UDim2.new(0,280,0,42); pill.Position=UDim2.new(0.5,-140,0.45,(i-1)*52); pill.BackgroundColor3=Color3.fromRGB(40,190,40); pill.Parent=mSg
+			local pill=Instance.new("Frame"); pill.AnchorPoint=Vector2.new(0.5,0); pill.Size=UDim2.new(0,280,0,42); pill.Position=UDim2.new(0.5,0,0,MS_TOP+(i-1)*52); pill.BackgroundColor3=Color3.fromRGB(40,190,40); pill.Parent=mSg
 			local co=Instance.new("UICorner"); co.CornerRadius=UDim.new(0,21); co.Parent=pill
 			local st=Instance.new("UIStroke"); st.Color=Color3.fromRGB(0,140,0); st.Thickness=2; st.Parent=pill
 			local lbl=Instance.new("TextLabel"); lbl.Text=m; lbl.Font=Enum.Font.GothamBold; lbl.TextSize=16; lbl.TextColor3=Color3.new(1,1,1); lbl.Size=UDim2.new(1,-10,1,0); lbl.Position=UDim2.new(0,5,0,0); lbl.BackgroundTransparency=1; lbl.TextXAlignment=Enum.TextXAlignment.Center; lbl.Parent=pill
-			pill.BackgroundTransparency=1; pill.Position=UDim2.new(0.5,-140,0.42,(i-1)*52)
-			TweenService:Create(pill,TweenInfo.new(0.3,Enum.EasingStyle.Back),{BackgroundTransparency=0,Position=UDim2.new(0.5,-140,0.45,(i-1)*52)}):Play()
+			-- slide DOWN into place from 12px higher (it used to rise from below, which read as coming up
+			-- out of the middle of the screen -- wrong direction now that it lives at the top)
+			pill.BackgroundTransparency=1; pill.Position=UDim2.new(0.5,0,0,MS_TOP-12+(i-1)*52)
+			TweenService:Create(pill,TweenInfo.new(0.3,Enum.EasingStyle.Back),{BackgroundTransparency=0,Position=UDim2.new(0.5,0,0,MS_TOP+(i-1)*52)}):Play()
 			task.delay(2.5,function()
 				TweenService:Create(pill,TweenInfo.new(0.4),{BackgroundTransparency=1}):Play()
-				task.delay(0.4,function() mSg:Destroy() end)
+				task.delay(0.4,function() mSg:Destroy(); _G.eventPillHold(tag, false) end)
 			end)
 		end)
 	end
@@ -857,10 +907,17 @@ local function showEventBanner(dispName,msg,color)
 	})
 end
 
--- The pill and the banner no longer share a slot -- the banner goes to the hero lane (top-centre) and
--- the pill lives in the top-right status column -- so the pill no longer has to wait ~5.45s for the
--- banner to clear. A short beat is still nice so the two don't pop in on the same frame.
-local BANNER_GONE_AFTER = 0.6
+-- THEY SHARE A SLOT AGAIN, so the pill waits for the banner properly.
+-- This used to be a flat 0.6s beat, correct only while the pill lived in the top-right column: the banner
+-- had its own lane, so the pill only needed to not pop in on the same frame. Now the pill opens in the
+-- top-centre quest lane, directly under the banner, and 0.6s is nowhere near enough -- the banner is a
+-- 5-second NotifyCenter push, so the countdown appeared while the announcement was still on screen.
+--
+-- It now WAITS ON THE BANNER ITSELF rather than on a guessed duration: poll NotifyCenter until the lane is
+-- clear, then show. That is correct whatever the banner's duration is, and it also covers a second banner
+-- queued behind the first. The cap stops a stuck NotifyCenter from suppressing the countdown forever.
+local BANNER_GONE_AFTER = 0.35   -- the small beat AFTER the lane clears, so the two don't swap on one frame
+local BANNER_WAIT_CAP   = 12     -- seconds; give up waiting and show anyway
 local pillToken = 0
 -- Reveal the (top-centered) countdown pill, but ONLY after the banner has cleared the screen AND only if the event
 -- is still running by then. `pillToken` cancels a pending reveal the moment a newer event/pill cycle begins, and
@@ -868,10 +925,21 @@ local pillToken = 0
 local function showCountPillAfterBanner(stillActive)
 	pillToken = pillToken + 1
 	local myToken = pillToken
-	countPill.Visible = false -- stay hidden while the announcement banner is on screen
-	task.delay(BANNER_GONE_AFTER, function()
+	countPill.Visible = false; _G.eventPillHold("count", false) -- hidden while the announcement is on screen
+	task.spawn(function()
+		local waited = 0
+		while waited < BANNER_WAIT_CAP do
+			local NC = _G.NotifyCenter
+			if not (NC and NC.isBusy()) then break end
+			task.wait(0.1); waited = waited + 0.1
+		end
+		task.wait(BANNER_GONE_AFTER)
 		if myToken == pillToken and (not stillActive or stillActive()) then
+			-- re-read the lane on the way in, not just at build time: PetQuestUI may not have existed when
+			-- this pill was created, and the quest lane can be retuned while the game is running
+			countPill.Position = UDim2.new(0.5, 0, 0, questLaneY())
 			countPill.Visible = true
+			_G.eventPillHold("count", true) -- the quest tracker stands down until this clears
 		end
 	end)
 end
@@ -883,6 +951,10 @@ local function addEventSg(sg2) table.insert(activeEventSgs,sg2) end
 -- All world/Lighting + 3D particles (no GUI overlay, so the HUD stays bright). Base Lighting is snapshotted and
 -- fully restored on storm end. Lightning = a 3D Lighting spike. Wind = _G.thunderWindVec (CoreClient applies it). =====
 local stormCC = nil
+-- The Sky we blacked out for the storm + its original faces, so the end of the storm puts the real sky
+-- back exactly as it was. SkyByAltitude already stands down entirely while _G.thunderstormActive is set
+-- (it returns early on that flag), so the storm can own the sky outright without two writers fighting.
+local stormSky, savedSky = nil, nil
 local savedStormLighting = nil
 local stormApplied = nil            -- the active Lighting target (FLY or LAND) -- a lightning flash returns to it
 local stormClouds = nil
@@ -906,12 +978,21 @@ local STORM_FLY = {
 	ClockTime = 14, Brightness = 0.6, ExposureCompensation = -0.6,
 	FogColor = Color3.fromRGB(60,60,70), FogStart = 0, FogEnd = 60,  -- ~60 studs: islands fully invisible
 	OutdoorAmbient = Color3.fromRGB(45,47,55), Ambient = Color3.fromRGB(48,50,58),
+	-- ===== THE SKYBOX GOES DARK TOO =====
+	-- Classic Fog does NOT touch the skybox in Roblox. So the fog wall correctly swallowed the islands
+	-- while the SKY behind them stayed the bright SkyByAltitude gradient -- a dark grey world under a
+	-- cheerful blue backdrop. ColorCorrection is a full-frame post effect, so it DOES grade the skybox;
+	-- driving it from the same flying/landed switch is what finally makes the whole background dark.
+	-- ScreenGuis are 2D and unaffected, so the HUD stays readable at full brightness.
+	cc = { Brightness = -0.18, Contrast = 0.04, Saturation = -0.55, TintColor = Color3.fromRGB(142,148,168) },
 }
 -- LANDED = on an island: cloud eases WAY back so the island is clearly visible (stormy but visible).
 local STORM_LAND = {
 	ClockTime = 14, Brightness = 1.6, ExposureCompensation = -0.1,
 	FogColor = Color3.fromRGB(150,156,166), FogStart = 50, FogEnd = 650,
 	OutdoorAmbient = Color3.fromRGB(150,156,166), Ambient = Color3.fromRGB(150,156,166),
+	-- standing on an island: the overcast grade it always had, so the island reads clearly
+	cc = { Brightness = 0, Contrast = -0.03, Saturation = -0.35, TintColor = Color3.fromRGB(244,246,250) },
 }
 -- HARD-CULL APPROACH. An Atmosphere maxes out at Density 1.0 / Haze 10 and even then only WASHES OUT
 -- distant objects (light scattering) -- it never fully occludes, so islands stayed faintly visible.
@@ -978,6 +1059,10 @@ local function applyStormState(flying, t)
 		FogColor=target.FogColor, FogStart=target.FogStart, FogEnd=target.FogEnd,
 		OutdoorAmbient=target.OutdoorAmbient, Ambient=target.Ambient,
 	}):Play()
+	-- grade the whole frame (skybox included) to match the state, on the same easing as the fog
+	if stormCC and target.cc then
+		TweenService:Create(stormCC, TweenInfo.new(t or 1.1, Enum.EasingStyle.Sine), target.cc):Play()
+	end
 	-- HARD-CULL atmosphere handling.
 	if flying then
 		-- The enforcer below REMOVES any Atmosphere + pins the dense classic-fog wall every frame, so just
@@ -1058,9 +1143,35 @@ local function startStormSky()
 	-- cause is render distance -- with StreamingEnabled the engine can draw distant islands past the fog.
 	print("[Storm] workspace.StreamingEnabled = "..tostring(workspace.StreamingEnabled)..
 		" (if true and islands still show through the classic-fog wall, render distance is drawing them -- needs a render-distance fix)")
+	-- ===== BLACK OUT THE SKYBOX ITSELF =====
+	-- Colour-grading darkened the sky but it was still a SKY: blue gradient, sun, stars, all clearly
+	-- readable behind a storm that is supposed to have swallowed the world. A Roblox Sky has no colour
+	-- property, but a face with an EMPTY texture id renders solid black -- so blanking all six, killing
+	-- the sun/moon and zeroing the stars turns the whole backdrop into featureless dark cloud. Every
+	-- original value is saved first and restored when the storm ends.
+	do
+		local sky = Lighting:FindFirstChildOfClass("Sky")
+		if sky then
+			if not savedSky then
+				savedSky = {
+					Up = sky.SkyboxUp, Dn = sky.SkyboxDn, Lf = sky.SkyboxLf,
+					Rt = sky.SkyboxRt, Ft = sky.SkyboxFt, Bk = sky.SkyboxBk,
+					Stars = sky.StarCount, Bodies = sky.CelestialBodiesShown,
+				}
+			end
+			stormSky = sky
+			sky.SkyboxUp, sky.SkyboxDn, sky.SkyboxLf = "", "", ""
+			sky.SkyboxRt, sky.SkyboxFt, sky.SkyboxBk = "", "", ""
+			sky.StarCount = 0
+			sky.CelestialBodiesShown = false   -- no sun burning through the thundercloud
+			print("[Storm] skybox blacked out (6 faces blanked, sun + stars off) -- restored when the storm ends")
+		end
+	end
 	if not stormCC then stormCC=Instance.new("ColorCorrectionEffect"); stormCC.Name="ThunderstormCC"; stormCC.Parent=Lighting end
+	-- neutral START values only. The grade itself is no longer hardcoded here: it used to always tween to
+	-- the LANDED look, which then fought the applyStormState call a few lines below whenever the storm
+	-- began mid-flight. applyStormState now owns it and picks flying-dark or landed-overcast.
 	stormCC.Brightness=0; stormCC.Contrast=0; stormCC.Saturation=0; stormCC.TintColor=Color3.fromRGB(255,255,255)
-	TweenService:Create(stormCC, TweenInfo.new(1.5), {Brightness=0, Contrast=-0.03, Saturation=-0.35, TintColor=Color3.fromRGB(244,246,250)}):Play()
 	startStormParticles()
 	stormState = isPlayerFlying()
 	applyStormState(stormState, 1.5)
@@ -1085,6 +1196,17 @@ local function triggerLightning()
 end
 local function stopStormSky()
 	stormApplied=nil; stormState=nil
+	-- give the real sky back, face by face, exactly as it was before the storm
+	if stormSky and savedSky then
+		if stormSky.Parent then
+			stormSky.SkyboxUp, stormSky.SkyboxDn, stormSky.SkyboxLf = savedSky.Up, savedSky.Dn, savedSky.Lf
+			stormSky.SkyboxRt, stormSky.SkyboxFt, stormSky.SkyboxBk = savedSky.Rt, savedSky.Ft, savedSky.Bk
+			stormSky.StarCount = savedSky.Stars
+			stormSky.CelestialBodiesShown = savedSky.Bodies
+			print("[Storm] skybox restored")
+		end
+		stormSky, savedSky = nil, nil
+	end
 	stopStormFogEnforcer()   -- STOP pinning fog BEFORE restoring, so the restore tween isn't re-stomped each frame
 	stopStormParticles()
 	if savedStormLighting then
@@ -1139,8 +1261,15 @@ local function cleanupWeather()
 	end
 end
 
+-- FORWARD-DECLARED: defined further down (with the thunderstorm code it belongs to), but endEvent -- the
+-- forced-stop path for ANY event -- has to be able to put the islands back, and it lives above that
+-- definition. Without this line the call below would compile as a nil global and silently do nothing,
+-- leaving every island invisible for the rest of the session after a force-stopped storm.
+local setIslandsInvisible
+
 local function endEvent()
 	eventBanner.Visible=false; glowPulseActive=false; hideGlow()
+	if setIslandsInvisible then setIslandsInvisible(false) end -- storm force-stopped: islands must come back
 	_G.serverEventActive=false; _G.serverEventDisplayName=""
 	_G.serverEventSpeedMult=1; _G.serverEventCoinMult=1; _G.serverEventGasDrainMult=1
 	_G.serverEventHeightMult=1; _G.serverEventRingMult=1
@@ -1151,7 +1280,7 @@ local function endEvent()
 	-- Clear any full-screen flash/lightning overlays INSTANTLY so no screen tint lingers past the event.
 	lightningFlash.BackgroundTransparency=1
 	flashFrame.BackgroundTransparency=1
-	countPill.Visible=false
+	countPill.Visible=false; _G.eventPillHold("count", false)
 	for _,sg2 in ipairs(activeEventSgs) do pcall(function() sg2:Destroy() end) end; activeEventSgs={}
 	cleanupWeather()
 end
@@ -1258,9 +1387,75 @@ local function spawnLightningStrike()
 	end
 end
 
+-- ===== ISLANDS VANISH IN THE STORM =====
+-- Hides every island's parts while the thunderstorm runs, then puts back EXACTLY what was there. It records
+-- each part's original Transparency and restores that saved value rather than assuming 0 -- islands are full
+-- of glass, water, foliage and already-invisible markers, and blanket-resetting to 0 would leave the world
+-- permanently changed after the first storm.
+--
+-- Collision is untouched: the ground still holds you up, so a player standing on an island when the storm
+-- hits does not fall through the world -- the island simply disappears into the cloud around them.
+local stormHidden = nil   -- [BasePart] = its Transparency before the storm
+local STORM_KEEP_NEAR = 50 -- studs: an island this close to you stays solid, storm or not
+
+-- ===== WHICH ISLANDS VANISH, AND WHEN =====
+-- The storm should hide the WORLD you are flying through, never the ground under your feet. So an island
+-- is hidden only when BOTH are true:
+--   * you are FLYING (standing on an island keeps it visible -- vanishing the floor you are stood on reads
+--     as falling through the map, and it is genuinely disorienting for a young player), and
+--   * that island is more than STORM_KEEP_NEAR studs away (so the one you just launched off, or are about
+--     to land on, stays solid while you are near it and fades once you have climbed past it).
+--
+-- This is re-evaluated on the storm's own tick, so islands fade and return as you climb -- which is the
+-- effect: cloud swallowing the world below while the island you are at stays real.
+-- Assigns the forward-declared local above (no `local` keyword here on purpose -- a second `local` would
+-- shadow it and leave endEvent holding the original nil).
+function setIslandsInvisible(on)
+	if on then
+		stormHidden = stormHidden or {}
+		local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		local flying = (_G.isFlying == true)
+		for _, model in ipairs(workspace:GetChildren()) do
+			if model:IsA("Model") and model.Name:sub(1, 7) == "Island_" then
+				-- distance to the island's centre, measured once per island rather than per part
+				local okCF, cf = pcall(function() return model:GetPivot() end)
+				local far = true
+				if okCF and hrp then
+					far = (hrp.Position - cf.Position).Magnitude > STORM_KEEP_NEAR
+				end
+				local shouldHide = flying and far
+				for _, d in ipairs(model:GetDescendants()) do
+					-- characters standing on the island are NOT part of it -- skip anything under a Humanoid
+					-- rig, or the player and NPCs would vanish along with the scenery
+					if d:IsA("BasePart") and not d.Parent:FindFirstChildOfClass("Humanoid") then
+						if shouldHide then
+							if stormHidden[d] == nil then stormHidden[d] = d.Transparency end
+							-- DARKENED, not erased: 0.82 leaves a faint shape in the cloud, so the world
+							-- still reads as out there rather than deleted. Fully transparent looked like
+							-- the islands had been unloaded.
+							d.Transparency = math.max(d.Transparency, 0.82)
+						elseif stormHidden[d] ~= nil then
+							d.Transparency = stormHidden[d]   -- back in range / landed: restore exactly
+							stormHidden[d] = nil
+						end
+					end
+				end
+			end
+		end
+	else
+		if not stormHidden then return end
+		for p, t in pairs(stormHidden) do
+			if p.Parent then p.Transparency = t end   -- restore the ORIGINAL value, not a blanket 0
+		end
+		stormHidden = nil
+		print("[Storm] islands restored")
+	end
+end
+
 -- ===== THUNDERSTORM =====
 local function startThunderstorm(dur)
 	_G.thunderstormActive=true
+	setIslandsInvisible(true)
 	if not thunderstormSound.IsPlaying then thunderstormSound:Play() end -- once; don't replay on re-trigger
 	stormBlur.Enabled=false -- NO screen blur: the storm look is real 3D fog + cloud particles (HUD stays bright)
 	startStormSky()           -- dark thundercloud while flying / island visible when landed + cloud/rain particles
@@ -1272,6 +1467,7 @@ local function startThunderstorm(dur)
 	task.spawn(function()
 		local lightTimer=math.random(40,100)*0.1
 		local rainTimer=0; local rain2DTimer=0; local windChangeTimer=0; local strikeTimer=math.random(200,400)*0.01
+		local islandFadeTimer=0 -- throttles the island fade/restore sweep (see below); 0 = run it on the first tick
 		local windTarget=Vector3.new(0,0,0)
 		while tick()<endT and _G.thunderstormActive do
 			local dt2=task.wait(0.05); if not dt2 then dt2=0.05 end
@@ -1299,17 +1495,27 @@ local function startThunderstorm(dur)
 			-- FLYING = dark blinding cloud (islands gone); LANDED = fog eased so the island is visible
 			local nowFly=isPlayerFlying()
 			if nowFly~=stormState then stormState=nowFly; applyStormState(nowFly, 1.0) end
+			-- RE-EVALUATE WHICH ISLANDS ARE HIDDEN, twice a second. It has to be on a timer rather than
+			-- only on the fly/land change, because the DISTANCE test moves with you: islands fade as you
+			-- climb away from them and come back as you approach one to land. Throttled because each pass
+			-- walks all 14 islands' descendants -- far too heavy to run every frame.
+			islandFadeTimer = islandFadeTimer - dt2
+			if islandFadeTimer <= 0 then
+				islandFadeTimer = 0.5
+				setIslandsInvisible(true)
+			end
 			local rem=math.max(0,math.ceil(endT-tick()))
 			countLabel.Text="\xe2\x9b\x88 THUNDERSTORM: "..rem.."s"
 			if rem<=0 then break end
 		end
 		_G.thunderstormActive=false; glowPulseActive=false
+		setIslandsInvisible(false)   -- islands come back, each to the transparency it actually had
 		_G.thunderWindVec=Vector3.new(0,0,0) -- wind off (CoreClient reads zero -> normal flight)
 		thunderstormSound:Stop() -- stop the storm sound when the event ends, even mid-playback
 		stormBlur.Enabled=false
 		stopStormSky()           -- restore Lighting/fog/particles to normal
 		lightningFlash.BackgroundTransparency=1
-		countPill.Visible=false; hideGlow()
+		countPill.Visible=false; _G.eventPillHold("count", false); hideGlow()
 	end)
 end
 
@@ -1346,7 +1552,7 @@ local function startWindstorm()
 		end
 		_G.windstormActive=false; glowPulseActive=false
 		windstormSound:Stop() -- stop the loop cleanly when the windstorm ends
-		countPill.Visible=false; hideGlow()
+		countPill.Visible=false; _G.eventPillHold("count", false); hideGlow()
 	end)
 end
 

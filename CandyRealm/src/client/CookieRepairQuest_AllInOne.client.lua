@@ -33,6 +33,15 @@ local PlayerGui = player:WaitForChild("PlayerGui")
 -- ============================================================================
 local ISLAND_NAME      = "island3"
 local TOTAL            = 6
+-- CHIP PRY: the per-chunk minigame. DELIBERATELY SHORT -- 6s, not the realm's usual 15s
+-- floor, because the Chocolate Monster is hunting you the whole time and a 15s modal
+-- would just park you still while it closes in. Six chunks x 6s = 36s, and the chase is
+-- doing the rest of the pacing work on this island.
+local PRY_SECONDS      = 6
+local PRY_GAIN         = 0.075   -- bar per tap (~2.2 taps/sec to keep pace -- under the mobile 2.7 ceiling)
+-- If the monster gets this close the panel BAILS instead of trapping you in it. Slightly
+-- wider than its own SHOVE_RANGE (12) so you get out before it can land the shove.
+local PRY_MONSTER_BAIL = 16
 local CHUNK_NAME       = "chunk"                       -- brick name (case-insensitive)
 -- names below are compared with norm(): lowercase, spaces/underscores/hyphens removed.
 -- So "Candy Npc" and "Giant Cookie" match "candynpc" / "giantcookie".
@@ -583,6 +592,123 @@ local function nextHint()
 end
 
 -- ============================================================================
+-- CHIP PRY -- the per-chunk minigame (short, because you're being chased)
+-- ============================================================================
+-- Tap to lever the chunk out of whatever it's set into. Same rising-ceiling
+-- enforcement as the rest of the realm -- `ceiling` climbs 0 -> 1 over exactly
+-- PRY_SECONDS and clamps the bar every frame and on every tap -- so mashing can't
+-- beat it. It is just tuned to 6s instead of 15s.
+--
+-- The monster watch is the reason this one isn't a plain copy of the gumball panel:
+-- a modal that traps you in place while something is charging you is a trap, not a
+-- minigame. Getting bailed out costs you nothing -- the chunk stays, the prompt
+-- re-arms, you run and come back.
+local pryOpen = false
+local function monsterDistance()
+	local mon = Workspace:FindFirstChild("ChocolateMonster")
+	local body = mon and mon:FindFirstChild("Body")
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not (body and hrp) then return math.huge end
+	return (body.Position - hrp.Position).Magnitude
+end
+
+local function openPry(chunkModel, onDone)
+	if pryOpen then return end
+	pryOpen = true
+
+	-- NOTE: do NOT drive main.CFrame here. spawnChunk runs a PivotTo bob loop on the whole
+	-- model every 0.03s, so any CFrame we set is overwritten on the next tick. Size and the
+	-- light are ours alone, so the chunk reacts through those instead.
+	local main = chunkModel and chunkModel:FindFirstChild("Choco")
+	local baseSize = main and main.Size
+	local light = main and main:FindFirstChildWhichIsA("PointLight")
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "ChipPry"; gui.ResetOnSpawn = false; gui.IgnoreGuiInset = true
+	gui.DisplayOrder = 90; gui.Parent = PlayerGui
+
+	local film = Instance.new("Frame")
+	film.Size = UDim2.fromScale(1, 1); film.BackgroundColor3 = Color3.new(0, 0, 0)
+	film.BackgroundTransparency = 0.5; film.BorderSizePixel = 0; film.Parent = gui
+
+	local panel = Instance.new("Frame")
+	panel.Size = UDim2.fromOffset(400, 250); panel.Position = UDim2.fromScale(0.5, 0.5)
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	panel.BackgroundColor3 = Color3.fromRGB(25, 90, 185); panel.BorderSizePixel = 0; panel.Parent = gui
+	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 14)
+	local ps = Instance.new("UIStroke", panel); ps.Color = Color3.new(1, 1, 1); ps.Thickness = 3
+
+	local title = Instance.new("TextLabel")
+	title.BackgroundTransparency = 1; title.Size = UDim2.new(1, -60, 0, 40); title.Position = UDim2.fromOffset(18, 12)
+	title.Font = Enum.Font.GothamBold; title.TextSize = 22; title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextColor3 = Color3.fromRGB(255, 215, 0); title.Text = "Pry it out!"; title.Parent = panel
+
+	local hint = Instance.new("TextLabel")
+	hint.BackgroundTransparency = 1; hint.Size = UDim2.new(1, -36, 0, 22); hint.Position = UDim2.fromOffset(18, 48)
+	hint.Font = Enum.Font.Gotham; hint.TextSize = 14; hint.TextXAlignment = Enum.TextXAlignment.Left
+	hint.TextColor3 = Color3.new(1, 1, 1); hint.Text = "Tap fast -- and keep an ear out"; hint.Parent = panel
+
+	local close = Instance.new("TextButton")
+	close.Size = UDim2.fromOffset(34, 34); close.Position = UDim2.new(1, -44, 0, 12)
+	close.BackgroundColor3 = Color3.fromRGB(220, 70, 70); close.Text = "X"; close.TextColor3 = Color3.new(1, 1, 1)
+	close.Font = Enum.Font.GothamBold; close.TextSize = 18; close.Parent = panel
+	Instance.new("UICorner", close).CornerRadius = UDim.new(0, 8)
+
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1, -36, 0, 26); track.Position = UDim2.fromOffset(18, 84)
+	track.BackgroundColor3 = Color3.fromRGB(12, 50, 110); track.BorderSizePixel = 0; track.Parent = panel
+	Instance.new("UICorner", track).CornerRadius = UDim.new(0, 8)
+	local fillBar = Instance.new("Frame")
+	fillBar.Size = UDim2.fromScale(0, 1); fillBar.BackgroundColor3 = Color3.fromRGB(255, 210, 120)
+	fillBar.BorderSizePixel = 0; fillBar.Parent = track
+	Instance.new("UICorner", fillBar).CornerRadius = UDim.new(0, 8)
+
+	local pry = Instance.new("TextButton")
+	pry.Size = UDim2.new(1, -36, 0, 92); pry.Position = UDim2.fromOffset(18, 130)
+	pry.BackgroundColor3 = Color3.fromRGB(214, 92, 158); pry.Text = "PRY"
+	pry.TextColor3 = Color3.new(1, 1, 1); pry.Font = Enum.Font.GothamBold; pry.TextSize = 34; pry.Parent = panel
+	Instance.new("UICorner", pry).CornerRadius = UDim.new(0, 10)
+	local pst = Instance.new("UIStroke", pry); pst.Color = Color3.new(1, 1, 1); pst.Thickness = 2
+
+	local fill, ceiling = 0, 0
+	local ceilRate = 1 / PRY_SECONDS
+	local finished = false
+	local conn
+
+	local function shut(result)   -- "win" | "bail" | "monster"
+		if finished then return end
+		finished = true; pryOpen = false
+		if conn then conn:Disconnect() end
+		-- put the prop back however we leave: won, bailed, or chased off
+		if main and main.Parent and baseSize then main.Size = baseSize end
+		if light and light.Parent then light.Brightness = 1.4 end
+		gui:Destroy()
+		onDone(result)
+	end
+
+	pry.Activated:Connect(function()
+		if finished then return end
+		fill = math.min(fill + PRY_GAIN, ceiling)
+	end)
+	close.Activated:Connect(function() shut("bail") end)
+
+	conn = RunService.RenderStepped:Connect(function(dt)
+		if finished then return end
+		if monsterDistance() <= PRY_MONSTER_BAIL then shut("monster"); return end
+		ceiling = math.min(1, ceiling + ceilRate * dt)
+		fill = math.min(fill, ceiling)
+		fillBar.Size = UDim2.fromScale(fill, 1)
+		-- the chunk judders harder and glows hotter the closer it is to coming free
+		if main and main.Parent and baseSize then
+			main.Size = baseSize * (1 + math.sin(os.clock() * 30) * 0.06 * fill)
+		end
+		if light and light.Parent then light.Brightness = 1.4 + fill * 2.2 end
+		if fill >= 1 then shut("win") end
+	end)
+end
+
+-- ============================================================================
 -- CHUNK COLLECTIBLES -- hide the "chunk" brick, spawn a shiny chocolate chunk
 -- ============================================================================
 local function spawnChunk(src, idx)
@@ -614,13 +740,13 @@ local function spawnChunk(src, idx)
 	end)
 
 	local prompt = Instance.new("ProximityPrompt")
-	prompt.ActionText = "Take"; prompt.ObjectText = "Chocolate Chunk"; prompt.HoldDuration = 0
+	prompt.ActionText = "Pry Loose"; prompt.ObjectText = "Chocolate Chunk"; prompt.HoldDuration = 0.4
 	prompt.MaxActivationDistance = COLLECT_DISTANCE; prompt.RequiresLineOfSight = false; prompt.Parent = main
 
 	local done = false
-	prompt.Triggered:Connect(function()
+	-- the reward half, unchanged -- it just runs after the pry now instead of on the tap
+	local function award()
 		if done then return end
-		if not questAccepted then flashBanner("\xF0\x9F\x8D\xAA Talk to the Candy NPC first!", 2.5); return end
 		done = true
 		collected += 1
 		liveChunks[model] = nil
@@ -632,7 +758,7 @@ local function spawnChunk(src, idx)
 
 		-- the NPC calls out with a flavor line (heard anywhere on the island via the banner)
 		local line
-		if collected >= TOTAL then line = "That's all 6! Bring them to me -- let's fix that cookie!"
+		if collected >= TOTAL then line = ("That's all %d! Bring them to me -- let's fix that cookie!"):format(TOTAL)
 		else line = nextLine() end
 		if npcHead then
 			showBubble(npcHead, (collected >= TOTAL) and line or ("%s  (%d/%d)"):format(line, collected, TOTAL), false)
@@ -647,6 +773,23 @@ local function spawnChunk(src, idx)
 				if hint then flashBanner("\xF0\x9F\x8D\xAB " .. hint, 3) end
 			end)
 		end
+	end
+
+	prompt.Triggered:Connect(function()
+		if done then return end
+		if not questAccepted then flashBanner("\xF0\x9F\x8D\xAA Talk to the Candy NPC first!", 2.5); return end
+		prompt.Enabled = false
+		openPry(model, function(result)
+			if result == "win" then
+				award()
+			else
+				if result == "monster" then
+					flashBanner("\xF0\x9F\x8D\xAB The monster's on you! Run -- the chunk will keep.", 2.5)
+				end
+				-- re-arm behind the same guard the trigger uses, so a taken chunk can't re-arm
+				if not done and prompt.Parent then prompt.Enabled = true end
+			end
+		end)
 	end)
 end
 
@@ -661,7 +804,7 @@ local function questPages()
 		}
 	end
 	if collected >= TOTAL then
-		return { "All 6! You beautiful genius!", "Hand them over -- let me fix the Giant Cookie..." }
+		return { ("All %d! You beautiful genius!"):format(TOTAL), "Hand them over -- let me fix the Giant Cookie..." }
 	end
 	if questAccepted then
 		local pages = { "Still missing some chunks!", ("Found: %d of %d."):format(collected, TOTAL) }
@@ -780,6 +923,7 @@ task.spawn(function()
 
 	task.spawn(function()
 		local seen, idx, firstDone = {}, 0, false
+		local lastIdx, settleAt = 0, nil   -- see the SETTLE-DOWN note at the bottom of this loop
 		while true do
 			local found = 0
 			for _, d in ipairs(Workspace:GetDescendants()) do
@@ -797,6 +941,19 @@ task.spawn(function()
 				end
 			end
 			if not firstDone then firstDone = true; print(("[CookieQuest] scan: %d instance(s) with '%s' in the name"):format(found, CHUNK_NAME)) end
+
+			-- SETTLE-DOWN. The rescan above copes with island3 streaming in late, but if the
+			-- world simply has fewer 'chunk' parts than TOTAL, the quest can never be handed
+			-- in -- you'd hunt forever for a 6th chunk that does not exist. So once the count
+			-- has stopped moving for a while, the target drops to what actually exists.
+			if idx > 0 and idx ~= lastIdx then lastIdx = idx; settleAt = os.clock() + 45 end
+			if idx > 0 and idx < TOTAL and settleAt and os.clock() >= settleAt then
+				warn(("[CookieQuest] only %d chunk(s) exist on island3 -- target lowered from %d to %d")
+					:format(idx, TOTAL, idx))
+				TOTAL = idx
+				settleAt = nil
+				refreshBanner()
+			end
 			task.wait(3)
 		end
 	end)

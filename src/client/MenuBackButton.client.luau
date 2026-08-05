@@ -197,40 +197,93 @@ local function clearRoom(host, btn)
 	end
 end
 
+-- FIND THE CLOSE X. The small square button reading "X" nearest the top of the panel. Size
+-- capped so a wide button that merely contains an X in its label can't be mistaken for it.
+local function findCloseX(panel)
+	local best
+	for _, ch in ipairs(panel:GetDescendants()) do
+		if ch:IsA("TextButton") then
+			local t = ch.Text
+			if (t == "X" or t == "x" or t == "\xE2\x9C\x95" or t == "\xE2\x9C\x96")
+				and ch.AbsoluteSize.X > 0 and ch.AbsoluteSize.X <= 60
+				and (not best or ch.AbsolutePosition.Y < best.AbsolutePosition.Y)
+			then
+				best = ch
+			end
+		end
+	end
+	return best
+end
+
 local function inject(gui, target)
 	local panel, header = findPanelAndHeader(gui)
 	if not panel then return false end
 	local host = header or panel
-	if host:FindFirstChild("RG_Back") then return true end -- already done
+	if panel:FindFirstChild("RG_Back", true) then return true end -- already done
 
+	-- SAME BUTTON AS THE SEASONAL PETS HUB'S. That one is warm brown with a cream glyph and no
+	-- outline; this was navy-grey with a white stroke, which read as a dead grey square sitting
+	-- next to a bright red X. One back button, one look, everywhere.
 	local b = Instance.new("TextButton")
 	b.Name = "RG_Back"
-	b.Size = UDim2.new(0, BACK_W, 0, BACK_H)
-	b.AnchorPoint = Vector2.new(0, 0.5)
-	-- Vertically centred in the header so it lines up with the title, not the band's edge.
-	b.Position = header
-		and UDim2.new(0, 14, 0, math.floor(header.Size.Y.Offset / 2))
-		or  UDim2.new(0, 14, 0, 22)
-	b.BackgroundColor3 = Color3.fromRGB(58, 62, 92)
-	b.Text = "\xE2\x9D\xAE  BACK"          -- ❮ BACK
-	b.Font = Enum.Font.GothamBold
-	b.TextSize = 15
-	b.TextColor3 = Color3.fromRGB(255, 255, 255)
+	b.BackgroundColor3 = Color3.fromRGB(120, 78, 40)
+	b.Font = Enum.Font.FredokaOne
+	b.TextColor3 = Color3.fromRGB(255, 244, 214)
 	b.AutoButtonColor = false
 	b.ZIndex = 50                            -- above headers, gloss and dividers
-	b.Parent = host
-	corner(b, 10); stroke(b, Color3.fromRGB(255, 255, 255), 1.5)
-	clearRoom(host, b)
+
+	-- ===== IT SITS NEXT TO THE X, NOT ON TOP OF THE TITLE =====
+	-- This used to park BACK at the panel's top-LEFT and then shove the title label to the
+	-- right to make room (clearRoom, below). On every panel whose title starts near the left
+	-- edge that meant the button landed ON the words -- and on the ones where clearRoom did
+	-- fire, it left the title visibly off-centre from its own header.
+	--
+	-- The top-right already has a button and a convention: the close X. BACK is mirrored off
+	-- it -- same size, same anchor, same corner radius, same baseline -- and placed one gap to
+	-- its left, so the two read as a matched pair and nothing else on the panel has to move.
+	--
+	-- The FILL stays navy rather than the X's red. Two red buttons side by side both say
+	-- "leave" and you could not tell which one goes back: matched in shape, distinct in colour.
+	local x = findCloseX(panel)
+	if x then
+		-- The gap is measured off the X's RENDERED width, and 14 rather than 8: a close button with
+		-- its own UIStroke or padding draws wider than its Size says, which is what let the two
+		-- touch. A couple of pixels of daylight costs nothing and cannot overlap.
+		local w = (x.AbsoluteSize.X > 0) and x.AbsoluteSize.X or BACK_H
+		local radius = 10
+		local xc = x:FindFirstChildOfClass("UICorner")
+		if xc then radius = xc.CornerRadius.Offset end
+		b.Size = x.Size
+		b.AnchorPoint = x.AnchorPoint
+		b.Position = UDim2.new(x.Position.X.Scale, x.Position.X.Offset - w - 14,
+			x.Position.Y.Scale, x.Position.Y.Offset)
+		b.Text = "\xE2\x97\x80"              -- ◀, the same glyph the Seasonal Pets back button uses
+		b.TextSize = 20
+		b.Parent = x.Parent                  -- the X's own header, whatever that turned out to be
+		corner(b, radius)                    -- no stroke: the seasonal one has none either
+	else
+		-- No close button found -- fall back to the old left-hand placement, title shove and all.
+		b.Size = UDim2.new(0, BACK_W, 0, BACK_H)
+		b.AnchorPoint = Vector2.new(0, 0.5)
+		b.Position = header
+			and UDim2.new(0, 14, 0, math.floor(header.Size.Y.Offset / 2))
+			or  UDim2.new(0, 14, 0, 22)
+		b.Text = "\xE2\x9D\xAE  BACK"        -- ❮ BACK
+		b.TextSize = 15
+		b.Parent = host
+		corner(b, 10); stroke(b, Color3.fromRGB(255, 255, 255), 1.5)
+		clearRoom(host, b)
+	end
 
 	local sc = Instance.new("UIScale"); sc.Scale = 1; sc.Parent = b
 	local ti = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 	b.MouseEnter:Connect(function()
 		TweenService:Create(sc, ti, { Scale = 1.05 }):Play()
-		TweenService:Create(b, ti, { BackgroundColor3 = Color3.fromRGB(78, 84, 122) }):Play()
+		TweenService:Create(b, ti, { BackgroundColor3 = Color3.fromRGB(152, 102, 56) }):Play()  -- lit brown
 	end)
 	b.MouseLeave:Connect(function()
 		TweenService:Create(sc, ti, { Scale = 1 }):Play()
-		TweenService:Create(b, ti, { BackgroundColor3 = Color3.fromRGB(58, 62, 92) }):Play()
+		TweenService:Create(b, ti, { BackgroundColor3 = Color3.fromRGB(120, 78, 40) }):Play()  -- back to rest
 	end)
 
 	-- DEBOUNCED: closeGui goes through the panel's own TOGGLE, so a double-tap would close

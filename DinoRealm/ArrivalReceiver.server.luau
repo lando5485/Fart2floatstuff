@@ -34,6 +34,7 @@ _G.playerTitle           = _G.playerTitle           or {}
 _G.playerCrateTokens     = _G.playerCrateTokens     or {}
 _G.playerOwnedGutSkins   = _G.playerOwnedGutSkins   or {}
 _G.playerEquippedGutSkin = _G.playerEquippedGutSkin or {}
+_G.playerGamepasses      = _G.playerGamepasses      or {} -- [player] = { TwoXForever=bool, GlitterTrail=bool, InfiniteGut=bool }
 
 _G.incomingFtFData   = _G.incomingFtFData   or {} -- the raw payload, kept for custom arrival code
 _G.playerHomePlaceId = _G.playerHomePlaceId or {} -- [player] = placeId to send them BACK to
@@ -78,6 +79,53 @@ local function intake(player)
 	end)
 
 	earnings(player) -- always exists, so gameplay code can add to it whether or not they arrived via a portal
+
+	-- ===== GAMEPASSES: bought once in ANY realm, honoured in all of them ==========================
+	-- ABOVE the "no teleport data" return ON PURPOSE. Everything below this block is portal-arrival state
+	-- that genuinely only exists in a payload -- but a gamepass is not: it is a Roblox-side fact about the
+	-- USER, so somebody who opens this place straight from the website owns it just as much as somebody who
+	-- walked through the portal. Resolving it after the early return would have quietly taken a paid pass
+	-- away from every direct joiner.
+	--
+	-- TWO STEPS, in this order, and both matter:
+	--   1. TRUST THE PAYLOAD, instantly. The islands already resolved every pass when the player joined
+	--      there, so the flags arrive pre-computed and a 2x pass works on the arrival frame instead of a
+	--      second later. They are stamped as ATTRIBUTES under the islands' own names (HasTwoXForever /
+	--      HasGlitterTrail / HasInfiniteGut), so a client script copied over from there reads them
+	--      unmodified. TeleportData is server-set, so a client cannot forge these.
+	--   2. THEN VERIFY, in a spawn so a slow web call never holds up the arrival. The flags are a snapshot
+	--      of the moment they left: a pass bought on the website mid-session, an older sender that predates
+	--      this field, or a direct joiner with no payload at all would each be wrong. UserOwnsGamePassAsync
+	--      is the real authority and works from any place, so it gets the last word -- but only ever to ADD.
+	--      A failed web call must never strip a pass off somebody who paid for it.
+	local passes = (type(data) == "table" and type(data.gamepasses) == "table") and data.gamepasses or {}
+	_G.playerGamepasses[player] = passes
+	for name, owned in pairs(passes) do
+		player:SetAttribute("Has" .. name, owned == true)
+	end
+	-- The ids normally come down the wire, which is what keeps this file from owning a second copy of the
+	-- islands' list that then drifts. They can be absent three ways: a direct joiner (no payload at all), an
+	-- older sender, or the sending place's RealmTransfer module failing to load and dropping to its
+	-- documented "pets-only" emergency payload. None of those should cost a player a pass they bought, so
+	-- there is a fallback list -- used ONLY when the wire did not carry one.
+	local passIds = (type(data) == "table" and type(data.gamepassIds) == "table" and next(data.gamepassIds) ~= nil)
+		and data.gamepassIds
+		or { TwoXForever = 1862015450, GlitterTrail = 1859714979, InfiniteGut = 1860686821 }
+	task.spawn(function()
+		local MarketplaceService = game:GetService("MarketplaceService")
+		for name, id in pairs(passIds) do
+			if tonumber(id) and tonumber(id) ~= 0 then
+				local ok, owns = pcall(function()
+					return MarketplaceService:UserOwnsGamePassAsync(player.UserId, tonumber(id))
+				end)
+				if ok and owns and passes[name] ~= true and player.Parent then
+					passes[name] = true
+					player:SetAttribute("Has" .. name, true)
+					print(("[DinoRealm] %s owns %s (confirmed live)"):format(player.Name, name))
+				end
+			end
+		end
+	end)
 
 	-- Not a portal arrival (joined the place directly, or the payload was lost) -> give them a normal start.
 	-- They get NO home placeId, so ReturnSender falls back to its own constant -- see the note over there.
@@ -131,6 +179,7 @@ Players.PlayerRemoving:Connect(function(p)
 	_G.playerCrateTokens[p]     = nil
 	_G.playerOwnedGutSkins[p]   = nil
 	_G.playerEquippedGutSkin[p] = nil
+	_G.playerGamepasses[p]      = nil
 	_G.playerHomePlaceId[p]     = nil
 	_G.playerEarnedHere[p]      = nil
 end)

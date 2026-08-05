@@ -11,8 +11,9 @@
 --   * Wires the Candy Npc with a candy-palette paged speech bubble + "Talk" prompt.
 --   * FLOW: on spawn -> "Go talk to the Candy NPC" banner + directional arrows to the
 --     NPC. Candies are LOCKED until you accept the quest (talk past page 1). Trying to
---     collect early -> "Go accept the quest from Candy NPC first!". Then collect all 8.
---   * At 8/8 -> completion dialogue + a "Quest Complete" banner.
+--     collect early -> "Go accept the quest from Candy NPC first!". Then collect all 4.
+--   * Each one takes a 15s CHUTE RATTLE minigame -- see openRattle(). No free pickups.
+--   * At 4/4 -> completion dialogue + a "Quest Complete" banner.
 --
 -- Self-contained (matches EggSystem/BurritoDig _AllInOne). Drop into
 -- StarterPlayerScripts (Rojo maps src/client). Streaming-safe: island 1 is at
@@ -33,10 +34,22 @@ local PlayerGui  = player:WaitForChild("PlayerGui")
 -- ============================================================================
 -- CONFIG
 -- ============================================================================
-local TOTAL            = 8
+-- FOUR, not eight. Every gumball now costs a 15s minigame, so 8 of them was two solid
+-- minutes of the same panel on the tutorial island -- well past the tedium line.
+local TOTAL            = 4
 local GUMBALL_NAME     = "gumball"                 -- brick name (case-insensitive)
 local NPC_NAMES        = { "candy npc", "candynpc" } -- accepted NPC names (lowercased)
 local COLLECT_DISTANCE = 12                          -- studs to collect an orb
+-- CHUTE RATTLE: the per-gumball minigame. RATTLE_SECONDS is a HARD floor, not a target --
+-- a rising ceiling clamps the bar every frame, so mashing cannot finish it early (and going
+-- slower than the ceiling still costs you extra time on top).
+local RATTLE_SECONDS   = 15
+-- ~9 clean hits to fill. Worth doing the arithmetic: the knocker sweeps ~0.7 laps/sec at
+-- mid-fill, so the green comes past roughly 1.4x/sec -- 9 hits is well inside 15s for a
+-- player who waits for it, which is the point. The ceiling still holds the 15s floor for a
+-- perfect run; sloppier players just take longer.
+local RATTLE_HIT       = 0.11    -- bar per WELL-TIMED knock
+local RATTLE_MISS      = 0.05    -- bar lost on a mistimed knock -- a setback, never a fail
 local ORB_SIZE         = 2.6
 local COLLECT_SOUND_ID = ""                          -- drop in an OWNED pickup sound id; "" = silent
 
@@ -66,9 +79,9 @@ local function questPages(collected, hint)
 	end
 	return {
 		"Catastrophe! I tipped my gumball machine over.",
-		"Eight gumballs went bouncing off across the island.",
-		"Round them all up for me -- every last one.",
-		"Do that and I'll let you crank the machine yourself!",
+		"Four gumballs went bouncing off across the island.",
+		"They've wedged themselves into things -- you'll have to shake each one loose.",
+		"Round them all up and I'll let you crank the machine yourself!",
 	}
 end
 
@@ -195,7 +208,7 @@ end
 local function acceptQuest()
 	if questAccepted then return end
 	questAccepted = true
-	updateObjective() -- banner stays up, switches from "talk to NPC" to "Collect the gumballs! X/8"
+	updateObjective() -- banner stays up, switches from "talk to NPC" to "Collect the gumballs! X/4"
 	if _G.guideTrailClear then _G.guideTrailClear() end -- stop the arrows to the NPC once accepted
 end
 
@@ -235,6 +248,9 @@ end
 -- BUILD -- find the world objects, hide bricks, spawn orbs
 -- ============================================================================
 local orbs = {}  -- { pos=Vector3, orb=Model, prompt=, done=bool }
+-- every 'gumball' brick already turned into an orb. The brick keeps its name after we hide
+-- it, so the late-arrival rescan would otherwise wire the same brick again and again.
+local wiredBricks = {}
 
 local npcHead  -- assigned below
 
@@ -681,9 +697,9 @@ local function completeQuest()
 	if npcHead then task.delay(0.95, function() hideBubble(npcHead) end) end
 	cinematicFinish()
 	if _G.NotifyCenter then
-		pcall(function() _G.NotifyCenter.push({ text = "\xF0\x9F\x8D\xAC Quest Complete! You collected all 8 gumballs!", color = STROKE }) end)
+		pcall(function() _G.NotifyCenter.push({ text = ("\xF0\x9F\x8D\xAC Quest Complete! You collected all %d gumballs!"):format(TOTAL), color = STROKE }) end)
 	end
-	print("[CandyQuest] complete -- 8/8 gumballs collected")
+	print(("[CandyQuest] complete -- %d/%d gumballs collected"):format(TOTAL, TOTAL))
 end
 
 local function collect(o)
@@ -724,7 +740,182 @@ local function collect(o)
 	end
 end
 
+-- ============================================================================
+-- CHUTE RATTLE -- the per-gumball minigame.
+-- ============================================================================
+-- The gumball is wedged in the chute. A knocker sweeps the track; knock while it's over
+-- the green patch and the gumball shifts. Every clean hit speeds the knocker up, narrows
+-- the patch, and moves it somewhere new -- so the last knock is the hard one. It's a
+-- TIMING game, not a tapping game: blind mashing lands about half its hits and the misses
+-- cost 10% each, so it is strictly worse than waiting for the green.
+--
+-- THE FLOOR IS THE CEILING. `ceiling` climbs from 0 to 1 over exactly RATTLE_SECONDS
+-- and the bar is clamped to it every frame AND on every tap, so no amount of mashing
+-- finishes this early. Tapping slower than the ceiling just costs extra time. This is
+-- the only enforcement that is exact and un-gameable -- tuning gain rates is not.
+--
+-- Closing: the X button only. A backdrop tap NEVER closes it (house rule) -- and the
+-- backdrop deliberately has no input handler at all rather than a swallowed one.
+local rattleOpen = false
+local function openRattle(orbModel, onDone)
+	if rattleOpen then return end          -- one panel at a time
+	rattleOpen = true
+
+	local candy = orbModel and orbModel:FindFirstChild("Candy")
+	local light = candy and candy:FindFirstChildWhichIsA("PointLight")
+	local baseSize = candy and candy.Size
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "ChuteRattle"; gui.ResetOnSpawn = false; gui.IgnoreGuiInset = true
+	gui.DisplayOrder = 90; gui.Parent = PlayerGui
+
+	-- dim film: 0.5 so the real gumball stays visible reacting behind the panel
+	local film = Instance.new("Frame")
+	film.Size = UDim2.fromScale(1, 1); film.BackgroundColor3 = Color3.new(0, 0, 0)
+	film.BackgroundTransparency = 0.5; film.BorderSizePixel = 0; film.Parent = gui
+
+	local panel = Instance.new("Frame")
+	panel.Size = UDim2.fromOffset(420, 292); panel.Position = UDim2.fromScale(0.5, 0.5)
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	panel.BackgroundColor3 = Color3.fromRGB(25, 90, 185); panel.BorderSizePixel = 0; panel.Parent = gui
+	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 14)
+	local ps = Instance.new("UIStroke", panel); ps.Color = Color3.new(1, 1, 1); ps.Thickness = 3
+
+	local title = Instance.new("TextLabel")
+	title.BackgroundTransparency = 1; title.Size = UDim2.new(1, -60, 0, 40); title.Position = UDim2.fromOffset(18, 12)
+	title.Font = Enum.Font.GothamBold; title.TextSize = 22; title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextColor3 = Color3.fromRGB(255, 215, 0); title.Text = "Shake it loose!"; title.Parent = panel
+
+	local hint = Instance.new("TextLabel")
+	hint.BackgroundTransparency = 1; hint.Size = UDim2.new(1, -36, 0, 22); hint.Position = UDim2.fromOffset(18, 48)
+	hint.Font = Enum.Font.Gotham; hint.TextSize = 14; hint.TextXAlignment = Enum.TextXAlignment.Left
+	hint.TextColor3 = Color3.new(1, 1, 1); hint.Text = "Knock when the marker hits the green"; hint.Parent = panel
+
+	local close = Instance.new("TextButton")
+	close.Size = UDim2.fromOffset(34, 34); close.Position = UDim2.new(1, -44, 0, 12)
+	close.BackgroundColor3 = Color3.fromRGB(220, 70, 70); close.Text = "X"; close.TextColor3 = Color3.new(1, 1, 1)
+	close.Font = Enum.Font.GothamBold; close.TextSize = 18; close.AutoButtonColor = true; close.Parent = panel
+	Instance.new("UICorner", close).CornerRadius = UDim.new(0, 8)
+
+	-- progress bar
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1, -36, 0, 26); track.Position = UDim2.fromOffset(18, 92)
+	track.BackgroundColor3 = Color3.fromRGB(12, 50, 110); track.BorderSizePixel = 0; track.Parent = panel
+	Instance.new("UICorner", track).CornerRadius = UDim.new(0, 8)
+	local fillBar = Instance.new("Frame")
+	fillBar.Size = UDim2.fromScale(0, 1); fillBar.BackgroundColor3 = Color3.fromRGB(150, 235, 130)
+	fillBar.BorderSizePixel = 0; fillBar.Parent = track
+	Instance.new("UICorner", fillBar).CornerRadius = UDim.new(0, 8)
+
+	-- THE TIMING TRACK. A knocker slides back and forth; the green patch is where the
+	-- gumball is jammed. Knock while the marker is ON the patch and it shifts down the
+	-- chute. Every clean hit speeds the knocker up AND narrows the patch AND moves it
+	-- somewhere new -- so the last knock is the hard one, and there is something to get
+	-- better at instead of the same blind tap twelve times.
+	local trackF = Instance.new("Frame")
+	trackF.Size = UDim2.new(1, -36, 0, 46); trackF.Position = UDim2.fromOffset(18, 132)
+	trackF.BackgroundColor3 = Color3.fromRGB(12, 50, 110); trackF.BorderSizePixel = 0; trackF.Parent = panel
+	Instance.new("UICorner", trackF).CornerRadius = UDim.new(0, 8)
+
+	local zone = Instance.new("Frame")
+	zone.BackgroundColor3 = Color3.fromRGB(150, 235, 130); zone.BorderSizePixel = 0
+	zone.Size = UDim2.new(0.26, 0, 1, 0); zone.Parent = trackF
+	Instance.new("UICorner", zone).CornerRadius = UDim.new(0, 6)
+
+	local needle = Instance.new("Frame")
+	needle.BackgroundColor3 = Color3.new(1, 1, 1); needle.BorderSizePixel = 0
+	needle.Size = UDim2.new(0, 6, 1, 0); needle.ZIndex = 3; needle.Parent = trackF
+	Instance.new("UICorner", needle).CornerRadius = UDim.new(0, 3)
+
+	local knock = Instance.new("TextButton")
+	knock.Size = UDim2.new(1, -36, 0, 76); knock.Position = UDim2.fromOffset(18, 190)
+	knock.BackgroundColor3 = Color3.fromRGB(214, 92, 158); knock.Text = "KNOCK"
+	knock.TextColor3 = Color3.new(1, 1, 1); knock.Font = Enum.Font.GothamBold; knock.TextSize = 30
+	knock.AutoButtonColor = false; knock.Parent = panel
+	Instance.new("UICorner", knock).CornerRadius = UDim.new(0, 10)
+	local kst = Instance.new("UIStroke", knock); kst.Color = Color3.new(1, 1, 1); kst.Thickness = 2
+
+	local fill, ceiling = 0, 0
+	local ceilRate = 1 / RATTLE_SECONDS
+	local pos, dir = 0, 1
+	local zc, zw = 0.5, 0.26          -- zone centre / width, both re-rolled on every hit
+	local streak = 0
+	local finished = false
+	local conn
+
+	local function drawZone()
+		zone.Position = UDim2.new(math.clamp(zc - zw * 0.5, 0, 1 - zw), 0, 0, 0)
+		zone.Size = UDim2.new(zw, 0, 1, 0)
+	end
+	drawZone()
+
+	local function shut(success)
+		if finished then return end
+		finished = true; rattleOpen = false
+		if conn then conn:Disconnect() end
+		-- ALWAYS put the world prop back the way we found it, win or bail
+		if candy and candy.Parent and baseSize then candy.Size = baseSize end
+		if light and light.Parent then light.Brightness = 1.6 end
+		gui:Destroy()
+		onDone(success)
+	end
+
+	local function flash(good)
+		kst.Color = good and Color3.fromRGB(150, 235, 130) or Color3.fromRGB(255, 120, 110)
+		knock.BackgroundColor3 = good and Color3.fromRGB(120, 200, 255) or Color3.fromRGB(150, 60, 90)
+		task.delay(0.14, function()
+			if finished then return end
+			kst.Color = Color3.new(1, 1, 1)
+			knock.BackgroundColor3 = Color3.fromRGB(214, 92, 158)
+		end)
+	end
+
+	knock.Activated:Connect(function()
+		if finished then return end
+		if math.abs(pos - zc) <= zw * 0.5 then
+			streak += 1
+			fill = math.min(fill + RATTLE_HIT, ceiling)   -- clamped on input as well as per-frame
+			-- it gets harder as it loosens: faster knocker, tighter patch, new spot
+			zw = math.max(0.12, zw - 0.012)
+			zc = 0.16 + math.random() * 0.68
+			drawZone()
+			hint.Text = (streak >= 3) and ("Nice -- %d in a row!"):format(streak) or "Good knock!"
+			flash(true)
+		else
+			streak = 0
+			fill = math.max(0, fill - RATTLE_MISS)
+			hint.Text = "Missed it -- wait for the green"
+			flash(false)
+		end
+	end)
+	close.Activated:Connect(function() shut(false) end)
+
+	conn = RunService.RenderStepped:Connect(function(dt)
+		if finished then return end
+		ceiling = math.min(1, ceiling + ceilRate * dt)
+		fill = math.min(fill, ceiling)
+		fillBar.Size = UDim2.fromScale(fill, 1)
+
+		-- knocker sweeps faster the looser the gumball gets
+		pos += dir * (0.42 + fill * 0.55) * dt
+		if pos >= 1 then pos, dir = 1, -1 elseif pos <= 0 then pos, dir = 0, 1 end
+		needle.Position = UDim2.new(pos, -3, 0, 0)
+		-- the marker turns green the instant it's over the patch, so the timing is READABLE
+		local onZone = math.abs(pos - zc) <= zw * 0.5
+		needle.BackgroundColor3 = onZone and Color3.fromRGB(150, 235, 130) or Color3.new(1, 1, 1)
+
+		-- the real gumball rattles harder the closer it is to coming free
+		if candy and candy.Parent and baseSize then
+			candy.Size = baseSize * (1 + math.sin(os.clock() * 28) * 0.05 * fill)
+		end
+		if light and light.Parent then light.Brightness = 1.6 + fill * 2.4 end
+		if fill >= 1 then shut(true) end
+	end)
+end
+
 local function spawnOrb(brick, idx)
+	if wiredBricks[brick] then return end
+	wiredBricks[brick] = true
 	local pos = brick.Position
 	-- HIDE the source brick -> invisible anchor
 	brick.Transparency = 1; brick.CanCollide = false; brick.CanQuery = false; brick.Anchored = true
@@ -769,11 +960,28 @@ local function spawnOrb(brick, idx)
 	end)
 
 	local prompt = Instance.new("ProximityPrompt")
-	prompt.ActionText = "Collect"; prompt.ObjectText = "Gumball"; prompt.HoldDuration = 0
+	prompt.ActionText = "Shake Loose"; prompt.ObjectText = "Gumball"; prompt.HoldDuration = 0.4
 	prompt.MaxActivationDistance = COLLECT_DISTANCE; prompt.RequiresLineOfSight = false; prompt.Parent = orb
 
 	local entry = { pos = pos, orb = model, prompt = prompt, done = false }
-	prompt.Triggered:Connect(function() collect(entry) end)
+	prompt.Triggered:Connect(function()
+		-- the "accept the quest first" nudge has to fire BEFORE the panel opens, not after
+		-- 15 seconds of work -- so it stays on collect()'s guard, checked up front here.
+		if entry.done then return end
+		if not questAccepted then
+			flashObjective("\xF0\x9F\x8D\xAD Go accept the quest from Candy NPC first!", 2.5)
+			return
+		end
+		prompt.Enabled = false
+		openRattle(model, function(success)
+			if success then
+				collect(entry)
+			-- re-arm behind the SAME guard the trigger uses, or a finished orb re-arms itself
+			elseif not entry.done and prompt.Parent then
+				prompt.Enabled = true
+			end
+		end)
+	end)
 	orbs[#orbs + 1] = entry
 end
 
@@ -843,22 +1051,59 @@ task.spawn(function()
 		end)
 	end
 
-	local bricks = pollFor(function()
-		local g = findGumballs()
-		return (#g > 0) and g or nil
-	end, 45) or {}
+	-- STREAMING: the old version returned the moment ONE brick existed, so on island1 it
+	-- routinely grabbed a partial set (3 of 4) and then TOTAL never moved -- an
+	-- uncompletable 3/4 quest. Two fixes, both needed:
+	--   1. keep polling until we have TOTAL of them, holding on to the BIGGEST set seen
+	--   2. if we still time out short, TOTAL becomes what actually spawned, so whatever
+	--      the world gives us is always finishable
+	local bricks = {}
+	do
+		local t0 = os.clock()
+		repeat
+			local g = findGumballs()
+			if #g > #bricks then bricks = g end
+			if #bricks >= TOTAL then break end
+			task.wait(0.5)
+		until os.clock() - t0 > 45
+	end
 
 	if #bricks == 0 then
 		warn("[CandyQuest] no bricks named 'gumball' found -- nothing to collect")
 	else
-		if #bricks ~= TOTAL then
-			warn(("[CandyQuest] expected %d 'gumball' bricks, found %d -- using all found"):format(TOTAL, #bricks))
+		if #bricks < TOTAL then
+			warn(("[CandyQuest] only %d of %d 'gumball' bricks streamed in -- the quest now asks for %d")
+				:format(#bricks, TOTAL, #bricks))
+			TOTAL = #bricks
+		elseif #bricks > TOTAL then
+			-- more bricks in the world than the quest asks for: take the first TOTAL and
+			-- leave the rest hidden, so the count in the banner is the count you can find
+			warn(("[CandyQuest] found %d 'gumball' bricks, only %d needed -- using the first %d")
+				:format(#bricks, TOTAL, TOTAL))
+			while #bricks > TOTAL do table.remove(bricks) end
 		end
 		for i, b in ipairs(bricks) do spawnOrb(b, i) end
 	end
 
+	-- LATE ARRIVALS: island1 hands the rest of itself over as you walk around it, so a brick
+	-- that shows up after the window still becomes a real gumball (and raises the target).
+	task.spawn(function()
+		while #orbs > 0 and collected < TOTAL do
+			task.wait(3)
+			for _, b in ipairs(findGumballs()) do
+				if not wiredBricks[b] then
+					spawnOrb(b, #orbs + 1)
+					TOTAL += 1
+					print(("[CandyQuest] a late gumball streamed in -- target is now %d"):format(TOTAL))
+					updateObjective()
+				end
+			end
+		end
+	end)
+
 	updateObjective()
-	print(("[CandyQuest] ready -- Candy Npc %s, %d gumball orbs spawned (bricks hidden)"):format(npcHead and "wired" or "MISSING", #orbs))
+	print(("[CandyQuest] ready -- Candy Npc %s, %d gumball orb(s) spawned, target %d")
+		:format(npcHead and "wired" or "MISSING", #orbs, TOTAL))
 end)
 
 -- ============================================================================

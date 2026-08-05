@@ -43,7 +43,7 @@ local PETS = {
 		pieceLabel   = "Broccoli",                                  -- tracker/popup label ("Broccoli: 1/3")
 		iconEmoji    = "\xF0\x9F\xA5\xA6",                           -- 🥦 tracker icon
 		questName    = "Broccoli Bunny Quest",                       -- HUD indicator: the quest's real NAME
-		objective    = "Find 3 broccoli pieces",                     -- HUD indicator: short objective line
+		objective    = "Pull 3 broccoli out of the dirt",            -- HUD indicator: short objective line
 		trackWord    = "Pieces",                                     -- HUD minimized tracker word ("Pieces X/3")
 		nextStep     = "Hatch the egg",                              -- tracker text once the count is complete
 	},
@@ -377,6 +377,59 @@ local function floatText(pos, text)
 	task.delay(1.3, function() a:Destroy() end)
 end
 
+-- ============================================================================================
+-- THE QUEST ACCEPT GATE
+--
+-- Landing on an island used to hand you its quest: the tracker told you the objective and every collectible
+-- was already live. Now the island keeps its secret until you find the quest giver and hear them out. The NPC
+-- sets Island<N>QuestAccepted on the SERVER (page 2 of its dialogue, IslandNPCs.server.lua); it replicates
+-- here for free and survives respawns, so no remote and no handshake is needed.
+--
+-- The props stay VISIBLE and still show their prompts -- an island stripped of its scenery reads as broken,
+-- and a prompt that silently does nothing reads as a bug. What they refuse to do is START a quest nobody
+-- handed you, and they say exactly where to go instead.
+--
+-- The island number comes from the pet's own islandPrefix ("Island_2_" -> 2), so there is no second table to
+-- keep in sync -- adding a quest island needs no edit here.
+-- ============================================================================================
+-- ===== THIS FILE IS AT LUAU'S 200-LOCAL CEILING =====
+-- The main chunk of PetFollow is one register from the limit -- adding eight plain top-level locals
+-- here is what produced "Out of local registers when trying to allocate reqAccept: exceeded limit
+-- 200", which kills the WHOLE script, not just the new code.
+--
+-- So the gate costs ZERO top-level registers: its state and helpers live inside this do-block (they
+-- become upvalues of the closure, which are not main-chunk registers), and the one entry point is
+-- published on _G -- the same pattern this file already uses for _G.isFlying / _G.guideTrailTo.
+--
+--   _G.petQuestGate(def)       -> boolean, SILENT. For "may I show this?" checks.
+--   _G.petQuestGate(def, pos)  -> boolean, and floats "talk to the NPC" at pos when refused.
+do
+	local attrCache, msgAt = {}, 0
+	local function attrFor(def)
+		if not def.islandPrefix then return nil end
+		local cached = attrCache[def.islandPrefix]
+		if cached ~= nil then return cached end
+		local n = tonumber(tostring(def.islandPrefix):match("%d+"))
+		cached = n and ("Island%dQuestAccepted"):format(n) or false
+		attrCache[def.islandPrefix] = cached
+		return cached
+	end
+	_G.petQuestGate = function(def, pos)
+		local attr = attrFor(def)
+		if not attr then return true end -- seasonal/starter pets have no island: nothing to gate
+		if player:GetAttribute(attr) == true then return true end
+		-- refused. Say why ONCE -- mashing E must not stack ten labels on top of each other.
+		if pos and os.clock() - msgAt > 2 then
+			msgAt = os.clock()
+			if typeof(pos) == "Vector3" then
+				floatText(pos + Vector3.new(0, 2.5, 0), "Talk to the Quest NPC to start this quest!")
+			end
+			print("[Pet][Quest] blocked -- " .. tostring(attr) .. " not accepted yet")
+		end
+		return false
+	end
+end
+
 local hatchEgg -- forward declaration; assigned below (after the spawnFollowerPet/setEggGlow it relies on)
 
 -- ============================================================================================
@@ -419,42 +472,236 @@ local function buildCoconutCrab(scale)
 end
 
 -- CRACK MINIGAME: a small popup -- tap the coconut NEED times within WINDOW seconds to crack it.
+-- ============================================================================================
+-- SHARED MINIGAME UI KIT. All four quest minigames are built from these, so they read as ONE
+-- system instead of four unrelated popups: house-blue gradient card, thick white border, navy
+-- cartoon drop shadow, gold header strip with an X, and the same adaptive scale the rest of the
+-- HUD uses. Colours are the house palette -- bright and kid-friendly, navy for shadow, never black.
+-- ============================================================================================
+local MG = {
+	blueTop = Color3.fromRGB(26, 79, 214),   -- panel gradient top
+	blueBot = Color3.fromRGB(14, 59, 176),   -- panel gradient bottom
+	headTop = Color3.fromRGB(18, 62, 180),   -- header strip
+	headBot = Color3.fromRGB(10, 44, 140),
+	navy    = Color3.fromRGB(6, 26, 80),     -- shadows + meter troughs (never black)
+	trough  = Color3.fromRGB(10, 40, 110),
+	white   = Color3.fromRGB(255, 255, 255),
+	lime    = Color3.fromRGB(126, 217, 87),
+	gold    = Color3.fromRGB(255, 210, 74),
+	amber   = Color3.fromRGB(255, 170, 60),
+	red     = Color3.fromRGB(226, 76, 72),
+	ice     = Color3.fromRGB(206, 226, 255), -- caption text
+}
+local function mgCorner(inst, r) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 12); c.Parent = inst; return c end
+local function mgStroke(inst, col, th, trans)
+	local s = Instance.new("UIStroke"); s.Color = col or MG.white; s.Thickness = th or 2; s.Transparency = trans or 0; s.Parent = inst; return s
+end
+local function mgGrad(inst, a, b, rot)
+	local gr = Instance.new("UIGradient"); gr.Color = ColorSequence.new(a, b); gr.Rotation = rot or 90; gr.Parent = inst; return gr
+end
+-- glossy fill: a UIGradient MULTIPLIES the frame colour, so white->grey reads as a lit top edge on ANY hue
+local function mgGloss(inst)
+	local gr = Instance.new("UIGradient"); gr.Rotation = 90
+	gr.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0,   Color3.new(1, 1, 1)),
+		ColorSequenceKeypoint.new(0.5, Color3.new(0.90, 0.90, 0.90)),
+		ColorSequenceKeypoint.new(1,   Color3.new(0.70, 0.70, 0.70)),
+	})
+	gr.Parent = inst; return gr
+end
+-- The standard modal card. The backdrop blocks clicks but NEVER closes the panel (X only -- house rule).
+-- Body content starts at MG_BODY_TOP. Returns the shared pieces; each minigame adds its own body.
+local MG_BODY_TOP = 78
+local function mgCard(guiName, w, h, titleText, hintText)
+	local pgui = player:WaitForChild("PlayerGui")
+	-- ===== KILL ANY OLDER CARD OF THE SAME NAME FIRST =====
+	-- Roblox happily keeps two ScreenGuis with identical names side by side, and this builder used to
+	-- just add a new one. So an older build's card -- left in PlayerGui by a stale duplicate LocalScript,
+	-- or baked into the place -- stayed put and rendered UNDERNEATH the new one: you would open the
+	-- popcorn quest and see the previous version of the minigame. The name is the identity here, so any
+	-- earlier copy is by definition dead and gets destroyed before the new card is parented.
+	for _, old in ipairs(pgui:GetChildren()) do
+		if old:IsA("ScreenGui") and old.Name == guiName then
+			old:Destroy()
+			warn("[Pet] destroyed a STALE '" .. guiName .. "' left over from an older build -- "
+				.. "if this prints every join, delete the duplicate LocalScript in Studio.")
+		end
+	end
+	local g = Instance.new("ScreenGui"); g.Name = guiName; g.ResetOnSpawn = false; g.DisplayOrder = 90
+	g.IgnoreGuiInset = true; g.Enabled = false; g.Parent = pgui
+	local film = Instance.new("Frame"); film.Size = UDim2.new(1,0,1,0); film.BackgroundColor3 = MG.navy
+	film.BackgroundTransparency = 0.45; film.BorderSizePixel = 0; film.Active = true; film.Parent = g
+	-- ===== EVERY MINIGAME CARD IS THE HOUSE PANEL SIZE (700x520) =====
+	-- The card frame is now the same footprint as the Shop / Daily Tasks / trade panels, whatever w/h the
+	-- caller asks for -- so the crack, reel, fishing and pull minigames all open the same-sized window as
+	-- every other menu instead of four different little cards. The caller's w/h still matters: it becomes
+	-- the size of a CONTENT frame centred inside the card (see `body` below), so each minigame's hand-tuned
+	-- internal layout keeps its coordinates and simply sits centred in the standard frame.
+	-- holder carries the adaptive UIScale so the card is the same on-screen size on phone and desktop
+	local holder = Instance.new("Frame"); holder.Size = UDim2.new(0, 700, 0, 520); holder.AnchorPoint = Vector2.new(0.5,0.5)
+	holder.Position = UDim2.new(0.5,0,0.5,0); holder.BackgroundTransparency = 1; holder.Parent = g
+	local scale = Instance.new("UIScale"); scale.Parent = holder
+	local function fit()
+		local vp = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(1280, 720)
+		-- MOBILE: scale so the 700x520 card always fits inside ~92% of the viewport. The old clamp floored
+		-- at 0.62, which was tuned for the small per-minigame cards -- at 700x520 that floor is 434x322,
+		-- which OVERFLOWS a short phone screen (a 360-tall landscape viewport). This formula fits the card
+		-- to the actual screen on every device; the 0.4 floor only guards against a degenerate viewport.
+		scale.Scale = math.clamp(math.min(vp.X * 0.92 / 700, vp.Y * 0.92 / 520), 0.4, 1)
+	end
+	fit()
+	pcall(function() workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(fit) end)
+	local shadow = Instance.new("Frame"); shadow.Size = UDim2.new(1,0,1,0); shadow.Position = UDim2.new(0,7,0,9)
+	shadow.BackgroundColor3 = MG.navy; shadow.BackgroundTransparency = 0.4; shadow.BorderSizePixel = 0; shadow.Parent = holder
+	mgCorner(shadow, 22)
+	local panel = Instance.new("Frame"); panel.Size = UDim2.new(1,0,1,0); panel.BackgroundColor3 = MG.blueTop
+	panel.BorderSizePixel = 0; panel.Parent = holder
+	mgCorner(panel, 22); mgGrad(panel, MG.blueTop, MG.blueBot); mgStroke(panel, MG.white, 4)
+	-- HEADER strip: rounded like the panel, with a filler squaring off its bottom edge + a gold rule
+	local head = Instance.new("Frame"); head.Size = UDim2.new(1,0,0,50); head.BackgroundColor3 = MG.headTop
+	head.BorderSizePixel = 0; head.Parent = panel
+	mgCorner(head, 20); mgGrad(head, MG.headTop, MG.headBot)
+	local sq = Instance.new("Frame"); sq.Size = UDim2.new(1,0,0,22); sq.Position = UDim2.new(0,0,1,-22)
+	sq.BackgroundColor3 = MG.headBot; sq.BorderSizePixel = 0; sq.Parent = head
+	local rule = Instance.new("Frame"); rule.Size = UDim2.new(1,0,0,3); rule.Position = UDim2.new(0,0,1,-3)
+	rule.BackgroundColor3 = MG.gold; rule.BackgroundTransparency = 0.4; rule.BorderSizePixel = 0; rule.Parent = head
+	local titl = Instance.new("TextLabel"); titl.Size = UDim2.new(1,-100,1,-6); titl.Position = UDim2.new(0,16,0,0)
+	titl.BackgroundTransparency = 1; titl.Font = Enum.Font.FredokaOne; titl.TextSize = 23; titl.TextColor3 = MG.gold
+	titl.TextXAlignment = Enum.TextXAlignment.Left; titl.TextScaled = false; titl.Text = titleText; titl.Parent = head
+	mgStroke(titl, MG.navy, 2)
+	local close = Instance.new("TextButton"); close.Size = UDim2.new(0,34,0,34); close.Position = UDim2.new(1,-45,0,8)
+	close.BackgroundColor3 = MG.red; close.Text = "X"; close.Font = Enum.Font.GothamBold; close.TextSize = 18
+	close.TextColor3 = MG.white; close.AutoButtonColor = false; close.Parent = head
+	mgCorner(close, 10); mgStroke(close, MG.white, 2); mgGloss(close)
+	local hintL = Instance.new("TextLabel"); hintL.Size = UDim2.new(1,-28,0,22); hintL.Position = UDim2.new(0,14,0,53)
+	hintL.BackgroundTransparency = 1; hintL.Font = Enum.Font.GothamMedium; hintL.TextSize = 13; hintL.TextColor3 = MG.white
+	hintL.TextWrapped = true; hintL.Text = hintText or ""; hintL.Parent = panel
+	-- The minigame's own content area: the caller's original w x h, centred in the space below the header
+	-- strip. Every call site parents its pieces to `panel` (or `holder`) using offsets tuned to that w x h,
+	-- so BOTH names below point HERE -- the tuned layouts land unchanged, just centred in the big card.
+	-- ===== THE CONTENT IS SCALED TO FILL THE CARD =====
+	-- The card became the house 700x520 panel while each minigame kept its own small hand-tuned layout
+	-- (330x342, 420x300, ...) pinned to the top. Everything landed where it always had and the leftover
+	-- room simply appeared underneath -- so every minigame opened as a little cluster of controls floating
+	-- in a large empty blue rectangle.
+	--
+	-- Rather than re-tuning four layouts by hand, the whole body is SCALED. One UIScale, computed from the
+	-- card's real content area, applies to every minigame at once: the coconut, its "Crack it!" line and its
+	-- progress bar all grow together, and so do the reel, the fishing and the pull.
+	--
+	-- The scale is UNIFORM, so nothing is stretched out of shape. It is the smaller of the two fits:
+	--   * vertical -- content runs from just under the hint line down to BOTTOM_MARGIN off the bottom edge
+	--   * horizontal -- capped so a wide layout cannot grow past the panel's side margins
+	-- For the four current minigames the vertical fit binds on three and the horizontal on one, which is
+	-- what the request describes: fill the height, keep even margins, no distortion.
+	--
+	-- MG_BODY_TOP is subtracted before scaling and added back after. Every minigame measures its pieces from
+	-- the CARD's top edge (MG_BODY_TOP + n, i.e. "n below the header"), so that first 78px is header
+	-- clearance, not content -- scaling it would just push everything down and undo the gain.
+	local TOP_TARGET, BOTTOM_MARGIN, SIDE_MARGIN = 80, 16, 16
+	local body = Instance.new("Frame"); body.Size = UDim2.new(0, w, 0, h)
+	body.AnchorPoint = Vector2.new(0.5, 0)
+	body.BackgroundTransparency = 1; body.Parent = panel
+	local contentH = math.max(1, h - MG_BODY_TOP)
+	local bScale = math.min((520 - TOP_TARGET - BOTTOM_MARGIN) / contentH, (700 - SIDE_MARGIN * 2) / w)
+	if bScale < 1 then bScale = 1 end   -- never shrink a layout that already fits
+	local bs = Instance.new("UIScale"); bs.Scale = bScale; bs.Parent = body
+	-- Pull the body up by the scaled header clearance so the FIRST piece of content lands on TOP_TARGET.
+	-- The body's own top edge ends up above the panel, which is invisible: it is a transparent frame and
+	-- no minigame places anything above MG_BODY_TOP.
+	body.Position = UDim2.new(0.5, 0, 0, TOP_TARGET - bScale * MG_BODY_TOP)
+	return { gui = g, holder = body, panel = body, card = panel, head = head, title = titl, hint = hintL, close = close }
+end
+-- A labelled meter: caption + rounded trough + glossy fill. Returns the FILL frame to drive.
+local function mgMeter(parent, x, y, w, label, col)
+	local cap = Instance.new("TextLabel"); cap.Size = UDim2.new(0,w,0,14); cap.Position = UDim2.new(0,x,0,y)
+	cap.BackgroundTransparency = 1; cap.Font = Enum.Font.GothamBold; cap.TextSize = 11
+	cap.TextXAlignment = Enum.TextXAlignment.Left; cap.TextColor3 = MG.ice; cap.Text = label; cap.Parent = parent
+	local bg = Instance.new("Frame"); bg.Size = UDim2.new(0,w,0,16); bg.Position = UDim2.new(0,x,0,y+15)
+	bg.BackgroundColor3 = MG.navy; bg.BorderSizePixel = 0; bg.Parent = parent
+	mgCorner(bg, 8); mgStroke(bg, MG.trough, 2, 0.25)
+	local f = Instance.new("Frame"); f.Size = UDim2.new(0,0,1,0); f.BackgroundColor3 = col; f.BorderSizePixel = 0; f.Parent = bg
+	mgCorner(f, 8); mgGloss(f)
+	return f
+end
+
 local crackUI, crackBusy = nil, false
 local function ensureCrackUI()
 	if crackUI then return crackUI end
-	local pgui = player:WaitForChild("PlayerGui")
-	local g = Instance.new("ScreenGui"); g.Name = "CoconutCrackGui"; g.ResetOnSpawn = false; g.DisplayOrder = 90; g.Enabled = false; g.Parent = pgui
-	local film = Instance.new("Frame"); film.Size = UDim2.new(1,0,1,0); film.BackgroundColor3 = Color3.new(0,0,0); film.BackgroundTransparency = 0.5; film.Active = true; film.Parent = g
-	local panel = Instance.new("Frame"); panel.Size = UDim2.new(0,300,0,310); panel.Position = UDim2.new(0.5,0,0.5,0); panel.AnchorPoint = Vector2.new(0.5,0.5)
-	panel.BackgroundColor3 = Color3.fromRGB(25,90,185); panel.Parent = g
-	Instance.new("UICorner", panel).CornerRadius = UDim.new(0,16); local ps = Instance.new("UIStroke", panel); ps.Color = Color3.new(1,1,1); ps.Thickness = 3
-	local titl = Instance.new("TextLabel"); titl.Size = UDim2.new(1,-20,0,30); titl.Position = UDim2.new(0,10,0,8); titl.BackgroundTransparency = 1
-	titl.Font = Enum.Font.GothamBold; titl.TextSize = 20; titl.TextColor3 = Color3.fromRGB(255,215,0); titl.Text = "CRACK THE COCONUT!"; titl.Parent = panel
-	local hintL = Instance.new("TextLabel"); hintL.Size = UDim2.new(1,-20,0,18); hintL.Position = UDim2.new(0,10,0,38); hintL.BackgroundTransparency = 1
-	hintL.Font = Enum.Font.Gotham; hintL.TextSize = 13; hintL.TextColor3 = Color3.new(1,1,1); hintL.Text = "Tap fast!"; hintL.Parent = panel
-	local coco = Instance.new("TextButton"); coco.Size = UDim2.new(0,150,0,150); coco.Position = UDim2.new(0.5,0,0.5,8); coco.AnchorPoint = Vector2.new(0.5,0.5)
-	coco.BackgroundColor3 = Color3.fromRGB(112,72,42); coco.Text = "\xF0\x9F\xA5\xA5"; coco.TextSize = 90; coco.Font = Enum.Font.GothamBold; coco.Parent = panel
-	Instance.new("UICorner", coco).CornerRadius = UDim.new(1,0)
-	local cnt = Instance.new("TextLabel"); cnt.Size = UDim2.new(1,-20,0,26); cnt.Position = UDim2.new(0,10,1,-58); cnt.BackgroundTransparency = 1
-	cnt.Font = Enum.Font.GothamBold; cnt.TextSize = 18; cnt.TextColor3 = Color3.new(1,1,1); cnt.Text = "0"; cnt.Parent = panel
-	local barBg = Instance.new("Frame"); barBg.Size = UDim2.new(1,-20,0,14); barBg.Position = UDim2.new(0,10,1,-26); barBg.BackgroundColor3 = Color3.fromRGB(15,40,90); barBg.Parent = panel
-	Instance.new("UICorner", barBg).CornerRadius = UDim.new(0,6)
-	local bar = Instance.new("Frame"); bar.Size = UDim2.new(1,0,1,0); bar.BackgroundColor3 = Color3.fromRGB(80,220,80); bar.Parent = barBg
-	Instance.new("UICorner", bar).CornerRadius = UDim.new(0,6)
-	crackUI = { gui = g, coco = coco, cnt = cnt, bar = bar, hint = hintL }
+	local ui = mgCard("CoconutCrackGui", 330, 342, "CRACK THE COCONUT!", "Tap the coconut to fill the bar before it drains!")
+	local panel = ui.panel
+	-- the coconut sits on a lighter round pad so the tap target reads as a target
+	local pad = Instance.new("Frame"); pad.Size = UDim2.new(0,176,0,176); pad.Position = UDim2.new(0.5,0,0,MG_BODY_TOP)
+	pad.AnchorPoint = Vector2.new(0.5,0); pad.BackgroundColor3 = MG.navy; pad.BackgroundTransparency = 0.55
+	pad.BorderSizePixel = 0; pad.Parent = panel
+	mgCorner(pad, 88); mgStroke(pad, MG.white, 2, 0.65)
+	local coco = Instance.new("TextButton"); coco.Size = UDim2.new(0,152,0,152); coco.Position = UDim2.new(0.5,0,0.5,0)
+	coco.AnchorPoint = Vector2.new(0.5,0.5); coco.BackgroundColor3 = Color3.fromRGB(126, 82, 48)
+	coco.Text = "\xF0\x9F\xA5\xA5"; coco.TextSize = 92; coco.Font = Enum.Font.GothamBold; coco.AutoButtonColor = false; coco.Parent = pad
+	mgCorner(coco, 76); mgStroke(coco, MG.white, 3); mgGloss(coco)
+	local cnt = Instance.new("TextLabel"); cnt.Size = UDim2.new(1,-28,0,24); cnt.Position = UDim2.new(0,14,0,MG_BODY_TOP+184)
+	cnt.BackgroundTransparency = 1; cnt.Font = Enum.Font.FredokaOne; cnt.TextSize = 18; cnt.TextColor3 = MG.white
+	cnt.Text = "Crack it!"; cnt.Parent = panel
+	mgStroke(cnt, MG.navy, 2)
+	local bar = mgMeter(panel, 16, MG_BODY_TOP + 212, 298, "CRACK PROGRESS", MG.lime)
+	-- `close` IS LOAD-BEARING and was missing. mgCard always builds the X, but this table is all that
+	-- openCrackMinigame below can see -- leave the button out of it and there is nothing to connect the click
+	-- to, so the X renders, highlights on hover, and does nothing. Worse than nothing, actually: the panel
+	-- stays up AND crackBusy stays true, so the coconut prompts refuse to open a new minigame afterwards.
+	-- The reel and broccoli minigames both keep theirs (see spinUI / the pull UI); this one didn't.
+	crackUI = { gui = ui.gui, coco = coco, cnt = cnt, bar = bar, hint = ui.hint, close = ui.close }
 	return crackUI
 end
 -- Per-coconut difficulty for the TUG-OF-WAR crack: drain = how fast the bar falls/sec; fill = how much each
 -- tap pushes it up. Success when the bar reaches the TOP (need taps/sec > drain/fill). Tuned EASIER than the
 -- old tap-count -- a few easy, a couple medium, a couple hard; even the hard ones are doable by a fast tapper.
+-- RETUNED FOR LENGTH: a coconut used to crack in ~2 seconds. Two things now hold it to 15s+:
+--   * each tap moves the bar a small amount, so it's ~40-50 taps of real work, and
+--   * `secs` is a HARD FLOOR -- the bar is clamped to a ceiling that rises over exactly that many seconds,
+--     so no amount of mashing finishes a coconut early. Tapping SLOWER than the ceiling still costs you time,
+--     the ceiling only stops you going faster.
+--
+-- ===== 75% FEWER TAPS THAN THE ORIGINAL (40%, 10% x3, 15% x2, THEN 20%) =====
+-- Every `fill` below has been divided by 0.6, then 0.9 three times, then 0.85 twice, then 0.8 -- 0.252 of
+-- the original tap cost, so a coconut now takes a quarter of the taps it did originally, and 80% of the
+-- last pass.
+--
+-- `drain` and `secs` are deliberately UNCHANGED, every time. The ask was fewer clicks, not a shorter quest:
+-- the `secs` floor still holds each coconut at 15-19 seconds no matter how fast you tap, so the pacing of
+-- Coconut Cove -- and the total length of the climb -- is exactly as it always was. What changed is how hard
+-- a finger works to fill that same window.
+--
+-- Taps to crack = (rise + drain x secs) / fill, where rise = 1 - CRACK_START:
+--   coconut 1   68 -> 41 -> 37 -> 33 -> 30 -> 26 -> 21 -> 17 taps    coconut 7   89 -> ... -> 28 -> 22
+--   whole quest 536 -> 322 -> 290 -> 261 -> 235 -> 200 -> 169 -> 135 taps
+--
+-- The difficulty CURVE is untouched -- easy 1-3, medium 4-5, hard 6-7 all scale by the same factor every
+-- time, so 7 is still nominally harder than 1.
+--
+-- ===== `fill` IS NOW SPENT AS A LEVER, ON EVERY COCONUT =====
+-- The tap rate needed to out-pace the drain is drain/fill. Below 1.0 the `secs` ceiling rises faster than
+-- the bar drains, so the bar climbs on its own: the coconut cannot be failed, only waited out.
+--
+--   1: 0.63   2: 0.63   3: 0.68   |   4: 0.71   5: 0.75   6: 0.77   |   7: 0.81
+--
+-- ALL SEVEN are now well under 1.0 -- the highest sits at 0.81. Every coconut is a 15-19 second wait with
+-- light tapping; none of them can be lost, and the "difficulty curve" above is now a difference in the
+-- number on the label rather than anything a player experiences.
+--
+-- Cutting `fill` again would change nothing anyone can feel: the bar already out-climbs the drain by a
+-- wide margin everywhere, so fewer taps just means more idle seconds staring at a bar that fills itself.
+-- The ONLY remaining cost is `secs` -- 7 coconuts x 15-19s, about two minutes of Coconut Cove. If this
+-- still feels long, that is the number to change, but it makes the quest SHORTER rather than easier and
+-- it moves the pacing of the whole climb.
+local CRACK_START = 0.16 -- where the bar starts (also fixes how far it has to climb)
 local CRACK_DIFFICULTY = {
-	[1] = { drain = 0.35, fill = 0.22, name = "Easy" },   -- need >~1.6 taps/sec
-	[2] = { drain = 0.35, fill = 0.22, name = "Easy" },
-	[3] = { drain = 0.45, fill = 0.20, name = "Easy" },   -- ~2.3/sec
-	[4] = { drain = 0.55, fill = 0.18, name = "Medium" }, -- ~3.1/sec
-	[5] = { drain = 0.58, fill = 0.17, name = "Medium" },
-	[6] = { drain = 0.60, fill = 0.17, name = "Hard" },   -- ~3.5 taps/sec (toned down: comfy one-finger on mobile)
-	[7] = { drain = 0.63, fill = 0.17, name = "Hard" },   -- ~3.7 taps/sec (hardest, still mobile-doable -- a touch above medium)
+	[1] = { drain = 0.070, fill = 0.1109, secs = 15, name = "Easy" },
+	[2] = { drain = 0.070, fill = 0.1109, secs = 15, name = "Easy" },
+	[3] = { drain = 0.075, fill = 0.1109, secs = 16, name = "Easy" },
+	[4] = { drain = 0.082, fill = 0.1148, secs = 17, name = "Medium" },
+	[5] = { drain = 0.086, fill = 0.1148, secs = 17, name = "Medium" },
+	[6] = { drain = 0.092, fill = 0.1189, secs = 18, name = "Hard" },
+	[7] = { drain = 0.096, fill = 0.1189, secs = 19, name = "Hard" },
 }
 
 -- TUG-OF-WAR crack: the fill bar constantly DRAINS down; each tap pushes it UP. Fill it to the TOP to crack.
@@ -463,25 +710,41 @@ local function openCrackMinigame(onCracked, diff)
 	if crackBusy then return end
 	crackBusy = true
 	local ui = ensureCrackUI()
-	diff = diff or { drain = 0.5, fill = 0.18, name = "" }
-	local fill = 0.28 -- start partway up so it isn't instantly empty
+	-- fill scaled by the same factor as CRACK_DIFFICULTY above -- an 8th coconut falling back to this default
+	-- would otherwise be the one that still cost the old number of taps
+	diff = diff or { drain = 0.082, fill = 0.1148, secs = 16, name = "" }
+	local fill = CRACK_START -- small head start so the long crack still starts near-empty
+	-- TIME FLOOR: `ceiling` rises from the start position to full over diff.secs and the bar is clamped to it,
+	-- so the crack can NEVER complete faster than that no matter how fast the player taps.
+	local ceiling = fill
+	local ceilRate = (1 - CRACK_START) / (diff.secs or 16)
 	local done = false
 	local started = false -- the bar holds steady until the FIRST tap; drain only begins then (a moment to react)
 	ui.hint.Text = "Tap to FILL the bar before it drains!"
 	ui.cnt.Text = "Crack it!" -- NO difficulty shown to the player (the tier still varies under the hood)
 	ui.bar.Size = UDim2.new(fill, 0, 1, 0); ui.bar.BackgroundColor3 = Color3.fromRGB(80,220,80)
 	ui.gui.Enabled = true
-	local conn
+	local conn, closeConn
 	local function finish(success)
 		if done then return end
-		done = true; if conn then conn:Disconnect() end
+		done = true
+		if conn then conn:Disconnect() end
+		-- BOTH connections must go. crackUI is CACHED and reused for every coconut, so the X button outlives
+		-- this minigame -- leaving its handler attached would stack another one on each open, and by the 7th
+		-- coconut a single tap of the X would fire seven finishes.
+		if closeConn then closeConn:Disconnect() end
 		ui.gui.Enabled = false; crackBusy = false
 		if success then onCracked() end
 	end
+	-- X CLOSES IT, and closing counts as giving up, not as cracking -- finish(false) leaves the coconut
+	-- uncracked and the count untouched, so it can simply be tried again. Same contract as the reel and
+	-- broccoli minigames: the X is the ONLY way out, a stray tap elsewhere never shuts the panel.
+	closeConn = ui.close.MouseButton1Click:Connect(function() finish(false) end)
 	conn = ui.coco.MouseButton1Click:Connect(function()
 		if done then return end
 		started = true -- first tap arms the drain (the tug-of-war is now on)
 		fill = math.min(1, fill + diff.fill)
+		if fill > ceiling then fill = ceiling end -- mashing can't outrun the time floor
 		ui.bar.Size = UDim2.new(fill, 0, 1, 0)
 		pcall(function() game:GetService("TweenService"):Create(ui.coco, TweenInfo.new(0.05), { Rotation = math.random(-12,12) }):Play() end)
 		if fill >= 1 then finish(true) end
@@ -491,7 +754,8 @@ local function openCrackMinigame(onCracked, diff)
 		while not done do
 			local now = os.clock(); local dt = now - last; last = now -- keep `last` current even while paused (no drain accrues before the first tap)
 			if started then -- the bar only starts draining AGAINST the player after their first tap
-				fill = math.max(0, fill - diff.drain * dt)
+				ceiling = math.min(1, ceiling + ceilRate * dt) -- the time floor advances from the first tap
+				fill = math.max(0, math.min(fill, ceiling) - diff.drain * dt)
 				ui.bar.Size = UDim2.new(fill, 0, 1, 0)
 				ui.bar.BackgroundColor3 = (fill > 0.5) and Color3.fromRGB(80,220,80) or Color3.fromRGB(235,170,55)
 				if fill <= 0 then ui.hint.Text = "Drained! Try again."; task.wait(0.35); finish(false); break end
@@ -530,10 +794,27 @@ local function buildCoconutWorld(petId, def, positions)
 	if st.built then return end
 	st.built = true; st.isCrack = true
 	local pieces = positions.pieces or {}
+	-- PER-COCONUT PLACEMENT NUDGE, in studs, applied on top of the marker position.
+	--
+	-- Coconut4's marker sits low enough that the ball ends up inside the island geometry -- present and
+	-- rendering, but not visible or reachable. +2 studs lifts it clear. It is listed HERE, one coconut, by
+	-- number, rather than detected at runtime: an earlier attempt tried to spot buried coconuts automatically
+	-- and floated several healthy ones instead, because "is this ball touching something" is also true of
+	-- every coconut resting on the ground. Everything not in this table is placed exactly on its marker.
+	--
+	-- This is a patch over a marker that is slightly too low. Moving 'Coconut4' up in Studio and deleting the
+	-- entry below is the real fix -- with the entry still here, doing that would raise it twice.
+	--
+	-- Declared inside this function ON PURPOSE: PetFollow's main chunk is at Luau's 200-local ceiling, and a
+	-- new top-level local is what produced "Out of local registers" and killed the whole script last time.
+	local COCO_NUDGE = { [4] = Vector3.new(0, 1.75, 0) } -- was +2; dropped 0.25 to sit right
 	-- 7 coconuts (hidden until applyState confirms !owns). Hold E -> crack minigame -> count + server collect.
 	for i = 1, #def.pieceMarkers do
 		local pos = pieces[i]
 		if typeof(pos) == "Vector3" then
+			-- applied before anything reads `pos`, so the ball, its prompt, the "cracked!" text and the
+			-- on-landing hint anchor all agree on one position
+			pos = pos + (COCO_NUDGE[i] or Vector3.zero)
 			st.hintAnchor = st.hintAnchor or pos -- the on-landing hint anchors at a COCONUT (on the island), not the cave chest
 			local coco = Instance.new("Model"); coco.Name = "Coconut"..i
 			local b = newPart(coco, "Coco", Enum.PartType.Ball, Vector3.new(1.6,1.6,1.6), Color3.fromRGB(112,72,42), CFrame.new(pos), Enum.Material.Wood)
@@ -543,6 +824,7 @@ local function buildCoconutWorld(petId, def, positions)
 			end
 			local pp = addPrompt(b, "Crack Coconut", "Coconut", function()
 				if st.collected[i] or st.owns then return end
+				if not _G.petQuestGate(def, pos) then return end -- the Beachcomber has to hand you this first
 				openCrackMinigame(function()
 					if st.collected[i] or st.owns then return end
 					st.collected[i] = true
@@ -561,6 +843,7 @@ local function buildCoconutWorld(petId, def, positions)
 			end)
 			pp.HoldDuration = 0.5 -- HOLD E to start the minigame
 			st.pieces[i] = coco
+
 			setVisible(coco, false)
 			print(string.format("[Pet][DIAG] built coconut %d (%s) at (%.0f,%.0f,%.0f)", i, (CRACK_DIFFICULTY[i] and CRACK_DIFFICULTY[i].name or "?"), pos.X, pos.Y, pos.Z))
 		else
@@ -674,57 +957,125 @@ end
 local spinUI, spinBusy = nil, false
 local function ensureSpinUI()
 	if spinUI then return spinUI end
-	local pgui = player:WaitForChild("PlayerGui")
-	local g = Instance.new("ScreenGui"); g.Name = "FilmReelSpinGui"; g.ResetOnSpawn = false; g.DisplayOrder = 90; g.Enabled = false; g.Parent = pgui
-	local film = Instance.new("Frame"); film.Size = UDim2.new(1,0,1,0); film.BackgroundColor3 = Color3.new(0,0,0); film.BackgroundTransparency = 0.5; film.Active = true; film.Parent = g
-	local panel = Instance.new("Frame"); panel.Size = UDim2.new(0,360,0,240); panel.Position = UDim2.new(0.5,0,0.5,0); panel.AnchorPoint = Vector2.new(0.5,0.5)
-	panel.BackgroundColor3 = Color3.fromRGB(25,90,185); panel.Parent = g
-	Instance.new("UICorner", panel).CornerRadius = UDim.new(0,16); local ps = Instance.new("UIStroke", panel); ps.Color = Color3.new(1,1,1); ps.Thickness = 3
-	local titl = Instance.new("TextLabel"); titl.Size = UDim2.new(1,-20,0,30); titl.Position = UDim2.new(0,10,0,10); titl.BackgroundTransparency = 1
-	titl.Font = Enum.Font.GothamBold; titl.TextSize = 22; titl.TextColor3 = Color3.fromRGB(255,215,0); titl.Text = "STOP THE REEL!"; titl.Parent = panel
-	local hintL = Instance.new("TextLabel"); hintL.Size = UDim2.new(1,-20,0,18); hintL.Position = UDim2.new(0,10,0,42); hintL.BackgroundTransparency = 1
-	hintL.Font = Enum.Font.Gotham; hintL.TextSize = 13; hintL.TextColor3 = Color3.new(1,1,1); hintL.Text = "Tap STOP when the marker is in the green zone!"; hintL.Parent = panel
-	-- the TRACK (a horizontal bar) with the green target ZONE + the sweeping MARKER
-	local track = Instance.new("Frame"); track.Size = UDim2.new(1,-40,0,34); track.Position = UDim2.new(0.5,0,0,98); track.AnchorPoint = Vector2.new(0.5,0)
-	track.BackgroundColor3 = Color3.fromRGB(15,40,90); track.Parent = panel; Instance.new("UICorner", track).CornerRadius = UDim.new(0,8)
-	local zone = Instance.new("Frame"); zone.BackgroundColor3 = Color3.fromRGB(70,210,90); zone.BorderSizePixel = 0; zone.Parent = track
-	Instance.new("UICorner", zone).CornerRadius = UDim.new(0,6)
-	local marker = Instance.new("Frame"); marker.Size = UDim2.new(0,8,1,8); marker.AnchorPoint = Vector2.new(0.5,0.5); marker.Position = UDim2.new(0,0,0.5,0)
-	marker.BackgroundColor3 = Color3.fromRGB(255,230,80); marker.ZIndex = 2; marker.Parent = track
-	Instance.new("UICorner", marker).CornerRadius = UDim.new(0,3); local ms = Instance.new("UIStroke", marker); ms.Color = Color3.new(0,0,0); ms.Thickness = 1
-	local stop = Instance.new("TextButton"); stop.Size = UDim2.new(0,180,0,48); stop.Position = UDim2.new(0.5,0,1,-18); stop.AnchorPoint = Vector2.new(0.5,1)
-	stop.BackgroundColor3 = Color3.fromRGB(220,60,60); stop.Text = "STOP"; stop.Font = Enum.Font.GothamBold; stop.TextSize = 24; stop.TextColor3 = Color3.new(1,1,1); stop.Parent = panel
-	Instance.new("UICorner", stop).CornerRadius = UDim.new(0,10); local ss = Instance.new("UIStroke", stop); ss.Color = Color3.new(0,0,0); ss.Thickness = 2
-	local close = Instance.new("TextButton"); close.Size = UDim2.new(0,30,0,30); close.Position = UDim2.new(1,-38,0,8); close.BackgroundColor3 = Color3.fromRGB(120,40,40)
-	close.Text = "X"; close.Font = Enum.Font.GothamBold; close.TextSize = 16; close.TextColor3 = Color3.new(1,1,1); close.Parent = panel
-	Instance.new("UICorner", close).CornerRadius = UDim.new(0,8)
-	spinUI = { gui = g, panel = panel, track = track, zone = zone, marker = marker, stop = stop, close = close, hint = hintL }
+	local ui = mgCard("FilmReelSpinGui", 420, 300, "WIND THE FILM!",
+		"Tap WIND until the reel is full.")
+	local panel = ui.panel
+	local BODY = MG_BODY_TOP + 10
+
+	-- ===== THE BENCH: SUPPLY REEL -> FILM -> TAKE-UP REEL =====
+	-- Two reels with the film strip running between them. The supply reel SHRINKS and the take-up reel GROWS
+	-- as you wind, so progress is legible from the picture alone before you read a single number.
+	local function reel(x, size)
+		local r = Instance.new("Frame"); r.Size = UDim2.new(0, size, 0, size)
+		r.AnchorPoint = Vector2.new(0.5, 0.5); r.Position = UDim2.new(0, x, 0, BODY + 74)
+		r.BackgroundColor3 = Color3.fromRGB(38, 34, 40); r.BorderSizePixel = 0; r.Parent = panel
+		Instance.new("UICorner", r).CornerRadius = UDim.new(1, 0)
+		mgStroke(r, MG.trough, 3, 0.15)
+		-- spokes: the thing that makes rotation READABLE. A plain disc spinning looks static.
+		for i = 0, 2 do
+			local sp = Instance.new("Frame"); sp.Size = UDim2.new(0.86, 0, 0, 5)
+			sp.AnchorPoint = Vector2.new(0.5, 0.5); sp.Position = UDim2.fromScale(0.5, 0.5)
+			sp.Rotation = i * 60; sp.BackgroundColor3 = Color3.fromRGB(96, 88, 100)
+			sp.BorderSizePixel = 0; sp.Parent = r
+		end
+		local hub = Instance.new("Frame"); hub.Size = UDim2.fromScale(0.3, 0.3)
+		hub.AnchorPoint = Vector2.new(0.5, 0.5); hub.Position = UDim2.fromScale(0.5, 0.5)
+		hub.BackgroundColor3 = Color3.fromRGB(140, 130, 145); hub.BorderSizePixel = 0; hub.Parent = r
+		Instance.new("UICorner", hub).CornerRadius = UDim.new(1, 0)
+		return r
+	end
+	local supply = reel(96, 118)
+	local takeup = reel(324, 60)
+
+	-- the film strip stretched between them, with sprocket holes that SCROLL while winding
+	local strip = Instance.new("Frame"); strip.Size = UDim2.new(0, 150, 0, 26)
+	strip.AnchorPoint = Vector2.new(0.5, 0.5); strip.Position = UDim2.new(0, 210, 0, BODY + 74)
+	strip.BackgroundColor3 = Color3.fromRGB(24, 22, 28); strip.BorderSizePixel = 0; strip.Parent = panel
+	strip.ClipsDescendants = true
+	mgStroke(strip, Color3.fromRGB(70, 64, 76), 2, 0.3)
+	local holes = {}
+	for i = 1, 12 do
+		local hlow = Instance.new("Frame"); hlow.Size = UDim2.new(0, 7, 0, 6)
+		hlow.Position = UDim2.new(0, (i - 1) * 16, 0, 3)
+		hlow.BackgroundColor3 = Color3.fromRGB(224, 220, 210); hlow.BorderSizePixel = 0; hlow.Parent = strip
+		local hhi = hlow:Clone(); hhi.Position = UDim2.new(0, (i - 1) * 16, 1, -9); hhi.Parent = strip
+		holes[#holes + 1] = hlow; holes[#holes + 1] = hhi
+	end
+
+	-- the CRANK on the take-up reel: an arm with a knob, rotating a notch per wind
+	local crank = Instance.new("Frame"); crank.Size = UDim2.new(0, 54, 0, 8)
+	crank.AnchorPoint = Vector2.new(0, 0.5); crank.Position = UDim2.new(0, 324, 0, BODY + 74)
+	crank.BackgroundColor3 = Color3.fromRGB(188, 150, 70); crank.BorderSizePixel = 0; crank.Parent = panel
+	mgCorner(crank, 4); mgStroke(crank, MG.navy, 2)
+	local knob = Instance.new("Frame"); knob.Size = UDim2.new(0, 16, 0, 16)
+	knob.AnchorPoint = Vector2.new(0.5, 0.5); knob.Position = UDim2.new(1, -2, 0.5, 0)
+	knob.BackgroundColor3 = Color3.fromRGB(230, 196, 96); knob.BorderSizePixel = 0; knob.Parent = crank
+	Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+	mgStroke(knob, MG.navy, 2)
+
+	-- ONE BAR, ONE BUTTON. There was a tension gauge here with a red band and a snap-the-film penalty --
+	-- two systems to read and a way to lose, on a quest that is meant to be a pleasant thirty seconds of
+	-- winding a reel. It is gone: tap WIND, the bar fills, the reels turn. Nothing to fail.
+	local progCap = Instance.new("TextLabel"); progCap.Size = UDim2.new(0, 200, 0, 14)
+	progCap.Position = UDim2.new(0, 20, 0, BODY + 146); progCap.BackgroundTransparency = 1
+	progCap.Font = Enum.Font.GothamBold; progCap.TextSize = 11; progCap.TextColor3 = MG.ice
+	progCap.TextXAlignment = Enum.TextXAlignment.Left; progCap.Text = "FILM WOUND"; progCap.Parent = panel
+	local progBg = Instance.new("Frame"); progBg.Size = UDim2.new(1, -40, 0, 24)
+	progBg.Position = UDim2.new(0, 20, 0, BODY + 162); progBg.BackgroundColor3 = MG.navy
+	progBg.BorderSizePixel = 0; progBg.Parent = panel
+	mgCorner(progBg, 10); mgStroke(progBg, MG.trough, 2, 0.25)
+	local progFill = Instance.new("Frame"); progFill.Size = UDim2.new(0, 0, 1, 0)
+	progFill.BackgroundColor3 = Color3.fromRGB(255, 196, 84); progFill.BorderSizePixel = 0; progFill.Parent = progBg
+	mgCorner(progFill, 10); mgGloss(progFill)
+
+	local wind = Instance.new("TextButton"); wind.Size = UDim2.new(0, 220, 0, 60)
+	wind.Position = UDim2.new(0.5, 0, 0, BODY + 200); wind.AnchorPoint = Vector2.new(0.5, 0)
+	wind.BackgroundColor3 = Color3.fromRGB(46, 132, 62); wind.Text = "WIND"
+	wind.Font = Enum.Font.FredokaOne; wind.TextSize = 26; wind.TextColor3 = MG.white
+	wind.AutoButtonColor = false; wind.Parent = panel
+	mgCorner(wind, 14); mgStroke(wind, MG.white, 3); mgGloss(wind)
+
+	spinUI = {
+		gui = ui.gui, panel = ui.holder, close = ui.close, hint = ui.hint,
+		supply = supply, takeup = takeup, crank = crank, holes = holes,
+		progFill = progFill, wind = wind,
+	}
 	return spinUI
 end
--- per-reel difficulty: zone = target width (fraction of the track), speed = sweeps/sec. Earlier reels are easy;
--- later reels have a smaller zone + a faster sweep. Even reel 6 stays single-tap-doable on mobile.
+-- WINDING TUNING (this replaced a stop-the-sweeping-marker minigame -- see ensureSpinUI for why).
+-- `hits` = taps to wind that reel, and it is now the ONLY field that means anything. The old zone/speed
+-- columns were the sweeping marker's target width and sweep rate, and a SPIN_MIN_SECONDS floor held a
+-- finished reel back until the clock caught up -- all gone with the mechanic. Later reels are simply
+-- longer, which is the entire difficulty curve; there is nothing to fail and nothing to wait out.
+-- BACK TO THE ORIGINAL EFFORT. The original quest cost ONE well-timed stop per reel -- six actions
+-- for the whole thing -- and the later 10..16-tap ramp made Popcorn Pinnacle far heavier than it
+-- ever was. A literal 1 would make the winding pointless (the reels would not visibly turn), so
+-- every reel is a flat 4 quick taps: about two seconds each, ~24 for the quest, no ramp. Say the
+-- word and it drops to 1-per-reel for exact parity.
 local SPIN_DIFFICULTY = {
-	[1] = { zone = 0.34, speed = 0.55 },
-	[2] = { zone = 0.32, speed = 0.62 },
-	[3] = { zone = 0.28, speed = 0.72 },
-	[4] = { zone = 0.26, speed = 0.84 },
-	[5] = { zone = 0.23, speed = 0.96 },
-	[6] = { zone = 0.20, speed = 1.10 },
+	[1] = { hits = 4 },
+	[2] = { hits = 4 },
+	[3] = { hits = 4 },
+	[4] = { hits = 4 },
+	[5] = { hits = 4 },
+	[6] = { hits = 4 },
 }
 local function openSpinMinigame(onSuccess, diff)
 	if spinBusy then return end
 	spinBusy = true
 	local ui = ensureSpinUI()
-	diff = diff or { zone = 0.28, speed = 0.8 }
-	local zoneW = diff.zone
-	local zoneX = 0.04 + math.random() * math.max(0, 0.92 - zoneW) -- random target position, fully inside the track
-	ui.zone.Size = UDim2.new(zoneW, 0, 1, 0); ui.zone.Position = UDim2.new(zoneX, 0, 0, 0)
-	ui.hint.Text = "Tap STOP when the marker is in the green zone!"
-	ui.marker.BackgroundColor3 = Color3.fromRGB(255,230,80)
-	ui.gui.Enabled = true
+	diff = diff or { hits = 14 }
+	local needWinds = diff.hits or 14   -- cranks to wind this reel over. That is the ENTIRE rule.
+	local winds = 0
+	local crankAng, stripOff = 0, 0
 	local done = false
-	local pos = math.random()                      -- marker start (0..1)
-	local dir = (math.random() < 0.5) and 1 or -1  -- random initial direction
+
+	ui.hint.Text = "Tap WIND until the reel is full."
+	ui.progFill.Size = UDim2.new(0, 0, 1, 0)
+	ui.supply.Size = UDim2.new(0, 118, 0, 118)
+	ui.takeup.Size = UDim2.new(0, 60, 0, 60)
+	ui.gui.Enabled = true
+
 	local conns = {}
 	local function finish(success)
 		if done then return end
@@ -733,25 +1084,41 @@ local function openSpinMinigame(onSuccess, diff)
 		ui.gui.Enabled = false; spinBusy = false
 		if success then onSuccess() end
 	end
-	conns[#conns+1] = ui.stop.MouseButton1Click:Connect(function()
+
+	-- One tap = one crank. No tension, no timer, no way to lose -- the reels turning and the bar filling
+	-- ARE the game. Winding an old projector reel is meant to be satisfying, not a test.
+	conns[#conns+1] = ui.wind.MouseButton1Click:Connect(function()
 		if done then return end
-		if pos >= zoneX and pos <= (zoneX + zoneW) then
-			ui.marker.BackgroundColor3 = Color3.fromRGB(90,235,110); ui.hint.Text = "Nice \xE2\x80\x94 reel grabbed!"
+		winds = winds + 1
+		crankAng = crankAng + 72   -- a fifth of a turn: the arm visibly steps round
+		stripOff = stripOff + 16   -- one sprocket hole of film travels
+		if winds >= needWinds then
+			ui.hint.Text = "Reel wound -- got it!"
 			task.wait(0.25); finish(true)
 		else
-			ui.marker.BackgroundColor3 = Color3.fromRGB(235,90,80); ui.hint.Text = "Missed! Keep going \xE2\x80\x94 tap in the green."
-			task.delay(0.45, function() if not done then ui.marker.BackgroundColor3 = Color3.fromRGB(255,230,80) end end)
-			-- NOT punishing: the sweep simply continues so the player can try again
+			ui.hint.Text = "Wound " .. winds .. "/" .. needWinds
 		end
 	end)
 	conns[#conns+1] = ui.close.MouseButton1Click:Connect(function() finish(false) end)
+
 	task.spawn(function()
 		local last = os.clock()
 		while not done do
 			local now = os.clock(); local dt = now - last; last = now
-			pos = pos + dir * diff.speed * dt
-			if pos >= 1 then pos = 1; dir = -1 elseif pos <= 0 then pos = 0; dir = 1 end -- ping-pong sweep
-			ui.marker.Position = UDim2.new(pos, 0, 0.5, 0)
+			local p = math.clamp(winds / math.max(needWinds, 1), 0, 1)
+			ui.progFill.Size = UDim2.new(p, 0, 1, 0)
+			-- the crank eases toward its stepped angle, and BOTH reels spin with it
+			ui.crank.Rotation = ui.crank.Rotation + (crankAng - ui.crank.Rotation) * math.min(1, dt * 12)
+			ui.supply.Rotation = -ui.crank.Rotation * 0.55
+			ui.takeup.Rotation = ui.crank.Rotation
+			-- film physically moves from the big reel to the small one
+			ui.supply.Size = UDim2.new(0, 118 - 46 * p, 0, 118 - 46 * p)
+			ui.takeup.Size = UDim2.new(0, 60 + 46 * p, 0, 60 + 46 * p)
+			-- sprocket holes scroll so the strip itself reads as moving
+			for i, h in ipairs(ui.holes) do
+				local col = math.floor((i - 1) / 2)
+				h.Position = UDim2.new(0, (col * 16 - stripOff) % 192 - 8, h.Position.Y.Scale, h.Position.Y.Offset)
+			end
 			task.wait()
 		end
 	end)
@@ -956,6 +1323,7 @@ local function buildPopcornWorld(petId, def, positions)
 			local reel = buildFilmReel(pos, math.rad(i * 43)) -- built flat, in place, with a varied yaw
 			local pp = addPrompt(reel.PrimaryPart, "Take Film Reel", "Film Reel", function()
 				if st.collected[i] or st.owns then return end
+				if not _G.petQuestGate(def, pos) then return end -- the Projectionist has to hand you this first
 				openSpinMinigame(function() -- STOP-the-marker timing minigame per reel (not the coconut tap-fill)
 					if st.collected[i] or st.owns then return end
 					st.collected[i] = true
@@ -1495,40 +1863,45 @@ end
 local reelUI, reelBusy = nil, false
 local function ensureReelUI()
 	if reelUI then return reelUI end
-	local pgui = player:WaitForChild("PlayerGui")
-	local g = Instance.new("ScreenGui"); g.Name = "ButterReelGui"; g.ResetOnSpawn = false; g.DisplayOrder = 90; g.Enabled = false; g.Parent = pgui
-	local dim = Instance.new("Frame"); dim.Size = UDim2.new(1,0,1,0); dim.BackgroundColor3 = Color3.new(0,0,0); dim.BackgroundTransparency = 0.5; dim.Active = true; dim.Parent = g
-	local panel = Instance.new("Frame"); panel.Size = UDim2.new(0,300,0,360); panel.Position = UDim2.new(0.5,0,0.5,0); panel.AnchorPoint = Vector2.new(0.5,0.5)
-	panel.BackgroundColor3 = Color3.fromRGB(25,90,185); panel.Parent = g
-	Instance.new("UICorner", panel).CornerRadius = UDim.new(0,16); local ps = Instance.new("UIStroke", panel); ps.Color = Color3.new(1,1,1); ps.Thickness = 3
-	local titl = Instance.new("TextLabel"); titl.Size = UDim2.new(1,-20,0,30); titl.Position = UDim2.new(0,10,0,10); titl.BackgroundTransparency = 1
-	titl.Font = Enum.Font.GothamBold; titl.TextSize = 22; titl.TextColor3 = Color3.fromRGB(255,215,0); titl.Text = "REEL IT IN!"; titl.Parent = panel
+	local ui = mgCard("ButterReelGui", 340, 396, "REEL IT IN!",
+		"HOLD to rise \xE2\x80\xA2 RELEASE to drop \xE2\x80\x94 keep \xF0\x9F\x90\x9F inside the slider")
+	local panel = ui.panel
+	local TOP, TALL = MG_BODY_TOP + 18, 244
 	-- the tall vertical REEL BAR (holds the drifting fish + the player-controlled slider)
-	local track = Instance.new("Frame"); track.Size = UDim2.new(0,90,0,250); track.Position = UDim2.new(0,40,0,90)
-	track.BackgroundColor3 = Color3.fromRGB(12,34,76); track.Parent = panel; Instance.new("UICorner", track).CornerRadius = UDim.new(0,12)
-	local tstk = Instance.new("UIStroke", track); tstk.Color = Color3.new(1,1,1); tstk.Transparency = 0.55; tstk.Thickness = 2
+	local track = Instance.new("Frame"); track.Size = UDim2.new(0,104,0,TALL); track.Position = UDim2.new(0,34,0,TOP)
+	track.BackgroundColor3 = MG.navy; track.BorderSizePixel = 0; track.Parent = panel
+	mgCorner(track, 14); mgStroke(track, MG.trough, 2, 0.15)
+	for k = 1, 5 do -- faint depth ticks so the bar doesn't read as an empty slab
+		local t = Instance.new("Frame"); t.Size = UDim2.new(1,-16,0,2); t.Position = UDim2.new(0,8,k/6,0)
+		t.BackgroundColor3 = MG.white; t.BackgroundTransparency = 0.88; t.BorderSizePixel = 0; t.Parent = track
+	end
 	-- the SLIDER (catch zone) the player moves with hold/release
-	local zone = Instance.new("Frame"); zone.Size = UDim2.new(1,-10,0.30,0); zone.Position = UDim2.new(0.5,0,0.5,0); zone.AnchorPoint = Vector2.new(0.5,0.5)
-	zone.BackgroundColor3 = Color3.fromRGB(70,210,90); zone.BackgroundTransparency = 0.2; zone.BorderSizePixel = 0; zone.Parent = track; Instance.new("UICorner", zone).CornerRadius = UDim.new(0,8)
-	local zstk = Instance.new("UIStroke", zone); zstk.Color = Color3.fromRGB(225,255,225); zstk.Thickness = 2
+	local zone = Instance.new("Frame"); zone.Size = UDim2.new(1,-10,0.30,0); zone.Position = UDim2.new(0.5,0,0.5,0)
+	zone.AnchorPoint = Vector2.new(0.5,0.5); zone.BackgroundColor3 = MG.lime; zone.BackgroundTransparency = 0.15
+	zone.BorderSizePixel = 0; zone.Parent = track
+	mgCorner(zone, 10); mgGloss(zone); mgStroke(zone, Color3.fromRGB(226,255,208), 2)
 	-- the FISH marker that drifts up/down inside the bar
-	local fish = Instance.new("TextLabel"); fish.Size = UDim2.new(0,46,0,46); fish.AnchorPoint = Vector2.new(0.5,0.5); fish.Position = UDim2.new(0.5,0,0.5,0)
-	fish.BackgroundTransparency = 1; fish.Font = Enum.Font.GothamBold; fish.TextSize = 34; fish.Text = "\xF0\x9F\x90\x9F"; fish.ZIndex = 4; fish.Parent = track
+	local fish = Instance.new("TextLabel"); fish.Size = UDim2.new(0,48,0,48); fish.AnchorPoint = Vector2.new(0.5,0.5)
+	fish.Position = UDim2.new(0.5,0,0.5,0); fish.BackgroundTransparency = 1; fish.Font = Enum.Font.GothamBold
+	fish.TextSize = 36; fish.Text = "\xF0\x9F\x90\x9F"; fish.ZIndex = 4; fish.Parent = track
 	-- the catch PROGRESS bar (vertical, right side), fills bottom-up
-	local pbBg = Instance.new("Frame"); pbBg.Size = UDim2.new(0,40,0,250); pbBg.Position = UDim2.new(1,-70,0,90)
-	pbBg.BackgroundColor3 = Color3.fromRGB(15,40,90); pbBg.Parent = panel; Instance.new("UICorner", pbBg).CornerRadius = UDim.new(0,10)
+	local pbBg = Instance.new("Frame"); pbBg.Size = UDim2.new(0,52,0,TALL); pbBg.Position = UDim2.new(1,-86,0,TOP)
+	pbBg.BackgroundColor3 = MG.navy; pbBg.BorderSizePixel = 0; pbBg.Parent = panel
+	mgCorner(pbBg, 14); mgStroke(pbBg, MG.trough, 2, 0.15)
 	local pb = Instance.new("Frame"); pb.Size = UDim2.new(1,0,0.45,0); pb.Position = UDim2.new(0,0,1,0); pb.AnchorPoint = Vector2.new(0,1)
-	pb.BackgroundColor3 = Color3.fromRGB(255,205,60); pb.BorderSizePixel = 0; pb.Parent = pbBg; Instance.new("UICorner", pb).CornerRadius = UDim.new(0,10)
-	local pbl = Instance.new("TextLabel"); pbl.Size = UDim2.new(0,80,0,16); pbl.AnchorPoint = Vector2.new(0.5,0); pbl.Position = UDim2.new(1,-50,1,-26); pbl.BackgroundTransparency = 1
-	pbl.Font = Enum.Font.GothamBold; pbl.TextSize = 12; pbl.TextColor3 = Color3.fromRGB(255,225,120); pbl.Text = "CATCH"; pbl.Parent = panel
+	pb.BackgroundColor3 = MG.gold; pb.BorderSizePixel = 0; pb.Parent = pbBg
+	mgCorner(pb, 14); mgGloss(pb)
+	local function cap(text, x, w)
+		local l = Instance.new("TextLabel"); l.Size = UDim2.new(0,w,0,16); l.Position = UDim2.new(0,x,0,TOP+TALL+8)
+		l.BackgroundTransparency = 1; l.Font = Enum.Font.GothamBold; l.TextSize = 11; l.TextColor3 = MG.ice; l.Text = text; l.Parent = panel
+	end
+	cap("SLIDER", 34, 104); cap("CATCH", 340-86, 52)
 	-- center "GET READY" overlay for the brief locked intro
-	local ready = Instance.new("TextLabel"); ready.AnchorPoint = Vector2.new(0.5,0.5); ready.Position = UDim2.new(0.5,0,0.5,0); ready.Size = UDim2.new(1,-20,0,40)
-	ready.BackgroundTransparency = 1; ready.Font = Enum.Font.FredokaOne; ready.TextSize = 28; ready.TextColor3 = Color3.fromRGB(255,240,120); ready.Text = "GET READY..."; ready.ZIndex = 6; ready.Parent = panel
-	Instance.new("UIStroke", ready).Thickness = 2
-	-- bottom hint (the familiar Fisch layout already makes it clear; this is a gentle reminder)
-	local hintL = Instance.new("TextLabel"); hintL.Size = UDim2.new(1,-20,0,20); hintL.Position = UDim2.new(0,10,1,-28); hintL.BackgroundTransparency = 1
-	hintL.Font = Enum.Font.Gotham; hintL.TextSize = 13; hintL.TextColor3 = Color3.new(1,1,1); hintL.Text = "HOLD to rise \xE2\x80\xA2 RELEASE to drop \xE2\x80\x94 keep \xF0\x9F\x90\x9F in the zone"; hintL.Parent = panel
-	reelUI = { gui = g, zone = zone, fish = fish, pb = pb, hint = hintL, ready = ready }
+	local ready = Instance.new("TextLabel"); ready.AnchorPoint = Vector2.new(0.5,0.5); ready.Position = UDim2.new(0.5,0,0.5,10)
+	ready.Size = UDim2.new(1,-20,0,44); ready.BackgroundTransparency = 1; ready.Font = Enum.Font.FredokaOne
+	ready.TextSize = 30; ready.TextColor3 = MG.gold; ready.Text = "GET READY..."; ready.ZIndex = 6; ready.Parent = panel
+	mgStroke(ready, MG.navy, 3)
+	reelUI = { gui = ui.gui, zone = zone, fish = fish, pb = pb, hint = ui.hint, ready = ready }
 	return reelUI
 end
 local function openReelMinigame(onDone)
@@ -1536,10 +1909,15 @@ local function openReelMinigame(onDone)
 	reelBusy = true
 	local UIS = game:GetService("UserInputService")
 	local ui = ensureReelUI()
+	-- RETUNED FOR LENGTH: the catch used to fill in ~1.5s. It's now a sustained fight with a HARD FLOOR --
+	-- `ceiling` rises over MIN_FIGHT seconds and the catch bar is clamped to it, so even perfect tracking
+	-- cannot land the fish sooner. The slider stays WIDE and the drain stays gentle: longer, not harder.
+	local MIN_FIGHT = 15         -- seconds the fish fights for, minimum, once the bar goes live
 	local ZONE_H = 0.30          -- slider height as a fraction of the bar (WIDE = easy; this is an easy pet)
 	local zone, zoneVel = 0.45, 0
 	local fishF, fishTarget, fishTimer = 0.5, 0.5, 0
-	local progress = 0.45        -- start partway so it isn't an instant win/lose
+	local progress = 0.30        -- start partway so it isn't an instant win/lose (lower = a longer fight)
+	local ceiling = progress
 	ui.zone.Size = UDim2.new(1,-10,ZONE_H,0)
 	ui.pb.Size = UDim2.new(1,0,progress,0)
 	local done, holding = false, false
@@ -1568,15 +1946,17 @@ local function openReelMinigame(onDone)
 			if zone < ZONE_H/2 then zone = ZONE_H/2; zoneVel = 0 elseif zone > 1 - ZONE_H/2 then zone = 1 - ZONE_H/2; zoneVel = 0 end
 			-- FISH drift toward a slowly-changing target (gentle = easy)
 			fishTimer = fishTimer - dt
-			if fishTimer <= 0 then fishTarget = 0.14 + math.random() * 0.72; fishTimer = 0.6 + math.random() * 1.4 end
-			fishF = fishF + (fishTarget - fishF) * math.min(dt * 1.6, 1)
+			if fishTimer <= 0 then fishTarget = 0.14 + math.random() * 0.72; fishTimer = 0.5 + math.random() * 1.1 end
+			fishF = fishF + (fishTarget - fishF) * math.min(dt * 1.8, 1) -- runs a little more often so you can't just park the slider
 			local inZone = math.abs(fishF - zone) <= (ZONE_H/2)
 			if introT > 0 then
 				introT = introT - dt
 				if introT <= 0 then ui.ready.Visible = false end
 			else
 				-- LIVE: fill while the fish is inside the slider, drain (slower = forgiving) when it slips out
-				progress = math.clamp(progress + (inZone and 0.46 or -0.22) * dt, 0, 1)
+				ceiling = math.min(1, ceiling + ((1 - 0.30) / MIN_FIGHT) * dt) -- the time floor, live-only
+				progress = math.clamp(math.min(progress, ceiling) + (inZone and 0.135 or -0.105) * dt, 0, 1)
+				progress = math.min(progress, ceiling)
 			end
 			-- visuals (f=1 is the TOP of the bar)
 			ui.zone.Position = UDim2.new(0.5, 0, 1 - zone, 0)
@@ -1628,11 +2008,32 @@ local function buildButterWorld(petId, def, positions)
 		rodTip = rp("Tip", Enum.PartType.Ball, Vector3.new(0.16,0.16,0.16), Color3.fromRGB(235,235,235)); rodTip.Transparency = 1
 		rodTipAtt = Instance.new("Attachment"); rodTipAtt.Parent = rodTip
 		rod.Parent = Workspace; heldRod = rod; st.fishProps[#st.fishProps+1] = rod
+		-- TELL EVERYONE ELSE. This rod is a client-built prop in the local Workspace, so by default it exists
+		-- for nobody but the holder -- other players see you miming. HeldItemSync picks this flag up and
+		-- publishes it as a replicated Player attribute, and every other client draws its own copy on your hand.
+		if _G.setHeldQuestItem then _G.setHeldQuestItem("FishingRod") end
 		task.spawn(function()
+			-- LEASH: the rod belongs to Butter Swamp's lake, so it goes away when you leave. Measured in 3D from
+			-- the lake, NOT in X/Z -- the islands sit in a vertical stack with overlapping footprints, so a
+			-- flat distance check would still call you "at the lake" while you flew a thousand studs above it.
+			-- Flying off is the common case and it moves you almost entirely in Y.
+			local ROD_LEASH = 350
 			while heldRod and heldRod.Parent and not st.owns do
 				local char = player.Character
 				local hand = char and (char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm"))
 				local hrp = char and char:FindFirstChild("HumanoidRootPart")
+				-- PUT IT AWAY when you leave the island OR the moment you take off. Flying with a fishing
+				-- rod welded to your hand looks broken, and the rod is island equipment -- lifting off is
+				-- the clearest possible "I am done here" signal a player can give.
+				local flyingAway = (_G.isFlying == true)
+				if hrp and ((hrp.Position - lakePos).Magnitude > ROD_LEASH or flyingAway) then
+					-- put the rod away, drop the flag so other players stop seeing it, and clear hasRod so
+					-- the barrel hands you a fresh one when you come back.
+					heldRod:Destroy(); heldRod = nil; st.hasRod = false
+					if _G.setHeldQuestItem then _G.setHeldQuestItem(nil) end
+					print("[Pet] " .. (flyingAway and "took off" or "left Butter Swamp") .. " -- fishing rod put away")
+					break
+				end
 				if hand and hrp then
 					local look = hrp.CFrame.LookVector; look = Vector3.new(look.X, 0, look.Z)
 					if look.Magnitude < 0.1 then look = Vector3.new(0,0,-1) end
@@ -1645,6 +2046,14 @@ local function buildButterWorld(petId, def, positions)
 					rodTip.CFrame = cf * CFrame.new(3.0, 0, 0)                       -- far end of the shaft (line origin)
 				end
 				RunService.Heartbeat:Wait()
+			end
+			-- QUEST FINISHED -> HAND IT BACK. The loop above also ends when st.owns flips true (the pet is
+			-- claimed), and without this the rod just stopped following and hung in the air wherever the
+			-- player happened to be standing. You keep the pet, not the equipment.
+			if heldRod then
+				heldRod:Destroy(); heldRod = nil; st.hasRod = false
+				if _G.setHeldQuestItem then _G.setHeldQuestItem(nil) end
+				print("[Pet] Butter Duck quest done -- fishing rod handed back")
 			end
 		end)
 	end
@@ -1704,6 +2113,8 @@ local function buildButterWorld(petId, def, positions)
 		st.fishProps[#st.fishProps+1] = barrel
 		local grab = addPrompt(body, "Grab Fishing Rod", "Rod Barrel", function()
 			if st.owns then return end
+			-- THE ROD IS THE START OF THE FISHING QUEST -- same rule as the shovel: refused, with directions.
+			if not _G.petQuestGate(def, barrelPos) then return end
 			if not st.hasRod then
 				st.hasRod = true
 				startHeldRod() -- show the rod in the player's hand from now on
@@ -1896,6 +2307,7 @@ local function buildButterWorld(petId, def, positions)
 	local fishPrompt -- forward-declared so the closure below captures THIS local (not a nil global)
 	fishPrompt = addPrompt(fishFollower, "Fish", "Butter Swamp", function()
 		if st.owns or st.eggCaught or fishing then return end
+		if not _G.petQuestGate(def, lakePos) then return end -- the Angler has to hand you this first
 		if not st.hasRod then floatText((player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character.HumanoidRootPart.Position or lakePos) + Vector3.new(0,3,0), "Grab a rod from the barrel first!"); return end
 		if not isNearButterEdge() then floatText((player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character.HumanoidRootPart.Position or lakePos) + Vector3.new(0,3,0), "Get closer to the butter's edge to fish!"); return end
 		fishing = true; fishPrompt.Enabled = false
@@ -2150,20 +2562,46 @@ local function buildBurritoWorld(petId, def, positions)
 		if heldShovel then return end
 		heldShovel = buildShovel(); heldShovel.Name = petId.."HeldShovel"; st.digProps[#st.digProps+1] = heldShovel
 		task.spawn(function()
+			-- the dig site (the shovel barrel's own spot): anything past this is "left the island", same
+			-- idea as the rod's ROD_LEASH
+			local digHome = shovelPos
 			while heldShovel and heldShovel.Parent and not st.owns do
 				local char = player.Character
 				local hand = char and (char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm"))
 				local hrp = char and char:FindFirstChild("HumanoidRootPart")
+				-- PUT IT AWAY on take-off, or if you wander right off the island. A shovel welded to your
+				-- hand mid-flight looks broken, and it is dig-site equipment -- the barrel hands you a
+				-- fresh one the moment you come back.
+				local flyingAway = (_G.isFlying == true)
+				local strayed = hrp and typeof(digHome) == "Vector3"
+					and (hrp.Position - digHome).Magnitude > 350
+				if hrp and (flyingAway or strayed) then
+					heldShovel:Destroy(); heldShovel = nil
+					print("[Pet] " .. (flyingAway and "took off" or "left Burrito Barrens") .. " -- shovel put away")
+					break
+				end
 				if hand and hrp then
 					local look = hrp.CFrame.LookVector; look = Vector3.new(look.X,0,look.Z)
 					if look.Magnitude < 0.1 then look = Vector3.new(0,0,-1) end
-					-- shaft points FORWARD + DOWN so the BLADE is toward the ground in front (the 180 FLIP fix);
-					-- grip sits at the hand. (Previously the shaft pointed up + the blade faced the wrong way.)
-					local dirShaft = (look.Unit + Vector3.new(0,-0.5,0)).Unit
-					local gripPos = hand.Position + Vector3.new(0,-0.1,0) - dirShaft*0.4
+					-- ===== HELD BY THE HANDLE, BLADE DOWN AND FORWARD =====
+					-- `dirShaft` is the direction from GRIP to BLADE, so it must point away from the hand,
+					-- forward and steeply down -- the natural digging carry. It read as upside down because
+					-- the shaft was too shallow (-0.5) to sell "blade at the ground": the tool sat out
+					-- horizontally like a lance. -1.15 puts the blade clearly below the hand.
+					--
+					-- The hand end is the T-grip: `gripPos` is pulled BACK along the shaft from the palm, so
+					-- the fist closes on the handle rather than the middle of the shaft.
+					local dirShaft = (look.Unit + Vector3.new(0,-1.15,0)).Unit
+					local gripPos = hand.Position + Vector3.new(0,0.15,0) - dirShaft*0.55
 					heldShovel:PivotTo(shovelCF(gripPos, dirShaft))
 				end
 				RunService.Heartbeat:Wait()
+			end
+			-- QUEST FINISHED -> HAND IT BACK, same as the fishing rod. The loop also ends when st.owns
+			-- flips true, and without this the shovel simply stopped following and hung in mid-air.
+			if heldShovel then
+				heldShovel:Destroy(); heldShovel = nil
+				print("[Pet] Burrito Armadillo quest done -- shovel handed back")
 			end
 		end)
 	end
@@ -2191,6 +2629,9 @@ local function buildBurritoWorld(petId, def, positions)
 		end
 		local grab = addPrompt(body, "Grab Shovel", "Shovel Stand", function()
 			if st.owns then return end
+			-- THE SHOVEL IS THE START OF THE DIG QUEST, so this is where it gets refused: the barrel is right
+			-- there and the prompt still works, it just tells you who to see rather than arming the quest.
+			if not _G.petQuestGate(def, shovelPos) then return end
 			if not st.hasShovel then
 				st.hasShovel = true
 				startHeldShovel()
@@ -2206,7 +2647,14 @@ local function buildBurritoWorld(petId, def, positions)
 		warn("[Pet][DIAG] ShovelSpot position MISSING for "..petId)
 	end
 
-	local N_SWINGS = 6 -- E-taps ("swings") to fully dig a mound away (the active mound shrinks one step per swing)
+	-- RETUNED FOR LENGTH: 6 swings emptied a mound in ~2s of mashing. The WIND-UP between swings (the prompt
+	-- goes quiet for SWING_COOLDOWN after each one) IS the floor here: 14 swings x ~1.05s of forced cadence
+	-- puts a mound at ~15s minimum, and spamming E can't beat it because extra presses do nothing.
+	-- 50% FEWER SWINGS (was 14). Six mounds x 14 taps was 84 E-presses for one pet; at 7 it is 42. Only the
+	-- tap COUNT changed -- the mound still shrinks one step per swing, so each dig looks the same, it just
+	-- takes half as many presses to finish.
+	local N_SWINGS = 7           -- E-taps ("swings") to fully dig a mound away (it shrinks one step per swing)
+	local SWING_COOLDOWN = 1.0   -- seconds the shovel takes to come back up between swings (13 x 1.0 = 13s floor)
 	-- a dug-up JUNK item RISES out of the decoy hole (in-world reveal), holds, then fades away
 	local function junkRise(pos, junkName)
 		local j = newPart(Workspace, petId.."DugJunk", Enum.PartType.Ball, Vector3.new(1.3,1.3,1.3), Color3.fromRGB(120,92,60), CFrame.new(pos + Vector3.new(0, -3.0, 0)), Enum.Material.SmoothPlastic)
@@ -2349,6 +2797,12 @@ local function buildBurritoWorld(petId, def, positions)
 					if hum then hum.CameraOffset = Vector3.new((math.random()-0.5)*0.5, -0.35, 0); TS:Create(hum, TweenInfo.new(0.18), {CameraOffset = Vector3.zero}):Play() end
 				end)
 				print(string.format("[Pet][DIG] swing %d/%d on %s", swings, N_SWINGS, spot.label))
+				if swings < N_SWINGS then -- WIND-UP: the prompt goes quiet while the shovel comes back up
+					prompt.Enabled = false
+					task.delay(SWING_COOLDOWN, function() -- same gate activateStep uses; a finished/owned mound stays off
+						if not done and not st.owns and not st.eggCaught then prompt.Enabled = true end
+					end)
+				end
 				if swings >= N_SWINGS then -- mound fully dug -> reveal + advance the trail
 					done = true; prompt.Enabled = false
 					pushQuestProg(petId, { started = true, found = ((localQuestProg[petId] and localQuestProg[petId].found) or 0) + 1, total = #digSpots }) -- HUD: "Mounds X/6"
@@ -2390,6 +2844,7 @@ local function buildBurritoWorld(petId, def, positions)
 		if n > #digSpots then return end
 		local e = spots[n]
 		if not e then return activateStep(n + 1) end
+		st.digStep = n -- remembered so the accept-gate can restore the trail to exactly this step
 		setVisible(e.mound, true)
 		if not st.owns and not st.eggCaught then e.prompt.Enabled = true end
 		print(string.format("[Pet][DIG] active mound: %s (trail step %d/%d)", e.spot.label, n, #digSpots))
@@ -2399,6 +2854,231 @@ local function buildBurritoWorld(petId, def, positions)
 	print(string.format("[Pet][DIAG] burrito dig ready: shovel=%s buriedegg=%s", shovelPos and "yes" or "no", buriedPos and "yes" or "no"))
 	-- avoid a flash of the props for someone who already OWNS the armadillo
 	if st.owns then for _, o in ipairs(st.digProps) do setVisible(o, false) end end
+end
+
+-- ============================================================================================
+-- BROCCOLI PULL MINIGAME (questType "find" -- Broccoli Bluff, the FIRST pet quest). The 3 pieces are
+-- PLANTED in the dirt, so collecting one is no longer a free E-tap: HOLD to pull. The harder you lean
+-- into it the faster it comes up, but the STRAIN on the stalk builds -- redline it and the stalk slips
+-- and you lose ground. Let go, let the strain bleed off, pull again. Deliberately DIFFERENT from the
+-- coconut tug-of-war (tap-spam) and the film-reel meter (timing): this one is a HOLD/RELEASE rhythm,
+-- tuned to ~15s per broccoli for clean play (riding just under the redline is the fast line).
+-- Cosmetic-only -- the server still dedups by piece index.
+-- ============================================================================================
+
+-- per-piece difficulty. pull = uproot/sec at neutral strain, strain = strain/sec while holding,
+-- cool = strain bled off/sec while released. Piece 1 easiest -> piece 3 hardest (all ~14-17s).
+-- Tuned so even the OPTIMAL rhythm (hold to just under the redline, release, repeat) can't finish a broccoli
+-- in under ~15s -- 16/17/18s for pieces 1/2/3, more if you slip. Holding through the slips is slower still.
+local PULL_DIFFICULTY = {
+	[1] = { pull = 0.090, strain = 0.40, cool = 0.60 }, -- ~16s played well
+	[2] = { pull = 0.088, strain = 0.44, cool = 0.61 }, -- ~17s
+	[3] = { pull = 0.086, strain = 0.48, cool = 0.62 }, -- ~18s
+}
+local PULL_SNAP_COST = 0.10  -- uproot progress lost when the stalk slips (never enough to dead-end you)
+local PULL_LOCKOUT   = 0.8   -- seconds you can't pull after a slip
+
+local pullUI, pullBusy = nil, false
+local function ensurePullUI()
+	if pullUI then return pullUI end
+	local ui = mgCard("BroccoliPullGui", 360, 392, "PULL IT UP!", "HOLD to pull \xE2\x80\x94 let go before the stalk slips!")
+	local panel, titl, hintL = ui.panel, ui.title, ui.hint
+
+	-- the little DIRT SCENE: sky, a soil band with a grass lip, and the broccoli rising out from BEHIND the
+	-- soil (soil ZIndex > broccoli ZIndex) as the uproot bar fills. Clipped so it truly emerges from the ground.
+	-- KEEP THE 116 HEIGHT / 48 SOIL BAND: the pull animation's pixel offsets are tuned against them.
+	local scene = Instance.new("Frame"); scene.Size = UDim2.new(1,-28,0,116); scene.Position = UDim2.new(0,14,0,MG_BODY_TOP)
+	scene.BackgroundColor3 = Color3.fromRGB(126,190,240); scene.ClipsDescendants = true; scene.BorderSizePixel = 0; scene.Parent = panel
+	mgCorner(scene, 12); mgStroke(scene, MG.navy, 2, 0.45)
+	mgGrad(scene, Color3.fromRGB(158,212,248), Color3.fromRGB(112,178,236))
+	-- Y OFFSETS (from the scene bottom; negative = up). It starts DOWN IN THE SOIL with only the crown
+	-- showing and finishes with the whole broccoli sitting just clear of the dirt line -- it is being
+	-- uprooted, not launched, so it never travels up into the sky.
+	local brocc = Instance.new("TextLabel"); brocc.Size = UDim2.new(0,74,0,74); brocc.AnchorPoint = Vector2.new(0.5,1)
+	brocc.Position = UDim2.new(0.5,0,1,4); brocc.BackgroundTransparency = 1; brocc.Font = Enum.Font.GothamBold
+	brocc.TextSize = 58; brocc.Text = "\xF0\x9F\xA5\xA6"; brocc.ZIndex = 2; brocc.Parent = scene
+	local soil = Instance.new("Frame"); soil.Size = UDim2.new(1,0,0,48); soil.Position = UDim2.new(0,0,1,-48)
+	soil.BackgroundColor3 = Color3.fromRGB(96,64,40); soil.BorderSizePixel = 0; soil.ZIndex = 3; soil.Parent = scene
+	local grass = Instance.new("Frame"); grass.Size = UDim2.new(1,0,0,7); grass.Position = UDim2.new(0,0,0,0)
+	grass.BackgroundColor3 = Color3.fromRGB(96,182,86); grass.BorderSizePixel = 0; grass.ZIndex = 4; grass.Parent = soil
+	for k = 1, 6 do -- a few dirt specks so the soil band isn't a flat rectangle
+		local d = Instance.new("Frame"); d.Size = UDim2.new(0,6,0,6); d.Position = UDim2.new((k-0.5)/6, math.random(-14,14), 0, 12 + math.random(0,22))
+		d.BackgroundColor3 = Color3.fromRGB(74,48,28); d.BorderSizePixel = 0; d.ZIndex = 4; d.Parent = soil
+		Instance.new("UICorner", d).CornerRadius = UDim.new(1,0)
+	end
+
+	-- 3 ROOT pips: they light up gold as each third of the stalk tears free (pacing beats, and each one
+	-- gives a free strain reset -- a breather).
+	local rootCap = Instance.new("TextLabel"); rootCap.Size = UDim2.new(1,-28,0,14); rootCap.Position = UDim2.new(0,14,0,MG_BODY_TOP+122)
+	rootCap.BackgroundTransparency = 1; rootCap.Font = Enum.Font.GothamBold; rootCap.TextSize = 11; rootCap.TextColor3 = MG.ice
+	rootCap.TextXAlignment = Enum.TextXAlignment.Left; rootCap.Text = "ROOTS"; rootCap.Parent = panel
+	local roots = {}
+	for k = 1, 3 do
+		local r = Instance.new("Frame"); r.Size = UDim2.new(0,100,0,12); r.Position = UDim2.new(0.5,(k-2)*106,0,MG_BODY_TOP+138)
+		r.AnchorPoint = Vector2.new(0.5,0); r.BackgroundColor3 = MG.navy; r.BorderSizePixel = 0; r.Parent = panel
+		mgCorner(r, 6); mgStroke(r, MG.trough, 2, 0.35); mgGloss(r)
+		roots[k] = r
+	end
+
+	local upBar  = mgMeter(panel, 16, MG_BODY_TOP + 158, 328, "UPROOTED", MG.lime)
+	local strBar = mgMeter(panel, 16, MG_BODY_TOP + 196, 328, "STALK STRAIN", MG.lime)
+
+	local pullBtn = Instance.new("TextButton"); pullBtn.Size = UDim2.new(0,258,0,58); pullBtn.Position = UDim2.new(0.5,0,1,-18)
+	pullBtn.AnchorPoint = Vector2.new(0.5,1); pullBtn.BackgroundColor3 = Color3.fromRGB(60,180,80); pullBtn.Text = "HOLD TO PULL"
+	pullBtn.Font = Enum.Font.FredokaOne; pullBtn.TextSize = 24; pullBtn.TextColor3 = MG.white; pullBtn.AutoButtonColor = false; pullBtn.Parent = panel
+	mgCorner(pullBtn, 14); mgStroke(pullBtn, MG.white, 3); mgGloss(pullBtn)
+
+	pullUI = { gui = ui.gui, panel = ui.holder, scene = scene, brocc = brocc, soil = soil, roots = roots,
+	           up = upBar, strain = strBar, btn = pullBtn, close = ui.close, hint = hintL, title = titl }
+	return pullUI
+end
+
+-- hooks (optional) let the 3D broccoli in the world react: hooks.update(progress, pulling, strain),
+-- hooks.snap() on a slip, hooks.pop() on success. onPulled runs only on a full uproot.
+local function openPullMinigame(onPulled, diff, hooks)
+	if pullBusy then return end
+	pullBusy = true
+	local ui = ensurePullUI()
+	hooks = hooks or {}
+	diff = diff or { pull = 0.118, strain = 0.44, cool = 0.58 }
+	local UIS = game:GetService("UserInputService")
+	local TS  = game:GetService("TweenService")
+
+	local progress, strain = 0, 0
+	local holding, done, lockout = false, false, 0
+	local rootsSnapped = 0
+	ui.hint.Text = "HOLD to pull \xE2\x80\x94 let go before the stalk slips!"
+	ui.title.Text = "PULL IT UP!"
+	ui.up.Size = UDim2.new(0,0,1,0); ui.strain.Size = UDim2.new(0,0,1,0)
+	ui.brocc.Position = UDim2.new(0.5,0,1,4); ui.brocc.Rotation = 0 -- back down in the soil
+	for _, r in ipairs(ui.roots) do r.BackgroundColor3 = Color3.fromRGB(15,40,90) end
+	ui.btn.BackgroundColor3 = Color3.fromRGB(60,180,80); ui.btn.Text = "HOLD TO PULL"
+	ui.gui.Enabled = true
+
+	local conns = {}
+	local function finish(success)
+		if done then return end
+		done = true; holding = false
+		for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+		ui.gui.Enabled = false; pullBusy = false
+		if success then onPulled() else pcall(function() if hooks.reset then hooks.reset() end end) end -- bailed out: drop the world broccoli back in its hole
+	end
+	local function setHold(on)
+		if done or (on and lockout > 0) then return end
+		holding = on
+	end
+	conns[#conns+1] = ui.btn.MouseButton1Down:Connect(function() setHold(true) end)
+	conns[#conns+1] = ui.btn.MouseButton1Up:Connect(function() setHold(false) end)
+	conns[#conns+1] = ui.btn.MouseLeave:Connect(function() setHold(false) end)
+	-- global release safety: a touch/click that ends OFF the button must still let go of the stalk
+	conns[#conns+1] = UIS.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then setHold(false)
+		elseif input.KeyCode == Enum.KeyCode.Space or input.KeyCode == Enum.KeyCode.E then setHold(false) end
+	end)
+	conns[#conns+1] = UIS.InputBegan:Connect(function(input, gpe) -- keyboard: hold SPACE (or E) instead of the button
+		if done or gpe then return end -- gpe = typing in chat; don't pull
+		if input.KeyCode == Enum.KeyCode.Space or input.KeyCode == Enum.KeyCode.E then setHold(true) end
+	end)
+	conns[#conns+1] = ui.close.MouseButton1Click:Connect(function() finish(false) end) -- X only (a backdrop tap never closes it)
+
+	task.spawn(function()
+		local last = os.clock()
+		while not done do
+			local now = os.clock(); local dt = math.min(now - last, 0.1); last = now
+			if lockout > 0 then lockout = math.max(0, lockout - dt); if lockout == 0 then ui.hint.Text = "Get a fresh grip \xE2\x80\x94 HOLD to pull!" end end
+			if holding and lockout == 0 then
+				-- pulling HARDER (higher strain) uproots faster: riding just under the redline is the fast line
+				progress = math.min(1, progress + diff.pull * (0.6 + 0.8 * strain) * dt)
+				strain = strain + diff.strain * dt
+				if strain >= 1 then -- SLIP: the stalk tears out of your hands, you lose a little ground
+					strain = 0; holding = false; lockout = PULL_LOCKOUT
+					progress = math.max(0, progress - PULL_SNAP_COST)
+					ui.hint.Text = "The stalk SLIPPED! Ease off next time."
+					ui.btn.BackgroundColor3 = Color3.fromRGB(190,60,55); ui.btn.Text = "SLIPPED!"
+					pcall(function() TS:Create(ui.panel, TweenInfo.new(0.06, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 3, true), { Position = UDim2.new(0.5,8,0.5,0) }):Play() end)
+					pcall(function() if hooks.snap then hooks.snap() end end)
+				end
+			else
+				strain = math.max(0, strain - diff.cool * dt)
+			end
+			-- ROOT beats at 1/3 and 2/3: a root tears free, the strain resets (breather) + a dirt burst
+			local want = math.floor(progress * 3 + 0.0001)
+			while rootsSnapped < math.min(want, 3) and progress < 1 do
+				rootsSnapped = rootsSnapped + 1
+				ui.roots[rootsSnapped].BackgroundColor3 = Color3.fromRGB(255,205,60)
+				strain = 0
+				ui.hint.Text = "Root "..rootsSnapped.."/3 tore free!"
+				pcall(function() if hooks.snap then hooks.snap() end end)
+			end
+			-- paint
+			ui.up.Size = UDim2.new(progress, 0, 1, 0)
+			ui.strain.Size = UDim2.new(strain, 0, 1, 0)
+			ui.strain.BackgroundColor3 = (strain < 0.55) and Color3.fromRGB(90,200,110)
+				or ((strain < 0.82) and Color3.fromRGB(235,180,55) or Color3.fromRGB(235,80,70))
+			if lockout == 0 then
+				ui.btn.BackgroundColor3 = holding and Color3.fromRGB(40,150,64) or Color3.fromRGB(60,180,80)
+				if ui.btn.Text ~= "HOLD TO PULL" then ui.btn.Text = "HOLD TO PULL" end
+			end
+			-- 44px of total travel: buried (+4) -> whole broccoli resting on the dirt line (-40). No further.
+			ui.brocc.Position = UDim2.new(0.5, 0, 1, 4 - math.floor(progress * 44))
+			ui.brocc.Rotation = holding and (math.random(-5,5) + strain * 4) or 0
+			pcall(function() if hooks.update then hooks.update(progress, holding, strain) end end)
+			if progress >= 1 then
+				for _, r in ipairs(ui.roots) do r.BackgroundColor3 = Color3.fromRGB(255,205,60) end
+				ui.title.Text = "GOT IT!"; ui.hint.Text = "Broccoli uprooted!"
+				ui.btn.Text = "POP!"; ui.btn.BackgroundColor3 = Color3.fromRGB(255,205,60)
+				-- a 4px settle as the last root lets go -- NOT a launch into the air
+				pcall(function() TS:Create(ui.brocc, TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Position = UDim2.new(0.5,0,1,-44) }):Play() end)
+				pcall(function() if hooks.pop then hooks.pop() end end)
+				task.wait(0.45)
+				finish(true)
+				break
+			end
+			task.wait()
+		end
+	end)
+end
+
+-- Lock a built model into ONE rigid piece: every BasePart anchored AND WeldConstraint'd to the model's
+-- root part. Anchored alone already holds them in place, but the weld means that if anything ever
+-- unanchors a part (an event, a stray physics touch) the model still travels as a single object instead
+-- of collapsing into loose bits on the floor. PivotTo the model afterwards moves the whole unit.
+local function lockModel(model, root)
+	root = root or model.PrimaryPart
+	if not root then return end
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.Anchored = true
+			if d ~= root then
+				local w = Instance.new("WeldConstraint")
+				w.Part0 = root; w.Part1 = d; w.Parent = root
+			end
+		end
+	end
+end
+
+-- The DIRT PATCH each broccoli piece is planted in: a squat mound, a ring of clods and a couple of leaf
+-- tufts poking out of the soil, so a piece reads as "growing here", not "floating here". Kept SMALLER
+-- than the broccoli that sits in it -- an oversized mound made the florets read as junk on the ground.
+-- Returns the model + its mound part (used as the dirt-FX anchor).
+local function buildDirtPatch(pos)
+	local patch = Instance.new("Model"); patch.Name = "DirtPatch"
+	local mound = newPart(patch, "Mound", Enum.PartType.Ball, Vector3.new(3.4, 1.2, 3.4), Color3.fromRGB(94, 63, 38), CFrame.new(pos + Vector3.new(0, -0.3, 0)), Enum.Material.Ground)
+	patch.PrimaryPart = mound
+	for k = 1, 7 do -- clods scattered around the rim
+		local a = (k-1) * (2*math.pi/7) + math.random() * 0.5
+		local r = 1.2 + math.random() * 0.45
+		newPart(patch, "Clod", Enum.PartType.Ball, Vector3.new(0.6, 0.42, 0.6), Color3.fromRGB(76, 50, 30),
+			CFrame.new(pos + Vector3.new(math.cos(a) * r, -0.12, math.sin(a) * r)), Enum.Material.Ground)
+	end
+	for k = 1, 4 do -- flat leaf tufts fanning out of the soil (the "there's something planted here" cue)
+		local a = (k-1) * (2*math.pi/4) + 0.6
+		local leaf = newPart(patch, "Leaf", Enum.PartType.Block, Vector3.new(1.3, 0.14, 0.55), Color3.fromRGB(104, 168, 72),
+			nil, Enum.Material.Grass)
+		leaf.CFrame = CFrame.new(pos + Vector3.new(0, 0.18, 0)) * CFrame.Angles(0, a, 0) * CFrame.new(0.8, 0, 0) * CFrame.Angles(0, 0, math.rad(16))
+	end
+	lockModel(patch, mound)
+	return patch, mound
 end
 
 -- Build the pieces + egg for a pet from SERVER-PROVIDED positions (the client never searches Workspace).
@@ -2414,26 +3094,98 @@ local function buildPetWorld(petId, def, positions)
 	if def.questType == "dig" then return buildBurritoWorld(petId, def, positions) end -- burrito armadillo dig quest has its own world
 	st.built = true
 	local pieces = positions.pieces or {}
-	-- 3 collectible pieces (built at the received coordinates)
+	-- 3 collectible pieces (built at the received coordinates), each PLANTED in a dirt patch: the prompt
+	-- opens the PULL minigame (~15s) instead of handing the piece over on a single E-tap.
 	for i = 1, #def.pieceMarkers do
 		local pos = pieces[i]
 		if typeof(pos) == "Vector3" then
-			local piece = buildBroccoliBlob(0.7, false)
-			piece:PivotTo(CFrame.new(pos))
-			addPrompt(piece.PrimaryPart, "Collect", (def.pieceLabel or "Pet").." Piece", function() -- no name-number: which piece doesn't matter
-				if st.collected[i] or st.owns then return end
-				st.collected[i] = true -- track WHICH pieces (index = dedup key); the same piece can't count twice
-				-- DISPLAYED number = how many DISTINCT pieces collected so far (running total), NOT the piece index i
-				local count = 0; for _, v in pairs(st.collected) do if v then count = count + 1 end end
-				setVisible(piece, false)
-				floatText(pos, (def.pieceLabel or "Pet").." piece "..count.."/"..#def.pieceMarkers.."!")
-				pcall(function() PetCollectEvent:FireServer(petId, i) end) -- send the index so the server dedups by piece
+			-- container: dirt patch (static) + the broccoli blob (rises out of the soil as you pull).
+			-- ONE model so setVisible()/applyState keeps toggling exactly one thing per piece.
+			local piece = Instance.new("Model"); piece.Name = "BroccoliPatch"..i
+			local patch, mound = buildDirtPatch(pos)
+			patch.Parent = piece
+			-- ONE whole broccoli standing in the mound (stalk buried, crown clearly above the dirt). It is
+			-- welded into a single rigid unit so it reads as a plant, never as loose florets on the floor.
+			local blob = buildBroccoliBlob(0.85, false); blob.Name = "Blob"; blob.Parent = piece
+			local baseCF = CFrame.new(pos + Vector3.new(0, 0.35, 0)) -- stalk base sits in the mound, crown proud of it
+			blob:PivotTo(baseCF)
+			lockModel(blob, blob.PrimaryPart)
+			piece.PrimaryPart = mound
+
+			-- dirt FX anchor (built lazily on the first burst, cleaned up with the piece)
+			local dirtEm
+			local function dirtBurst(n)
+				if not dirtEm then
+					local a = Instance.new("Attachment"); a.Name = "DirtFX"; a.Position = Vector3.new(0, 0.8, 0); a.Parent = mound
+					local em = Instance.new("ParticleEmitter"); em.Texture = "rbxasset://textures/particles/smoke_main.dds"
+					em.Color = ColorSequence.new(Color3.fromRGB(150,110,70), Color3.fromRGB(110,78,46)); em.Lifetime = NumberRange.new(0.4,0.85)
+					em.Speed = NumberRange.new(8,15); em.SpreadAngle = Vector2.new(45,45); em.EmissionDirection = Enum.NormalId.Top
+					em.Acceleration = Vector3.new(0,-44,0); em.Size = NumberSequence.new(0.8); em.Rate = 0; em.Rotation = NumberRange.new(0,360); em.Parent = a
+					dirtEm = em
+				end
+				pcall(function() dirtEm:Emit(n or 14) end)
+			end
+
+			-- LATE GROUND-SNAP: a marker part that sits a little UNDER the island surface (or a little above it)
+			-- is exactly how a piece ends up buried in the mesh and looks like it never spawned. The island is
+			-- usually not streamed in when we build, so we can't raycast yet -- wait until the player is actually
+			-- near the piece, then drop a short ray and sit the whole patch flush on the ground. Runs once.
+			task.spawn(function()
+				while true do
+					task.wait(1)
+					if st.collected[i] or st.owns then return end
+					local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+					if hrp and (hrp.Position - pos).Magnitude < 250 then
+						local rp = RaycastParams.new()
+						rp.FilterType = Enum.RaycastFilterType.Exclude
+						rp.FilterDescendantsInstances = { piece, player.Character }
+						local hit = Workspace:Raycast(pos + Vector3.new(0, 12, 0), Vector3.new(0, -36, 0), rp)
+						if hit then
+							local dy = hit.Position.Y - pos.Y
+							if math.abs(dy) > 0.35 and not pullBusy then
+								piece:PivotTo(piece:GetPivot() + Vector3.new(0, dy, 0))
+								baseCF = baseCF + Vector3.new(0, dy, 0) -- keep the pull animation's rest pose in sync
+								print(string.format("[Pet][DIAG] piece %d ground-snapped %.1f studs onto the island surface", i, dy))
+							end
+							return
+						end
+					end
+				end
 			end)
+
+			addPrompt(blob.PrimaryPart, "Pull Up", (def.pieceLabel or "Pet"), function() -- no name-number: which piece doesn't matter
+				if st.collected[i] or st.owns then return end
+				if not _G.petQuestGate(def, pos) then return end -- the Grower has to hand you this first
+				openPullMinigame(function()
+					if st.collected[i] or st.owns then return end
+					st.collected[i] = true -- track WHICH pieces (index = dedup key); the same piece can't count twice
+					-- DISPLAYED number = how many DISTINCT pieces collected so far (running total), NOT the piece index i
+					local count = 0; for _, v in pairs(st.collected) do if v then count = count + 1 end end
+					setVisible(piece, false) -- (the dirt burst already fired from the `pop` hook, while it was still visible)
+					floatText(pos, (def.pieceLabel or "Pet").." piece "..count.."/"..#def.pieceMarkers.."!")
+					pcall(function() PetCollectEvent:FireServer(petId, i) end) -- send the index so the server dedups by piece
+				end, PULL_DIFFICULTY[i] or PULL_DIFFICULTY[3], {
+					-- the REAL broccoli reacts behind the (semi-transparent) minigame panel: it lifts out of
+					-- the soil with the uproot bar and shakes while you're pulling.
+					update = function(progress, pulling)
+						local lift = progress * 0.85 -- just enough to clear the stalk from the mound, never airborne
+						local shake = pulling and CFrame.new((math.random()-0.5)*0.16, 0, (math.random()-0.5)*0.16) * CFrame.Angles(0, 0, math.rad((math.random()-0.5)*7)) or CFrame.new()
+						blob:PivotTo(baseCF * CFrame.new(0, lift, 0) * shake)
+					end,
+					snap  = function() dirtBurst(12) end,
+					reset = function() blob:PivotTo(baseCF) end, -- closed the panel early: it settles back into the dirt
+					pop   = function()
+						dirtBurst(20)
+						blob:PivotTo(baseCF * CFrame.new(0, 1.05, 0)) -- pops free and sits on the dirt, not in the sky
+					end,
+				})
+			end).HoldDuration = 0.4 -- HOLD E to start the pull minigame (matches the other quests' openers)
+
 			st.pieces[i] = piece
 			setVisible(piece, false) -- hidden until PetStateEvent confirms !owns (avoids a flash for owners)
-			print(string.format("[Pet][DIAG] built piece %d at (%.0f,%.0f,%.0f) with Collect prompt", i, pos.X, pos.Y, pos.Z))
+			print(string.format("[Pet][DIAG] built planted piece %d at (%.0f,%.0f,%.0f) with Pull Up prompt", i, pos.X, pos.Y, pos.Z))
 		else
-			warn("[Pet][DIAG] piece "..i.." position MISSING from server for "..petId)
+			warn("[Pet][DIAG] piece "..i.." position MISSING from server for "..petId.." -- that piece will NOT exist in the world (check the server's '[Pet] piece marker ... MISSING' warning)")
 		end
 	end
 	-- EGG (ovoid) sitting in a twiggy NEST, built at the received coordinate; shown only when found==total.
@@ -3271,9 +4023,15 @@ hint.Name="Hint"; hint.AnchorPoint=Vector2.new(0.5,0); hint.Position=UDim2.new(0
 hint.BackgroundTransparency=1; hint.Font=Enum.Font.FredokaOne; hint.TextSize=22; hint.TextColor3=Color3.fromRGB(225,232,255); hint.TextTransparency=1; hint.Text=""; hint.Parent=questGui
 local hintStroke = uiStroke(hint, 2); hintStroke.Transparency=1
 
--- (2a) DISCOVERY POPUP: center reveal that animates toward the corner tracker
+-- (2a) DISCOVERY POPUP: TOP-CENTRE reveal that animates up into the corner tracker.
+-- It used to open at y=0.4 -- the middle of the screen, over the player's own character and nowhere near
+-- the tracker it then flies into. It now opens in the SAME top-centre lane it is heading for, just under
+-- the tracker's slot (tracker is y 12..64, so 76 clears it), which also makes the fly-to-tracker tween a
+-- short hop instead of a trip across the screen.
+-- Anchor is (0.5, 0) to match the tracker's: that tween sets Position = tracker.Position, and with two
+-- different anchor points the popup was landing offset from the box it was supposedly merging into.
 local popup = Instance.new("Frame")
-popup.Name="Popup"; popup.AnchorPoint=Vector2.new(0.5,0.5); popup.Position=UDim2.new(0.5,0,0.4,0); popup.Size=UDim2.new(0,300,0,110)
+popup.Name="Popup"; popup.AnchorPoint=Vector2.new(0.5,0); popup.Position=UDim2.new(0.5,0,0,76); popup.Size=UDim2.new(0,300,0,110)
 popup.BackgroundColor3=Color3.fromRGB(38,72,38); popup.BackgroundTransparency=0.05; popup.Visible=false; popup.Parent=questGui
 uiCorner(popup, 16); uiStroke(popup, 3, Color3.fromRGB(120,220,120))
 local popTitle = Instance.new("TextLabel"); popTitle.BackgroundTransparency=1; popTitle.Font=Enum.Font.FredokaOne; popTitle.TextSize=26; popTitle.TextColor3=Color3.fromRGB(180,255,180); popTitle.Size=UDim2.new(1,-12,0,40); popTitle.Position=UDim2.new(0,6,0,8); popTitle.Text="Pet Search Active!"; popTitle.Parent=popup; uiStroke(popTitle,2)
@@ -3286,7 +4044,16 @@ local tracker = Instance.new("Frame")
 -- Broccoli") belong in the player's eyeline. It shares that space with NotifyCenter's hero banner
 -- (y 10..75), which it cannot fit beside, so instead of colliding it YIELDS: see the visibility gate
 -- just below -- the tracker slides away while a banner is on screen and slides back when it clears.
-tracker.Name="Tracker"; tracker.AnchorPoint=Vector2.new(0.5,0); tracker.Position=UDim2.new(0.5,0,0,12); tracker.Size=UDim2.new(0,240,0,52)
+-- LANE Y = -20. The top-centre line every quest pill hangs from, tuned live on the mobile emulator.
+-- 12 sat too low there for one specific reason: the HUD's UIScale shrinks an element's SIZE but never its
+-- own Position, so on a phone the pill renders 240x52 -> 134x31 while its 12px gap from the top edge does
+-- not shrink with it. The gap has to come down to match, and -20 is where it looked right.
+--
+-- It lives on an ATTRIBUTE, not a top-level local: this file's main chunk is at 198 of Luau's 200 local
+-- registers, and BOTH the visibility gate below and showDiscoveryPopup need to read it. Change it here and
+-- the other two follow.
+tracker.Name="Tracker"; tracker.AnchorPoint=Vector2.new(0.5,0); tracker.Position=UDim2.new(0.5,0,0,-20); tracker.Size=UDim2.new(0,240,0,52)
+tracker:SetAttribute("LaneY", -20)
 tracker.BackgroundColor3=Color3.fromRGB(28,52,28); tracker.BackgroundTransparency=0.12; tracker.Visible=false; tracker.Parent=questGui
 uiCorner(tracker, 10); uiStroke(tracker, 2, Color3.fromRGB(120,220,120))
 
@@ -3303,10 +4070,19 @@ uiCorner(tracker, 10); uiStroke(tracker, 2, Color3.fromRGB(120,220,120))
 -- keep the values as upvalues. Do NOT lift any of this to a top-level `local`.
 do
 	local wanted, onScreen = false, false
-	local SHOWN, HIDDEN = UDim2.new(0.5, 0, 0, 12), UDim2.new(0.5, 0, 0, -70)
+	-- Both read the LaneY attribute set above; HIDDEN keeps the original 82px of travel, so the slide-out
+	-- still clears the top edge completely rather than leaving a sliver of pill parked up there.
+	local SHOWN, HIDDEN = UDim2.new(0.5, 0, 0, (tracker:GetAttribute("LaneY") or -20)),
+		UDim2.new(0.5, 0, 0, (tracker:GetAttribute("LaneY") or -20) - 82)
 	local function apply()
 		local NC = _G.NotifyCenter
-		local blocked = (NC ~= nil) and NC.isBusy() or false
+		-- TWO THINGS OUTRANK THE TRACKER, and for the same reason: both are transient and both now open in
+		-- this exact lane, while the tracker is persistent and will still be here once they clear.
+		--   NotifyCenter.isBusy()  -- the hero banner (island unlock / purchase / server event / reward)
+		--   _G.eventPillActive     -- an event pill: the storm countdown, or a milestone pill
+		-- EventClient publishes that second flag by tag as its pills come and go (see eventPillHold there),
+		-- so the tracker slides away for them and slides back the moment the last one retires.
+		local blocked = ((NC ~= nil) and NC.isBusy() or false) or (_G.eventPillActive == true)
 		local target = wanted and not blocked
 		if target == onScreen then return end -- already in the right state; don't restart the tween
 		onScreen = target
@@ -3378,9 +4154,11 @@ refreshQuestHUD = function()
 	-- 1) a STARTED-but-unfinished quest wins (progress); a finished-but-unhatched one shows "Complete!"
 	--    ISLAND-BOUND: `and onIsland[petId]` so the on-screen tracker only shows while the player is ON that
 	--    quest's island (hides elsewhere, reappears on return). The pet GUI quest TAB is unaffected.
+	--    ACCEPT-BOUND: `and _G.petQuestGate(def)` -- landing on an island no longer tells you what the quest is.
+	--    You have to find the quest giver and hear it from them.
 	for petId, def in pairs(PETS) do
 		local st = petState[petId]
-		if st and not st.owns and onIsland[petId] then
+		if st and not st.owns and onIsland[petId] and _G.petQuestGate(def) then
 			local _, _, started, complete = questProgress(petId, def, st)
 			if complete then showId, mode = petId, "complete"; break
 			elseif started then showId, mode = petId, "progress"; break end
@@ -3390,7 +4168,7 @@ refreshQuestHUD = function()
 	if not showId then
 		for petId, def in pairs(PETS) do
 			local st = petState[petId]
-			if st and not st.owns and onIsland[petId] then showId, mode = petId, "available"; break end
+			if st and not st.owns and onIsland[petId] and _G.petQuestGate(def) then showId, mode = petId, "available"; break end
 		end
 	end
 	if not showId then _G.__petTrackerSet(false); activeUiPet = nil; return end
@@ -3422,18 +4200,60 @@ refreshQuestHUD = function()
 	_G.__petTrackerSet(true) -- "quest is live" -> the gate decides whether a banner is currently in the way
 end
 
+-- IT NEVER SHARES THE LANE WITH AN ANNOUNCEMENT.
+-- The top-centre strip belongs to NotifyCenter's hero banner (island unlock / purchase / server event /
+-- reward) whenever one is up. The tracker already yields to it; this reveal now does the same, in both
+-- directions: if a banner is up when a piece is found the reveal WAITS for the lane to clear rather than
+-- opening underneath it, and if a banner starts while the reveal is on screen the reveal gets out of the
+-- way immediately. Quest state is untouched either way -- this only decides whether the box is drawn.
+--
+-- Every local here is inside the function ON PURPOSE. This file's main chunk sits at 198 of Luau's 200
+-- local registers; two more top-level `local`s and the whole script silently fails to compile, taking
+-- every pet, quest and tracker with it.
 local function showDiscoveryPopup(def, found, total)
-	popSub.Text = found.."/"..total.." "..(def.pieceLabel or "Pieces").." Found"
-	popTitle.TextTransparency=0; popSub.TextTransparency=0; popup.BackgroundTransparency=0.05
-	popup.Position = UDim2.new(0.5,0,0.4,0); popup.Size = UDim2.new(0,240,0,88); popup.Visible = true
-	TweenService:Create(popup, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size=UDim2.new(0,300,0,110)}):Play()
-	print("[Pet][UI] discovery popup shown ("..found.."/"..total..")")
-	task.delay(2.0, function()
-		local ti = TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		TweenService:Create(popup, ti, {Position=tracker.Position, Size=UDim2.new(0,180,0,40), BackgroundTransparency=1}):Play()
-		TweenService:Create(popTitle, ti, {TextTransparency=1}):Play()
-		TweenService:Create(popSub, ti, {TextTransparency=1}):Play()
-		task.delay(0.6, function() popup.Visible=false end)
+	-- WHERE IT SITS IS MEASURED, NOT HARD-CODED.
+	-- The HUD's UIScale shrinks an element's SIZE but never its own Position, so a fixed "76px from the
+	-- top" is not a fixed place: on a 1044px desktop screen it is 7% down, on a 372px phone screen it is
+	-- 20% down -- far enough that the reveal reads as mid-screen again, which is the whole bug. Measured
+	-- on the emulator: tracker 240x52 renders as 134x31, so the gap under it shrinks by 21px while the 76
+	-- does not move.
+	-- So the popup is placed against the tracker's LIVE bottom edge instead: the shared LaneY + however
+	-- tall the tracker actually renders + 8 of air. Desktop -20+52+8 = 40, this phone -20+31+8 = 19 --
+	-- the same gap under the tracker on both, in the top-centre lane on both.
+	local th = tracker.AbsoluteSize.Y
+	if th < 1 then th = 52 end   -- not laid out yet (gui disabled): fall back to the authored height
+	local SHOWN_AT = UDim2.new(0.5, 0, 0, (tracker:GetAttribute("LaneY") or -20) + math.ceil(th) + 8)
+	local function bannerUp()
+		local NC = _G.NotifyCenter
+		return (NC ~= nil) and NC.isBusy() or false
+	end
+	task.spawn(function()
+		-- wait out a banner, but not forever -- 6s, then show anyway rather than swallow the reveal
+		local waited = 0
+		while bannerUp() and waited < 6 do task.wait(0.15); waited = waited + 0.15 end
+
+		popSub.Text = found.."/"..total.." "..(def.pieceLabel or "Pieces").." Found"
+		popTitle.TextTransparency=0; popSub.TextTransparency=0; popup.BackgroundTransparency=0.05
+		popup.Position = SHOWN_AT; popup.Size = UDim2.new(0,240,0,88); popup.Visible = true
+		TweenService:Create(popup, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size=UDim2.new(0,300,0,110)}):Play()
+		print("[Pet][UI] discovery popup shown ("..found.."/"..total..") top-centre")
+
+		local retired = false
+		task.spawn(function()   -- a banner starting mid-reveal takes the lane back at once
+			while not retired do
+				if bannerUp() then popup.Visible = false; retired = true; break end
+				task.wait(0.1)
+			end
+		end)
+		task.delay(2.0, function()
+			if retired then return end
+			retired = true
+			local ti = TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			TweenService:Create(popup, ti, {Position=tracker.Position, Size=UDim2.new(0,180,0,40), BackgroundTransparency=1}):Play()
+			TweenService:Create(popTitle, ti, {TextTransparency=1}):Play()
+			TweenService:Create(popSub, ti, {TextTransparency=1}):Play()
+			task.delay(0.6, function() popup.Visible=false end)
+		end)
 	end)
 end
 
@@ -3619,7 +4439,39 @@ local function applyState(state)
 	end
 	refreshQuestHUD() -- re-pick + render the on-screen quest indicator from the latest state
 end
-if PetStateEvent then PetStateEvent.OnClientEvent:Connect(applyState) end -- guarded: a missing remote can't crash the script
+-- Everything below lives in a do-block for the same reason as the gate above: this chunk is at the
+-- 200-register ceiling, and locals inside a block are released at its end.
+do
+	-- Remember the last state the server sent, so accepting a quest can re-apply it with no round trip.
+	local lastPetState = {}
+	if PetStateEvent then -- guarded: a missing remote can't crash the script
+		PetStateEvent.OnClientEvent:Connect(function(state)
+			lastPetState = state or lastPetState
+			applyState(lastPetState)
+		end)
+	end
+
+-- ===== ACCEPTING A QUEST OPENS IT, IMMEDIATELY =====
+-- The NPC sets Island<N>QuestAccepted on the SERVER (page 2 of its dialogue) and it replicates here. Watching
+-- the attribute rather than a RemoteEvent means the quest scripts and the NPC know nothing about each other,
+-- and a player who accepted before a respawn still has their quest open afterwards.
+--
+-- One listener per quest island, wired from the pet catalog so adding a quest island needs no edit here.
+	local wired = {}
+	for _, def in pairs(PETS) do
+		local n = def.islandPrefix and tonumber(tostring(def.islandPrefix):match("%d+"))
+		local attr = n and ("Island%dQuestAccepted"):format(n)
+		if attr and not wired[attr] then
+			wired[attr] = true
+			player:GetAttributeChangedSignal(attr):Connect(function()
+				if player:GetAttribute(attr) ~= true then return end
+				print("[Pet][Quest] " .. attr .. " -> quest accepted")
+				applyState(lastPetState)   -- refresh anything gated on it
+				refreshQuestHUD()          -- and the tracker can finally show what the quest is
+			end)
+		end
+	end
+end
 
 -- RARE HATCH FANFARE: the server fires this when a rare hatches -> a big on-screen "RARE!" callout + an extra
 -- sparkle burst on the new pet, so the player clearly knows they got something special. Cosmetic-only.
@@ -3707,6 +4559,12 @@ local StarterPetEvent = RS:WaitForChild("StarterPetEvent", 30) -- s->c: (petId, 
 if StarterPetEvent then
 	StarterPetEvent.OnClientEvent:Connect(function(petId, displayName)
 		local name = tostring(displayName or (PETS[petId] and PETS[petId].displayName) or petId)
+		-- ANNOUNCE THE CARD BEFORE IT EXISTS. ObjectiveHUD's directions card holds off until this clears, so a
+		-- brand-new player is told "here is your pet" and only THEN "here is what to do" -- two cards fighting
+		-- for the same first ten seconds is how a new player reads neither. Set at the moment the grant lands
+		-- rather than when the card appears, because the card waits out the loading screen and the whole Garden
+		-- Intro first: with no "pending" claimed up front, the directions would win that race every time.
+		_G.starterWelcome = "pending"
 		print(string.format("[StarterPet] granted %s (%s) -- waiting for the intro to finish, then welcoming", name, tostring(petId)))
 		task.spawn(function()
 			-- (1) THEY MUST ACTUALLY BE PLAYING FIRST. The pet is granted at JOIN, while the player is still sitting
@@ -3750,6 +4608,7 @@ if StarterPetEvent then
 			-- fits it with the identical factor; it REUSES an element's existing UIScale rather than adding a second
 			-- one, so this cannot double-shrink the card if the sweep runs again later.
 			if _G.applyHudScaling then pcall(_G.applyHudScaling) end
+			_G.starterWelcome = "showing"
 			local IN = TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 			TW:Create(card,   IN, {BackgroundTransparency=0.08}):Play()
 			TW:Create(stroke, IN, {Transparency=0}):Play()
@@ -3767,6 +4626,7 @@ if StarterPetEvent then
 				TW:Create(stroke, OUT, {Transparency=1}):Play()
 				for _, l in ipairs({ title, who, sub }) do TW:Create(l, OUT, {TextTransparency=1}):Play() end
 				task.wait(0.6); sg:Destroy()
+				_G.starterWelcome = "done"   -- ObjectiveHUD's directions card is waiting on exactly this
 			end)
 			-- Says WHY it fired: "intro done" is the normal path (watched or skipped); "TIMED OUT" means the
 			-- cinematic never reported back and the safety net fired, which is worth seeing in a test log.
@@ -3780,6 +4640,48 @@ end -- (do-block: keeps StarterPetEvent off the top-level local budget)
 -- ===== STARTUP: handshake for state, then ASK THE SERVER for marker positions and build =====
 -- Fire the state handshake FIRST so an OWNED pet spawns immediately (the follower needs no markers).
 if PetRequestStateEvent then pcall(function() PetRequestStateEvent:FireServer() end) end
+
+-- ===== SELF-HEAL: "the bean buddy sometimes doesn't render" =====
+-- Neither half of the join handshake is guaranteed on its own:
+--
+--   * the PUSH can arrive too early. The server grants the starter pet the moment the save loads -- which is
+--     roughly half a second BEFORE this script connects its OnClientEvent handlers. An unheard remote is
+--     queued only briefly and then discarded, so on a slow join that push is simply gone.
+--   * the PULL can come back empty. PetRequestStateEvent above is one-shot, and the server answers with
+--     whatever it knows *at that instant* -- if the save hasn't finished loading, that is "you own nothing"
+--     (see the comment on PetRequestStateEvent.OnServerEvent in PetSystem).
+--
+-- Miss both and st.owns stays false, spawnFollowerPet is never called, and there is no pet -- with no error
+-- anywhere to explain it. This watchdog closes the loop from the only side that can actually see the result:
+-- it compares what the server says we own against what is really standing in the Workspace, and fixes the
+-- difference. That makes it agnostic about WHICH delivery failed -- it also covers a model that gets
+-- destroyed later on. Re-asking is capped so a genuinely pet-less player doesn't poll forever; the
+-- missing-model check stays live for the whole session because a model can go away at any time.
+task.spawn(function()
+	local asked, healed = 0, 0
+	while true do
+		task.wait(3)
+		local ownAny, gap = false, nil
+		for petId, st in pairs(petState) do
+			if st.owns then
+				ownAny = true
+				-- owned AND equipped, but nothing in the world -> the follower never spawned (or was lost)
+				if st.equipped and not (st.pet and st.pet.Parent) then gap = petId end
+			end
+		end
+		if gap then
+			healed = healed + 1
+			warn(("[Pet][HEAL] %s is owned+equipped but has no follower in Workspace -- rebuilding it (heal #%d)"):format(gap, healed))
+			pcall(spawnFollowerPet, gap)
+		elseif not ownAny and asked < 20 then
+			-- Every player owns at least the starter pet, so "zero owned" this long after joining means the
+			-- state never reached us. Ask again. 20 tries x 3s = a one-minute window, then we stop.
+			asked = asked + 1
+			warn(("[Pet][HEAL] server state still reports 0 owned pets -- re-requesting (try %d/20)"):format(asked))
+			if PetRequestStateEvent then pcall(function() PetRequestStateEvent:FireServer() end) end
+		end
+	end
+end)
 
 -- Per pet: ASK the server for the marker coordinates (no Workspace searching) and build from them.
 for petId, def in pairs(PETS) do
@@ -4349,32 +5251,52 @@ local function makeViewportIcon(card, petId, level, isRare, sizeU, posU, anchorV
 	--   SpinHeld = true while a finger is down, which pauses SpinAuto so the two never fight.
 	vp.Active = true
 	vp:SetAttribute("SpinDrag", 0); vp:SetAttribute("SpinAuto", 0); vp:SetAttribute("SpinHeld", false)
+	vp:SetAttribute("SpinTilt", 0)
 	do
-		local lastX
-		local function release() lastX = nil; vp:SetAttribute("SpinHeld", false) end
+		-- ===== THE DRAG IS TRACKED GLOBALLY, NOT OVER THE ICON =====
+		-- The first version listened on the ViewportFrame's OWN InputChanged and released on
+		-- MouseLeave. A grid icon is about 50px wide, so the pointer left it within the first
+		-- few pixels of any real drag -- movement stopped arriving and MouseLeave then dropped
+		-- the grab entirely. It read as "the pet barely turns, then lets go by itself".
+		-- Only the GRAB is hit-tested on the icon now; once you have hold of the pet, the
+		-- movement and the release come from UserInputService, so your finger/mouse can travel
+		-- anywhere on the screen and the pet keeps turning with it.
+		local uis = game:GetService("UserInputService")
+		local lastX, lastY, moveConn, endConn
+		local function release()
+			lastX, lastY = nil, nil
+			if moveConn then moveConn:Disconnect(); moveConn = nil end
+			if endConn then endConn:Disconnect(); endConn = nil end
+			vp:SetAttribute("SpinHeld", false)   -- the idle orbit picks up from here
+		end
 		vp.InputBegan:Connect(function(io)
-			if io.UserInputType == Enum.UserInputType.MouseButton1
-				or io.UserInputType == Enum.UserInputType.Touch then
-				lastX = io.Position.X; vp:SetAttribute("SpinHeld", true)
-			end
-		end)
-		vp.InputChanged:Connect(function(io)
-			if not lastX then return end
-			if io.UserInputType == Enum.UserInputType.MouseMovement
-				or io.UserInputType == Enum.UserInputType.Touch then
-				local dx = io.Position.X - lastX
-				lastX = io.Position.X
-				-- 0.011 rad/px: a drag across a grid icon turns the pet roughly one full revolution
+			if io.UserInputType ~= Enum.UserInputType.MouseButton1
+				and io.UserInputType ~= Enum.UserInputType.Touch then return end
+			release()                            -- never stack two grabs on one icon
+			lastX, lastY = io.Position.X, io.Position.Y
+			vp:SetAttribute("SpinHeld", true)    -- pauses the auto-spin for THIS pet only
+
+			moveConn = uis.InputChanged:Connect(function(m)
+				if not lastX then return end
+				if m.UserInputType ~= Enum.UserInputType.MouseMovement
+					and m.UserInputType ~= Enum.UserInputType.Touch then return end
+				local dx, dy = m.Position.X - lastX, m.Position.Y - lastY
+				lastX, lastY = m.Position.X, m.Position.Y
+				-- 0.011 rad/px sideways: a drag the width of the panel is roughly one full turn.
 				vp:SetAttribute("SpinDrag", (vp:GetAttribute("SpinDrag") or 0) + dx * 0.011)
-			end
+				-- Up/down raises and lowers the camera so you can look at the pet's face or its
+				-- feet. Clamped so it can never swing over the top and render the pet upside down.
+				vp:SetAttribute("SpinTilt",
+					math.clamp((vp:GetAttribute("SpinTilt") or 0) + dy * 0.02, -1.6, 2.2))
+			end)
+			endConn = uis.InputEnded:Connect(function(e)
+				if e.UserInputType == Enum.UserInputType.MouseButton1
+					or e.UserInputType == Enum.UserInputType.Touch then release() end
+			end)
 		end)
-		-- InputEnded fires on the frame you release INSIDE it; MouseLeave covers dragging off the edge, which
-		-- would otherwise leave the pet stuck holding forever.
-		vp.InputEnded:Connect(function(io)
-			if io.UserInputType == Enum.UserInputType.MouseButton1
-				or io.UserInputType == Enum.UserInputType.Touch then release() end
-		end)
-		vp.MouseLeave:Connect(release)
+		-- A card rebuild (inventory refresh, menu close) destroys the icon mid-drag; without this
+		-- its two UserInputService connections would outlive it, one pair per rebuild.
+		vp.Destroying:Connect(release)
 	end
 	iconQueue[#iconQueue + 1] = { vp = vp, cam = cam, ph = ph, petId = petId, level = level,
 		isRare = isRare, skin = skinId, trait = traitId }
@@ -4410,8 +5332,11 @@ do
 					vp:SetAttribute("SpinAuto", ((vp:GetAttribute("SpinAuto") or 0) + step) % (2 * math.pi))
 				end
 				local a = ic.a0 + (vp:GetAttribute("SpinAuto") or 0) + (vp:GetAttribute("SpinDrag") or 0)
+				-- SpinTilt is the up/down the player dragged in, scaled by this icon's own radius so the
+				-- same finger movement reads the same on a tiny grid card and on the big detail pet.
+				local h = ic.height + (vp:GetAttribute("SpinTilt") or 0) * ic.radius * 0.5
 				ic.cam.CFrame = CFrame.lookAt(
-					ic.center + Vector3.new(math.cos(a) * ic.radius, ic.height, math.sin(a) * ic.radius),
+					ic.center + Vector3.new(math.cos(a) * ic.radius, h, math.sin(a) * ic.radius),
 					ic.center)
 			end
 			-- else: scrolled out of the panel's visible band -- leave it, it'll spin again when scrolled back in
@@ -4564,24 +5489,58 @@ _G.PetHub.showDetail = function(key, p)
 	-- Everything below is function-scoped. This file sits at Luau's 200-locals-per-scope ceiling and one more
 	-- top-level local silently stops the whole script compiling -- taking every pet handler down with it.
 
-	-- ---- TOP LEFT: back + page title ----
-	local back = Instance.new("TextButton"); back.Size = UDim2.new(0,132,0,30); back.Position = UDim2.new(0,10,0,8)
-	back.BackgroundColor3 = Color3.fromRGB(120,120,120); back.Font = Enum.Font.GothamBold; back.TextSize = 14
-	back.TextColor3 = Color3.new(1,1,1); back.Text = "\xE2\x97\x80 Back to Pets"; back.ZIndex = 8; back.Parent = d
-	uicorner(back, 8); uistroke(back, Color3.new(0,0,0), 2)
+	-- ===== EVERYTHING BELOW IS SCALE, NOT OFFSET =====
+	-- This page was laid out in pixels for a PC viewport: 676 x 404 inside the 700 x 520 panel, with every
+	-- child at a hand-measured offset. On a short mobile screen the panel loses height, the offsets do not
+	-- move, and the whole page compresses into itself. Each Scale below is the ORIGINAL pixel measure
+	-- divided by that 676 x 404, so the page is pixel-identical on PC and simply re-proportions elsewhere.
+	--
+	-- The aspect ratio holds the shape: rather than squashing vertically when the panel is short, the page
+	-- keeps its 676:404 and gives back the width it cannot use.
+	do
+		local ar = Instance.new("UIAspectRatioConstraint")
+		ar.AspectRatio = 676 / 404
+		ar.AspectType = Enum.AspectType.FitWithinMaxSize
+		ar.DominantAxis = Enum.DominantAxis.Width
+		ar.Parent = d
+	end
+	-- TextScaled everywhere, each label capped so it can never grow past its authored size -- shrink-to-fit
+	-- in one direction only.
+	local function dfit(o, maxSize)
+		o.TextScaled = true
+		local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = maxSize or 20; c.Parent = o
+		return o
+	end
+
+	-- ---- HEADER ROW: back + page title, laid out, not overlapped ----
+	-- These were two absolutely-positioned elements at x=10 and x=152 with the title sized (1,-160). The
+	-- back button's own width was not part of that sum, so the moment either changed size they slid over
+	-- each other. A horizontal list gives each a share of the row and the gap is the layout's, not a guess.
+	local hdr = Instance.new("Frame"); hdr.Name = "HeaderRow"; hdr.BackgroundTransparency = 1
+	hdr.Position = UDim2.new(0.015,0,0.02,0); hdr.Size = UDim2.new(0.97,0,0.074,0); hdr.ZIndex = 8; hdr.Parent = d
+	do
+		local hl = Instance.new("UIListLayout"); hl.FillDirection = Enum.FillDirection.Horizontal
+		hl.SortOrder = Enum.SortOrder.LayoutOrder; hl.Padding = UDim.new(0.02,0)
+		hl.VerticalAlignment = Enum.VerticalAlignment.Center; hl.Parent = hdr
+	end
+	local back = Instance.new("TextButton"); back.Size = UDim2.new(0.2,0,1,0); back.LayoutOrder = 1
+	back.BackgroundColor3 = Color3.fromRGB(120,120,120); back.Font = Enum.Font.GothamBold
+	back.TextColor3 = Color3.new(1,1,1); back.Text = "\xE2\x97\x80 Back to Pets"; back.ZIndex = 8; back.Parent = hdr
+	uicorner(back, 8); uistroke(back, Color3.new(0,0,0), 2); dfit(back, 14)
 	back.MouseButton1Click:Connect(_G.PetHub.hideDetail)
 
-	local title = Instance.new("TextLabel"); title.Size = UDim2.new(1,-160,0,30); title.Position = UDim2.new(0,152,0,8)
-	title.BackgroundTransparency = 1; title.Font = Enum.Font.FredokaOne; title.TextSize = 26
+	local title = Instance.new("TextLabel"); title.Size = UDim2.new(0.76,0,1,0); title.LayoutOrder = 2
+	title.BackgroundTransparency = 1; title.Font = Enum.Font.FredokaOne
 	title.TextXAlignment = Enum.TextXAlignment.Left; title.TextTruncate = Enum.TextTruncate.AtEnd
 	title.TextColor3 = isVariant and tierColor or Color3.fromRGB(255,215,0); title.ZIndex = 8
-	title.Text = (p.rare and (p.rareName or p.displayName)) or p.displayName or petId; title.Parent = d
-	uistroke(title, Color3.new(0,0,0), 2)
+	title.Text = (p.rare and (p.rareName or p.displayName)) or p.displayName or petId; title.Parent = hdr
+	uistroke(title, Color3.new(0,0,0), 2); dfit(title, 20)
 
 	-- ---- LEFT: the pet on a display stage ----
 	-- The pedestal and the soft glow are plain Frames in the panel's own palette, so the pet reads as standing on
 	-- something rather than floating in a blue box. No new art, no new colours.
-	local stage = Instance.new("Frame"); stage.Size = UDim2.new(0,268,0,140); stage.Position = UDim2.new(0,10,0,46)
+	-- 268x140 at (10,46) -> the same rect expressed against 676x404
+	local stage = Instance.new("Frame"); stage.Size = UDim2.new(0.396,0,0.347,0); stage.Position = UDim2.new(0.015,0,0.114,0)
 	stage.BackgroundColor3 = Color3.fromRGB(12,44,104); stage.BorderSizePixel = 0; stage.ZIndex = 6; stage.Parent = d
 	uicorner(stage, 10); uistroke(stage, Color3.fromRGB(8,26,64), 2)
 	do
@@ -4599,15 +5558,35 @@ _G.PetHub.showDetail = function(key, p)
 	bigVp.ZIndex = 7
 
 	-- ---- TOP RIGHT: what this pet is wearing ----
-	local info = Instance.new("Frame"); info.Size = UDim2.new(1,-296,0,140); info.Position = UDim2.new(0,288,0,46)
+	-- (1,-296) x 140 at (288,46) -> the same rect against 676x404
+	local info = Instance.new("Frame"); info.Size = UDim2.new(0.562,0,0.347,0); info.Position = UDim2.new(0.426,0,0.114,0)
 	info.BackgroundColor3 = Color3.fromRGB(12,44,104); info.BackgroundTransparency = 0.25; info.BorderSizePixel = 0
 	info.ZIndex = 6; info.Parent = d
 	uicorner(info, 10); uistroke(info, Color3.fromRGB(8,26,64), 2)
+	-- ---- THE INFO BLOCK: ONE VERTICAL LIST ---------------------------------------------------------
+	-- Same fix as the grid cards. These six rows were hand-placed at y = 6/24/44/66/86/108 inside a frame
+	-- 140px tall -- 134px of content in 140px of room, so the moment the panel scaled down they stacked.
+	-- The list places each row after the one before it, and the Scale heights re-proportion with the frame.
+	--
+	-- SubLine / XpBar / XpFill / XpText / EquipBtn KEEP THEIR NAMES -- the live-patch path above finds them
+	-- to update the numbers in place, which is what stops the 3D pet being rebuilt (and its spin snapping
+	-- back to zero) every few seconds while XP ticks in. It already searches recursively, so it does not
+	-- care that they now sit one level deeper.
+	local ibody = Instance.new("Frame"); ibody.Name = "Body"; ibody.BackgroundTransparency = 1
+	ibody.Position = UDim2.new(0,10,0,6); ibody.Size = UDim2.new(1,-20,1,-12); ibody.ZIndex = 7; ibody.Parent = info
 	do
-		local h = Instance.new("TextLabel"); h.Size = UDim2.new(1,-20,0,14); h.Position = UDim2.new(0,10,0,6)
-		h.BackgroundTransparency = 1; h.Font = Enum.Font.GothamBold; h.TextSize = 12
+		local il = Instance.new("UIListLayout"); il.FillDirection = Enum.FillDirection.Vertical
+		il.SortOrder = Enum.SortOrder.LayoutOrder
+		il.Padding = UDim.new(0.02,0)   -- a FRACTION of the block, so the gaps shrink with the rows
+		il.Parent = ibody
+	end
+	local ifit = dfit   -- same TextScaled + max-size treatment as the header
+	do
+		local h = Instance.new("TextLabel"); h.Size = UDim2.new(1,0,0.11,0); h.LayoutOrder = 1
+		h.BackgroundTransparency = 1; h.Font = Enum.Font.GothamBold
 		h.TextColor3 = Color3.fromRGB(255,215,0); h.TextXAlignment = Enum.TextXAlignment.Left
-		h.ZIndex = 7; h.Text = "EQUIPPED"; h.Parent = info
+		h.ZIndex = 7; h.Text = "EQUIPPED"; h.Parent = ibody
+		ifit(h, 12)
 	end
 	-- Read live from the state PetSkinLook mirrors off the server, never from a local guess, so this panel and the
 	-- crate panel cannot disagree about what you are wearing.
@@ -4617,42 +5596,50 @@ _G.PetHub.showDetail = function(key, p)
 		return { name = id and tostring(id) or "Default", tier = "Common",
 			tierColor = Color3.new(1,1,1), color = Color3.fromRGB(120,130,145) }
 	end
-	local function infoRow(y, key, value, colour)
-		local k = Instance.new("TextLabel"); k.Size = UDim2.new(0,58,0,18); k.Position = UDim2.new(0,10,0,y)
-		k.BackgroundTransparency = 1; k.Font = Enum.Font.Gotham; k.TextSize = 12
+	-- A key/value pair is now a ROW in the list rather than two labels at a shared y. The two halves are
+	-- Scale-width inside that row, so the value column follows the frame instead of starting at a fixed 70px.
+	local function infoRow(order, key, value, colour)
+		local row = Instance.new("Frame"); row.BackgroundTransparency = 1
+		row.Size = UDim2.new(1,0,0.15,0); row.LayoutOrder = order; row.ZIndex = 7; row.Parent = ibody
+		local k = Instance.new("TextLabel"); k.Size = UDim2.new(0.3,0,1,0)
+		k.BackgroundTransparency = 1; k.Font = Enum.Font.Gotham
 		k.TextColor3 = Color3.fromRGB(165,195,240); k.TextXAlignment = Enum.TextXAlignment.Left
-		k.ZIndex = 7; k.Text = key; k.Parent = info
-		local v = Instance.new("TextLabel"); v.Size = UDim2.new(1,-80,0,18); v.Position = UDim2.new(0,70,0,y)
-		v.BackgroundTransparency = 1; v.Font = Enum.Font.GothamBold; v.TextSize = 13
+		k.ZIndex = 7; k.Text = key; k.Parent = row
+		ifit(k, 12)
+		local v = Instance.new("TextLabel"); v.Size = UDim2.new(0.68,0,1,0); v.Position = UDim2.new(0.32,0,0,0)
+		v.BackgroundTransparency = 1; v.Font = Enum.Font.GothamBold
 		v.TextColor3 = colour or Color3.new(1,1,1); v.TextXAlignment = Enum.TextXAlignment.Left
-		v.TextTruncate = Enum.TextTruncate.AtEnd; v.ZIndex = 7; v.Text = value; v.Parent = info
+		v.TextTruncate = Enum.TextTruncate.AtEnd; v.ZIndex = 7; v.Text = value; v.Parent = row
+		ifit(v, 13)
 	end
 	do
 		local m = metaOf(eqNow and eqNow.skin or nil)
-		infoRow(24, "Skin",  m.name, m.tierColor)
-		infoRow(44, "Trait", (eqNow and eqNow.trait) or "None",
+		infoRow(2, "Skin",  m.name, m.tierColor)
+		infoRow(3, "Trait", (eqNow and eqNow.trait) or "None",
 			(eqNow and eqNow.trait) and Color3.fromRGB(255,205,120) or Color3.fromRGB(180,200,230))
 	end
 
 	-- SubLine / XpBar / XpFill / XpText / EquipBtn keep these EXACT names: the live-patch path above finds them by
 	-- name and updates their numbers in place on every inventory push, which is what stops the 3D pet from being
 	-- rebuilt (and its spin snapping back to zero) every few seconds while XP ticks in during flight.
-	local sub = Instance.new("TextLabel"); sub.Name = "SubLine"; sub.Size = UDim2.new(1,-20,0,16); sub.Position = UDim2.new(0,10,0,66)
-	sub.BackgroundTransparency = 1; sub.Font = Enum.Font.GothamBold; sub.TextSize = 12
-	sub.TextXAlignment = Enum.TextXAlignment.Left; sub.ZIndex = 7; sub.Parent = info
+	local sub = Instance.new("TextLabel"); sub.Name = "SubLine"; sub.Size = UDim2.new(1,0,0.13,0); sub.LayoutOrder = 4
+	sub.BackgroundTransparency = 1; sub.Font = Enum.Font.GothamBold
+	sub.TextXAlignment = Enum.TextXAlignment.Left; sub.ZIndex = 7; sub.Parent = ibody
 	sub.TextColor3 = locked and Color3.fromRGB(255,205,90) or tierColor
 	sub.Text = subText()
+	ifit(sub, 12)
 
 	if not locked then
-		local barBG = Instance.new("Frame"); barBG.Name = "XpBar"; barBG.Size = UDim2.new(1,-20,0,16); barBG.Position = UDim2.new(0,10,0,86)
-		barBG.BackgroundColor3 = Color3.fromRGB(8,26,64); barBG.BorderSizePixel = 0; barBG.ZIndex = 7; barBG.Parent = info
+		local barBG = Instance.new("Frame"); barBG.Name = "XpBar"; barBG.Size = UDim2.new(1,0,0.13,0); barBG.LayoutOrder = 5
+		barBG.BackgroundColor3 = Color3.fromRGB(8,26,64); barBG.BorderSizePixel = 0; barBG.ZIndex = 7; barBG.Parent = ibody
 		uicorner(barBG, 8)
 		local frac = maxed and 1 or math.clamp((p.xp or 0) / math.max(1, p.xpNeed or 1), 0, 1)
 		local fill = Instance.new("Frame"); fill.Name = "XpFill"; fill.Size = UDim2.new(frac,0,1,0); fill.BorderSizePixel = 0; fill.ZIndex = 7
 		fill.BackgroundColor3 = maxed and Color3.fromRGB(255,200,40) or Color3.fromRGB(80,220,120); fill.Parent = barBG; uicorner(fill, 8)
 		local xt = Instance.new("TextLabel"); xt.Name = "XpText"; xt.Size = UDim2.new(1,0,1,0); xt.BackgroundTransparency = 1; xt.ZIndex = 8
-		xt.Font = Enum.Font.GothamBold; xt.TextSize = 11; xt.TextColor3 = Color3.new(1,1,1); xt.Parent = barBG
+		xt.Font = Enum.Font.GothamBold; xt.TextColor3 = Color3.new(1,1,1); xt.Parent = barBG
 		xt.Text = maxed and "MAX LEVEL" or ((p.xp or 0) .. " / " .. (p.xpNeed or 0) .. " XP to Level " .. ((p.level or 1) + 1))
+		ifit(xt, 11)
 	end
 
 	-- THE BIG BUTTON equips the PET. That is deliberately the primary action on this page: a skin only shows up in
@@ -4660,8 +5647,9 @@ _G.PetHub.showDetail = function(key, p)
 	-- pet would leave you looking at a change nobody else can see. Per-skin Equip lives on each card.
 	if not locked and key then
 		local eq = Instance.new("TextButton"); eq.Name = "EquipBtn"
-		eq.Size = UDim2.new(1,-20,0,26); eq.Position = UDim2.new(0,10,0,108); eq.Parent = info
-		eq.Font = Enum.Font.GothamBold; eq.TextSize = 15; eq.TextColor3 = Color3.new(1,1,1); eq.ZIndex = 8
+		eq.Size = UDim2.new(1,0,0.21,0); eq.LayoutOrder = 6; eq.Parent = ibody
+		eq.Font = Enum.Font.GothamBold; eq.TextColor3 = Color3.new(1,1,1); eq.ZIndex = 8
+		ifit(eq, 15)
 		eq.BackgroundColor3 = p.equipped and Color3.fromRGB(120,120,120) or Color3.fromRGB(50,200,50)
 		eq.Text = p.equipped and ("\xE2\x9C\x94 EQUIPPED") or "EQUIP PET"
 		eq:SetAttribute("Equipped", p.equipped and true or false)
@@ -4696,14 +5684,16 @@ _G.PetHub.showDetail = function(key, p)
 	table.insert(ownedList, 1, { skin = false, trait = nil, count = 1, isDefault = true })
 
 	local totalSkins = (_G.petSkinTotal and _G.petSkinTotal()) or (#ownedList)
-	local ownedLbl = Instance.new("TextLabel"); ownedLbl.Size = UDim2.new(1,-20,0,18); ownedLbl.Position = UDim2.new(0,10,0,192)
-	ownedLbl.BackgroundTransparency = 1; ownedLbl.Font = Enum.Font.GothamBold; ownedLbl.TextSize = 14
+	local ownedLbl = Instance.new("TextLabel"); ownedLbl.Size = UDim2.new(0.97,0,0.045,0); ownedLbl.Position = UDim2.new(0.015,0,0.475,0)
+	ownedLbl.BackgroundTransparency = 1; ownedLbl.Font = Enum.Font.GothamBold
 	ownedLbl.TextColor3 = Color3.fromRGB(255,215,0); ownedLbl.TextXAlignment = Enum.TextXAlignment.Left
 	ownedLbl.ZIndex = 7; ownedLbl.Parent = d
 	ownedLbl.Text = "Skins Owned:  " .. (distinct + 1) .. " / " .. totalSkins
+	dfit(ownedLbl, 14)
 
+	-- the grid takes whatever is left under the filter bar: y 0.609 -> 1.0 of the page
 	local grid = Instance.new("ScrollingFrame"); grid.Name = "SkinGrid"
-	grid.Size = UDim2.new(1,-20,1,-254); grid.Position = UDim2.new(0,10,0,246)
+	grid.Size = UDim2.new(0.97,0,0.371,0); grid.Position = UDim2.new(0.015,0,0.609,0)
 	grid.BackgroundTransparency = 1; grid.BorderSizePixel = 0; grid.ScrollBarThickness = 6
 	grid.ScrollBarImageColor3 = Color3.fromRGB(255,215,0); grid.CanvasSize = UDim2.new(0,0,0,0)
 	grid.AutomaticCanvasSize = Enum.AutomaticSize.Y; grid.ZIndex = 6; grid.Parent = d
@@ -4734,13 +5724,15 @@ _G.PetHub.showDetail = function(key, p)
 				-- showing the real thing is the whole point of a skin card. The chip stays as the BACKDROP so the card
 				-- still reads as that skin's colour at a glance and the pet has something to sit against -- the same
 				-- swatch-behind-model pairing the crate reel uses.
-				local sw = Instance.new("Frame"); sw.Size = UDim2.new(1,-16,0,54); sw.Position = UDim2.new(0,8,0,8)
+				-- Scale-sized (0.39 of a 140px cell = the same 54px), so the preview keeps its share of the
+				-- card rather than holding 54px while everything under it is squeezed.
+				local sw = Instance.new("Frame"); sw.Size = UDim2.new(1,-16,0.39,0); sw.Position = UDim2.new(0,8,0,8)
 				sw.BackgroundColor3 = m.color; sw.BorderSizePixel = 0; sw.ZIndex = 7; sw.Parent = card
 				uicorner(sw, 8); uistroke(sw, Color3.new(0,0,0), 1)
 				-- Same builder + same shared auto-rotate loop the pet grid uses, so these spin exactly like every other
 				-- pet picture in the hub. Transparent background so the skin colour behind shows through.
 				local svp = makeViewportIcon(card, petId, p.level or 1, p.rare,
-					UDim2.new(1,-16,0,54), UDim2.new(0,8,0,8), Vector2.new(0,0), it.skin or nil, it.trait)
+					UDim2.new(1,-16,0.39,0), UDim2.new(0,8,0,8), Vector2.new(0,0), it.skin or nil, it.trait)
 				svp.ZIndex = 8; svp.BackgroundTransparency = 1
 				if (it.count or 1) > 1 then
 					-- parented to the CARD at ZIndex 9, not to the swatch: the viewport now sits above the swatch, so a
@@ -4750,17 +5742,32 @@ _G.PetHub.showDetail = function(key, p)
 					cb.TextColor3 = Color3.new(1,1,1); cb.ZIndex = 9; cb.Text = "x" .. it.count; cb.Parent = card
 					uicorner(cb, 6)
 				end
-				local nmL = Instance.new("TextLabel"); nmL.Size = UDim2.new(1,-16,0,16); nmL.Position = UDim2.new(0,8,0,66)
-				nmL.BackgroundTransparency = 1; nmL.Font = Enum.Font.GothamBold; nmL.TextSize = 13
+				-- Name / rarity / Equip in a list too. These sat at y = 66/84/110 in a 140px cell -- the same
+				-- fixed-offset stack as every other card in this hub, and it collapses the same way.
+				local sbody = Instance.new("Frame"); sbody.Name = "Body"; sbody.BackgroundTransparency = 1
+				sbody.Position = UDim2.new(0,8,0.46,0); sbody.Size = UDim2.new(1,-16,0.54,-8); sbody.ZIndex = 7; sbody.Parent = card
+				do
+					local sl = Instance.new("UIListLayout"); sl.FillDirection = Enum.FillDirection.Vertical
+					sl.SortOrder = Enum.SortOrder.LayoutOrder; sl.Padding = UDim.new(0,2); sl.Parent = sbody
+				end
+				local function sfit(o, maxSize)
+					o.TextScaled = true
+					local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = maxSize; c.Parent = o
+				end
+				local nmL = Instance.new("TextLabel"); nmL.Size = UDim2.new(1,0,0.24,0); nmL.LayoutOrder = 1
+				nmL.BackgroundTransparency = 1; nmL.Font = Enum.Font.GothamBold
 				nmL.TextColor3 = Color3.new(1,1,1); nmL.TextXAlignment = Enum.TextXAlignment.Left
-				nmL.TextTruncate = Enum.TextTruncate.AtEnd; nmL.ZIndex = 7; nmL.Text = m.name; nmL.Parent = card
-				local rr = Instance.new("TextLabel"); rr.Size = UDim2.new(1,-16,0,14); rr.Position = UDim2.new(0,8,0,84)
-				rr.BackgroundTransparency = 1; rr.Font = Enum.Font.Gotham; rr.TextSize = 11
+				nmL.TextTruncate = Enum.TextTruncate.AtEnd; nmL.ZIndex = 7; nmL.Text = m.name; nmL.Parent = sbody
+				sfit(nmL, 13)
+				local rr = Instance.new("TextLabel"); rr.Size = UDim2.new(1,0,0.21,0); rr.LayoutOrder = 2
+				rr.BackgroundTransparency = 1; rr.Font = Enum.Font.Gotham
 				rr.TextColor3 = m.tierColor; rr.TextXAlignment = Enum.TextXAlignment.Left
-				rr.TextTruncate = Enum.TextTruncate.AtEnd; rr.ZIndex = 7; rr.Parent = card
+				rr.TextTruncate = Enum.TextTruncate.AtEnd; rr.ZIndex = 7; rr.Parent = sbody
 				rr.Text = m.tier .. (it.trait and ("  \xC2\xB7  " .. it.trait) or "")
-				local b = Instance.new("TextButton"); b.Size = UDim2.new(1,-16,0,22); b.Position = UDim2.new(0,8,0,110)
-				b.Font = Enum.Font.GothamBold; b.TextSize = 12; b.TextColor3 = Color3.new(1,1,1); b.ZIndex = 7; b.Parent = card
+				sfit(rr, 11)
+				local b = Instance.new("TextButton"); b.Size = UDim2.new(1,0,0.33,0); b.LayoutOrder = 3
+				b.Font = Enum.Font.GothamBold; b.TextColor3 = Color3.new(1,1,1); b.ZIndex = 7; b.Parent = sbody
+				sfit(b, 12)
 				b.BackgroundColor3 = on and Color3.fromRGB(60,150,70) or Color3.fromRGB(50,200,50)
 				b.AutoButtonColor = not on
 				b.Text = on and ("\xE2\x9C\x94 Equipped") or "Equip"
@@ -4773,8 +5780,10 @@ _G.PetHub.showDetail = function(key, p)
 			end
 		end
 		if shown == 0 then
+			-- the grid layout sizes this to a cell whatever we ask for, so it just needs to shrink its text
 			local none = Instance.new("TextLabel"); none.Size = UDim2.new(0,470,0,40); none.LayoutOrder = 0
-			none.BackgroundTransparency = 1; none.Font = Enum.Font.Gotham; none.TextSize = 13; none.TextWrapped = true
+			dfit(none, 13)
+			none.BackgroundTransparency = 1; none.Font = Enum.Font.Gotham; none.TextWrapped = true
 			none.TextColor3 = Color3.fromRGB(165,195,240); none.TextXAlignment = Enum.TextXAlignment.Left
 			none.ZIndex = 7; none.Parent = grid
 			none.Text = (filter == "All") and "No skins yet. Open a Skin Crate to find some!"
@@ -4785,10 +5794,10 @@ _G.PetHub.showDetail = function(key, p)
 	-- FILTERS. Same gold-on-blue / dark-on-gold selected states the hub nav bar uses, so the two read as one UI.
 	do
 		local bar = Instance.new("Frame"); bar.Name = "SkinFilters"
-	bar.Size = UDim2.new(1,-20,0,26); bar.Position = UDim2.new(0,10,0,214)
+		bar.Size = UDim2.new(0.97,0,0.064,0); bar.Position = UDim2.new(0.015,0,0.53,0)
 		bar.BackgroundTransparency = 1; bar.ZIndex = 7; bar.Parent = d
 		local bl = Instance.new("UIListLayout"); bl.FillDirection = Enum.FillDirection.Horizontal
-		bl.Padding = UDim.new(0,6); bl.SortOrder = Enum.SortOrder.LayoutOrder; bl.Parent = bar
+		bl.Padding = UDim.new(0.012,0); bl.SortOrder = Enum.SortOrder.LayoutOrder; bl.Parent = bar
 		local btns = {}
 		local function light(sel)
 			for name, b in pairs(btns) do
@@ -4800,11 +5809,12 @@ _G.PetHub.showDetail = function(key, p)
 			end
 		end
 		for i, name in ipairs({ "All", "Common", "Rare", "Epic", "Legendary", "Traits" }) do
-			local b = Instance.new("TextButton"); b.Size = UDim2.new(0,104,1,0); b.LayoutOrder = i
-			b.Font = Enum.Font.GothamBold; b.TextSize = 12; b.TextScaled = true; b.Text = name; b.ZIndex = 8; b.Parent = bar
+			-- six buttons + five 0.012 gaps: 6 x 0.157 + 0.06 = 1.0 exactly, so the row fills the bar at any width
+			local b = Instance.new("TextButton"); b.Size = UDim2.new(0.157,0,1,0); b.LayoutOrder = i
+			b.Font = Enum.Font.GothamBold; b.Text = name; b.ZIndex = 8; b.Parent = bar
 			uicorner(b, 8); uistroke(b, Color3.new(1,1,1), 1)
 			-- CoreClient force-sets TextScaled on every PlayerGui label, so the ceiling has to come from a constraint
-			do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 12; c.Parent = b end
+			dfit(b, 12)
 			btns[name] = b
 			b.MouseButton1Click:Connect(function() light(name); renderSkins(name) end)
 		end
@@ -4813,21 +5823,23 @@ _G.PetHub.showDetail = function(key, p)
 	renderSkins("All")
 
 	if locked then
-		local warn2 = Instance.new("TextLabel"); warn2.Size = UDim2.new(1,-20,0,18); warn2.Position = UDim2.new(0,10,0,192)
-		warn2.BackgroundTransparency = 1; warn2.Font = Enum.Font.GothamBold; warn2.TextSize = 13
+		local warn2 = Instance.new("TextLabel"); warn2.Size = UDim2.new(0.97,0,0.045,0); warn2.Position = UDim2.new(0.015,0,0.475,0)
+		warn2.BackgroundTransparency = 1; warn2.Font = Enum.Font.GothamBold
 		warn2.TextColor3 = Color3.fromRGB(255,200,120); warn2.TextXAlignment = Enum.TextXAlignment.Left
 		warn2.ZIndex = 8; warn2.Parent = d
 		warn2.Text = "\xF0\x9F\x94\x92 Unlock this pet to wear its skins"
+		dfit(warn2, 13)
 		ownedLbl.Visible = false
 		-- The old facts list carried 'Found on' / 'How to get it'. That list is gone, so the ONE line worth
 		-- keeping moves here: a locked pet's page exists to sell you on going and earning it, and showing the
 		-- prize without saying where to get it is a worse pitch than the grid card you clicked to get here.
-		local hint = Instance.new("TextLabel"); hint.Size = UDim2.new(1,-20,0,44); hint.Position = UDim2.new(0,10,0,214)
-		hint.BackgroundTransparency = 1; hint.Font = Enum.Font.Gotham; hint.TextSize = 13; hint.TextWrapped = true
+		local hint = Instance.new("TextLabel"); hint.Size = UDim2.new(0.97,0,0.109,0); hint.Position = UDim2.new(0.015,0,0.53,0)
+		hint.BackgroundTransparency = 1; hint.Font = Enum.Font.Gotham; hint.TextWrapped = true
 		hint.TextColor3 = Color3.fromRGB(205,222,255); hint.TextXAlignment = Enum.TextXAlignment.Left
 		hint.TextYAlignment = Enum.TextYAlignment.Top; hint.ZIndex = 8; hint.Parent = d
 		hint.Text = (p.questLabel or p.unlock or "Keep exploring to find this pet")
 			.. (p.islandName and ("   " .. p.islandName) or "")
+		dfit(hint, 13)
 		-- nothing to filter when you own none of its skins
 		local fb = d:FindFirstChild("SkinFilters"); if fb then fb.Visible = false end
 	end
@@ -4845,18 +5857,52 @@ local function buildPetCard(key, p, order)
 	local tierName, tierColor, isVariant, flashy = petTier(p.level, p.rare, petId)
 	-- border: variant = its tier color (Exotic/Mythical) glow; else equipped = gold; else default.
 	uistroke(card, isVariant and tierColor or (p.equipped and Color3.fromRGB(255,215,0) or Color3.fromRGB(10,40,100)), (isVariant or p.equipped) and 3 or 1)
-	-- BIG 3D picture across the top of the card -- the pets are the star of the menu
-	makeViewportIcon(card, petId, p.level, p.rare, UDim2.new(0,310,0,140), UDim2.new(0.5,0,0,6), Vector2.new(0.5,0))
+	-- BIG 3D picture across the top of the card -- the pets are the star of the menu.
+	-- SCALE-sized (0.55 of the card = the same 140px it has always been on a 252px cell), so the picture
+	-- and the text block below it keep their proportions instead of the picture holding a fixed 140px and
+	-- squeezing everything else off the bottom.
+	makeViewportIcon(card, petId, p.level, p.rare, UDim2.new(1,-12,0.55,0), UDim2.new(0.5,0,0,6), Vector2.new(0.5,0))
 	-- WHOLE CARD OPENS THE SKINS PAGE. A TextButton behind everything (ZIndex 0, fully transparent): the real
 	-- controls sit on top and swallow their own clicks, and the pet picture keeps its drag-to-rotate, so this
 	-- only catches the empty parts of the card. Routes to the same in-panel page VIEW does -- never a popup.
 	local hit = Instance.new("TextButton"); hit.Size = UDim2.new(1,0,1,0); hit.BackgroundTransparency = 1
 	hit.Text = ""; hit.AutoButtonColor = false; hit.ZIndex = 0; hit.Parent = card
 	hit.MouseButton1Click:Connect(function() _G.PetHub.showDetail(key, p) end)
-	local nm = Instance.new("TextLabel"); nm.Size = UDim2.new(1,-16,0,18); nm.Position = UDim2.new(0,8,0,148)
-	nm.BackgroundTransparency = 1; nm.Font = Enum.Font.GothamBold; nm.TextSize = 16
+	-- ---- THE CARD BODY: ONE VERTICAL LIST, NO FIXED OFFSETS ----------------------------------------
+	-- Every line below used to be hand-placed at y = 148 / 166 / 182 / 200 / 220 against a card assumed to
+	-- be exactly 252px tall. That is what stacked the name, the two info lines, the XP bar and the buttons
+	-- on top of each other: the offsets do not move when the card does. A UIListLayout cannot overlap by
+	-- construction -- each row is placed after the one before it, whatever height the card ends up.
+	--
+	-- Sizes are all SCALE, so the block re-proportions with the card instead of overflowing it. Every label
+	-- is TextScaled with a UITextSizeConstraint holding its AUTHORED size as the maximum -- so at full size
+	-- it renders exactly as it does today, and on a small card the text shrinks rather than spilling into
+	-- the row underneath. That cap is also what makes this survive the HUD's blanket TextScaled sweep,
+	-- which would otherwise inflate every one of these labels to fill its whole row.
+	--
+	-- (No AutomaticSize on the card itself: petsScroll is a UIGridLayout, and a grid writes its cells' Size
+	-- outright every layout pass -- an AutomaticSize card would just be overwritten.)
+	local body = Instance.new("Frame"); body.Name = "Body"
+	body.BackgroundTransparency = 1
+	body.Position = UDim2.new(0, 8, 0.57, 2)
+	body.Size = UDim2.new(1, -16, 0.43, -8)
+	body.Parent = card
+	do
+		local bl = Instance.new("UIListLayout"); bl.FillDirection = Enum.FillDirection.Vertical
+		bl.SortOrder = Enum.SortOrder.LayoutOrder; bl.Padding = UDim.new(0, 2); bl.Parent = body
+	end
+	-- TextScaled + a MAX size. Not TextSize: a fixed size cannot shrink, which is the whole problem.
+	local function fitText(o, maxSize)
+		o.TextScaled = true
+		local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = maxSize; c.Parent = o
+		return o
+	end
+
+	local nm = Instance.new("TextLabel"); nm.Size = UDim2.new(1,0,0.18,0); nm.LayoutOrder = 1
+	nm.BackgroundTransparency = 1; nm.Font = Enum.Font.GothamBold   -- alignment left at its default (centre), as authored
 	nm.TextColor3 = isVariant and tierColor or Color3.new(1,1,1)
-	nm.Text = p.rare and (p.rareName or p.displayName) or p.displayName; nm.Parent = card -- show the variant name (e.g. "Cosmic Duck") for rares
+	nm.Text = p.rare and (p.rareName or p.displayName) or p.displayName; nm.Parent = body -- variant name (e.g. "Cosmic Duck") for rares
+	fitText(nm, 18)
 	if isVariant then -- a flashy TIER badge (Exotic / Mythical) in the top-right corner
 		local tag = Instance.new("TextLabel"); tag.AutomaticSize = Enum.AutomaticSize.X; tag.Size = UDim2.new(0,0,0,18); tag.Position = UDim2.new(1,-6,0,8); tag.AnchorPoint = Vector2.new(1,0)
 		tag.BackgroundColor3 = tierColor; tag.Font = Enum.Font.GothamBold; tag.TextSize = 11; tag.TextColor3 = Color3.new(1,1,1); tag.Text = tierName; tag.Parent = card
@@ -4879,51 +5925,59 @@ local function buildPetCard(key, p, order)
 	-- from, and how far off completing its wardrobe they are -- without spending a whole row on either.
 	do
 		local ownedSk, totalSk = _G.PetHub.skinCount(petId)
-		local rs = Instance.new("TextLabel"); rs.Size = UDim2.new(1,-16,0,14); rs.Position = UDim2.new(0,8,0,166)
-		rs.BackgroundTransparency = 1; rs.Font = Enum.Font.Gotham; rs.TextSize = 12
+		local rs = Instance.new("TextLabel"); rs.Size = UDim2.new(1,0,0.14,0); rs.LayoutOrder = 2
+		rs.BackgroundTransparency = 1; rs.Font = Enum.Font.Gotham
 		rs.TextColor3 = Color3.fromRGB(175,205,250); rs.TextXAlignment = Enum.TextXAlignment.Left
-		rs.TextTruncate = Enum.TextTruncate.AtEnd; rs.Parent = card
+		rs.TextTruncate = Enum.TextTruncate.AtEnd; rs.Parent = body
 		rs.Text = (p.islandName or "Bean Farm") .. "   \xC2\xB7   " .. ownedSk .. " / " .. totalSk .. " Skins"
+		fitText(rs, 12)
 	end
-	local lv = Instance.new("TextLabel"); lv.Size = UDim2.new(1,-16,0,16); lv.Position = UDim2.new(0,8,0,182)
-	lv.BackgroundTransparency = 1; lv.Font = Enum.Font.GothamBold; lv.TextSize = 13
-	lv.Text = (isVariant and tierName or (tierName .. "  Age " .. p.level)) .. (p.equipped and "  \xE2\x80\xA2 EQUIPPED" or ""); lv.Parent = card
+	local lv = Instance.new("TextLabel"); lv.Size = UDim2.new(1,0,0.16,0); lv.LayoutOrder = 3
+	lv.BackgroundTransparency = 1; lv.Font = Enum.Font.GothamBold
+	lv.Text = (isVariant and tierName or (tierName .. "  Age " .. p.level)) .. (p.equipped and "  \xE2\x80\xA2 EQUIPPED" or ""); lv.Parent = body
 	lv.TextColor3 = tierColor
+	fitText(lv, 13)
 	-- XP PROGRESS BAR (current XP / XP needed for the next level)
-	local barBG = Instance.new("Frame"); barBG.Size = UDim2.new(1,-16,0,14); barBG.Position = UDim2.new(0,8,0,200)
-	barBG.BackgroundColor3 = Color3.fromRGB(12,40,90); barBG.BorderSizePixel = 0; barBG.Parent = card; uicorner(barBG, 7); uistroke(barBG, Color3.fromRGB(8,26,64), 1)
+	local barBG = Instance.new("Frame"); barBG.Size = UDim2.new(1,0,0.15,0); barBG.LayoutOrder = 4
+	barBG.BackgroundColor3 = Color3.fromRGB(12,40,90); barBG.BorderSizePixel = 0; barBG.Parent = body; uicorner(barBG, 7); uistroke(barBG, Color3.fromRGB(8,26,64), 1)
 	local frac = maxed and 1 or math.clamp((p.xp or 0) / math.max(1, p.xpNeed or 1), 0, 1)
 	local fill = Instance.new("Frame"); fill.Size = UDim2.new(frac, 0, 1, 0); fill.BorderSizePixel = 0
 	fill.BackgroundColor3 = maxed and Color3.fromRGB(255,200,40) or Color3.fromRGB(80,220,120); fill.Parent = barBG; uicorner(fill, 7)
 	local xpTxt = Instance.new("TextLabel"); xpTxt.Size = UDim2.new(1,0,1,0); xpTxt.BackgroundTransparency = 1
-	xpTxt.Font = Enum.Font.GothamBold; xpTxt.TextSize = 10; xpTxt.TextColor3 = Color3.new(1,1,1); xpTxt.Parent = barBG
+	xpTxt.Font = Enum.Font.GothamBold; xpTxt.TextColor3 = Color3.new(1,1,1); xpTxt.Parent = barBG
 	xpTxt.Text = maxed and "MAX" or ((p.xp or 0) .. " / " .. (p.xpNeed or 0) .. " XP")
-	-- VIEW MORE -> the full detail card (big picture, stats, blurb). It replaces the old next-milestone hint line
-	-- here; that hint now lives on the detail card as the "Next unlock" stat row, so nothing was lost.
-	-- EQUIP / SKIP / VIEW now share ONE row. They used to be stacked and overlapped by 4px, and the two new
-	-- lines above needed that height back. Every control that was here is still here.
-	local more = Instance.new("TextButton"); more.Size = UDim2.new(0,98,0,26); more.Position = UDim2.new(0,216,0,220)
-	more.BackgroundColor3 = Color3.fromRGB(38,110,215); more.Font = Enum.Font.GothamBold; more.TextSize = 12
-	more.TextColor3 = Color3.new(1,1,1); more.Text = "\xF0\x9F\x94\x8D VIEW"; more.Parent = card
-	uicorner(more, 6); uistroke(more, Color3.fromRGB(10,40,100), 1)
-	more.MouseButton1Click:Connect(function() _G.PetHub.showDetail(key, p) end)
-	-- EQUIP toggle (left half) + SKIP (right half), side by side to keep the picture big
-	local eq = Instance.new("TextButton"); eq.Size = UDim2.new(0,100,0,26); eq.Position = UDim2.new(0,8,0,220)
-	eq.Font = Enum.Font.GothamBold; eq.TextSize = 13; eq.TextColor3 = Color3.new(1,1,1)
+	fitText(xpTxt, 10)
+	-- EQUIP / SKIP / VIEW share ONE row -- now a horizontal UIListLayout rather than three hand-placed x
+	-- offsets, so the three buttons divide whatever width the card has instead of running off its edge.
+	-- VIEW opens the full detail page (big picture, stats, blurb).
+	local btnRow = Instance.new("Frame"); btnRow.Name = "Buttons"; btnRow.LayoutOrder = 5
+	btnRow.BackgroundTransparency = 1; btnRow.Size = UDim2.new(1,0,0.27,0); btnRow.Parent = body
+	do
+		local rl = Instance.new("UIListLayout"); rl.FillDirection = Enum.FillDirection.Horizontal
+		rl.SortOrder = Enum.SortOrder.LayoutOrder; rl.Padding = UDim.new(0, 4)
+		rl.VerticalAlignment = Enum.VerticalAlignment.Center; rl.Parent = btnRow
+	end
+	-- EQUIP toggle, then SKIP, then VIEW -- the same left-to-right order they were placed in by hand
+	local eq = Instance.new("TextButton"); eq.Size = UDim2.new(0.32,0,1,0); eq.LayoutOrder = 1
+	eq.Font = Enum.Font.GothamBold; eq.TextColor3 = Color3.new(1,1,1)
 	eq.BackgroundColor3 = p.equipped and Color3.fromRGB(120,120,120) or Color3.fromRGB(50,200,50)
-	eq.Text = p.equipped and "UNEQUIP" or "EQUIP"; eq.Parent = card
-	uicorner(eq, 8); uistroke(eq, Color3.new(0,0,0), 1)
+	eq.Text = p.equipped and "UNEQUIP" or "EQUIP"; eq.Parent = btnRow
+	uicorner(eq, 8); uistroke(eq, Color3.new(0,0,0), 1); fitText(eq, 13)
 	eq.MouseButton1Click:Connect(function()
 		if p.equipped then pcall(function() PetEquipEvent:FireServer(false) end)
 		else pcall(function() PetEquipEvent:FireServer(key) end) end -- equip THIS exact variant (storage key)
 	end)
 	-- TIER SKIP (Robux): jump the WHOLE next tier at once (lands on its first level). Button shows the next
 	-- tier + price; at the top tier (Legendary) there's nothing to skip. The SERVER validates + applies the jump.
-	local sk = Instance.new("TextButton"); sk.Size = UDim2.new(0,100,0,26); sk.Position = UDim2.new(0,112,0,220)
-	sk.Font = Enum.Font.GothamBold; sk.TextSize = 12; sk.TextScaled = true; sk.TextColor3 = Color3.new(1,1,1)
-	sk.Parent = card; uicorner(sk, 8)
-	-- 'Skip to Legendary R$599' is the longest string on the card; cap it or TextScaled overflows the button
-	do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 12; c.Parent = sk end
+	-- 'Skip to Legendary R$599' is the longest string on the card, which is why its cap is the tightest here.
+	local sk = Instance.new("TextButton"); sk.Size = UDim2.new(0.32,0,1,0); sk.LayoutOrder = 2
+	sk.Font = Enum.Font.GothamBold; sk.TextColor3 = Color3.new(1,1,1)
+	sk.Parent = btnRow; uicorner(sk, 8); fitText(sk, 12)
+	local more = Instance.new("TextButton"); more.Size = UDim2.new(0.32,0,1,0); more.LayoutOrder = 3
+	more.BackgroundColor3 = Color3.fromRGB(38,110,215); more.Font = Enum.Font.GothamBold
+	more.TextColor3 = Color3.new(1,1,1); more.Text = "\xF0\x9F\x94\x8D VIEW"; more.Parent = btnRow
+	uicorner(more, 6); uistroke(more, Color3.fromRGB(10,40,100), 1); fitText(more, 12)
+	more.MouseButton1Click:Connect(function() _G.PetHub.showDetail(key, p) end)
 	-- which tier-skip step applies to this pet's CURRENT level (Common 1-5 / Uncommon 6-10 / Rare 11-15 / Epic 16-20)
 	local skipStep = (p.level <= 5 and PET_SKIP_PRODUCTS[1]) or (p.level <= 10 and PET_SKIP_PRODUCTS[2])
 		or (p.level <= 15 and PET_SKIP_PRODUCTS[3]) or (p.level <= 20 and PET_SKIP_PRODUCTS[4]) or nil
@@ -4949,40 +6003,61 @@ local function buildLockedPetCard(info, order)
 	local card = Instance.new("Frame"); card.Name = "Locked_" .. tostring(petId); card.LayoutOrder = order
 	card.BackgroundColor3 = Color3.fromRGB(20, 70, 160); card.Parent = petsScroll -- SAME blue as an owned card
 	uicorner(card, 12); uistroke(card, Color3.fromRGB(255, 190, 60), 2) -- gold "locked" border (owned+equipped = solid gold)
-	makeViewportIcon(card, petId, 1, false, UDim2.new(0,310,0,140), UDim2.new(0.5,0,0,6), Vector2.new(0.5,0)) -- full colour, Lv1 look
+	makeViewportIcon(card, petId, 1, false, UDim2.new(1,-12,0.55,0), UDim2.new(0.5,0,0,6), Vector2.new(0.5,0)) -- full colour, Lv1 look
 	-- padlock badge over the top-right of the picture -- this (not a grey-out) is what marks the card as locked
 	local lock = Instance.new("TextLabel"); lock.Size = UDim2.new(0,28,0,28); lock.Position = UDim2.new(1,-12,0,12); lock.AnchorPoint = Vector2.new(1,0)
 	lock.BackgroundTransparency = 1; lock.Font = Enum.Font.FredokaOne; lock.TextScaled = true; lock.Text = "\xF0\x9F\x94\x92"; lock.Parent = card
-	local nm = Instance.new("TextLabel"); nm.Size = UDim2.new(1,-16,0,18); nm.Position = UDim2.new(0,8,0,150)
-	nm.BackgroundTransparency = 1; nm.Font = Enum.Font.GothamBold; nm.TextSize = 16
-	nm.TextColor3 = Color3.new(1,1,1); nm.Text = info.displayName or petId; nm.Parent = card
-	local st = Instance.new("TextLabel"); st.Size = UDim2.new(1,-16,0,16); st.Position = UDim2.new(0,8,0,170)
-	st.BackgroundTransparency = 1; st.Font = Enum.Font.GothamBold; st.TextSize = 13
-	st.TextColor3 = Color3.fromRGB(255,205,90); st.Text = "\xF0\x9F\x94\x92 LOCKED" .. (info.islandName and ("  \xE2\x80\xA2  " .. info.islandName) or ""); st.Parent = card
+	-- The same vertical list the owned card uses, for the same reason -- these sat at y = 150/170/188/204/230
+	-- and stacked on a shorter card. Locked and owned cards share a grid, so they have to share the treatment
+	-- or they stop lining up with each other.
+	local body = Instance.new("Frame"); body.Name = "Body"
+	body.BackgroundTransparency = 1
+	body.Position = UDim2.new(0, 8, 0.57, 2)
+	body.Size = UDim2.new(1, -16, 0.43, -8)
+	body.Parent = card
+	do
+		local bl = Instance.new("UIListLayout"); bl.FillDirection = Enum.FillDirection.Vertical
+		bl.SortOrder = Enum.SortOrder.LayoutOrder; bl.Padding = UDim.new(0, 2); bl.Parent = body
+	end
+	local function fitText(o, maxSize)
+		o.TextScaled = true
+		local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = maxSize; c.Parent = o
+		return o
+	end
+	local nm = Instance.new("TextLabel"); nm.Size = UDim2.new(1,0,0.18,0); nm.LayoutOrder = 1
+	nm.BackgroundTransparency = 1; nm.Font = Enum.Font.GothamBold
+	nm.TextColor3 = Color3.new(1,1,1); nm.Text = info.displayName or petId; nm.Parent = body
+	fitText(nm, 18)
+	local st = Instance.new("TextLabel"); st.Size = UDim2.new(1,0,0.16,0); st.LayoutOrder = 2
+	st.BackgroundTransparency = 1; st.Font = Enum.Font.GothamBold
+	st.TextColor3 = Color3.fromRGB(255,205,90); st.Text = "\xF0\x9F\x94\x92 LOCKED" .. (info.islandName and ("  \xE2\x80\xA2  " .. info.islandName) or ""); st.Parent = body
+	fitText(st, 13)
 	-- Same realm + skin-progress line the owned cards carry, so the grid reads consistently. Skins CAN be won
 	-- for a pet you have not unlocked yet, so this number is not always 1 -- which is precisely the nudge to
 	-- go and earn the pet.
 	do
 		local ownedSk, totalSk = _G.PetHub.skinCount(petId)
-		local rs = Instance.new("TextLabel"); rs.Size = UDim2.new(1,-20,0,14); rs.Position = UDim2.new(0,10,0,188)
-		rs.BackgroundTransparency = 1; rs.Font = Enum.Font.Gotham; rs.TextSize = 12
+		local rs = Instance.new("TextLabel"); rs.Size = UDim2.new(1,0,0.14,0); rs.LayoutOrder = 3
+		rs.BackgroundTransparency = 1; rs.Font = Enum.Font.Gotham
 		rs.TextColor3 = Color3.fromRGB(175,205,250); rs.TextXAlignment = Enum.TextXAlignment.Left
-		rs.TextTruncate = Enum.TextTruncate.AtEnd; rs.Parent = card
+		rs.TextTruncate = Enum.TextTruncate.AtEnd; rs.Parent = body
 		rs.Text = (info.islandName or "???") .. "   \xC2\xB7   " .. ownedSk .. " / " .. totalSk .. " Skins"
+		fitText(rs, 12)
 	end
-	local how = Instance.new("TextLabel"); how.Size = UDim2.new(1,-20,0,26); how.Position = UDim2.new(0,10,0,204)
-	how.BackgroundTransparency = 1; how.Font = Enum.Font.Gotham; how.TextSize = 12; how.TextWrapped = true
+	local how = Instance.new("TextLabel"); how.Size = UDim2.new(1,0,0.26,0); how.LayoutOrder = 4
+	how.BackgroundTransparency = 1; how.Font = Enum.Font.Gotham; how.TextWrapped = true
 	how.TextColor3 = Color3.fromRGB(205,222,255); how.TextYAlignment = Enum.TextYAlignment.Top
-	how.Text = info.unlock or "Keep exploring to find this pet"; how.Parent = card
+	how.Text = info.unlock or "Keep exploring to find this pet"; how.Parent = body
+	fitText(how, 12)
 	-- locked pets get a VIEW MORE too -- the detail card shows the pet big with its blurb and how to unlock it,
 	-- which is exactly the pitch for going and earning it.
-	local more = Instance.new("TextButton"); more.Size = UDim2.new(1,-16,0,20); more.Position = UDim2.new(0,8,0,230)
-	more.BackgroundColor3 = Color3.fromRGB(150,110,30); more.Font = Enum.Font.GothamBold; more.TextSize = 12
+	local more = Instance.new("TextButton"); more.Size = UDim2.new(1,0,0.22,0); more.LayoutOrder = 5
+	more.BackgroundColor3 = Color3.fromRGB(150,110,30); more.Font = Enum.Font.GothamBold
 	-- VIEW QUEST, not VIEW MORE: a locked pet has nothing to customise, so the only useful thing this page can
 	-- tell you is how to earn it. The card is deliberately NOT click-through either -- clicking a locked pet
 	-- must never land you on a skins page you cannot use.
-	more.TextColor3 = Color3.new(1,1,1); more.Text = "\xF0\x9F\x94\x92 VIEW QUEST"; more.Parent = card
-	uicorner(more, 6); uistroke(more, Color3.fromRGB(90,66,16), 1)
+	more.TextColor3 = Color3.new(1,1,1); more.Text = "\xF0\x9F\x94\x92 VIEW QUEST"; more.Parent = body
+	uicorner(more, 6); uistroke(more, Color3.fromRGB(90,66,16), 1); fitText(more, 12)
 	more.MouseButton1Click:Connect(function() _G.PetHub.showDetail(nil, info) end)
 end
 
@@ -4990,17 +6065,31 @@ end
 local function buildQuestEntry(q, order)
 	local qf = Instance.new("Frame"); qf.Name = "Quest"; qf.LayoutOrder = order; qf.Size = UDim2.new(1,-4,0,92); qf.BackgroundColor3 = Color3.fromRGB(20,70,160); qf.Parent = questsScroll
 	uicorner(qf, 8); uistroke(qf, Color3.fromRGB(10,40,100), 1)
-	local qn = Instance.new("TextLabel"); qn.Size = UDim2.new(1,-10,0,18); qn.Position = UDim2.new(0,6,0,4)
-	qn.BackgroundTransparency = 1; qn.Font = Enum.Font.GothamBold; qn.TextSize = 14; qn.TextColor3 = Color3.new(1,1,1); qn.TextXAlignment = Enum.TextXAlignment.Left; qn.Text = q.islandName or "?"; qn.Parent = qf
+	-- name / status / description as a list rather than y = 4/22/38 in a 92px box
+	local qbody = Instance.new("Frame"); qbody.Name = "Body"; qbody.BackgroundTransparency = 1
+	qbody.Position = UDim2.new(0,6,0,4); qbody.Size = UDim2.new(1,-12,1,-8); qbody.Parent = qf
+	do
+		local ql = Instance.new("UIListLayout"); ql.FillDirection = Enum.FillDirection.Vertical
+		ql.SortOrder = Enum.SortOrder.LayoutOrder; ql.Padding = UDim.new(0,2); ql.Parent = qbody
+	end
+	local function qfit(o, maxSize)
+		o.TextScaled = true
+		local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = maxSize; c.Parent = o
+	end
+	local qn = Instance.new("TextLabel"); qn.Size = UDim2.new(1,0,0.21,0); qn.LayoutOrder = 1
+	qn.BackgroundTransparency = 1; qn.Font = Enum.Font.GothamBold; qn.TextColor3 = Color3.new(1,1,1); qn.TextXAlignment = Enum.TextXAlignment.Left; qn.Text = q.islandName or "?"; qn.Parent = qbody
+	qfit(qn, 14)
 	local statusCol = (q.status == "done") and Color3.fromRGB(120,255,120) or (q.status == "inprogress") and Color3.fromRGB(255,205,90) or Color3.fromRGB(180,220,255)
 	local statusTxt = (q.status == "done") and "Done \xE2\x9C\x94"
 		or (q.status == "inprogress") and ("In Progress  "..(q.found or 0).."/"..(q.total or 0).." "..(q.unit or ""))
 		or "Available"
-	local qs = Instance.new("TextLabel"); qs.Size = UDim2.new(1,-10,0,14); qs.Position = UDim2.new(0,6,0,22)
-	qs.BackgroundTransparency = 1; qs.Font = Enum.Font.GothamBold; qs.TextSize = 11; qs.TextColor3 = statusCol; qs.TextXAlignment = Enum.TextXAlignment.Left; qs.Text = statusTxt; qs.Parent = qf
-	local qd = Instance.new("TextLabel"); qd.Size = UDim2.new(1,-12,0,46); qd.Position = UDim2.new(0,6,0,38)
-	qd.BackgroundTransparency = 1; qd.Font = Enum.Font.Gotham; qd.TextSize = 11; qd.TextColor3 = Color3.fromRGB(205,222,255); qd.TextWrapped = true
-	qd.TextXAlignment = Enum.TextXAlignment.Left; qd.TextYAlignment = Enum.TextYAlignment.Top; qd.Text = q.desc or ""; qd.Parent = qf
+	local qs = Instance.new("TextLabel"); qs.Size = UDim2.new(1,0,0.16,0); qs.LayoutOrder = 2
+	qs.BackgroundTransparency = 1; qs.Font = Enum.Font.GothamBold; qs.TextColor3 = statusCol; qs.TextXAlignment = Enum.TextXAlignment.Left; qs.Text = statusTxt; qs.Parent = qbody
+	qfit(qs, 11)
+	local qd = Instance.new("TextLabel"); qd.Size = UDim2.new(1,0,0.55,0); qd.LayoutOrder = 3
+	qd.BackgroundTransparency = 1; qd.Font = Enum.Font.Gotham; qd.TextColor3 = Color3.fromRGB(205,222,255); qd.TextWrapped = true
+	qd.TextXAlignment = Enum.TextXAlignment.Left; qd.TextYAlignment = Enum.TextYAlignment.Top; qd.Text = q.desc or ""; qd.Parent = qbody
+	qfit(qd, 11)
 end
 
 -- ===== COLLECTION REWARDS OVERLAY ("REWARDS" tab) =========================================================
@@ -5180,6 +6269,14 @@ if PetInventoryEvent then PetInventoryEvent.OnClientEvent:Connect(rebuildInvento
 -- =====================================================================================================
 -- STAGE 3: TRADE UI (housed in the Pet Hub). The client sends INTENTS only; the server owns the trade.
 -- =====================================================================================================
+-- Wrapped in a function ON PURPOSE -- do NOT flatten it back out to top level.
+-- Luau allows only 200 locals live at once PER FUNCTION, and the main chunk of this file had hit exactly
+-- that: `renderTradeWindow` below was the 201st, so it failed to COMPILE, which kills the whole script --
+-- no pet follow, no broccoli pieces, no egg, nothing. A function body gets its own register frame, so
+-- these 25 locals no longer count against the main chunk. A do...end block would NOT have worked: it only
+-- frees registers after its `end`, and the overflow happens inside. If you add more top-level locals to
+-- this file, wrap them in a function like this one.
+local function buildTradeUI()
 local PlayersSvc = game:GetService("Players")
 local tradeState = nil -- latest server trade state (active=true while trading)
 
@@ -5478,6 +6575,24 @@ tradeBtn.MouseButton1Click:Connect(function()
 	if tradeState and tradeState.active then tradeOverlay.Visible = true; renderTradeWindow(tradeState)
 	else tradeOverlay.Visible = not tradeOverlay.Visible; if tradeOverlay.Visible then showPicker() end end
 end)
+-- ===== PUBLISH THE TRADE HANDLES =====
+-- Everything above is LOCAL to buildTradeUI. The trade tab, the QUESTS and REWARDS chips, and the
+-- live-trade remote all live BELOW this function and referenced `tradeOverlay` / `showPicker` /
+-- `renderTradeWindow` directly -- which, out here, are not those locals at all: they are undeclared
+-- globals, i.e. nil. That is the "attempt to index nil with 'Visible'" the trade tab threw on every
+-- click, and why nothing happened when you pressed it.
+--
+-- They go on _G.PetHub rather than becoming module-scope locals ON PURPOSE: this file sits right up
+-- against Luau's 200-locals-per-scope ceiling, and three more top-level locals is exactly the kind of
+-- change that turns a working file into one that will not compile.
+	_G.PetHub.trade = {
+		overlay = tradeOverlay,
+		title   = ovTitle,
+		picker  = showPicker,
+		render  = renderTradeWindow,
+	}
+end -- closes buildTradeUI
+buildTradeUI() -- build it right here, exactly where it used to run inline
 
 -- ===== HUB ROUTER: one page at a time =====
 -- Defined HERE, not up beside the nav bar, because it drives the real trade + quest overlays and they do not
@@ -5516,10 +6631,13 @@ _G.PetHub.showPage = function(id)
 	local mo = panel:FindFirstChild("MilestonesOverlay"); if mo then mo:Destroy() end
 	_G.PetHub.hideDetail()
 	questsOverlay.Visible = (id == "quests")
-	tradeOverlay.Visible  = (id == "trade")
-	if id == "trade" then
+	local tr = _G.PetHub.trade
+	if tr and tr.overlay then tr.overlay.Visible = (id == "trade") end
+	if id == "trade" and tr then
 		-- a live session shows the trade window; otherwise the picker, exactly as the old TRADE chip did
-		if tradeState and tradeState.active then renderTradeWindow(tradeState) else showPicker() end
+		if tradeState and tradeState.active then
+			if tr.render then tr.render(tradeState) end
+		elseif tr.picker then tr.picker() end
 	end
 	_G.PetHub.activePage = id
 	_G.PetHub.syncNav()
@@ -5544,7 +6662,8 @@ questsBtn.Text = "\xF0\x9F\x97\xBA QUESTS"; questsBtn.Parent = header; uicorner(
 questsBtn.Visible = false -- replaced by the HubNav bar under the header; handler kept so nothing rewires
 do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 11; c.Parent = questsBtn; questsBtn.TextScaled = true end -- shrink-to-fit on the 82px chip
 questsBtn.MouseButton1Click:Connect(function()
-	tradeOverlay.Visible = false; _G.PetHub.hideDetail()
+	if _G.PetHub.trade and _G.PetHub.trade.overlay then _G.PetHub.trade.overlay.Visible = false end
+	_G.PetHub.hideDetail()
 	local mo = panel:FindFirstChild("MilestonesOverlay"); if mo then mo:Destroy() end
 	questsOverlay.Visible = not questsOverlay.Visible
 end)
@@ -5559,7 +6678,8 @@ do
 	rewardsBtn.Visible = false -- replaced by the HubNav bar under the header; handler kept so nothing rewires
 	do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 11; c.Parent = rewardsBtn; rewardsBtn.TextScaled = true end -- shrink-to-fit on the 82px chip
 	rewardsBtn.MouseButton1Click:Connect(function()
-		tradeOverlay.Visible = false; questsOverlay.Visible = false; _G.PetHub.hideDetail()
+		if _G.PetHub.trade and _G.PetHub.trade.overlay then _G.PetHub.trade.overlay.Visible = false end
+		questsOverlay.Visible = false; _G.PetHub.hideDetail()
 		local open = panel:FindFirstChild("MilestonesOverlay")
 		if open then open:Destroy() else _G.PetHub.showMilestones() end -- toggle
 	end)
@@ -5594,12 +6714,20 @@ qoBack.MouseButton1Click:Connect(function() questsOverlay.Visible = false end)
 if PetTradeState then PetTradeState.OnClientEvent:Connect(function(state)
 	tradeState = state
 	if state and state.active then
-		openPanel(true); tradeOverlay.Visible = true; renderTradeWindow(state) -- ensure the Hub is open so both players see the trade window
+		-- ensure the Hub is open so both players see the trade window
+		openPanel(true)
+		local tr = _G.PetHub.trade
+		if tr and tr.overlay then tr.overlay.Visible = true end
+		if tr and tr.render then tr.render(state) end
 	else
 		local reason = state and state.reason
 		print("[Trade] window closed (" .. tostring(reason) .. ")")
 		tradeState = nil
-		if tradeOverlay.Visible then ovTitle.Text = "Trade " .. (reason and ("\xE2\x80\x94 " .. reason) or "closed"); showPicker() end
+		local tr = _G.PetHub.trade
+		if tr and tr.overlay and tr.overlay.Visible then
+			if tr.title then tr.title.Text = "Trade " .. (reason and ("\xE2\x80\x94 " .. reason) or "closed") end
+			if tr.picker then tr.picker() end
+		end
 	end
 end) end
 

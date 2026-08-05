@@ -184,6 +184,18 @@ local function addTokens(player, amount, reason)
 	return newBal
 end
 
+-- PUBLISHED FOR CROSS-SCRIPT GRANTS. addTokens/setTokens/getTokens are deliberately local -- token balance is
+-- this service's business and nothing else should be writing it directly. But other server systems do
+-- legitimately need to HAND OUT tokens (the secret cave's trader sells them), and the alternative is each of
+-- them reinventing the balance read/write and drifting out of step with this file's saving and clamping.
+--
+-- So exactly one function is exposed, the additive one. Nothing can spend or set through this hook, and every
+-- grant still goes through the same logging and persistence path as a real Robux purchase.
+_G.addSkinTokens = function(player, amount, reason)
+	if typeof(player) ~= "Instance" or not player:IsA("Player") then return false end
+	return addTokens(player, amount, reason or "external")
+end
+
 local function spendTokens(player, amount)
 	amount = math.floor(tonumber(amount) or 0)
 	if amount <= 0 then return true end
@@ -418,6 +430,7 @@ local function equipSkin(player, petId, skinId, traitId)
 	if skinId == false or skinId == nil then
 		eq[petId] = nil
 		pushState(player)
+		if _G.petRebroadcastEquip then pcall(_G.petRebroadcastEquip, player, "skin-cleared") end
 		return true
 	end
 
@@ -435,6 +448,14 @@ local function equipSkin(player, petId, skinId, traitId)
 	-- pushState is what makes the pet repaint: the client's applyState calls repaintAll on every push, so the
 	-- follower re-skins the moment this lands. No separate render hook is needed.
 	pushState(player)
+
+	-- ...but that push is a FireClient to the owner alone, so it only re-skins the pet THEY can see. Every
+	-- other player in the server is still rendering the look from the last PetEquipBroadcast, which was sent
+	-- when the pet was equipped and knows nothing about a skin changed afterwards. Without this line the
+	-- owner sees the new skin instantly and everybody else keeps seeing the old one until the pet is
+	-- re-equipped or they rejoin -- so the two screens disagree, and the person who paid for the skin is the
+	-- only one who cannot tell.
+	if _G.petRebroadcastEquip then pcall(_G.petRebroadcastEquip, player, "skin-equipped") end
 	return true
 end
 

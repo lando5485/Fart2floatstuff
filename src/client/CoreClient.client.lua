@@ -786,15 +786,19 @@ local function showHudBanner(text, color, holdSeconds)
 end
 _G.showHudBanner = showHudBanner
 -- Periodic reminder: every 20s, if a reward is available and nothing else is on screen, flash the
--- banner for 4s. Crate takes priority over the gut upgrade. Stops on its own once claimed/bought (the
--- _G flags flip false). [crate = _G.crateIsClaimable() from CrateClient; gut = _G.gutUpgradeAffordable]
+-- banner for 4s. Stops on its own once the thing is bought (the _G flag flips false).
+--
+-- THE "Daily Reward Ready! Tap MORE+" CRATE BANNER IS GONE. It sat in this same loop ahead of the
+-- gut line, so a claimable crate meant this fired every 20 SECONDS for as long as you left it
+-- unclaimed -- by far the most repetitive thing on screen, and pointing at a MORE+ button that
+-- already wears its own ready-dot. The crate is untouched: still claimable from MORE+ > Rewards,
+-- the dot still marks it, _G.crateIsClaimable still answers for everything else. Only the nag went.
+-- (The /banner dev command still force-shows it for testing.)
 task.spawn(function()
 	while true do
 		task.wait(20)
 		if not bannerBusy() then
-			if _G.crateIsClaimable and _G.crateIsClaimable() then
-				showHudBanner("Daily Reward Ready!  Tap MORE+", Color3.fromRGB(255, 196, 60), 4)
-			elseif _G.gutUpgradeAffordable then
+			if _G.gutUpgradeAffordable then
 				showHudBanner("Stomach Upgrade Available!", Color3.fromRGB(60, 180, 90), 4)
 			end
 		end
@@ -3020,13 +3024,21 @@ if character then onLand(character) end -- no character yet on join (CharacterAu
 -- per-island difficulty: Tiny->2,3,4 (gate 5), Small->5,6 (gate 7), Medium->7,8 (gate 9),
 -- Large->9,10 (gate 11), XL->11,12 (gate 13), Iron->13,14. Thresholds align with the stomach maxPowers.
 local function getFlightSpeed(power)
-	if power <= 100 then return 40 -- Tiny band: bumped 33->40 (real data: speed 33 only climbed ~830 from launch, short of island 3). 40 -> ~1006 climb: reaches 3 & 4 with effort, gates at 5.
-	elseif power <= 182 then return 62
-	elseif power <= 611 then return 84   -- was 68 (too close to Small's 62 -> Medium barely out-climbed Small). 84 -> Medium clears islands 7,8.
-	elseif power <= 1075 then return 126 -- was 108 -> Large clears 9,10
-	elseif power <= 2146 then return 144 -- was 129 -> XL clears 11,12
-	elseif power <= 3218 then return 226 -- was 196 -> Iron clears 13,14
-	else return 280 end                  -- was 250 (Infinite gut)
+	local base
+	if power <= 100 then base = 40 -- Tiny band: bumped 33->40 (real data: speed 33 only climbed ~830 from launch, short of island 3). 40 -> ~1006 climb: reaches 3 & 4 with effort, gates at 5.
+	elseif power <= 182 then base = 62
+	elseif power <= 611 then base = 84   -- was 68 (too close to Small's 62 -> Medium barely out-climbed Small). 84 -> Medium clears islands 7,8.
+	elseif power <= 1075 then base = 126 -- was 108 -> Large clears 9,10
+	elseif power <= 2146 then base = 144 -- was 129 -> XL clears 11,12
+	elseif power <= 3218 then base = 226 -- was 196 -> Iron clears 13,14
+	else base = 280 end                  -- was 250 (Infinite gut)
+	-- SHADY SAL'S ROCKET GAS: +35% for five minutes, bought for coins at the secret cave trader. The
+	-- attribute is a server-set expiry (SecretTrader.server.lua, server clock), so this client-side read
+	-- can only ever HONOUR a boost the server granted -- setting the attribute locally does not replicate.
+	if (player:GetAttribute("SalSpeedBoostUntil") or 0) > workspace:GetServerTimeNow() then
+		base = base * 1.35
+	end
+	return base
 end
 
 -- ===== FLIGHT LOOP — simple land-on-islands flight =====
@@ -3637,8 +3649,11 @@ end
 -- quarter-second later. Whoever writes last no longer decides -- this does.
 --
 -- The HUD is off only while something real wants it off:
---   * a main menu is open (MainMenuManager.current), EXCEPT the food stand, which deliberately keeps the HUD
---     up because you need the gut pill + BUY FOOD button to actually use the stand (see standHudPin);
+--   * ANY main menu is open (MainMenuManager.current) -- the food stand INCLUDED. It used to be exempt, on the
+--     reasoning that you need the gut pill and the BUY FOOD button to use the stand; but the stand IS the buy
+--     screen, so the bar underneath was showing you a second, smaller copy of what you were already looking at,
+--     and it had to be pinned to DisplayOrder 105 to sit above the shop it was duplicating. The bar now goes
+--     away with every other menu and comes back on close (see standHudHide in ShopClient / Shop_AllInOne);
 --   * a script has claimed a hold via _G.hudHold(tag, true) -- currently the meteor crate reveal;
 --   * you are genuinely roasting: holding the stick AND standing at a fire. Both, not either. Holding alone
 --     meant walking away with the stick still equipped left the HUD gone with no way to get it back.
@@ -3686,7 +3701,7 @@ do
 				local g = PlayerGui:FindFirstChild("BottomStackGui")
 				if not (g and g:IsA("ScreenGui")) then return end
 				local mm = _G.MainMenuManager
-				local menuOpen = mm ~= nil and mm.current ~= nil and mm.current ~= "FoodShop"
+				local menuOpen = mm ~= nil and mm.current ~= nil   -- no exceptions: the food stand hides it too
 				local want = not (menuOpen or anyHold() or roasting())
 				if g.Enabled ~= want then g.Enabled = want end
 			end)

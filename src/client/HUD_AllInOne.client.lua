@@ -262,9 +262,11 @@ task.spawn(function()
 		local gearW = cSize.Y
 		local coinPosY    = coinPill.Position.Y
 		local coinAnchorY = coinPill.AnchorPoint.Y
-		gearBtn.AnchorPoint = Vector2.new(0, coinAnchorY)
+		-- GEAR PLACEMENT REMOVED -- TokenHud.client.luau owns the top-right row layout. This was the
+		-- SECOND script placing the gear off the coin pill's AbsolutePosition (SettingsMenu had the
+		-- same block), so the row had three writers fighting over one button and visibly snapped back
+		-- after being laid out. Size only from here on; the layouter measures it and does the rest.
 		gearBtn.Size = UDim2.fromOffset(gearW, cSize.Y)
-		gearBtn.Position = UDim2.new(0, cLeft - GAP - gearW, coinPosY.Scale, coinPosY.Offset)
 		settingsPanel.AnchorPoint = Vector2.new(0, coinAnchorY)
 		settingsPanel.Position = UDim2.new(0, (cLeft + cSize.X) - settingsPanel.Size.X.Offset, coinPosY.Scale, coinPosY.Offset + cSize.Y + 6)
 	end

@@ -1160,35 +1160,37 @@ if not _G.MainMenuManager then
 	_G.MainMenuManager = mgr
 end
 -- the food-STAND menu fully hides here (also clears shopOpen so the proximity loop knows it's closed)
--- THE STAND KEEPS THE BOTTOM HUD. MainMenuManager.notifyOpened() disables BottomStackGui outright, and the
--- gut pill, the gas meter and the BUY FOOD button all live in there -- so walking up to a food stand hid the
--- three things you need in order to use it.
+-- THE STAND HIDES THE BOTTOM HUD, like every other menu. It used to do the opposite: it re-enabled
+-- BottomStackGui and pinned it to DisplayOrder 105 so it floated ABOVE the shop, on the reasoning that you
+-- need the gut pill and the BUY FOOD button to use a food stand. But the stand IS the buy screen -- the bar
+-- underneath was a second, smaller copy of what you were already looking at, and it needed a DisplayOrder
+-- hack to sit on top of the thing it duplicated.
 --
--- Re-enabling alone is not enough: the shop is DisplayOrder 100 and the HUD is 5, so it would still be drawn
--- underneath. 105 puts it above the shop while staying below the crate reveal (120).
+-- MainMenuManager.notifyOpened() already disables BottomStackGui, and CoreClient's HUD authority re-asserts
+-- that 4x/sec. This exists so the bar goes on the SAME frame the shop opens rather than up to a quarter
+-- second later, and to undo the DisplayOrder from any session that ran the old pinning build.
 --
--- The previous order is stashed on an ATTRIBUTE rather than a local, so the restore is still correct if the
+-- The stashed order is read off an ATTRIBUTE rather than a local, so the restore is still correct if the
 -- stand closes by a path this function never saw -- a respawn, a teleport, another menu stealing focus.
-local function standHudPin(on)
+local function standHudHide(on)
 	local pg = player:FindFirstChildOfClass("PlayerGui")
 	local g = pg and pg:FindFirstChild("BottomStackGui")
 	if not g then return end
 	if on then
-		if g:GetAttribute("HudOrderBeforePin") == nil then g:SetAttribute("HudOrderBeforePin", g.DisplayOrder) end
-		g.DisplayOrder = 105
-		g.Enabled = true
+		g.Enabled = false
 	else
-		local prev = g:GetAttribute("HudOrderBeforePin")
+		local prev = g:GetAttribute("HudOrderBeforePin")   -- leftover from the old pin, if any
 		if prev then
 			g.DisplayOrder = prev
 			g:SetAttribute("HudOrderBeforePin", nil)
 		end
+		g.Enabled = true
 	end
 end
 
 -- Closing by ANY route -- another menu stealing focus, the X, a respawn -- must unpin too, or the HUD would
 -- be left floating above whatever opened next.
-_G.MainMenuManager.register("FoodShop", function() FoodShopGui.Enabled = false; shopOpen = false; standHudPin(false) end)
+_G.MainMenuManager.register("FoodShop", function() FoodShopGui.Enabled = false; shopOpen = false; standHudHide(false) end)
 
 -- [UIFix] print the SHOP panel's REAL final layout + any size-controlling constraints (so the menus can copy them exactly),
 -- then its RESOLVED on-screen size each time it opens (compare against the Pet Hub / Seasonal Pets prints).
@@ -1210,16 +1212,50 @@ foodCloseBtn.MouseButton1Click:Connect(function()
 	task.delay(3, function() playerClosedShop = false end)
 end)
 
+-- ===== THE CRUNCH ONLY PLAYS WHEN YOU ACTUALLY ATE =====
+-- This used to fire the moment the BUY button was clicked, BEFORE anything was checked. So you heard a big
+-- satisfying chomp when you couldn't afford the food, when the food was locked, and -- worst of all -- when
+-- your stomach was already full and the server threw the purchase away. A sound that says "yum" while the
+-- meter doesn't move teaches players the meter is broken.
+--
+-- So the trigger moved off the button and onto the only thing that actually proves a bite happened: the
+-- CurrentPower stat GOING UP. Nothing else in the game raises it -- flying drains it, and unlocking an island
+-- or upgrading a gut RESETS it to zero (a decrease, so it stays silent). Every rejected purchase leaves it
+-- untouched, and therefore silent, with no per-rejection special-casing to keep in sync with the server.
+--
+-- It also fixes BUY MAX for free: that fires one purchase per item and used to crunch once for the whole
+-- batch regardless; now it crunches per bite, coalesced by the debounce below into one chomp per burst.
 local function playEatSound()
 	local sound=Instance.new("Sound"); sound.SoundId="rbxassetid://103794849233173"
 	sound.Volume=0.8; sound.Parent=workspace; sound:Play()
 	game:GetService("Debris"):AddItem(sound,3)
 end
 
+-- BUY MAX fires a dozen FireServer calls in a row and CurrentPower ticks up once per food. A dozen overlapping
+-- copies of the same crunch is a mess, so collapse a burst into one.
+local EAT_SOUND_GAP = 0.25
+task.spawn(function()
+	local cp
+	repeat
+		task.wait(0.5)
+		cp = _G.leaderstats and _G.leaderstats:FindFirstChild("CurrentPower")
+	until cp
+	local last, lastAt = cp.Value, 0
+	cp:GetPropertyChangedSignal("Value"):Connect(function()
+		local now = cp.Value
+		if now > last and os.clock() - lastAt >= EAT_SOUND_GAP then
+			lastAt = os.clock()
+			playEatSound()
+		end
+		last = now
+	end)
+	print("[Shop] crunch sound armed -- plays on CurrentPower RISING only (never on a refused purchase)")
+end)
+
 foodBuyBtn.MouseButton1Click:Connect(function()
 	local f=featuredFood; if not f then return end          -- buy the CURRENTLY FEATURED food
 	if not isUnlocked(f.island) then return end              -- locked featured food: not buyable
-	playEatSound()
+	-- (no playEatSound() here -- the crunch is driven by CurrentPower rising, so a refused buy stays silent)
 	local coins=0
 	pcall(function() if _G.leaderstats then local c=_G.leaderstats:FindFirstChild("Coins"); if c then coins=c.Value end end end)
 	if coins<f.price then
@@ -1235,7 +1271,8 @@ foodBuyBtn.MouseButton1Click:Connect(function()
 end)
 
 foodBuyMaxBtn.MouseButton1Click:Connect(function()
-	playEatSound()
+	-- (no playEatSound() here either -- BUY MAX often buys NOTHING, because the stomach is full or the coins
+	-- don't stretch to a single item. It used to crunch anyway, before it had even worked out the quantity.)
 	local feat=featuredFood; if not feat then return end     -- BUY MAX targets the FEATURED food
 	if not isUnlocked(feat.island) then return end           -- locked featured food: BUY MAX disabled
 	local coins, curPower, stomMax = 0, 0, 46
@@ -1410,7 +1447,7 @@ task.spawn(function()
 					_G.MainMenuManager.notifyOpened("FoodShop") -- becomes the one open main menu
 					FoodShopGui.Enabled = true
 					shopOpen = true
-					standHudPin(true) -- the stand is a world menu: gut pill, gas meter and BUY FOOD stay up
+					standHudHide(true) -- shop open: the gas meter + BUY FOOD bar goes away
 					print("SHOP OPEN ISLAND", foundIsland)
 				end
 			else
@@ -1419,7 +1456,7 @@ task.spawn(function()
 				if shopOpen then
 					FoodShopGui.Enabled = false
 					shopOpen = false
-					standHudPin(false) -- walked away: hand the HUD back to whatever owns it normally
+					standHudHide(false) -- walked away: the bar comes straight back
 					_G.MainMenuManager.notifyClosed("FoodShop")
 					print("SHOP CLOSED")
 				end

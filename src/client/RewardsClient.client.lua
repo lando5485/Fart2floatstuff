@@ -102,28 +102,39 @@ _G.openCodesGui = function() setCodesOpen(true) end
 -- =========================== 3) GROUP WINDOW ================================
 local groupGui = new("ScreenGui", { Name = "GroupPerkGui", ResetOnSpawn = false, DisplayOrder = 130, Enabled = false }, playerGui) -- starts CLOSED; never enabled for group members (see setGroupOpen)
 local groupCatch = new("TextButton", { Size = UDim2.fromScale(1,1), BackgroundColor3 = Color3.new(0,0,0), BackgroundTransparency = 0.5, Text = "", Visible = false, ZIndex = 1, AutoButtonColor = false }, groupGui)
-local groupPanel = new("Frame", { Size = UDim2.fromOffset(380, 320), Position = UDim2.fromScale(0.5,0.5), AnchorPoint = Vector2.new(0.5,0.5), BackgroundColor3 = Color3.fromRGB(40, 40, 55), Visible = false, ZIndex = 2 }, groupGui)
+local groupPanel = new("Frame", { Size = UDim2.fromOffset(700, 520), Position = UDim2.fromScale(0.5,0.5), AnchorPoint = Vector2.new(0.5,0.5), BackgroundColor3 = Color3.fromRGB(40, 40, 55), Visible = false, ZIndex = 2 }, groupGui)
 corner(groupPanel, 16); stroke(groupPanel, CREAM, 3)
+-- MOBILE FIT: same rule as the minigame cards -- a fixed 700x520 panel must scale itself down on phones or
+-- it hangs off both edges of a 360-tall screen. 92% of the viewport, never above 1.
+do
+	local gscale = Instance.new("UIScale"); gscale.Parent = groupPanel
+	local function gfit()
+		local vp = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(1280, 720)
+		gscale.Scale = math.clamp(math.min(vp.X * 0.92 / 700, vp.Y * 0.92 / 520), 0.4, 1)
+	end
+	gfit()
+	pcall(function() workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(gfit) end)
+end
 new("TextLabel", { Text = "MLR STUDIOS GROUP", Font = Enum.Font.FredokaOne, TextSize = 24, TextColor3 = CREAM, BackgroundTransparency = 1, Size = UDim2.new(1, -40, 0, 44), Position = UDim2.fromOffset(20, 12), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3 }, groupPanel)
 local groupX = new("TextButton", { Text = "X", Font = Enum.Font.GothamBold, TextSize = 18, TextColor3 = CREAM, BackgroundColor3 = Color3.fromRGB(210, 60, 55), Size = UDim2.fromOffset(30, 30), Position = UDim2.new(1, -40, 0, 14), ZIndex = 3 }, groupPanel)
 corner(groupX, 8)
-local groupStatus = new("TextLabel", { Text = "", Font = Enum.Font.GothamBold, TextSize = 18, TextColor3 = CREAM, BackgroundTransparency = 1, TextWrapped = true, Size = UDim2.new(1, -40, 0, 70), Position = UDim2.fromOffset(20, 60), TextYAlignment = Enum.TextYAlignment.Top, ZIndex = 3 }, groupPanel)
-local joinBtn = new("TextButton", { Text = "JOIN GROUP", Font = Enum.Font.FredokaOne, TextSize = 20, TextColor3 = Color3.new(1,1,1), BackgroundColor3 = GREEN, Size = UDim2.new(1, -40, 0, 46), Position = UDim2.fromOffset(20, 136), ZIndex = 3 }, groupPanel)
+local groupStatus = new("TextLabel", { Text = "", Font = Enum.Font.GothamBold, TextSize = 18, TextColor3 = CREAM, BackgroundTransparency = 1, TextWrapped = true, Size = UDim2.new(1, -80, 0, 110), Position = UDim2.fromOffset(40, 120), TextYAlignment = Enum.TextYAlignment.Top, ZIndex = 3 }, groupPanel)
+local joinBtn = new("TextButton", { Text = "JOIN GROUP", Font = Enum.Font.FredokaOne, TextSize = 20, TextColor3 = Color3.new(1,1,1), BackgroundColor3 = GREEN, Size = UDim2.new(1, -80, 0, 56), Position = UDim2.fromOffset(40, 250), ZIndex = 3 }, groupPanel)
 corner(joinBtn, 10); stroke(joinBtn, CREAM, 2)
-local urlBox = new("TextBox", { Text = groupState.url, Font = Enum.Font.Gotham, TextSize = 14, TextColor3 = DARK, BackgroundColor3 = Color3.fromRGB(245,245,250), TextWrapped = true, ClearTextOnFocus = false, TextEditable = true, Size = UDim2.new(1, -40, 0, 50), Position = UDim2.fromOffset(20, 192), ZIndex = 3 }, groupPanel)
+local urlBox = new("TextBox", { Text = groupState.url, Font = Enum.Font.Gotham, TextSize = 14, TextColor3 = DARK, BackgroundColor3 = Color3.fromRGB(245,245,250), TextWrapped = true, ClearTextOnFocus = false, TextEditable = true, Size = UDim2.new(1, -80, 0, 56), Position = UDim2.fromOffset(40, 326), ZIndex = 3 }, groupPanel)
 corner(urlBox, 8)
-local copyBtn = new("TextButton", { Text = "COPY LINK", Font = Enum.Font.FredokaOne, TextSize = 18, TextColor3 = DARK, BackgroundColor3 = Color3.fromRGB(255, 210, 90), Size = UDim2.new(1, -40, 0, 40), Position = UDim2.fromOffset(20, 250), ZIndex = 3 }, groupPanel)
+local copyBtn = new("TextButton", { Text = "COPY LINK", Font = Enum.Font.FredokaOne, TextSize = 18, TextColor3 = DARK, BackgroundColor3 = Color3.fromRGB(255, 210, 90), Size = UDim2.new(1, -80, 0, 52), Position = UDim2.fromOffset(40, 400), ZIndex = 3 }, groupPanel)
 corner(copyBtn, 10); stroke(copyBtn, Color3.fromRGB(180, 140, 40), 2)
 
 local function refreshGroupPanel()
 	if groupState.isMember then
 		groupStatus.Text = "You're a member — +10% coins active! \xE2\x9C\x85"
 		joinBtn.Visible = false; urlBox.Visible = false; copyBtn.Visible = false
-		groupPanel.Size = UDim2.fromOffset(380, 150)
+		groupPanel.Size = UDim2.fromOffset(700, 520)
 	else
 		groupStatus.Text = "Join MLR Studios for a permanent +10% coin perk (stacks with the friend boost).\nJoin the group, then REJOIN the game to claim."
 		joinBtn.Visible = true; urlBox.Visible = true; copyBtn.Visible = true; urlBox.Text = groupState.url
-		groupPanel.Size = UDim2.fromOffset(380, 310)
+		groupPanel.Size = UDim2.fromOffset(700, 520)
 	end
 end
 local function setGroupOpen(open)
@@ -211,6 +222,17 @@ local function isSafeToShowBanner()
 	for _, g in ipairs(playerGui:GetChildren()) do               -- the one-time Garden cinematic (cover/title/skip)
 		if g:IsA("ScreenGui") and g.Name:sub(1, 11) == "GardenIntro" then return false end
 	end
+	-- ===== THE ONBOARDING DIRECTIONS OWN THE SCREEN UNTIL THEY ARE DONE =====
+	-- While the tutorial arrows are guiding a brand-new player ("go to the Gardener", then "go to the food
+	-- stand"), a Daily Rewards nag popping over the top is the worst possible timing: it lands on the exact
+	-- player who has no idea what any of it means yet, and it competes with the one instruction they are
+	-- supposed to be following.
+	--
+	-- GardenGuideTrail publishes the live step here: "gardener" / "stand" while directions are running, and
+	-- nil the moment BOTH legs are done (or the player flies, which also graduates them). Non-nil = the
+	-- directions are still on screen, so every reminder banner waits. They are not lost -- pumpBanners
+	-- re-checks this gate on its own timer and shows them once the player is through.
+	if _G.gardenGuideStep ~= nil then return false end
 	local reveal = playerGui:FindFirstChild("MeteorCrateReveal")  -- daily-crate reveal open
 	if reveal then
 		local dim = reveal:FindFirstChild("Dim")
@@ -295,15 +317,15 @@ task.spawn(function()
 		task.wait(360)
 	end
 end)
--- DAILY: every 3 minutes, but ONLY while a daily reward is actually ready (and the player has no pet yet).
--- The task.wait(180) floor means it can never fire faster than once every 3 minutes.
-task.spawn(function()
-	task.wait(60)
-	while true do
-		if dailyEligible() then enqueueBanner(DAILY_TEXT, "daily") end -- dailyEligible() = crate claimable + no pet
-		task.wait(180) -- 3 minutes
-	end
-end)
+-- DAILY REMINDER: REMOVED. It fired every 3 minutes telling the player to "claim your FREE Daily Reward
+-- from the More menu", and it was the most repetitive thing on screen -- a nag pointing at a button that is
+-- already sitting in the HUD with its own ready-dot. The reward itself is untouched: it is still claimable
+-- from More+ > Rewards, the ready-dot still marks it, and _G.crateIsClaimable is still what the rest of the
+-- game asks. Only the recurring banner is gone.
+--
+-- DAILY_TEXT / dailyEligible / playerHasPet are deliberately KEPT above rather than deleted: they are the
+-- whole "is a daily reward waiting for a new player" test, and re-adding a prompt later (a one-shot on
+-- first join, say) should not mean rewriting it from scratch.
 
 -- ---- group: its OWN banner every 10 minutes, ONLY until the player joins the MLR group ----
 -- (no HUD button anymore; this tappable banner is the prompt. Stops once groupState.isMember is true.)

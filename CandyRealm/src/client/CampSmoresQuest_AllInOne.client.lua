@@ -60,7 +60,12 @@ local CARRY_MAX     = 8      -- backpack capacity -- must clear SHROOMS_NEEDED
 -- bigger dome sitting at the old height with its brim through your eyebrows.
 local HAT_SCALE     = 0.95
 local MILL_STROKES  = 8      -- saw strokes to get through ONE log (~12s played well)
-local SHROOM_PULL   = 4.2    -- seconds of holding to free one mushroom cap
+-- Seconds of holding to free one mushroom cap. This IS the floor and needs no ceiling
+-- clamp: playPull only accepts a hold, and v climbs at dt/secs, so a continuous hold takes
+-- exactly this long and letting go only makes it longer. Nothing to mash.
+-- (Was 4.2 -- raised to the realm's 15s pickup floor. 6 caps = 90s on this island, on top
+-- of the saw and the axe; drop it back toward 10 if that plays long.)
+local SHROOM_PULL   = 15     -- seconds of holding to free one mushroom cap
 local FIRE_DROP     = 10     -- studs to sink the fire below the top of the campfire model
 local FLAME_SCALE   = 4.0    -- flame HEIGHT (not the coals or the glow)
 local FLAME_WIDTH   = 0.62   -- flame SPREAD, on top of the scale -- narrower without shrinking

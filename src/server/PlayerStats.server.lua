@@ -1074,11 +1074,30 @@ Players.PlayerAdded:Connect(function(player)
 	-- petsApplyOnJoin so the pet state is loaded and the grant's sendState/sendInventory is the last word. Guarded
 	-- (pcall + existence check) so a pet-system failure can never break the join/load path. It also persists on the
 	-- normal path: PlayerStats saves _G.playerOwnedPets under saved.ownedPets on autosave/leave.
-	if isBrandNewPlayer and _G.grantStarterPet then
+	-- THE CHECK IS INSIDE THE SPAWN, NOT AROUND IT -- that ordering is the whole fix.
+	-- It used to read `if isBrandNewPlayer and _G.grantStarterPet then`, which asks whether PetSystem has
+	-- finished loading AT THIS EXACT INSTANT. PlayerStats and PetSystem are two separate server Scripts and
+	-- Roblox does not order them: on a join where PlayerStats got there first, _G.grantStarterPet was still
+	-- nil, the whole branch was skipped, and the player never received a Bean Buddy. Silently -- the print
+	-- lived inside the branch too, so there was not even a log line saying it had not run. That is the
+	-- intermittent "my starter pet did not show up": not a render failure at all, a grant that never
+	-- happened, on whichever joins lost the race.
+	--
+	-- Now the spawn always starts and WAITS for the function to exist (up to 15s, 10x/sec). The brand-new
+	-- test still gates it, and a timeout warns loudly instead of failing quietly.
+	if isBrandNewPlayer then
 		task.spawn(function()
+			local waited = 0
+			while not _G.grantStarterPet and waited < 15 do task.wait(0.1); waited = waited + 0.1 end
+			if not _G.grantStarterPet then
+				warn(("[STARTER PET] %s brandNew=y but _G.grantStarterPet never appeared after %.0fs -- " ..
+					"PetSystem.server did not load. No starter pet granted."):format(player.Name, waited))
+				return
+			end
+			if not player.Parent then return end -- left while we were waiting
 			local ok, granted = pcall(function() return _G.grantStarterPet(player) end)
-			print(string.format("[STARTER PET] %s brandNew=y grantOk=%s granted=%s",
-				player.Name, ok and "y" or "n", (ok and granted) and "y" or "n"))
+			print(string.format("[STARTER PET] %s brandNew=y grantOk=%s granted=%s (waited %.1fs for PetSystem)",
+				player.Name, ok and "y" or "n", (ok and granted) and "y" or "n", waited))
 		end)
 	end
 	-- OFFLINE PET EARNINGS: pay out what their pets earned while they were away. Deferred so it runs AFTER
@@ -1291,6 +1310,12 @@ CoinEvent.OnServerEvent:Connect(function(player, amount)
 	-- RewardsService (friend-in-server +25%, MLR group +10%, stackable). Flat rewards (codes) are granted directly, unaffected.
 	amt = amt * ((_G.coinBonusMult and _G.coinBonusMult[player]) or 1)
 	amt = amt * ((_G.rebirthMult and _G.rebirthMult[player]) or 1) -- REBIRTH coin boost (stacks on top of the friend/group boost)
+	-- SHADY SAL'S 2x COINS: bought for coins at the secret cave trader. The attribute is an EXPIRY set with
+	-- the server clock by SecretTrader.server.lua, and it is checked HERE, server-side, at the moment coins
+	-- are banked -- so a client can neither fake a boost nor stretch one past its five minutes.
+	if (player:GetAttribute("SalCoinBoostUntil") or 0) > workspace:GetServerTimeNow() then
+		amt = amt * 2
+	end
 	playerCoinAccum[player] = (playerCoinAccum[player] or 0) + amt
 	local toAdd = math.floor(playerCoinAccum[player])
 	if toAdd > 0 then
@@ -1664,10 +1689,39 @@ Players.PlayerRemoving:Connect(function(player)
 	flightsOfSaving[player] = nil
 end)
 
+-- ===== WHICH ISLAND DOES "RETURN" MEAN? =====
+-- The furthest island the player has actually got to, by ANY route -- and that is more than
+-- highestIslandReached alone. That table is raised ONLY by the physical landing detector below, so it misses
+-- everything that puts a player on an island without a detected touchdown: the Island leaderstat rises when
+-- they unlock one, Skip Island moves their home base, and a wormhole warp drops them straight onto a stand.
+-- Reading only the landing table meant the button could still say "Return to Island 3" for someone who had
+-- unlocked and travelled to 8 -- offering to send them backwards, which is the opposite of what it is for.
+--
+-- The max of the three is what the player has already been SHOWN as their progress (the food shop gates on
+-- exactly this max, see BuyFoodEvent), so it is the honest answer. Still server-authoritative: every one of
+-- these three is written only by server code and never from client input, and the result is clamped to an
+-- island whose stand actually exists, so it can never teleport into nothing.
+--
+-- DECLARED HERE, ABOVE BOTH USES -- the tap handler immediately below and the below-home prompt in the
+-- Heartbeat further down. A `local` is invisible to code written above it.
+local function maxIslandVisited(player)
+	local stats = player:FindFirstChild("leaderstats")
+	local lsIsland = stats and stats:FindFirstChild("Island")
+	local best = math.max(
+		highestIslandReached[player] or 1,
+		player:GetAttribute("HighestIsland") or 1,
+		(lsIsland and lsIsland.Value) or 1
+	)
+	-- clamp down to the highest island we actually have a stand for: standData fills in over the first few
+	-- seconds, and offering to return somewhere with no stand is a tap that silently does nothing
+	while best > 1 and not standData[best] do best = best - 1 end
+	return best
+end
+
 -- Player tapped the "Return to Island N" button. Server-authoritative: only teleport if they
 -- really are below their home island, and only ever to that island's real Stand part.
 ReturnToIslandEvent.OnServerEvent:Connect(function(player)
-	local hi = highestIslandReached[player] or 1
+	local hi = maxIslandVisited(player)
 	if hi <= 1 then return end
 	local char = player.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -1778,11 +1832,16 @@ RunService.Heartbeat:Connect(function(dt)
 			-- player is below their highest-reached island's Y — flying, falling, or standing.
 			-- Hidden only when on/above that island. (Client reads the ReturnPromptIsland
 			-- attribute.) No auto-teleport — the player chooses to tap the button.
+			-- NOT `hi`. `hi` above is the LANDING-DETECTOR's number and it has to stay that way -- it is the
+			-- value the `n > hi` test compares against, and widening it there would make a player who unlocked
+			-- island 5 without landing never register the landing at all. The BUTTON wants the broader
+			-- question ("furthest you have got to by any route"), so it asks separately.
+			local homeI = maxIslandVisited(plr)
 			local want = 0
-			if hi > 1 then
-				local sd = standData[hi]
+			if homeI > 1 then
+				local sd = standData[homeI]
 				if sd and hrp.Position.Y < sd.y - CATCH_MARGIN then
-					want = hi
+					want = homeI
 				end
 			end
 			if (plr:GetAttribute("ReturnPromptIsland") or 0) ~= want then

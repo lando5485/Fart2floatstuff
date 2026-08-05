@@ -20,7 +20,15 @@ local HttpService = game:GetService("HttpService")
 
 local RealmTransfer = {}
 
-RealmTransfer.VERSION = 1
+RealmTransfer.VERSION = 2   -- v2 added `gamepasses` + `gamepassIds`
+
+-- ONE list of the passes, mirroring PlayerStats.server.lua's GAMEPASS_IDS. It is duplicated here rather
+-- than required from PlayerStats because that is a Script, not a ModuleScript -- but the ids are shipped
+-- IN the payload, so a far realm reads them from the wire instead of keeping its own third copy.
+RealmTransfer.GAMEPASS_IDS = { TwoXForever = 1862015450, GlitterTrail = 1859714979, InfiniteGut = 1860686821 }
+
+-- The attribute PlayerStats stamps on the player when it resolves each pass on join.
+local PASS_ATTR = { TwoXForever = "HasTwoXForever", GlitterTrail = "HasGlitterTrail", InfiniteGut = "HasInfiniteGut" }
 
 --======================================================================
 -- SIZE. Roblox caps TeleportData, and going over does not truncate -- TeleportAsync THROWS, which means the
@@ -86,6 +94,23 @@ end
 --     A returning snapshot assigning them would wipe whatever the player earned in the meantime -- see the
 --     header of RealmReturnReceiver.server.lua for the full reasoning.
 --
+--   * GAMEPASSES -- and note carefully that these are a DIFFERENT KIND of thing from everything above, so
+--     they are carried for a different reason. Pet data has to travel because it exists only in this
+--     place's DataStore and the far realm has no way to look it up. Gamepass ownership is not like that:
+--     it is a Roblox-side fact keyed on (user, passId), and UserOwnsGamePassAsync answers it correctly
+--     from ANY place in ANY universe. So a realm that knows the pass ids never actually needed a payload.
+--
+--     They travel anyway, for two practical reasons:
+--       1. SPEED. The flags here were already resolved on join in this place, so the far realm can honour
+--          a 2x pass on the arrival frame instead of after a web call that can take a second and can fail.
+--       2. The far realm may not have the id list. `gamepassIds` ships alongside the flags precisely so a
+--          receiver can re-verify with UserOwnsGamePassAsync WITHOUT hardcoding ids that then drift apart
+--          between projects -- which is the failure this whole module exists to prevent.
+--
+--     Treat the flags as a trustworthy hint (TeleportData is server-set, so a client cannot forge them)
+--     and the ids as the way to confirm. They are three booleans and three numbers, so `fit` never needs
+--     to shed them.
+--
 -- `extra` is merged in last, so a caller can add its own keys (RealmPortals passes `realm`).
 function RealmTransfer.build(player, realmKey, extra)
 	local function g(tbl, default)
@@ -114,7 +139,21 @@ function RealmTransfer.build(player, realmKey, extra)
 		crateTokens     = math.floor(tonumber(g("playerCrateTokens", 0)) or 0),
 		ownedGutSkins   = g("playerOwnedGutSkins", { Default = true }),
 		equippedGutSkin = g("playerEquippedGutSkin", "Default"),
+
+		-- Read off the ATTRIBUTES rather than re-querying Roblox: PlayerStats already resolved every pass
+		-- when the player joined this place and stamped the answer there, so this costs nothing and cannot
+		-- block the teleport on a slow web call. A pass bought DURING this session is included too --
+		-- PlayerStats sets the same attribute in its PromptGamePassPurchaseFinished handler.
+		gamepasses      = {},
+		gamepassIds     = {},   -- a COPY, not the module's own table: `fit` and every caller are free to
+		                        -- mutate the payload, and aliasing would edit the shared list underneath them
 	}
+	for name, attr in pairs(PASS_ATTR) do
+		payload.gamepasses[name] = (player:GetAttribute(attr) == true)
+	end
+	for name, id in pairs(RealmTransfer.GAMEPASS_IDS) do
+		payload.gamepassIds[name] = id
+	end
 
 	if type(extra) == "table" then
 		for k, v in pairs(extra) do payload[k] = v end

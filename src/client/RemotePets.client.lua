@@ -563,13 +563,32 @@ local function onBroadcast(info)
 	if not info.petId then removeRemotePet(userId, "unequipped"); return end -- nothing equipped -> remove
 	local plr = Players:GetPlayerByUserId(userId)
 	if not plr then return end -- not in the server (shouldn't happen for a live broadcast)
+	-- THE SKIN IS PART OF THE LOOK, so it is part of the identity check below.
+	-- The payload carries the owner's equipped skin + trait; painting them here is what makes a remote pet
+	-- match what its owner sees. Before this the broadcast described only a species and everyone rendered the
+	-- plain base pet -- the owner saw a Cosmic-skinned duck, everyone else saw an ordinary duck.
+	-- applyPetSkinPreview is PetSkinLook's "paint an ARBITRARY skin+trait on this model" entry point, the same
+	-- one the crate reveal uses; static=false gives the full treatment (emitter, light, hue cycling), which is
+	-- right here because this is a live pet in the world rather than a thumbnail.
+	local function paintSkin(model, skin, trait)
+		if not (model and _G.applyPetSkinPreview) then return end
+		pcall(_G.applyPetSkinPreview, model, skin, trait, false)
+	end
+
 	local entry = remotePets[userId]
 	if entry and entry.pet and entry.petId == info.petId then
-		-- SAME pet -> just refresh the look if the level/rare changed (no rebuild)
+		-- SAME pet -> refresh the look if level / rare / SKIN changed (no rebuild)
 		entry.level = info.level; entry.isRare = info.isRare
 		if entry.appliedLevel ~= info.level or entry.appliedRare ~= info.isRare then
 			entry.appliedLevel = info.level; entry.appliedRare = info.isRare
 			applyLevelVisual(entry.pet, info.level or 1, info.petId, info.isRare)
+		end
+		-- Skin changes arrive as their own broadcast (SkinCrateService re-announces on equip), and they do NOT
+		-- change the pet id -- so without this the payload would be treated as "nothing to do" and the new
+		-- skin would never appear on anyone else's screen.
+		if entry.appliedSkin ~= info.skin or entry.appliedTrait ~= info.trait then
+			entry.appliedSkin = info.skin; entry.appliedTrait = info.trait
+			paintSkin(entry.pet, info.skin, info.trait)
 		end
 		return
 	end
@@ -580,10 +599,15 @@ local function onBroadcast(info)
 	entry.petId = info.petId; entry.level = info.level; entry.isRare = info.isRare
 	entry.smoothPos = nil; entry.smoothFwd = nil; entry.bobT = 0
 	remotePets[userId] = entry
-	if not buildEntryPet(entry) then
+	entry.appliedSkin = info.skin; entry.appliedTrait = info.trait
+	if buildEntryPet(entry) then
+		paintSkin(entry.pet, info.skin, info.trait)
+	else
 		-- template not replicated yet -> retry once shortly (a later broadcast also rebuilds)
 		task.delay(2, function()
-			if remotePets[userId] == entry and not entry.pet then buildEntryPet(entry) end
+			if remotePets[userId] == entry and not entry.pet then
+				if buildEntryPet(entry) then paintSkin(entry.pet, entry.appliedSkin, entry.appliedTrait) end
+			end
 		end)
 	end
 end

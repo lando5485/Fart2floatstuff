@@ -785,36 +785,38 @@ if not _G.MainMenuManager then
 	_G.MainMenuManager = mgr
 end
 -- the food-STAND menu fully hides here (also clears shopOpen so the proximity loop knows it's closed)
--- THE STAND KEEPS THE BOTTOM HUD. Identical to the fix in ShopClient.client.lua -- the realm places run
--- THIS file instead, and MainMenuManager.notifyOpened() disables BottomStackGui outright, which is where the
--- gut pill, the gas meter and the BUY FOOD button all live. Walking up to a stand hid the three things you
--- need in order to use it.
+-- THE STAND HIDES THE BOTTOM HUD, like every other menu. Identical to the change in ShopClient.client.lua --
+-- the realm places run THIS file instead. It used to do the opposite: re-enable BottomStackGui and pin it to
+-- DisplayOrder 105 so it floated ABOVE the shop, on the reasoning that the gut pill, the gas meter and the
+-- BUY FOOD button are what you need to use a stand. But the stand IS the buy screen -- the bar underneath was
+-- a second, smaller copy of what you were already looking at, and it needed a DisplayOrder hack to sit on top
+-- of the thing it duplicated.
 --
--- Re-enabling alone is not enough: the shop is DisplayOrder 100 and the HUD is 5, so it would still be drawn
--- underneath. 105 puts it above the shop while staying below the crate reveal (120).
+-- MainMenuManager.notifyOpened() already disables BottomStackGui, and CoreClient's HUD authority re-asserts
+-- that 4x/sec. This exists so the bar goes on the SAME frame the shop opens rather than up to a quarter second
+-- later, and to undo the DisplayOrder from any session that ran the old pinning build.
 --
--- The previous order is stashed on an ATTRIBUTE rather than a local, so the restore is still correct if the
--- stand closes by a path this function never saw -- a respawn, a realm teleport, another menu taking focus.
-local function standHudPin(on)
+-- The stashed order is read off an ATTRIBUTE rather than a local, so the restore is still correct if the stand
+-- closes by a path this function never saw -- a respawn, a realm teleport, another menu taking focus.
+local function standHudHide(on)
 	local pg = player:FindFirstChildOfClass("PlayerGui")
 	local g = pg and pg:FindFirstChild("BottomStackGui")
-	if not g then return end -- a realm without a bottom HUD: nothing to pin
+	if not g then return end -- a realm without a bottom HUD: nothing to hide
 	if on then
-		if g:GetAttribute("HudOrderBeforePin") == nil then g:SetAttribute("HudOrderBeforePin", g.DisplayOrder) end
-		g.DisplayOrder = 105
-		g.Enabled = true
+		g.Enabled = false
 	else
-		local prev = g:GetAttribute("HudOrderBeforePin")
+		local prev = g:GetAttribute("HudOrderBeforePin")   -- leftover from the old pin, if any
 		if prev then
 			g.DisplayOrder = prev
 			g:SetAttribute("HudOrderBeforePin", nil)
 		end
+		g.Enabled = true
 	end
 end
 
--- Closing by ANY route -- another menu taking focus, the X, a respawn -- must unpin too, or the HUD would be
--- left floating above whatever opened next.
-_G.MainMenuManager.register("FoodShop", function() FoodShopGui.Enabled = false; shopOpen = false; standHudPin(false) end)
+-- Closing by ANY route -- another menu taking focus, the X, a respawn -- must restore too, or you would walk
+-- away from a stand with no gas meter and no way to get it back.
+_G.MainMenuManager.register("FoodShop", function() FoodShopGui.Enabled = false; shopOpen = false; standHudHide(false) end)
 
 -- [UIFix] print the SHOP panel's REAL final layout + any size-controlling constraints (so the menus can copy them exactly),
 -- then its RESOLVED on-screen size each time it opens (compare against the Pet Hub / Seasonal Pets prints).
@@ -1025,7 +1027,7 @@ task.spawn(function()
 					_G.MainMenuManager.notifyOpened("FoodShop") -- becomes the one open main menu
 					FoodShopGui.Enabled = true
 					shopOpen = true
-					standHudPin(true) -- the stand is a world menu: gut pill, gas meter and BUY FOOD stay up
+					standHudHide(true) -- shop open: the gas meter + BUY FOOD bar goes away
 					print("SHOP OPEN ISLAND", foundIsland)
 				end
 			else
@@ -1034,7 +1036,7 @@ task.spawn(function()
 				if shopOpen then
 					FoodShopGui.Enabled = false
 					shopOpen = false
-					standHudPin(false) -- walked away: hand the HUD back to whatever owns it normally
+					standHudHide(false) -- walked away: the bar comes straight back
 					_G.MainMenuManager.notifyClosed("FoodShop")
 					print("SHOP CLOSED")
 				end

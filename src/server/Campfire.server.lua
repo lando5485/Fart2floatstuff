@@ -58,12 +58,54 @@ end
 nukeStaleServerCopies()
 task.delay(1, nukeStaleServerCopies); task.delay(4, nukeStaleServerCopies); task.delay(9, nukeStaleServerCopies)
 
--- client -> server actions for the roasting buttons ("roast" / "stop" / "eat"). getOrCreate so a missing
--- project.json entry can't break it; the client WaitForChild's this same name.
-local stickRemote = ReplicatedStorage:FindFirstChild("CampfireStick")
-if not stickRemote then
-	stickRemote = Instance.new("RemoteEvent"); stickRemote.Name = "CampfireStick"; stickRemote.Parent = ReplicatedStorage
+-- ===== THE REMOTE, AND WHY IT IS STAMPED RATHER THAN JUST NAMED =====
+-- THIS IS WHY ALL FOUR BUTTONS WERE DEAD, and the press logging is what proved it: the client printed
+-- "[Campfire][press] Roast -- allowed=true", so the click landed and FireServer ran -- and the server's
+-- receipt line never printed. The press was arriving at a RemoteEvent with nobody listening on it.
+--
+-- There was MORE THAN ONE RemoteEvent named "CampfireStick" in ReplicatedStorage. A stale duplicate server
+-- script (the log removes 2 of them every join) creates its own on startup. We remove those scripts at line
+-- 58, but destroying a Script does NOT stop code that is already running or queued, so a stale copy that
+-- gets there after us still adds a second remote. From then on it is a coin toss: the server listens on one,
+-- the client's WaitForChild("CampfireStick") resolves whichever replicated first, and if they differ every
+-- press vanishes into an object with no handler. Silently. Which is exactly what we saw.
+--
+-- Matching on NAME cannot fix that -- both are named the same. So ours is STAMPED, every same-named sibling
+-- is destroyed, and the client picks by stamp (see Campfire.client.luau). Re-swept on the same schedule as
+-- the script sweep above, because a stale copy can create its remote seconds after we start.
+local REMOTE_STAMP = "CampfireRemoteLive"
+
+local stickRemote
+do
+	-- adopt an already-stamped one if a previous pass made it, else the first same-named one, else build it
+	for _, d in ipairs(ReplicatedStorage:GetChildren()) do
+		if d:IsA("RemoteEvent") and d.Name == "CampfireStick" and d:GetAttribute(REMOTE_STAMP) then
+			stickRemote = d; break
+		end
+	end
+	if not stickRemote then stickRemote = ReplicatedStorage:FindFirstChild("CampfireStick") end
+	if not stickRemote then
+		stickRemote = Instance.new("RemoteEvent"); stickRemote.Name = "CampfireStick"
+	end
+	stickRemote:SetAttribute(REMOTE_STAMP, true) -- stamped BEFORE parenting, so the client never sees it unstamped
+	stickRemote.Parent = ReplicatedStorage
 end
+
+-- Exactly one "CampfireStick" may exist. Any other is a stale copy's, and a press that lands on it is lost.
+local function nukeRivalRemotes()
+	local killed = 0
+	for _, d in ipairs(ReplicatedStorage:GetChildren()) do
+		if d ~= stickRemote and d.Name == "CampfireStick" then
+			pcall(function() d:Destroy() end); killed += 1
+		end
+	end
+	if killed > 0 then
+		warn("[Campfire] destroyed " .. killed .. " RIVAL 'CampfireStick' remote(s) made by a stale duplicate " ..
+			"script. Button presses were landing on one of those and vanishing -- nobody was listening on it.")
+	end
+end
+nukeRivalRemotes()
+task.delay(1, nukeRivalRemotes); task.delay(4, nukeRivalRemotes); task.delay(9, nukeRivalRemotes)
 
 --------------------------------------------------------------------------------
 -- tuning -- keep the coins SMALL
@@ -71,10 +113,19 @@ end
 local SCALE        = 1.02   -- overall size of the campfire + seats (1 = original). Everything scales off this.
 local SEATS        = 6      -- default stump seats ringed around a fire (a numbered brick like "Fire 2" overrides)
 local REST_RADIUS  = 24     -- studs from the fire you must be within to count as resting (widened for the bigger ring)
-local TICK         = 3      -- seconds between payouts
+-- ===== RESTING PAY IS 40% LOWER, AND IT IS THE INTERVAL THAT CHANGED =====
+-- 3 -> 5 seconds between payouts, which is 3 / 0.6, so a minute at the fire now pays exactly 60% of what it
+-- used to. The per-tick AMOUNTS below are deliberately untouched: they are small integers (1 and 3), and
+-- scaling those by 0.6 gives 0.6 and 1.8, which floor to 0 and 1 -- the first would pay nothing at all and
+-- the second is a 67% cut, not 40%. Stretching the interval lands the cut exactly and keeps every payout a
+-- whole coin, so the ramp (1/tick, rising to the 3 cap after two minutes) still reads the same on screen.
+--
+--   before: 1 coin/3s = 20/min, ramping to 3/3s = 60/min at the cap
+--   after:  1 coin/5s = 12/min, ramping to 3/5s = 36/min at the cap
+local TICK         = 5      -- seconds between payouts (was 3; see the note above -- this is the 40% cut)
 local BASE_COINS   = 1      -- coins per tick to start
 local BONUS_PER_MIN = 1     -- +1 per full minute you stay, so genuine idling feels a touch cozier...
-local MAX_COINS    = 3      -- ...but it's capped low. 3 coins / 3s is the ceiling.
+local MAX_COINS    = 3      -- ...but it's capped low. 3 coins / 5s is the ceiling (36 a minute).
 local STILL_SPEED  = 14     -- studs/s: move faster than this and you're not "resting", you're passing through
 
 -- marshmallow roasting
@@ -369,6 +420,9 @@ local SIGN_LIT   = "\xF0\x9F\x94\xA5 Cozy Campfire\nrest & warm up"
 local SIGN_RAIN  = "\xF0\x9F\x8C\xA7 Rained out!\nthe fire's out"
 local function setFiresLit(lit)
 	firesLit = lit
+	-- Published so the CLIENT can grey the Roast button while the fire is out. Without it the button stays
+	-- bright orange during a storm and pressing it just silently fails, which reads as a broken button.
+	Workspace:SetAttribute("CampfireLit", lit and true or false)
 	for _, c in ipairs(CAMPFIRES) do
 		if c.fire  then c.fire.Enabled  = lit end
 		if c.smoke then c.smoke.Enabled = lit end -- (the flame part is driven by the flicker loop)
@@ -419,8 +473,11 @@ local function marshColor(r)
 end
 
 -- what eating a marshmallow at this roast says + rewards. Golden is the sweet spot.
+-- Below this the marshmallow is RAW: roastResult calls it "Still raw!", and the Eat action refuses it. One
+-- constant so the refusal and the result text can never disagree about what raw means.
+local RAW_UNTIL = 18
 local function roastResult(r)
-	if r < 18     then return "Still raw! Hold it over the fire.", 1, Color3.fromRGB(240, 240, 240)
+	if r < RAW_UNTIL then return "Still raw! Hold it over the fire.", 1, Color3.fromRGB(240, 240, 240)
 	elseif r < 42 then return "\xF0\x9F\x98\x8B Lightly toasted!",  3, Color3.fromRGB(240, 214, 150)
 	elseif r < 72 then return "\xF0\x9F\x94\xA5 Perfectly golden!", 8, Color3.fromRGB(255, 190, 90)  -- best
 	elseif r < 92 then return "Crispy and gooey!",                 4, Color3.fromRGB(170, 110, 60)
@@ -561,6 +618,9 @@ local function buildCodeStick()
 	local tool = Instance.new("Tool")
 	tool.Name = "Marshmallow Stick"; tool.CanBeDropped = false; tool.RequiresHandle = true
 	tool.ToolTip = "Roast it over the fire, then click to eat"
+	-- Belongs to Bean Farm's campfire and nowhere else. HeldItemSync reads this and takes the stick back on
+	-- respawn, so you can't carry it up to Pizza Palms and stand there holding a marshmallow at nothing.
+	tool:SetAttribute("QuestIsland", 1)
 
 	-- Handle = the grip end (what your hand holds). Everything else welds to it.
 	local handle = Instance.new("Part")
@@ -737,6 +797,23 @@ function giveStick(player) -- assigns the forward-declared local above
 	pcall(function() hum:EquipTool(tool) end)
 end
 
+-- Distance from a point to the NEAREST flame (or math.huge if there are none).
+--
+-- DECLARED HERE, ABOVE THE HANDLER THAT USES IT, AND THAT POSITION IS LOAD-BEARING. It used to live ~70
+-- lines further down. A `local` is only visible to code written after it, so from inside the button handler
+-- below the name resolved as a GLOBAL instead -- nil -- and the first press threw "attempt to call a nil
+-- value", killing the handler before it reached any of the four actions. Every button went dead at once.
+--
+-- The roasting loop further down calls it too, and worked fine, because that loop IS written after the old
+-- declaration. That is what made the break look like a UI problem rather than a scoping one.
+local function nearestFlameDist(pos)
+	local best = math.huge
+	for _, flame in ipairs(FLAMES) do
+		if flame.Parent then best = math.min(best, (pos - flame.Position).Magnitude) end
+	end
+	return best
+end
+
 -- Go / Stop / Eat / Remove, from the on-screen buttons.
 stickRemote.OnServerEvent:Connect(function(player, action)
 	local tool = heldStick[player]
@@ -752,10 +829,77 @@ stickRemote.OnServerEvent:Connect(function(player, action)
 			or (bp and bp:FindFirstChild("Marshmallow Stick"))
 		heldStick[player] = tool -- re-adopt (or leave nil if a stick genuinely isn't held anymore)
 	end
-	if not tool then return end -- genuinely not holding a stick -> ignore
-	if action == "roast"   then roasting[player] = true
-	elseif action == "stop" then roasting[player] = nil
-	elseif action == "eat"  then eatStick(player)
+	-- NOT SILENT. This used to be a bare `return`, and that is the single worst failure mode a button can
+	-- have: the press is received, rejected, and nothing whatsoever happens on screen. Every one of the four
+	-- buttons dies at once and it looks identical to "the remote never arrived", which is what sent the last
+	-- two rounds of debugging down the wrong hole. If we refuse, we say so, out loud, on the player's head
+	-- AND in the log with the state that caused it.
+	print(("[Campfire] press '%s' from %s -- tool=%s roasting=%s"):format(
+		tostring(action), player.Name, tostring(tool and tool:GetFullName() or "NONE"),
+		tostring(roasting[player] == true)))
+	if not tool then
+		flashOverhead(player, "\xF0\x9F\x8D\xA1 You aren't holding the marshmallow stick", Color3.fromRGB(255, 205, 130))
+		warn("[Campfire] '" .. tostring(action) .. "' REFUSED for " .. player.Name ..
+			" -- no 'Marshmallow Stick' tool in character or backpack. Take one from the campfire prompt first.")
+		return
+	end
+
+	-- ===== EVERY ACTION IS VALIDATED HERE, ON THE SERVER =====
+	-- The client greys the buttons it knows are illegal, but greying is a COURTESY, not a control: a crafted
+	-- FireServer can send any action at any time from anywhere. So each one re-checks the two things that
+	-- actually matter -- are you close enough to this fire, and is the action legal for the stick's state --
+	-- and says WHY it refused rather than failing silently.
+	local function inRange()
+		local char = player.Character
+		local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+		return hrp ~= nil and nearestFlameDist(hrp.Position) <= REST_RADIUS
+	end
+	local function refuse(msg)
+		flashOverhead(player, msg, Color3.fromRGB(255, 205, 130))
+	end
+
+	if action == "roast" then
+		if not hasMarsh(tool) then return refuse("\xF0\x9F\x8D\xA1 Nothing on the stick -- grab one from the bucket") end
+		if roasting[player] then return refuse("Already roasting!") end
+		if not firesLit then return refuse("\xF0\x9F\x8C\xA7 The fire is out") end
+		if not inRange() then return refuse("Get closer to the fire") end
+		roasting[player] = true
+		tool:SetAttribute("Roasting", true) -- replicates: the client greys Roast and un-greys Stop off this
+
+	elseif action == "stop" then
+		if not roasting[player] then return refuse("You aren't roasting anything") end
+		roasting[player] = nil
+		tool:SetAttribute("Roasting", false)
+		-- STOP FREEZES IT WHERE IT IS. Roast and the marshmallow's colour are deliberately left alone, so the
+		-- browning you earned stays earned and you can eat it at exactly the shade you pulled it out at.
+		--
+		-- This USED to reset it to white, on the reasoning that keeping the colour makes Stop a free "bank my
+		-- progress" button -- toast to perfect, stop, never risk burning. That is true, and it is the wrong
+		-- trade for this game: a marshmallow is not a boss fight, and wiping ten seconds of a child's work for
+		-- tapping the wrong button reads as the button being broken, not as a rule. Stop now means stop.
+		--
+		-- Nothing else has to change for this to work. The cook loop only advances Roast while roasting[player]
+		-- is set, so freezing is just not-advancing; pressing Roast again resumes from the current shade rather
+		-- than starting over; and Eat already gates on Roast >= RAW_UNTIL with no opinion about whether the
+		-- stick is still over the fire.
+		local shade = tool:GetAttribute("Roast") or 0
+		if shade >= RAW_UNTIL then
+			flashOverhead(player, "\xE2\x9C\x8B Stopped -- ready to eat!", Color3.fromRGB(180, 235, 170))
+		else
+			flashOverhead(player, "\xE2\x9C\x8B Stopped -- still raw, roast it more", Color3.fromRGB(200, 210, 225))
+		end
+
+	elseif action == "eat" then
+		if not hasMarsh(tool) then return refuse("\xF0\x9F\x8D\xA1 No marshmallow -- grab one from the bucket") end
+		if (tool:GetAttribute("Roast") or 0) < RAW_UNTIL then
+			-- RAW IS NOT FOOD. roastResult already calls anything under this "Still raw!", so eating it was
+			-- paying out a coin for doing nothing -- and it taught players that the fire is optional.
+			return refuse("\xF0\x9F\x8D\xA1 Still raw -- hold it over the fire first")
+		end
+		if not inRange() then return refuse("Get closer to the fire") end
+		eatStick(player)
+		tool:SetAttribute("Roasting", false)
+
 	elseif action == "remove" then
 		-- Put the stick down: no eat, no reward. Destroying the tool is what hands the bottom buttons back --
 		-- the HUD authority in CoreClient only hides them while you are holding a stick AT a fire, so the gut
@@ -763,17 +907,15 @@ stickRemote.OnServerEvent:Connect(function(player, action)
 		heldStick[player] = nil; roasting[player] = nil
 		tool:Destroy()
 		flashOverhead(player, "\xF0\x9F\x97\x91 Put the stick back", Color3.fromRGB(255, 170, 150))
+
+	else
+		-- An action string this build does not know. That means the press came from a STALE DUPLICATE client
+		-- baked into the place, firing an older vocabulary at the current server -- which lands here and does
+		-- nothing, silently, forever. Name it so the duplicate can be found and deleted.
+		warn("[Campfire] UNKNOWN action '" .. tostring(action) .. "' from " .. player.Name ..
+			" -- this is almost certainly a stale duplicate Campfire client script. Delete it in Studio.")
 	end
 end)
-
--- distance from a point to the NEAREST flame (or math.huge if there are none)
-local function nearestFlameDist(pos)
-	local best = math.huge
-	for _, flame in ipairs(FLAMES) do
-		if flame.Parent then best = math.min(best, (pos - flame.Position).Magnitude) end
-	end
-	return best
-end
 
 -- Resting = fires lit, alive, roughly still, and within REST_RADIUS of ANY of the campfires.
 local function restingAtAny(player)
@@ -823,7 +965,7 @@ local function runRoasting()
 				-- walked off -> drop the marshmallow, take the stick back
 				heldStick[player] = nil; roasting[player] = nil
 				flashOverhead(player, "\xF0\x9F\x8D\xA1 You left the campfire", Color3.fromRGB(255, 170, 90))
-				tool:Destroy()
+				tool:Destroy() -- the tool goes with it, so its Roasting attribute goes too
 			elseif marsh and hasMarsh(tool) and firesLit and roasting[player] and hrp and nearestFlameDist(hrp.Position) <= REST_RADIUS then
 				-- fires must be LIT to cook -- a rained-out fire won't roast anything
 				local r = math.min(100, (tool:GetAttribute("Roast") or 0) + ROAST_STEP)

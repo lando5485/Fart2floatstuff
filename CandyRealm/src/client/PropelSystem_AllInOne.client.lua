@@ -2,9 +2,13 @@
 -- PropelSystem_AllInOne.client.lua  (LocalScript)
 --======================================================================
 -- The FART PROPEL / FLIGHT ENGINE (no HUD of its own). It drives the REAL
--- bottom-stack HUD built by JustButtons_AllInOne: the gas bar (_G.HUD.gasFill /
+-- bottom HUD card built by BottomMeterPanel.client.luau: the gas bar (_G.HUD.gasFill /
 -- _G.HUD.gasPct) and the "HOLD TO FART!" button (which routes taps through
--- _G.toggleFart). Space also farts (desktop).
+-- _G.toggleFart). Space also farts (desktop) -- bound HERE and only here; the
+-- card deliberately leaves BIND_SPACE false so one press is not toggled twice.
+--
+-- (Those three handles used to be parts of JustButtons_AllInOne's three-slab bottom
+-- stack. The card publishes the same names off its own parts, so nothing below changed.)
 --
 -- Behavior (verbatim from CoreClient): tap fart -> a BodyVelocity drives you
 -- straight UP while the gas meter DRAINS. Run dry (meter hits 0) -> thrust stops,
@@ -54,8 +58,8 @@ local function getFlightSpeed(power)
 end
 
 -- ============================================================================
--- HUD DRIVE -- update the REAL JustButtons bottom-stack gas bar + fart label.
--- All guarded: no-ops until JustButtons has published _G.HUD.
+-- HUD DRIVE -- update the bottom card's gas bar + fart label.
+-- All guarded: no-ops until BottomMeterPanel has published _G.HUD.
 -- ============================================================================
 local function updateMeter()
 	local hud = _G.HUD
@@ -177,4 +181,13 @@ player.CharacterAdded:Connect(function()
 end)
 
 updateMeter(); updateFartLabel()
-print("[Propel] flight engine ready -- drives the real HUD; HOLD TO FART button + Space fart. (auto-fuel on ground)")
+
+-- SETTLE PASS. Both draws above, and the AUTO-FUEL top-up, are EDGE-triggered -- they run on a
+-- state change and then not again. LocalScripts start in arbitrary order, so if this engine
+-- fills the tank before BottomMeterPanel has published _G.HUD, those writes land on nothing and
+-- the bar reads 0% while the tank is actually full, right up until the first flight changes
+-- state again. Re-drawing after the HUDs have built closes that window; it is two property
+-- writes, not a loop.
+task.delay(1, function() updateMeter(); updateFartLabel() end)
+
+print("[Propel] flight engine ready -- drives the bottom card; HOLD TO FART button + Space fart. (auto-fuel on ground)")

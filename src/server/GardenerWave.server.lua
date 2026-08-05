@@ -89,6 +89,39 @@ local NPCS = {
 	},
 }
 
+-- ===== THE ISLAND QUEST GIVERS WAVE THE SAME WAY =====
+-- One entry per island, appended to the SAME list rather than given their own wave routine -- the whole point of
+-- this file is that there is exactly one wave and everybody runs it, so they can never drift apart.
+--
+-- Names are matched NORMALISED (lowercased, spaces/underscores stripped): the quest NPCs in this place are
+-- actually named "Quest " with a TRAILING SPACE, which an exact-name lookup misses every single time.
+local function normName(s) return (tostring(s):lower():gsub("[%s_%-%.]", "")) end
+local function findIslandModel(n)
+	local want = "island" .. n
+	for _, m in ipairs(Workspace:GetChildren()) do
+		if m:IsA("Model") then
+			local nm = normName(m.Name)
+			-- digit guard, or "island1" also matches island 10..14
+			if nm:sub(1, #want) == want and not tonumber(nm:sub(#want + 1, #want + 1)) then return m end
+		end
+	end
+	return nil
+end
+for n = 1, 14 do
+	NPCS[#NPCS + 1] = {
+		key = "Quest" .. n,
+		optional = true, -- most islands have no quest NPC placed; that is not an error worth warning about
+		find = function()
+			local island = findIslandModel(n)
+			if not island then return nil end
+			for _, d in ipairs(island:GetDescendants()) do
+				if d:IsA("Model") and normName(d.Name) == "quest" then return d end
+			end
+			return nil
+		end,
+	}
+end
+
 -- The LEFT shoulder joint. R15 and R6 name it and park it in completely different places, and the rig is chosen at
 -- runtime, so both are handled rather than assumed.
 local function findLeftShoulder(npc)
@@ -116,7 +149,9 @@ local function runNPC(spec)
 		task.wait(0.5)
 	end
 	if not (npc and hrp) then
-		warn(("[Wave] %s not found -- he will not wave"):format(spec.key))
+		-- OPTIONAL specs are the per-island quest givers: most islands legitimately have no NPC placed yet,
+		-- so a missing one is a fact, not a fault. Warning 9 times a session would train you to ignore it.
+		if not spec.optional then warn(("[Wave] %s not found -- he will not wave"):format(spec.key)) end
 		return
 	end
 

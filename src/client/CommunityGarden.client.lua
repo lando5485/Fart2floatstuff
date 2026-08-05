@@ -158,15 +158,29 @@ hintGui.Enabled = false; hintGui.Parent = player:WaitForChild("PlayerGui")
 local hint = Instance.new("TextLabel")
 hint.AnchorPoint = Vector2.new(0.5, 0.5); hint.Position = UDim2.new(0.5, 0, 0.60, 0)
 hint.Size = UDim2.new(0, 460, 0, 56)
-hint.BackgroundColor3 = Color3.fromRGB(26, 79, 214)   -- the house blue, same as the crate/shop panels
+-- ===== LEGIBILITY: this banner used to glare =====
+-- It had THREE brightnesses fighting on top of each other -- pure-white text, on a bright house blue, wearing
+-- a 3px WHITE UIStroke. On a TextLabel a UIStroke defaults to outlining the GLYPHS, not the panel border, so
+-- that white stroke was growing white outward from white letters: the counters (the holes in a, e, o) filled
+-- in and the whole line read as a bright smear rather than as words.
+--
+-- Worse, there were TWO strokes on the same label -- the white one and a dark blue one -- so the dark one that
+-- was supposed to define the edge was buried under the white one.
+--
+-- Same treatment as every button label in the game (see ButtonTextStyle): cream text instead of pure white, a
+-- SINGLE 2px stroke coloured a dark shade of the panel's OWN blue so it reads as shadow rather than as dirt,
+-- and the fill dropped so the light text has something to sit against. ButtonTextStyle did not catch this one
+-- because it only sweeps buttons, and this is a bare TextLabel in its own ScreenGui.
+hint.BackgroundColor3 = Color3.fromRGB(20, 62, 167)   -- house blue, darkened ~78% so cream text has contrast
 hint.BackgroundTransparency = 0.08
-hint.Font = Enum.Font.FredokaOne; hint.TextSize = 24; hint.TextColor3 = Color3.fromRGB(255, 255, 255)
+hint.Font = Enum.Font.FredokaOne; hint.TextSize = 24; hint.TextColor3 = Color3.fromRGB(255, 244, 224)
 hint.Text = ""; hint.Parent = hintGui
 Instance.new("UICorner", hint).CornerRadius = UDim.new(0, 14)
 do
-	local s = Instance.new("UIStroke", hint); s.Color = Color3.fromRGB(255, 255, 255); s.Thickness = 3
+	-- ONE stroke, and it is a dark shade of the fill above -- not white, and not black
 	local ts = Instance.new("UIStroke", hint); ts.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
-	ts.Color = Color3.fromRGB(14, 40, 110); ts.Thickness = 2
+	ts.LineJoinMode = Enum.LineJoinMode.Round -- stops the heavy angles in A/W/M spiking out
+	ts.Color = Color3.fromRGB(9, 27, 73); ts.Thickness = 2
 end
 
 -- gentle breathing pulse so the banner reads as "act on me", not as static furniture

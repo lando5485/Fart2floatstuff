@@ -290,6 +290,16 @@ local function buildBlackHole(center)
 	touchOrb.Size = Vector3.new(BH_CORE_SIZE, BH_CORE_SIZE, BH_CORE_SIZE); touchOrb.CFrame = coreCF
 	touchOrb.Anchored = true; touchOrb.CanCollide = false; touchOrb.CanQuery = false; touchOrb.CanTouch = true
 	touchOrb.Transparency = 1; touchOrb.CastShadow = false; touchOrb.Parent = model
+	-- ...and THE RINGS COUNT TOO. Hitting the accretion disk used to do nothing -- you had to thread the
+	-- black ball itself, which is a tiny target when you arrive at speed. This is one invisible DISC lying
+	-- in the same tilted plane, out to the outer ring's edge, so touching ANY part of the rift teleports.
+	-- One part beats touch-enabling the ~150 orbiting ring segments (each would need its own connection).
+	local BH_DISK_R = (80 + 18 / 2) * BH_SCALE -- outer ring radius + half its radial width
+	local touchDisk = Instance.new("Part"); touchDisk.Name = "TeleportTouchDisk"; touchDisk.Shape = Enum.PartType.Cylinder
+	touchDisk.Size = Vector3.new(10 * BH_SCALE, BH_DISK_R * 2, BH_DISK_R * 2) -- (thickness, diameter, diameter)
+	touchDisk.CFrame = planeCF * CFrame.Angles(0, 0, math.rad(90))            -- a Cylinder's round faces are on local X: rotate X->Y so it lies FLAT in the tilted plane
+	touchDisk.Anchored = true; touchDisk.CanCollide = false; touchDisk.CanQuery = false; touchDisk.CanTouch = true
+	touchDisk.Transparency = 1; touchDisk.CastShadow = false; touchDisk.Parent = model
 
 	-- small centered status message ("Traveling..." / "Coming soon!" / error)
 	local msgGui = Instance.new("ScreenGui"); msgGui.Name = "SpaceRealmMsg"; msgGui.ResetOnSpawn = false; msgGui.IgnoreGuiInset = true; msgGui.DisplayOrder = 60; msgGui.Parent = player:WaitForChild("PlayerGui")
@@ -316,13 +326,16 @@ local function buildBlackHole(center)
 		end)
 	end
 
-	touchOrb.Touched:Connect(function(hit)
+	-- ONE handler for both trigger volumes: the core void AND the accretion disk (the rings).
+	local function onRiftTouched(hit)
 		if traveling then return end
 		local char = player.Character
 		if not (char and hit and hit:IsDescendantOf(char)) then return end -- only the LOCAL player's character
 		traveling = true
 		if enterEvent then pcall(function() enterEvent:FireServer() end) end -- send INTENT; the SERVER gates + teleports
-	end)
+	end
+	touchOrb.Touched:Connect(onRiftTouched)
+	touchDisk.Touched:Connect(onRiftTouched)
 
 	return model
 end

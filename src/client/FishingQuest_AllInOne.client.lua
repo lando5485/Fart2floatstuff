@@ -23,6 +23,46 @@
 -- StarterPlayerScripts.
 --======================================================================
 
+-- ===== DO NOT ADD THIS FILE TO default.project.json ==========================================
+-- THIS IS A STANDALONE DEMO COPY, not the quest the game actually runs.
+--
+-- It lays its own props out AROUND THE PLAYER at runtime so the whole quest can be dropped into a
+-- BLANK world with no markers, no server code and no remotes. That is the opposite of what the real
+-- game needs: PetFollow already builds this quest properly, from the island's own marker parts, at
+-- the island it belongs to.
+--
+-- Syncing this file was tried and reverted. Both copies ran, and the result was the Burrito dig
+-- quest appearing on BEAN FARM (island 1) and the fishing quest hunting for a lake that was not on
+-- the island the player was standing on:
+--     ISLAND LANDING DETECTED: 1
+--     [BurritoDig] dig quest ready -- grab the shovel...
+--     [Fish] no part/model named 'ButterLake' found in Workspace
+-- while PetFollow had already built the real one at (-404, 20230, 321) on island 13.
+--
+-- Keep it here as the portable reference it was written to be. If you ever DO want it live, delete
+-- PetFollow's version of the same quest first -- never run both.
+--
+-- The guard below stays regardless: it costs nothing and it stops two copies fighting if this file
+-- is ever loaded twice by any route.
+if _G.__FishingQuestClient then
+	warn("[FishingQuest] a second copy is running -- this one is bailing out. Delete the stale " ..
+		"LocalScript in StarterPlayerScripts and re-sync Rojo.")
+	return
+end
+_G.__FishingQuestClient = true
+do
+	local removed = 0
+	for _, inst in ipairs(script.Parent:GetDescendants()) do
+		if inst ~= script and inst:IsA("LocalScript") and inst.Name == script.Name then
+			pcall(function() inst.Disabled = true; inst:Destroy() end)
+			removed += 1
+		end
+	end
+	if removed > 0 then
+		warn("[FishingQuest] removed " .. removed .. " STALE duplicate copy/copies -- delete them in Studio for good")
+	end
+end
+-- ===========================================================================================
 local Players    = game:GetService("Players")
 local Workspace  = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
@@ -146,10 +186,14 @@ local function openReelMinigame(onDone)
 	if reelBusy then if onDone then onDone(false) end return end
 	reelBusy = true
 	local ui = ensureReelUI()
+	-- KEPT IN SYNC with PetFollow.client.lua: `ceiling` rises over MIN_FIGHT seconds and clamps the catch bar,
+	-- so even perfect tracking can't land the fish sooner. Longer fight, same forgiving difficulty.
+	local MIN_FIGHT = 15
 	local ZONE_H = 0.30
 	local zone, zoneVel = 0.45, 0
 	local fishF, fishTarget, fishTimer = 0.5, 0.5, 0
-	local progress = 0.45
+	local progress = 0.30
+	local ceiling = progress
 	ui.zone.Size = UDim2.new(1,-10,ZONE_H,0)
 	ui.pb.Size = UDim2.new(1,0,progress,0)
 	local done, holding = false, false
@@ -174,11 +218,15 @@ local function openReelMinigame(onDone)
 			zone = zone + zoneVel * dt
 			if zone < ZONE_H/2 then zone = ZONE_H/2; zoneVel = 0 elseif zone > 1 - ZONE_H/2 then zone = 1 - ZONE_H/2; zoneVel = 0 end
 			fishTimer = fishTimer - dt
-			if fishTimer <= 0 then fishTarget = 0.14 + math.random() * 0.72; fishTimer = 0.6 + math.random() * 1.4 end
-			fishF = fishF + (fishTarget - fishF) * math.min(dt * 1.6, 1)
+			if fishTimer <= 0 then fishTarget = 0.14 + math.random() * 0.72; fishTimer = 0.5 + math.random() * 1.1 end
+			fishF = fishF + (fishTarget - fishF) * math.min(dt * 1.8, 1)
 			local inZone = math.abs(fishF - zone) <= (ZONE_H/2)
 			if introT > 0 then introT = introT - dt; if introT <= 0 then ui.ready.Visible = false end
-			else progress = math.clamp(progress + (inZone and 0.46 or -0.22) * dt, 0, 1) end
+			else
+				ceiling = math.min(1, ceiling + ((1 - 0.30) / MIN_FIGHT) * dt)
+				progress = math.clamp(math.min(progress, ceiling) + (inZone and 0.135 or -0.105) * dt, 0, 1)
+				progress = math.min(progress, ceiling)
+			end
 			ui.zone.Position = UDim2.new(0.5, 0, 1 - zone, 0)
 			ui.zone.BackgroundColor3 = inZone and Color3.fromRGB(70,225,95) or Color3.fromRGB(90,150,110)
 			ui.fish.Position = UDim2.new(0.5, 0, 1 - fishF, 0)

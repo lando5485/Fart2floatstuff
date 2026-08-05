@@ -4,6 +4,15 @@
     "$className": "DataModel",
     "ServerScriptService": {
       "$className": "ServerScriptService",
+      "BootCheck": {
+        "$path": "src/server/BootCheck.server.luau"
+      },
+      "HeldItemSync": {
+        "$path": "src/server/HeldItemSync.server.lua"
+      },
+      "SecretTrader": {
+        "$path": "src/server/SecretTrader.server.lua"
+      },
       "IslandStreaming": {
         "$path": "src/server/IslandStreaming.server.lua"
       },
@@ -21,6 +30,9 @@
       },
       "PetSystem": {
         "$path": "src/server/PetSystem.server.lua"
+      },
+      "IslandNPCs": {
+        "$path": "src/server/IslandNPCs.server.lua"
       },
       "FarmerSpawner": {
         "$path": "src/server/FarmerNPC.server.lua"
@@ -306,6 +318,21 @@
       "$className": "StarterPlayer",
       "StarterPlayerScripts": {
         "$className": "StarterPlayerScripts",
+        "BootCheck": {
+          "$path": "src/client/BootCheck.client.luau"
+        },
+        "ButtonTextStyle": {
+          "$path": "src/client/ButtonTextStyle.client.lua"
+        },
+        "NpcWaypointArrow": {
+          "$path": "src/client/NpcWaypointArrow.client.lua"
+        },
+        "HeldItemSync": {
+          "$path": "src/client/HeldItemSync.client.lua"
+        },
+        "SecretCave": {
+          "$path": "src/client/SecretCave.client.lua"
+        },
         "CoreClient": {
           "$path": "src/client/CoreClient.client.lua"
         },
@@ -383,6 +410,12 @@
         },
         "RocketSounds": {
           "$path": "src/client/RocketSounds.client.lua"
+        },
+        "NpcLife": {
+          "$path": "src/client/NpcLife.client.lua"
+        },
+        "NpcGuideArrow": {
+          "$path": "src/client/NpcGuideArrow.client.lua"
         },
         "PetFollow": {
           "$path": "src/client/PetFollow.client.lua"
@@ -476,6 +509,9 @@
         },
         "SettingsMenu": {
           "$path": "src/client/SettingsMenu.client.lua"
+        },
+        "FoodRealmHud": {
+          "$path": "src/client/FoodRealmHud.client.luau"
         }
       }
     }

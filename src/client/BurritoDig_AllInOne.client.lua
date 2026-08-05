@@ -23,6 +23,46 @@
 -- the remote exists, so it runs standalone.)
 --======================================================================
 
+-- ===== DO NOT ADD THIS FILE TO default.project.json ==========================================
+-- THIS IS A STANDALONE DEMO COPY, not the quest the game actually runs.
+--
+-- It lays its own props out AROUND THE PLAYER at runtime so the whole quest can be dropped into a
+-- BLANK world with no markers, no server code and no remotes. That is the opposite of what the real
+-- game needs: PetFollow already builds this quest properly, from the island's own marker parts, at
+-- the island it belongs to.
+--
+-- Syncing this file was tried and reverted. Both copies ran, and the result was the Burrito dig
+-- quest appearing on BEAN FARM (island 1) and the fishing quest hunting for a lake that was not on
+-- the island the player was standing on:
+--     ISLAND LANDING DETECTED: 1
+--     [BurritoDig] dig quest ready -- grab the shovel...
+--     [Fish] no part/model named 'ButterLake' found in Workspace
+-- while PetFollow had already built the real one at (-404, 20230, 321) on island 13.
+--
+-- Keep it here as the portable reference it was written to be. If you ever DO want it live, delete
+-- PetFollow's version of the same quest first -- never run both.
+--
+-- The guard below stays regardless: it costs nothing and it stops two copies fighting if this file
+-- is ever loaded twice by any route.
+if _G.__BurritoDigClient then
+	warn("[BurritoDig] a second copy is running -- this one is bailing out. Delete the stale " ..
+		"LocalScript in StarterPlayerScripts and re-sync Rojo.")
+	return
+end
+_G.__BurritoDigClient = true
+do
+	local removed = 0
+	for _, inst in ipairs(script.Parent:GetDescendants()) do
+		if inst ~= script and inst:IsA("LocalScript") and inst.Name == script.Name then
+			pcall(function() inst.Disabled = true; inst:Destroy() end)
+			removed += 1
+		end
+	end
+	if removed > 0 then
+		warn("[BurritoDig] removed " .. removed .. " STALE duplicate copy/copies -- delete them in Studio for good")
+	end
+end
+-- ===========================================================================================
 local Players    = game:GetService("Players")
 local Workspace  = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
@@ -211,7 +251,10 @@ local function buildBurritoWorld(positions)
 		grab.HoldDuration = 0.3
 	end
 
-	local N_SWINGS = 6 -- E-taps ("swings") to fully dig a mound away
+	-- KEPT IN SYNC with PetFollow.client.lua: 14 swings on a forced ~1s cadence = a ~15s dig per mound,
+	-- and mashing E can't beat it because the prompt is dead during the wind-up.
+	local N_SWINGS = 14         -- E-taps ("swings") to fully dig a mound away
+	local SWING_COOLDOWN = 1.0  -- seconds the shovel takes to come back up between swings
 	-- a dug-up JUNK item RISES out of the decoy hole (in-world reveal), holds, then fades
 	local function junkRise(pos, junkName)
 		local j = newPart(Workspace, petId.."DugJunk", Enum.PartType.Ball, Vector3.new(1.3,1.3,1.3), Color3.fromRGB(120,92,60), CFrame.new(pos + Vector3.new(0, -3.0, 0)), Enum.Material.SmoothPlastic)
@@ -347,6 +390,10 @@ local function buildBurritoWorld(positions)
 					if hum then hum.CameraOffset = Vector3.new((math.random()-0.5)*0.5, -0.35, 0); TS:Create(hum, TweenInfo.new(0.18), {CameraOffset = Vector3.zero}):Play() end
 				end)
 				print(string.format("[Pet][DIG] swing %d/%d on %s", swings, N_SWINGS, spot.label))
+				if swings < N_SWINGS then -- WIND-UP: the prompt goes quiet while the shovel comes back up
+					prompt.Enabled = false
+					task.delay(SWING_COOLDOWN, function() if not done then prompt.Enabled = true end end)
+				end
 				if swings >= N_SWINGS then -- mound fully dug -> reveal + advance the trail
 					done = true; prompt.Enabled = false
 					pushQuestProg(petId, { started = true, found = ((localQuestProg[petId] and localQuestProg[petId].found) or 0) + 1, total = #digSpots }) -- HUD: "Mounds X/6"

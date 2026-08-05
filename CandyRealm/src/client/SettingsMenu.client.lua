@@ -93,11 +93,16 @@ do local p=Instance.new("UIPadding"); p.PaddingTop=UDim.new(0,6); p.PaddingBotto
 
 -- Panel (hidden until the gear is clicked); opens just below the gear, right-aligned to the coins (its
 -- exact position is set relative to the coin pill in placeNextToCoins). Fallback values here.
+--
+-- Y = 78, not 64: placeNextToCoins never runs in CandyRealm (there is no CoinGui -- no CoreClient in
+-- this place), so this fallback is the position that actually ships. The CurrencyCapsule row occupies
+-- y 10..70, and 64 opened the panel 6px UNDER its bottom edge. 78 clears it with the same 8px gap the
+-- row itself uses. Right margin stays 10 to line the panel's right edge up with the capsule's.
 local panel = Instance.new("Frame")
 panel.Name = "SettingsPanel"
 panel.Size = UDim2.new(0, 260, 0, 150)
 panel.AnchorPoint = Vector2.new(1, 0)
-panel.Position = UDim2.new(1, -10, 0, 64)
+panel.Position = UDim2.new(1, -10, 0, 78)
 panel.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
 panel.BorderSizePixel = 0
 panel.Visible = false

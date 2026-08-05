@@ -239,11 +239,14 @@ task.spawn(function()
 		local gearW = cSize.Y                     -- square, matching the coins' rendered height (one row)
 		local coinPosY    = coinPill.Position.Y   -- coins' vertical position PROPERTY (scale + offset)
 		local coinAnchorY = coinPill.AnchorPoint.Y
-		-- Gear: X = just left of the coins' real left edge (absolute px); Y = the coins' EXACT vertical
-		-- anchor + position, so it lands on the coins' row and never above the top-bar inset.
-		gearBtn.AnchorPoint = Vector2.new(0, coinAnchorY)
-		gearBtn.Size = UDim2.fromOffset(gearW, cSize.Y)
-		gearBtn.Position = UDim2.new(0, cLeft - GAP - gearW, coinPosY.Scale, coinPosY.Offset)
+		-- GEAR PLACEMENT REMOVED -- TokenHud.client.luau owns the whole top-right row now
+		-- ([ticket pill] gap [gear] gap [coins], right-aligned to the STATS panel). This block used to
+		-- place the gear too, driven off the coin pill's AbsolutePosition. The moment TokenHud started
+		-- positioning the coin pill, that listener fired and stamped the gear back to ITS coordinates --
+		-- the row snapped into place and jumped back a moment later, every time. Two writers on one
+		-- element is the bug; the fix is one owner. `gearW` is still computed above because the panel
+		-- width below reads the same measurements.
+		gearBtn.Size = UDim2.fromOffset(gearW, cSize.Y)   -- size only: the row layouter measures this
 		-- Panel: opens just below the coin/gear row, right edge aligned with the coins' right edge.
 		panel.AnchorPoint = Vector2.new(0, coinAnchorY)
 		panel.Position = UDim2.new(0, (cLeft + cSize.X) - panel.Size.X.Offset, coinPosY.Scale, coinPosY.Offset + cSize.Y + 6)

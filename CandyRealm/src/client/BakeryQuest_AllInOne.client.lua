@@ -73,7 +73,11 @@ local BANNER_RANGE  = 420            -- objective banner shows only near the bak
 local MIXER_SCALE   = 5              -- the whole mixing station, grown in place around
                                      -- its base -- one dial each if the island outgrows them
 local OVEN_SCALE    = 5              -- both brick ovens, same treatment
-local STIRS_NEEDED  = 8              -- prompt presses to finish the batter
+-- The batter is FORCED CADENCE, not a bar: it's a ProximityPrompt, so the floor comes from
+-- N presses x a cooldown, and extra presses inside the cooldown do nothing at all. 14 x 1.0s
+-- ~= 14s. Was 8 presses on a HoldDuration=0 prompt, which a masher cleared in about 2s.
+local STIRS_NEEDED  = 14             -- prompt presses to finish the batter
+local STIR_CD       = 1.0            -- seconds the prompt goes dead after each stir -- THIS is the floor
 -- the oven HUD minigame: heat bleeds away, STOKE throws it back, and the bake
 -- only fills fast while the needle sits in the orange sweet zone
 local ZONE_LO, ZONE_HI = 42, 88      -- the sweet zone, on a 0..100 heat bar
@@ -890,6 +894,105 @@ local function buildChicken(originPos)
 	return m
 end
 
+-- ============================================================================
+-- STEADY LIFT -- the per-egg minigame
+-- ============================================================================
+-- HOLD to raise the egg out of the straw; let go and it settles back. A hold (not a
+-- tap) is the point: it's the one input a masher can't beat, and it reads as "careful"
+-- rather than "frantic", which is what lifting an egg should feel like.
+--
+-- The rising ceiling still does the enforcing. `ceiling` climbs 0 -> 1 over exactly
+-- EGG_LIFT_SECONDS and clamps the bar every frame, so even a perfect unbroken hold
+-- takes the full time -- and slipping costs extra on top.
+local EGG_LIFT_SECONDS = 15
+local eggLiftOpen = false
+local function openEggLift(eggPart, onDone)
+	if eggLiftOpen then return end
+	eggLiftOpen = true
+
+	local baseSize = eggPart and eggPart.Size
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "EggLift"; gui.ResetOnSpawn = false; gui.IgnoreGuiInset = true
+	gui.DisplayOrder = 90; gui.Parent = PlayerGui
+
+	local film = Instance.new("Frame")
+	film.Size = UDim2.fromScale(1, 1); film.BackgroundColor3 = Color3.new(0, 0, 0)
+	film.BackgroundTransparency = 0.5; film.BorderSizePixel = 0; film.Parent = gui
+
+	local panel = Instance.new("Frame")
+	panel.Size = UDim2.fromOffset(400, 260); panel.Position = UDim2.fromScale(0.5, 0.5)
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	panel.BackgroundColor3 = Color3.fromRGB(25, 90, 185); panel.BorderSizePixel = 0; panel.Parent = gui
+	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 14)
+	local ps = Instance.new("UIStroke", panel); ps.Color = Color3.new(1, 1, 1); ps.Thickness = 3
+
+	local title = Instance.new("TextLabel")
+	title.BackgroundTransparency = 1; title.Size = UDim2.new(1, -60, 0, 40); title.Position = UDim2.fromOffset(18, 12)
+	title.Font = Enum.Font.GothamBold; title.TextSize = 22; title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextColor3 = Color3.fromRGB(255, 215, 0); title.Text = "Lift it carefully"; title.Parent = panel
+
+	local hint = Instance.new("TextLabel")
+	hint.BackgroundTransparency = 1; hint.Size = UDim2.new(1, -36, 0, 22); hint.Position = UDim2.fromOffset(18, 48)
+	hint.Font = Enum.Font.Gotham; hint.TextSize = 14; hint.TextXAlignment = Enum.TextXAlignment.Left
+	hint.TextColor3 = Color3.new(1, 1, 1); hint.Text = "Hold the button -- let go and it settles back"; hint.Parent = panel
+
+	local close = Instance.new("TextButton")
+	close.Size = UDim2.fromOffset(34, 34); close.Position = UDim2.new(1, -44, 0, 12)
+	close.BackgroundColor3 = Color3.fromRGB(220, 70, 70); close.Text = "X"; close.TextColor3 = Color3.new(1, 1, 1)
+	close.Font = Enum.Font.GothamBold; close.TextSize = 18; close.Parent = panel
+	Instance.new("UICorner", close).CornerRadius = UDim.new(0, 8)
+
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1, -36, 0, 26); track.Position = UDim2.fromOffset(18, 88)
+	track.BackgroundColor3 = Color3.fromRGB(12, 50, 110); track.BorderSizePixel = 0; track.Parent = panel
+	Instance.new("UICorner", track).CornerRadius = UDim.new(0, 8)
+	local fillBar = Instance.new("Frame")
+	fillBar.Size = UDim2.fromScale(0, 1); fillBar.BackgroundColor3 = Color3.fromRGB(255, 235, 190)
+	fillBar.BorderSizePixel = 0; fillBar.Parent = track
+	Instance.new("UICorner", fillBar).CornerRadius = UDim.new(0, 8)
+
+	local holdBtn = Instance.new("TextButton")
+	holdBtn.Size = UDim2.new(1, -36, 0, 100); holdBtn.Position = UDim2.fromOffset(18, 134)
+	holdBtn.BackgroundColor3 = Color3.fromRGB(214, 92, 158); holdBtn.Text = "HOLD"
+	holdBtn.TextColor3 = Color3.new(1, 1, 1); holdBtn.Font = Enum.Font.GothamBold; holdBtn.TextSize = 32
+	holdBtn.AutoButtonColor = false; holdBtn.Parent = panel
+	Instance.new("UICorner", holdBtn).CornerRadius = UDim.new(0, 10)
+	local hst = Instance.new("UIStroke", holdBtn); hst.Color = Color3.new(1, 1, 1); hst.Thickness = 2
+
+	local fill, ceiling = 0, 0
+	local ceilRate = 1 / EGG_LIFT_SECONDS
+	local down, finished = false, false
+	local conn
+
+	local function shut(success)
+		if finished then return end
+		finished = true; eggLiftOpen = false
+		if conn then conn:Disconnect() end
+		if eggPart and eggPart.Parent and baseSize then eggPart.Size = baseSize end
+		gui:Destroy()
+		onDone(success)
+	end
+
+	holdBtn.MouseButton1Down:Connect(function() down = true;  holdBtn.BackgroundColor3 = Color3.fromRGB(255, 140, 195) end)
+	holdBtn.MouseButton1Up:Connect(function()   down = false; holdBtn.BackgroundColor3 = Color3.fromRGB(214, 92, 158) end)
+	holdBtn.MouseLeave:Connect(function()       down = false; holdBtn.BackgroundColor3 = Color3.fromRGB(214, 92, 158) end)
+	close.Activated:Connect(function() shut(false) end)
+
+	conn = RunService.RenderStepped:Connect(function(dt)
+		if finished then return end
+		ceiling = math.min(1, ceiling + ceilRate * dt)
+		-- rises while held, settles back slower than it rises so slipping is a setback, not a reset
+		fill = math.clamp(fill + (down and dt * ceilRate or -dt * ceilRate * 0.6), 0, 1)
+		fill = math.min(fill, ceiling)
+		fillBar.Size = UDim2.fromScale(fill, 1)
+		if eggPart and eggPart.Parent and baseSize then
+			eggPart.Size = baseSize * (1 + math.sin(os.clock() * 18) * 0.03 * fill)
+		end
+		if fill >= 1 then shut(true) end
+	end)
+end
+
 local function layEgg(fromCF)
 	-- the egg pops out the BACK, arcs to the ground, and sits there with a prompt.
 	-- With a pen plate, the egg seats ON the plate (clamped inside it) -- the
@@ -911,11 +1014,13 @@ local function layEgg(fromCF)
 	tween(egg, 0.45, { CFrame = CFrame.new(g + Vector3.new(0, 0.5, 0)) }, Enum.EasingStyle.Bounce)
 
 	local prompt = Instance.new("ProximityPrompt")
-	prompt.ActionText = "Take"; prompt.ObjectText = "Egg"; prompt.HoldDuration = 0
+	prompt.ActionText = "Lift Carefully"; prompt.ObjectText = "Egg"; prompt.HoldDuration = 0.4
 	prompt.MaxActivationDistance = 12; prompt.RequiresLineOfSight = false; prompt.Parent = egg
 	local taken = false
-	prompt.Triggered:Connect(function()
+	-- the reward half, unchanged -- it just runs after the lift now instead of on the tap
+	local function takeEgg()
 		if taken then return end
+		if not egg.Parent then return end   -- despawned while the panel was open
 		if step == 2 and stillNeeds("egg") then
 			taken = true
 			have.egg = (have.egg or 0) + 1
@@ -931,11 +1036,30 @@ local function layEgg(fromCF)
 		else
 			flashBanner(ING.egg.emoji .. " You don't need more eggs right now!", 2)
 		end
+	end
+
+	prompt.Triggered:Connect(function()
+		if taken then return end
+		-- the "you don't need eggs" nudge fires BEFORE the panel, not after 15s of holding
+		if not (step == 2 and stillNeeds("egg")) then
+			flashBanner(ING.egg.emoji .. " You don't need more eggs right now!", 2); return
+		end
+		prompt.Enabled = false
+		openEggLift(egg, function(success)
+			if success then takeEgg()
+			-- re-arm behind the same guard the trigger uses
+			elseif not taken and egg.Parent and prompt.Parent then prompt.Enabled = true end
+		end)
 	end)
-	-- an unwanted egg tidies itself away
-	task.delay(25, function() if egg.Parent and not taken then
-		poofAt(egg.Position, PAL.EGGSH); egg:Destroy()
-	end end)
+	-- An unwanted egg tidies itself away. 45s, not 25s: taking one now costs a 15s lift on
+	-- top of the walk over, and the old window could delete the egg out from under an open
+	-- panel. The wait-loop is the belt to that braces -- never despawn mid-lift.
+	task.delay(45, function()
+		while eggLiftOpen do task.wait(0.5) end
+		if egg.Parent and not taken then
+			poofAt(egg.Position, PAL.EGGSH); egg:Destroy()
+		end
+	end)
 end
 
 -- one brain, driven by Heartbeat waits: stroll to a point near home, pause and
@@ -1209,6 +1333,15 @@ local function doStir()
 	poofAt(bowlTopCF.Position + Vector3.new(math.cos(stirs * 2.2) * 1.6, -0.4, math.sin(stirs * 2.2) * 1.6)
 		* math.max(1, MIXER_SCALE * 0.55), R.batter)
 	mixPrompt.ActionText = ("Stir!  (%d/%d)"):format(stirs, STIRS_NEEDED)
+
+	-- the cooldown IS the enforcement: dead prompt between stirs, so mashing buys nothing.
+	-- Re-armed behind the SAME guard the rest of the file uses, or a finished bowl re-arms.
+	if stirs < STIRS_NEEDED then
+		mixPrompt.Enabled = false
+		task.delay(STIR_CD, function()
+			if step == 3 and stirs < STIRS_NEEDED then mixPrompt.Enabled = true end
+		end)
+	end
 
 	if stirs >= STIRS_NEEDED then
 		mixPrompt.Enabled = false

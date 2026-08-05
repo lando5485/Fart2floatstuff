@@ -88,14 +88,27 @@ backdrop.Name = "Backdrop"; backdrop.Size = UDim2.new(1, 0, 1, 0); backdrop.Back
 backdrop.BackgroundTransparency = 0.45; backdrop.AutoButtonColor = false; backdrop.Text = ""; backdrop.Active = true; backdrop.Parent = gui
 
 local panel = Instance.new("Frame")
-panel.AnchorPoint = Vector2.new(0.5, 0.5); panel.Position = UDim2.new(0.5, 0, 0.5, 0); panel.Size = UDim2.new(0.9, 0, 0, 470)
+panel.AnchorPoint = Vector2.new(0.5, 0.5); panel.Position = UDim2.new(0.5, 0, 0.5, 0)
+-- 700x520 FIXED -- byte-for-byte the Pet Hub's panel (PetFollow.client.lua's `panel`, itself copied from the
+-- SHOP menu's final layout). It used to be Size (0.9, 0, 0, 520) with a UISizeConstraint capping it at
+-- 700x520, which is NOT the same thing: 0.9-scale only reaches 700 once the viewport is ~778px wide, so on
+-- anything narrower this window was a different width from every other popup in the game -- and the narrower
+-- the screen, the bigger the mismatch.
+--
+-- Losing the 0.9 does not cost phones anything, because it is not what was fitting them: the responsive pass
+-- puts a UIScale on the panel and shrinks the whole window as one unit, exactly as it does for the Pet Hub.
+-- Sharing the size means sharing that behaviour too.
+panel.Size = UDim2.new(0, 700, 0, 520)
 panel.BackgroundColor3 = PANEL; panel.BorderSizePixel = 0; panel.Parent = gui
 do
 	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 20); c.Parent = panel
 	local s = Instance.new("UIStroke"); s.Color = ACCENT; s.Thickness = 2; s.Transparency = 0.2; s.Parent = panel
-	local sc = Instance.new("UISizeConstraint"); sc.MaxSize = Vector2.new(460, 470); sc.Parent = panel
 end
-local panelScale = Instance.new("UIScale"); panelScale.Scale = 0.7; panelScale.Parent = panel -- pop-in
+-- POP-IN SCALE. Starts at 1, not 0.7: openMenu() sets the 0.7 itself, and this value is also where the
+-- responsive pass writes the device scale (it REUSES an element's existing UIScale rather than adding a
+-- second one). Leaving 0.7 here would have looked like a device scale of 0.7 to the first thing that read it.
+local panelScale = Instance.new("UIScale"); panelScale.Scale = 1; panelScale.Parent = panel
+local popping = false   -- true only while the open animation is running -- see openMenu
 
 local titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1, 0, 0, 56); titleBar.BackgroundColor3 = TITLE_BAR; titleBar.BorderSizePixel = 0; titleBar.Parent = panel
@@ -200,8 +213,20 @@ local function openMenu()
 	isOpen = true
 	refreshMenu()
 	gui.Enabled = true
-	panelScale.Scale = 0.7
-	pcall(function() TweenService:Create(panelScale, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play() end)
+	-- POP IN TO THE DEVICE SCALE, NOT TO 1.0. The panel is a fixed 700x520 now, and what keeps that on a phone
+	-- is the responsive pass writing a device scale onto this very UIScale. Animating to a hard 1.0 would have
+	-- undone it on every open -- the window would pop from 0.7 straight up to full desktop size and hang off
+	-- the screen. So the rest value is READ from wherever the UIScale currently sits, and only re-read when we
+	-- are not already mid-animation (mid-tween it holds our own transient value, not the device's).
+	if not popping then panel:SetAttribute("RestScale", panelScale.Scale) end
+	local rest = tonumber(panel:GetAttribute("RestScale")) or 1
+	popping = true
+	panelScale.Scale = rest * 0.7
+	pcall(function()
+		local tw = TweenService:Create(panelScale, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = rest })
+		tw.Completed:Connect(function() popping = false end)
+		tw:Play()
+	end)
 	if _G.MainMenuManager and _G.MainMenuManager.notifyOpened then _G.MainMenuManager.notifyOpened("Wormhole") end
 end
 closeMenu = function()

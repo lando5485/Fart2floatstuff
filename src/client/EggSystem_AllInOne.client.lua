@@ -20,6 +20,46 @@
 -- StarterPlayer > StarterPlayerScripts (or sync via Rojo) and it runs.
 --======================================================================
 
+-- ===== DO NOT ADD THIS FILE TO default.project.json ==========================================
+-- THIS IS A STANDALONE DEMO COPY, not the quest the game actually runs.
+--
+-- It lays its own props out AROUND THE PLAYER at runtime so the whole quest can be dropped into a
+-- BLANK world with no markers, no server code and no remotes. That is the opposite of what the real
+-- game needs: PetFollow already builds this quest properly, from the island's own marker parts, at
+-- the island it belongs to.
+--
+-- Syncing this file was tried and reverted. Both copies ran, and the result was the Burrito dig
+-- quest appearing on BEAN FARM (island 1) and the fishing quest hunting for a lake that was not on
+-- the island the player was standing on:
+--     ISLAND LANDING DETECTED: 1
+--     [BurritoDig] dig quest ready -- grab the shovel...
+--     [Fish] no part/model named 'ButterLake' found in Workspace
+-- while PetFollow had already built the real one at (-404, 20230, 321) on island 13.
+--
+-- Keep it here as the portable reference it was written to be. If you ever DO want it live, delete
+-- PetFollow's version of the same quest first -- never run both.
+--
+-- The guard below stays regardless: it costs nothing and it stops two copies fighting if this file
+-- is ever loaded twice by any route.
+if _G.__EggSystemClient then
+	warn("[EggSystem] a second copy is running -- this one is bailing out. Delete the stale " ..
+		"LocalScript in StarterPlayerScripts and re-sync Rojo.")
+	return
+end
+_G.__EggSystemClient = true
+do
+	local removed = 0
+	for _, inst in ipairs(script.Parent:GetDescendants()) do
+		if inst ~= script and inst:IsA("LocalScript") and inst.Name == script.Name then
+			pcall(function() inst.Disabled = true; inst:Destroy() end)
+			removed += 1
+		end
+	end
+	if removed > 0 then
+		warn("[EggSystem] removed " .. removed .. " STALE duplicate copy/copies -- delete them in Studio for good")
+	end
+end
+-- ===========================================================================================
 local Players         = game:GetService("Players")
 local Workspace       = game:GetService("Workspace")
 local TweenService    = game:GetService("TweenService")

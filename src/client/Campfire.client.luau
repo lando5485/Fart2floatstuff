@@ -45,7 +45,13 @@ nukeStaleCampfireUi()
 
 local screen = Instance.new("ScreenGui")
 screen.Name = "CampfireHud"; screen.ResetOnSpawn = false; screen.IgnoreGuiInset = true
-screen.DisplayOrder = 40
+-- DisplayOrder 200, was 40. Roblox routes a click to the TOPMOST GuiObject under it, and DisplayOrder is what
+-- decides "topmost" ACROSS ScreenGuis. At 40 this bar sat under several full-screen elements that are invisible
+-- but still input-eating -- ButterFishingHUD is 88 and spawns a screen-covering tap catcher, and the bottom HUD
+-- overlaps this bar's exact rectangle. A transparent button still swallows the press. 200 puts the roasting
+-- bar above all of them, which is correct on its own terms: while you are stood at a fire holding a stick,
+-- these four ARE the frontmost controls on screen.
+screen.DisplayOrder = 200
 screen:SetAttribute("BuiltByLiveScript", true) -- stamp so the sweep above never destroys OUR hud
 screen.Parent = gui
 task.delay(1, nukeStaleCampfireUi); task.delay(4, nukeStaleCampfireUi); task.delay(9, nukeStaleCampfireUi)
@@ -57,7 +63,35 @@ task.delay(1, nukeStaleCampfireUi); task.delay(4, nukeStaleCampfireUi); task.del
 -- The buttons just fire the server; it owns the cooking + eating.
 --======================================================================
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local stickRemote = ReplicatedStorage:WaitForChild("CampfireStick", 30)
+-- ===== PICK THE REMOTE BY STAMP, NOT BY NAME =====
+-- WaitForChild("CampfireStick") is what broke every button. More than one RemoteEvent carries that name --
+-- a stale duplicate server script makes its own -- and WaitForChild returns whichever replicated first. When
+-- that was not the one the live server connected its handler to, FireServer went into a void: the click
+-- registered, the guards passed, the press was sent, and nothing on the server ever heard it.
+--
+-- The live server stamps its remote with CampfireRemoteLive and destroys same-named rivals, so the stamp is
+-- the only reliable way to tell them apart. We wait for the stamped one specifically, and only fall back to
+-- the plain name if no stamp shows up (an older server build that predates the stamp).
+local REMOTE_STAMP = "CampfireRemoteLive"
+
+local stickRemote
+do
+	local deadline = os.clock() + 30
+	repeat
+		for _, d in ipairs(ReplicatedStorage:GetChildren()) do
+			if d:IsA("RemoteEvent") and d.Name == "CampfireStick" and d:GetAttribute(REMOTE_STAMP) then
+				stickRemote = d; break
+			end
+		end
+		if not stickRemote then task.wait(0.1) end
+	until stickRemote or os.clock() > deadline
+
+	if not stickRemote then
+		stickRemote = ReplicatedStorage:FindFirstChild("CampfireStick")
+		warn("[Campfire] no STAMPED remote appeared in 30s -- falling back to the first one named " ..
+			"'CampfireStick'. If the buttons do nothing, the server script is stale or not running.")
+	end
+end
 
 if stickRemote then
 	local bar = Instance.new("Frame")
@@ -76,6 +110,9 @@ if stickRemote then
 		b.Size = UDim2.fromOffset(100, 54); b.AutoButtonColor = true
 		b.BackgroundColor3 = color; b.Text = text
 		b.Font = Enum.Font.FredokaOne; b.TextScaled = true; b.TextColor3 = Color3.new(1, 1, 1)
+		-- Hands-off, ButtonTextStyle: setLive() below drives this fill, and grey here MEANS "you cannot do this
+		-- right now". A generic restyler re-asserting a remembered colour would un-grey a dead button.
+		b:SetAttribute("BTS_Skip", true)
 		b.Parent = bar
 		Instance.new("UICorner", b).CornerRadius = UDim.new(0, 12)
 		local s = Instance.new("UIStroke", b); s.Color = Color3.new(0, 0, 0); s.Transparency = 0.4; s.Thickness = 2
@@ -97,12 +134,60 @@ if stickRemote then
 		return tool ~= nil and tool:GetAttribute("HasMarsh") ~= false
 	end
 
-	-- Roast and Eat need something to cook. The server refuses either way, but firing a remote that can only be
-	-- rejected is what makes a greyed-out button feel broken -- so don't send it. Stop always sends: it has to be
-	-- able to end a cook whatever state the stick is in.
-	goBtn.Activated:Connect(function()   if marshOn() then stickRemote:FireServer("roast") end end)
-	stopBtn.Activated:Connect(function() stickRemote:FireServer("stop") end)
-	eatBtn.Activated:Connect(function()  if marshOn() then stickRemote:FireServer("eat") end end)
+	-- ===== WHAT IS LEGAL RIGHT NOW =====
+	-- The server owns these rules and re-checks every one of them; this mirrors them ONLY so a button that
+	-- cannot work looks like it cannot work. Both the greying and the click guard read the SAME functions, so
+	-- a live-looking button can never be a dead one.
+	--
+	-- Everything here comes from replicated state -- attributes the server sets on the stick, and CampfireLit
+	-- on Workspace -- so no extra remote is needed and every client sees the same answer.
+	local RAW_UNTIL = 18 -- keep in step with RAW_UNTIL in Campfire.server.lua
+	local function stickTool()
+		local char = player.Character
+		return char and char:FindFirstChild("Marshmallow Stick")
+	end
+	local function isRoasting()
+		local t = stickTool()
+		return t ~= nil and t:GetAttribute("Roasting") == true
+	end
+	local function roastVal()
+		local t = stickTool()
+		return (t and t:GetAttribute("Roast")) or 0
+	end
+	local function firesAreLit()
+		-- missing attribute = an older server copy that never published it; assume lit rather than dead-lock
+		return workspace:GetAttribute("CampfireLit") ~= false
+	end
+
+	local canRoast = function() return marshOn() and not isRoasting() and firesAreLit() end
+	local canStop  = function() return isRoasting() end
+	local canEat   = function() return marshOn() and roastVal() >= RAW_UNTIL end
+
+	-- ===== WIRING THE PRESSES =====
+	-- MouseButton1Click, not Activated. Every other button in this game (CoreClient, ShopClient, RailGuard,
+	-- the crate UIs) uses MouseButton1Click; these four were the only ones on Activated. Whatever else is
+	-- wrong, being the odd one out is one variable too many when four buttons all read as dead at once.
+	--
+	-- And NOTHING here fails silently any more. A press that is refused says which guard refused it and what
+	-- that guard saw -- because "I pressed it and nothing happened" is identical from the outside whether the
+	-- click never landed, the guard blocked it, or the server dropped it, and those are three different bugs.
+	--
+	-- NOTE ON WHAT THIS PRINTS: it reads `bar.Visible`, NOT holdingStick()/atCampfire(). Those two are
+	-- declared further down the file, and a `local` is invisible to a closure written above it -- referencing
+	-- them here would resolve them as nil globals and throw on the first press, killing all four buttons.
+	-- That is the precise bug that took the server handler down last round. bar.Visible IS those two ANDed
+	-- together and it is already in scope, so it carries the same information with none of the hazard.
+	local function press(name, allowed, action)
+		print(("[Campfire][press] %s -- allowed=%s | marsh=%s roasting=%s roast=%d lit=%s barShown=%s")
+			:format(name, tostring(allowed), tostring(marshOn()), tostring(isRoasting()), roastVal(),
+				tostring(firesAreLit()), tostring(bar.Visible)))
+		if not allowed then return end
+		stickRemote:FireServer(action)
+	end
+
+	goBtn.MouseButton1Click:Connect(function()   press("Roast", canRoast(), "roast") end)
+	stopBtn.MouseButton1Click:Connect(function() press("Stop",  canStop(),  "stop")  end)
+	eatBtn.MouseButton1Click:Connect(function()  press("Eat",   canEat(),   "eat")   end)
 
 	-- a little red Remove button, centred UNDER the middle (Stop) button. Puts the whole stick down: no eat,
 	-- no reward. This is the deliberate way to hand yourself the bottom buttons back (gut pill / gas meter /
@@ -120,7 +205,19 @@ if stickRemote then
 	Instance.new("UICorner", removeBtn).CornerRadius = UDim.new(0, 10)
 	local rs = Instance.new("UIStroke", removeBtn); rs.Color = Color3.new(0, 0, 0); rs.Transparency = 0.4; rs.Thickness = 2
 	local rpad = Instance.new("UIPadding", removeBtn); rpad.PaddingLeft = UDim.new(0, 6); rpad.PaddingRight = UDim.new(0, 6)
-	removeBtn.Activated:Connect(function() stickRemote:FireServer("remove") end)
+	-- Remove has no legality guard -- putting the stick down is legal in every state -- so if THIS one reads as
+	-- dead, the click is not reaching the button at all and the problem is a GUI sitting on top of it, not the
+	-- rules. That makes it the most informative of the four, so it reports what is actually under the cursor.
+	removeBtn.MouseButton1Click:Connect(function()
+		local over = {}
+		pcall(function()
+			local m = player:GetMouse()
+			for _, o in ipairs(gui:GetGuiObjectsAtPosition(m.X, m.Y)) do over[#over + 1] = o:GetFullName() end
+		end)
+		print("[Campfire][press] Remove -- GUI stack under the cursor, topmost first: " ..
+			(#over > 0 and table.concat(over, "  >  ") or "(nothing -- the click did not land on any GUI)"))
+		stickRemote:FireServer("remove")
+	end)
 
 	-- Because eating now KEEPS the stick, you can be stood at the fire holding a bare stick -- and a Roast or
 	-- Eat button that silently does nothing reads as broken. Say what to do instead.
@@ -172,7 +269,8 @@ if stickRemote then
 		end
 		return false
 	end
-	local GO_COLOR, EAT_COLOR = Color3.fromRGB(214, 108, 44), Color3.fromRGB(86, 170, 78)
+	local GO_COLOR, STOP_COLOR, EAT_COLOR =
+		Color3.fromRGB(214, 108, 44), Color3.fromRGB(90, 96, 110), Color3.fromRGB(86, 170, 78)
 	local function setLive(btn, on, liveColor)
 		btn.AutoButtonColor = on
 		btn.BackgroundColor3 = on and liveColor or Color3.fromRGB(96, 96, 104)
@@ -184,19 +282,45 @@ if stickRemote then
 		bar.Visible = active
 		removeBtn.Visible = active
 		setHudHidden(active)
-		-- Stop and Remove stay live whatever is on the stick: Stop must always be able to end a cook, and
-		-- Remove is the way to hand yourself the bottom buttons back without walking off.
-		local marsh = active and marshOn()
-		setLive(goBtn, marsh, GO_COLOR)
-		setLive(eatBtn, marsh, EAT_COLOR)
-		hint.Visible = active and not marsh
+		-- Each button is lit only while its action would actually be accepted. Remove is the exception and
+		-- stays live always: it is the way to hand yourself the bottom HUD back without walking off, and
+		-- putting the stick down is legal in every state.
+		setLive(goBtn,   active and canRoast(), GO_COLOR)
+		setLive(stopBtn, active and canStop(),  STOP_COLOR)
+		setLive(eatBtn,  active and canEat(),   EAT_COLOR)
+
+		-- Say WHY, when the reason isn't obvious from the buttons alone.
+		local msg = nil
+		if active and not marshOn() then
+			msg = "Grab a marshmallow from the bucket"
+		elseif active and not firesAreLit() then
+			msg = "\xF0\x9F\x8C\xA7 The fire is out -- wait for it to dry"
+		elseif active and isRoasting() and roastVal() < RAW_UNTIL then
+			msg = "\xF0\x9F\x94\xA5 Roasting... hold it there"
+		elseif active and not canEat() then
+			msg = "Still raw -- roast it first"
+		end
+		hint.Text = msg or hint.Text
+		hint.Visible = active and msg ~= nil
 	end
 
-	local function hookChar(char)
-		char.ChildAdded:Connect(updateBar)
-		char.ChildRemoved:Connect(updateBar)
+	-- The stick's own attributes drive three of the four buttons, and Roast ticks several times a second while
+	-- cooking. Waiting on the half-second poll would leave Eat greyed for up to half a second after the
+	-- marshmallow stopped being raw, which feels like a stuck button -- so follow the attributes directly.
+	local function hookStick(inst)
+		if inst:IsA("Tool") and inst.Name == "Marshmallow Stick" then
+			inst.AttributeChanged:Connect(updateBar)
+		end
 		updateBar()
 	end
+	local function hookChar(char)
+		char.ChildAdded:Connect(hookStick)
+		char.ChildRemoved:Connect(updateBar)
+		for _, d in ipairs(char:GetChildren()) do hookStick(d) end -- already equipped when we hooked up
+		updateBar()
+	end
+	-- the fire going out (or drying) must grey/un-grey Roast for everyone standing there, immediately
+	workspace:GetAttributeChangedSignal("CampfireLit"):Connect(updateBar)
 	if player.Character then hookChar(player.Character) end
 	player.CharacterAdded:Connect(hookChar)
 	-- ChildAdded/ChildRemoved cover equipping and dropping, but WALKING AWAY fires no character event at all,

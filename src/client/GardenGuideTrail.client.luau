@@ -135,10 +135,61 @@ local function destroyAll() for _, nd in ipairs(pool) do pcall(function() nd:Des
 local started   = false
 local stage     = 1
 local override  = nil    -- Vector3 set by _G.guideTrailTo(); nil = fall back to the tutorial route
+local npcTarget = nil    -- Vector3 set by _G.guideTrailNpc(); LOWER priority than override
 local flownOnce = false  -- LATCH: true forever once the player first fart-flies. Ends the TUTORIAL route only.
 
+-- ===== SAY WHICH LEG THE ARROWS ARE ON =====
+-- The on-screen objective card (ObjectiveHUD) used to run its own opinion of what the player should do next,
+-- and it opened on "BUY BEANS AT THE FOOD STAND" -- while these arrows were pointing at the GARDENER. The
+-- words and the arrows disagreed on the very first instruction a new player is given, which is the one moment
+-- they are least able to work out which to trust.
+--
+-- Rather than teach the card to recompute the route (two copies of the same logic, guaranteed to drift), the
+-- trail publishes the leg it is ACTUALLY drawing and the card reads it. The trail owns the route; it is the
+-- thing that knows whether the Gardener has been reached, and it is the thing the player can see.
+--
+--   "gardener" -> arrows point at the Gardener
+--   "stand"    -> arrows point at the Island 1 food stand
+--   nil        -> no tutorial arrows (not started, both legs done, or the player has flown)
+local function publishStep()
+	local s = nil
+	if started and not flownOnce and stage < 3 then
+		s = (stage == 1) and "gardener" or "stand"
+	end
+	if _G.gardenGuideStep ~= s then _G.gardenGuideStep = s end
+end
+publishStep()
+
+-- ===== THE ARROWS WAIT FOR THE STARTER-PET CARD =====
+-- GardenIntro calls this the instant the cinematic finishes or is skipped -- and that is the SAME moment
+-- PetFollow's "YOUR FIRST PET!" welcome card is waiting for, because it is gated on the intro too. So both
+-- landed together: the card announcing the free Bean Buddy, and a line of green chevrons already pulling
+-- the player's eye across the floor toward the Gardener. The two instructions arrived at once and competed.
+--
+-- The arrows now hold until the card has gone. _G.starterWelcome is PetFollow's handshake -- "pending" from
+-- the moment the grant lands, "showing" while the card is up, "done" once it has faded. This is the same
+-- gate ObjectiveHUD's directions card uses, so the words and the arrows still appear together as a pair;
+-- they just appear after the pet, not on top of it.
+--
+-- EVERY caller is a first-timer by construction (the intro only plays for a player who has not seen it), so
+-- there is no returning-player branch to write here -- unlike ObjectiveHUD, which is built on every join.
+-- The 8s grace covers a first-timer whose grant failed or never arrived; the 45s ceiling means a welcome
+-- that never resolves delays the arrows rather than cancelling them.
+local starting = false
 _G.startGardenGuide = function()
-	if not started then started = true; print("[GardenGuideTrail] started -> guiding to the Gardener") end
+	if started or starting then return end
+	starting = true
+	task.spawn(function()
+		local waited = 0
+		while _G.starterWelcome == nil and waited < 8 do task.wait(0.25); waited = waited + 0.25 end
+		while (_G.starterWelcome == "pending" or _G.starterWelcome == "showing") and waited < 45 do
+			task.wait(0.25); waited = waited + 0.25
+		end
+		if started then return end
+		started = true; publishStep()
+		print(("[GardenGuideTrail] started -> guiding to the Gardener (waited %.1fs for the starter-pet card: %s)")
+			:format(waited, tostring(_G.starterWelcome)))
+	end)
 end
 
 -- Point the trail at ANY world position. Meant to be called every frame by whoever owns the target: it is cheap,
@@ -148,6 +199,14 @@ _G.guideTrailTo = function(pos)
 end
 _G.guideTrailClear = function()
 	override = nil
+end
+-- SECOND, LOWER-PRIORITY SLOT: the island's quest NPC (owned by NpcGuideArrow).
+--
+-- Two slots rather than one because with a single slot whichever script wrote last would win each
+-- frame, and the trail would FLICKER between a hatchable egg and an NPC instead of choosing one.
+-- An egg always beats an NPC: it's the thing the player is mid-way through.
+_G.guideTrailNpc = function(pos)
+	npcTarget = (typeof(pos) == "Vector3") and pos or nil
 end
 
 local conn
@@ -168,6 +227,7 @@ conn = RunService.RenderStepped:Connect(function()
 	if _G.isFlying and not flownOnce then
 		flownOnce = true
 		stage = 3 -- tutorial over: gardener + food-stand arrows are done for good
+		publishStep() -- and the objective card drops back to its own advice, since there are no arrows to follow
 		hideFrom(1)
 		print("[GardenGuideTrail] player fart-flew -> Bean Farm tutorial arrows removed for good"
 			.. " (egg trails still work)")
@@ -176,12 +236,15 @@ conn = RunService.RenderStepped:Connect(function()
 	-- Mid-flight there is no ground to lay chevrons on. HIDE, do not destroy -- we want the egg trail back on landing.
 	if _G.isFlying then hideFrom(1); return end
 
-	-- A hatchable egg (override) beats the tutorial route. With neither, the trail idles.
+	-- PRIORITY: a hatchable egg (override) > the tutorial route > the island's quest NPC.
+	-- With none of them, the trail idles.
 	local tpos
 	if override then
 		tpos = override
 	elseif started and stage < 3 and not flownOnce then
 		tpos = (stage == 1) and gardenerPos() or standPos()
+	elseif npcTarget then
+		tpos = npcTarget
 	end
 	if not tpos then hideFrom(1); return end -- nothing to point at, or the target is not in the world yet
 
@@ -193,8 +256,11 @@ conn = RunService.RenderStepped:Connect(function()
 		-- Arriving at an EGG must not advance the tutorial stage -- the two routes are unrelated, and letting an
 		-- egg tick the tutorial forward would silently skip the food stand for anyone who hatched a pet first.
 		-- PetFollow stops calling guideTrailTo once the egg is hatched, so the trail clears itself.
-		if not override then
+		-- ...and neither must arriving at an NPC. Any third consumer added here MUST be in this
+		-- guard too, or walking up to it silently advances the Bean Farm tutorial past the stand.
+		if not override and not npcTarget then
 			stage += 1
+			publishStep() -- the card follows the arrows to the next leg on the same frame they re-route
 			if stage == 2 then print("[GardenGuideTrail] reached the Gardener -> re-routing to the FOOD STAND")
 			else print("[GardenGuideTrail] reached the food stand -> guidance complete") end
 		end

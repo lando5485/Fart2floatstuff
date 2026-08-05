@@ -3,3 +3,6 @@
 *.zip.bak
 *_extracted/
 CandyRealm_MoreBackends_x/
+
+# Rojo binary (download separately)
+rojo.exe

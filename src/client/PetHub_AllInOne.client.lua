@@ -369,11 +369,37 @@ local function buildPetCard(key, p, order)
 	uicorner(card, 12)
 	local tierName, tierColor, isVariant = petTier(p.level, p.rare, petId)
 	uistroke(card, isVariant and tierColor or (p.equipped and Color3.fromRGB(255,215,0) or Color3.fromRGB(10,40,100)), (isVariant or p.equipped) and 3 or 1)
-	makeViewportIcon(card, petId, p.level, p.rare, UDim2.new(0,310,0,140), UDim2.new(0.5,0,0,6), Vector2.new(0.5,0))
-	local nm = Instance.new("TextLabel"); nm.Size = UDim2.new(1,-16,0,18); nm.Position = UDim2.new(0,8,0,150)
-	nm.BackgroundTransparency = 1; nm.Font = Enum.Font.GothamBold; nm.TextSize = 16
+	-- SCALE-sized picture (0.55 of the card = the same 140px on a 252px cell), so it keeps its share of the
+	-- card instead of holding 140px and squeezing the text block off the bottom.
+	makeViewportIcon(card, petId, p.level, p.rare, UDim2.new(1,-12,0.55,0), UDim2.new(0.5,0,0,6), Vector2.new(0.5,0))
+
+	-- ---- THE CARD BODY: ONE VERTICAL LIST, NO FIXED OFFSETS ----------------------------------------
+	-- Same change as PetFollow.client.lua's copy of this card, for the same reason. These lines were hand
+	-- placed at y = 150/170/188/208/236 against a card assumed to be exactly 252px tall, so the name, the
+	-- level line, the XP bar, the buttons and the milestone stacked on top of each other the moment the
+	-- card was any shorter. A UIListLayout cannot overlap: each row is placed after the one before it.
+	--
+	-- Sizes are SCALE and every label is TextScaled with a UITextSizeConstraint pinning its AUTHORED size
+	-- as the MAXIMUM -- identical at full size, shrinking instead of spilling when the card is small.
+	local body = Instance.new("Frame"); body.Name = "Body"
+	body.BackgroundTransparency = 1
+	body.Position = UDim2.new(0, 8, 0.57, 2)
+	body.Size = UDim2.new(1, -16, 0.43, -8)
+	body.Parent = card
+	do
+		local bl = Instance.new("UIListLayout"); bl.FillDirection = Enum.FillDirection.Vertical
+		bl.SortOrder = Enum.SortOrder.LayoutOrder; bl.Padding = UDim.new(0, 2); bl.Parent = body
+	end
+	local function fitText(o, maxSize)
+		o.TextScaled = true
+		local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = maxSize; c.Parent = o
+		return o
+	end
+	local nm = Instance.new("TextLabel"); nm.Size = UDim2.new(1,0,0.17,0); nm.LayoutOrder = 1
+	nm.BackgroundTransparency = 1; nm.Font = Enum.Font.GothamBold
 	nm.TextColor3 = isVariant and tierColor or Color3.new(1,1,1)
-	nm.Text = p.rare and (p.rareName or p.displayName) or p.displayName; nm.Parent = card
+	nm.Text = p.rare and (p.rareName or p.displayName) or p.displayName; nm.Parent = body
+	fitText(nm, 18)
 	if isVariant then
 		local tag = Instance.new("TextLabel"); tag.AutomaticSize = Enum.AutomaticSize.X; tag.Size = UDim2.new(0,0,0,18); tag.Position = UDim2.new(1,-6,0,8); tag.AnchorPoint = Vector2.new(1,0)
 		tag.BackgroundColor3 = tierColor; tag.Font = Enum.Font.GothamBold; tag.TextSize = 11; tag.TextColor3 = Color3.new(1,1,1); tag.Text = tierName; tag.Parent = card
@@ -390,34 +416,46 @@ local function buildPetCard(key, p, order)
 	end
 	local cap = p.maxLevel or 25
 	local maxed = (p.level >= cap)
-	local lv = Instance.new("TextLabel"); lv.Size = UDim2.new(1,-16,0,16); lv.Position = UDim2.new(0,8,0,170)
-	lv.BackgroundTransparency = 1; lv.Font = Enum.Font.GothamBold; lv.TextSize = 13
-	lv.Text = (isVariant and tierName or (tierName .. "  Lv " .. p.level)) .. (p.equipped and "  \xE2\x80\xA2 EQUIPPED" or ""); lv.Parent = card
+	local lv = Instance.new("TextLabel"); lv.Size = UDim2.new(1,0,0.15,0); lv.LayoutOrder = 2
+	lv.BackgroundTransparency = 1; lv.Font = Enum.Font.GothamBold
+	lv.Text = (isVariant and tierName or (tierName .. "  Lv " .. p.level)) .. (p.equipped and "  \xE2\x80\xA2 EQUIPPED" or ""); lv.Parent = body
 	lv.TextColor3 = tierColor
-	local barBG = Instance.new("Frame"); barBG.Size = UDim2.new(1,-16,0,14); barBG.Position = UDim2.new(0,8,0,188)
-	barBG.BackgroundColor3 = Color3.fromRGB(12,40,90); barBG.BorderSizePixel = 0; barBG.Parent = card; uicorner(barBG, 7); uistroke(barBG, Color3.fromRGB(8,26,64), 1)
+	fitText(lv, 13)
+	local barBG = Instance.new("Frame"); barBG.Size = UDim2.new(1,0,0.14,0); barBG.LayoutOrder = 3
+	barBG.BackgroundColor3 = Color3.fromRGB(12,40,90); barBG.BorderSizePixel = 0; barBG.Parent = body; uicorner(barBG, 7); uistroke(barBG, Color3.fromRGB(8,26,64), 1)
 	local frac = maxed and 1 or math.clamp((p.xp or 0) / math.max(1, p.xpNeed or 1), 0, 1)
 	local fill = Instance.new("Frame"); fill.Size = UDim2.new(frac, 0, 1, 0); fill.BorderSizePixel = 0
 	fill.BackgroundColor3 = maxed and Color3.fromRGB(255,200,40) or Color3.fromRGB(80,220,120); fill.Parent = barBG; uicorner(fill, 7)
 	local xpTxt = Instance.new("TextLabel"); xpTxt.Size = UDim2.new(1,0,1,0); xpTxt.BackgroundTransparency = 1
-	xpTxt.Font = Enum.Font.GothamBold; xpTxt.TextSize = 10; xpTxt.TextColor3 = Color3.new(1,1,1); xpTxt.Parent = barBG
+	xpTxt.Font = Enum.Font.GothamBold; xpTxt.TextColor3 = Color3.new(1,1,1); xpTxt.Parent = barBG
 	xpTxt.Text = maxed and "MAX" or ((p.xp or 0) .. " / " .. (p.xpNeed or 0) .. " XP")
-	local ms = Instance.new("TextLabel"); ms.Size = UDim2.new(1,-16,0,14); ms.Position = UDim2.new(0,8,0,236)
-	ms.BackgroundTransparency = 1; ms.Font = Enum.Font.Gotham; ms.TextSize = 11; ms.TextColor3 = Color3.fromRGB(185,212,255)
-	ms.Text = "\xE2\x9C\xA8 " .. (p.milestone or ""); ms.Parent = card
-	local eq = Instance.new("TextButton"); eq.Size = UDim2.new(0,149,0,26); eq.Position = UDim2.new(0,8,0,208)
-	eq.Font = Enum.Font.GothamBold; eq.TextSize = 13; eq.TextColor3 = Color3.new(1,1,1)
+	fitText(xpTxt, 10)
+	-- EQUIP + SKIP share one row; the milestone line sits under them, in list order rather than at y=236
+	local btnRow = Instance.new("Frame"); btnRow.Name = "Buttons"; btnRow.LayoutOrder = 4
+	btnRow.BackgroundTransparency = 1; btnRow.Size = UDim2.new(1,0,0.26,0); btnRow.Parent = body
+	do
+		local rl = Instance.new("UIListLayout"); rl.FillDirection = Enum.FillDirection.Horizontal
+		rl.SortOrder = Enum.SortOrder.LayoutOrder; rl.Padding = UDim.new(0, 6)
+		rl.VerticalAlignment = Enum.VerticalAlignment.Center; rl.Parent = btnRow
+	end
+	local ms = Instance.new("TextLabel"); ms.Size = UDim2.new(1,0,0.15,0); ms.LayoutOrder = 5
+	ms.BackgroundTransparency = 1; ms.Font = Enum.Font.Gotham; ms.TextColor3 = Color3.fromRGB(185,212,255)
+	ms.Text = "\xE2\x9C\xA8 " .. (p.milestone or ""); ms.Parent = body
+	fitText(ms, 11)
+	local eq = Instance.new("TextButton"); eq.Size = UDim2.new(0.49,0,1,0); eq.LayoutOrder = 1
+	eq.Font = Enum.Font.GothamBold; eq.TextColor3 = Color3.new(1,1,1)
 	eq.BackgroundColor3 = p.equipped and Color3.fromRGB(120,120,120) or Color3.fromRGB(50,200,50)
-	eq.Text = p.equipped and "UNEQUIP" or "EQUIP"; eq.Parent = card
-	uicorner(eq, 8); uistroke(eq, Color3.new(0,0,0), 1)
+	eq.Text = p.equipped and "UNEQUIP" or "EQUIP"; eq.Parent = btnRow
+	uicorner(eq, 8); uistroke(eq, Color3.new(0,0,0), 1); fitText(eq, 13)
 	eq.MouseButton1Click:Connect(function()
 		if PetEquipEvent then
 			if p.equipped then pcall(function() PetEquipEvent:FireServer(false) end)
 			else pcall(function() PetEquipEvent:FireServer(key) end) end
 		end
 	end)
-	local sk = Instance.new("TextButton"); sk.Size = UDim2.new(0,149,0,26); sk.Position = UDim2.new(0,165,0,208)
-	sk.Font = Enum.Font.GothamBold; sk.TextSize = 12; sk.TextColor3 = Color3.new(1,1,1); sk.Parent = card; uicorner(sk, 8)
+	-- 'Skip to Legendary R$599' is the longest string on the card, hence the tighter cap here
+	local sk = Instance.new("TextButton"); sk.Size = UDim2.new(0.49,0,1,0); sk.LayoutOrder = 2
+	sk.Font = Enum.Font.GothamBold; sk.TextColor3 = Color3.new(1,1,1); sk.Parent = btnRow; uicorner(sk, 8); fitText(sk, 12)
 	local skipStep = (p.level <= 5 and PET_SKIP_PRODUCTS[1]) or (p.level <= 10 and PET_SKIP_PRODUCTS[2])
 		or (p.level <= 15 and PET_SKIP_PRODUCTS[3]) or (p.level <= 20 and PET_SKIP_PRODUCTS[4]) or nil
 	if maxed or not skipStep then
