@@ -4,13 +4,17 @@
 -- LAND ON AN ISLAND, GET POINTED AT ITS NPC.
 --
 -- Every island has a quest giver and no way of knowing where they are; you land, and you are stood
--- on a large island with a person somewhere on it. This lays the chevron trail from wherever you
--- touch down to that island's NPC, then puts itself away.
+-- on a large island with a person somewhere on it. This marks that island's NPC with a floating ▼
+-- from the moment you touch down, then puts itself away.
 --
--- IT DOES NOT DRAW ANYTHING. GardenGuideTrail owns the chevrons -- it already survives across
--- islands, hides itself mid-flight and comes back when you land, and all the awkward parts are
--- solved in there. This script only decides WHERE it should point, through the low-priority slot
--- _G.guideTrailNpc, so an urgent target (a hatchable egg) still beats an NPC every time.
+-- IT DOES NOT DRAW ANYTHING. It decides WHO the island's quest giver is and publishes that model on
+-- _G.questArrowNpc; NpcWaypointArrow renders the bouncing green ▼ over their head from it.
+--
+-- NO GROUND CHEVRONS. This used to also point GardenGuideTrail at the NPC through the low-priority
+-- _G.guideTrailNpc slot, so landing laid a line of arrows across the floor to them. That trail is gone
+-- by request -- the ▼ over their head is the whole guidance now. Everything below (island detection,
+-- the visit timer, the retire rules) is kept because the ▼ obeys all of it; only the trail call is cut.
+-- GardenGuideTrail's _G.guideTrailNpc is a no-op stub now, so re-adding the call here does nothing.
 --
 -- ===== WHEN THE ARROWS GO AWAY (three ways) =====
 --   1. YOU REACH THEM      -- within ARRIVE_DIST. You found who you were looking for.
@@ -139,13 +143,13 @@ local function npcIn(scope, from)
 	return best
 end
 
--- ONE SET OF RULES, TWO RENDERERS.
+-- ONE SET OF RULES, ONE RENDERER.
 --
--- The ▼ over the NPC's head (NpcWaypointArrow) must appear and vanish on exactly the same terms as the ground
--- chevrons -- gone when you fly off, gone after SHOW_SECONDS, gone once you have met them. Rather than give
--- that script its own island detection and its own timer to drift out of step with this one, this publishes
--- the ONE npc currently being guided to. Nil means "show nothing", and every retirement path below already
--- routes through clearTrail().
+-- The ▼ over the NPC's head (NpcWaypointArrow) appears and vanishes on the rules worked out below -- gone when
+-- you fly off, gone after SHOW_SECONDS, gone once you have met them. Rather than give that script its own
+-- island detection and its own timer to drift out of step with this one, this publishes the ONE npc currently
+-- being guided to. Nil means "show nothing", and every retirement path below already routes through
+-- clearTrail(). (Two renderers until the ground chevrons were removed; the split is why it is still a global.)
 local function setGuided(part)
 	local model = nil
 	if part then
@@ -162,19 +166,11 @@ local function setGuided(part)
 	_G.questArrowNpc = model
 end
 
+-- Drop the ▼. (Named clearTrail from when it also cleared the ground chevrons; every call site below
+-- means "stop pointing at anyone", which is still exactly what it does.)
 local function clearTrail()
-	if _G.guideTrailNpc then _G.guideTrailNpc(nil) end
 	setGuided(nil)
 end
-
--- The trail lives in another script. If that one is missing or is an older copy without the NPC
--- slot, this script does everything right and nothing appears -- so say so, once, loudly, rather
--- than sitting there silently pointing at nobody.
-task.delay(5, function()
-	if not _G.guideTrailNpc then
-		warn("[NpcGuide] no _G.guideTrailNpc -- arrows CANNOT draw. GardenGuideTrail.client.luau needs the NPC slot.")
-	end
-end)
 
 -- /arrows -- print exactly what the guide can see, so a silent trail can be diagnosed in one line
 -- instead of guessed at
@@ -193,7 +189,7 @@ local function onCommand(msg)
 	end
 	print(("  retired  : %s"):format(island and tostring(reached[island.Name] == true) or "n/a"))
 	print(("  flying   : %s"):format(tostring(_G.isFlying == true)))
-	print(("  trail api: %s"):format(_G.guideTrailNpc and "present" or "MISSING"))
+	print(("  \xE2\x96\xBC shown : %s"):format(tostring(_G.questArrowNpc ~= nil)))
 end
 pcall(function()
 	TextChatService.MessageReceived:Connect(function(m)
@@ -266,8 +262,7 @@ RunService.Heartbeat:Connect(function()
 		return
 	end
 
-	if _G.guideTrailNpc then _G.guideTrailNpc(npcPart.Position) end
-	setGuided(npcPart) -- and light the ▼ over that same NPC's head
+	setGuided(npcPart) -- light the ▼ over that NPC's head (no ground trail -- see the header)
 end)
 
-print(("[NpcGuide] ready -- arrows to each island's NPC on landing, gone after %ds or on takeoff"):format(SHOW_SECONDS))
+print(("[NpcGuide] ready -- \xE2\x96\xBC over each island's NPC on landing (no ground trail), gone after %ds or on takeoff"):format(SHOW_SECONDS))

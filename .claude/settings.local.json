@@ -256,7 +256,12 @@
       "Bash(xargs wc -l)",
       "Bash(grep -rn '\"/\\\\|Chatted' --include=*.lua --include=*.luau src/server/)",
       "Bash(awk 'NR>=4640 && NR<=4646' src/client/PetFollow.client.lua)",
-      "Bash(awk 'NR>=4678 && NR<=4690' src/client/PetFollow.client.lua)"
+      "Bash(awk 'NR>=4678 && NR<=4690' src/client/PetFollow.client.lua)",
+      "Bash(git ls-tree *)",
+      "PowerShell(git status --short; \"---- remotes ----\"; git remote -v; \"---- branch ----\"; git rev-parse --abbrev-ref --symbolic-full-name '@{u}')",
+      "PowerShell(\"---- gameplay-fixes-and-hud-restyle vs main ----\"; git log --oneline main..origin/gameplay-fixes-and-hud-restyle; \"---- files changed ----\"; git diff --stat main...origin/gameplay-fixes-and-hud-restyle)",
+      "PowerShell(foreach \\($b in @\\('main','more-menu-dashboard-and-progression-gates','pet-wheel-ui-pass'\\)\\) { $c = git rev-list --left-right --count \"$b...origin/$b\"; \"$b  ->  ahead/behind: $c\" }; \"---- unfetched? ----\"; git log --oneline -1 origin/gameplay-fixes-and-hud-restyle; git log --oneline -1 origin/more-menu-dashboard-and-progression-gates; git log --oneline -1 origin/pet-wheel-ui-pass; \"---- objects present ----\"; git cat-file -e 8892dd7^{commit}; if \\($?\\) { \"8892dd7 present locally\" })",
+      "PowerShell(\"==== default.project.json ====\"; git diff -- default.project.json; \"==== .claude/settings.local.json ====\"; git diff -- .claude/settings.local.json)"
     ]
   }
 }

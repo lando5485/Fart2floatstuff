@@ -4,6 +4,9 @@
     "$className": "DataModel",
     "ServerScriptService": {
       "$className": "ServerScriptService",
+      "SecurityWatchdog": {
+        "$path": "src/server/SecurityWatchdog.server.luau"
+      },
       "BootCheck": {
         "$path": "src/server/BootCheck.server.luau"
       },

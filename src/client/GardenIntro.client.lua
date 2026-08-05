@@ -14,8 +14,11 @@
 -- view up the island stack 2..14, ending bottom-up on the black hole) -> return the
 -- camera to the player, restore everything. Any NPC/island that can't be found is
 -- skipped gracefully; existing garden/NPC behaviour is left intact afterwards.
--- SKIPPABLE: a SKIP button fades in a few seconds in (SKIP_AFTER) and cancels the
--- cinematic immediately when pressed (restores camera/controls/HUD and notifies the server).
+-- SKIPPABLE: a SKIP button sits bottom-right the whole time. Normal players must watch
+-- SKIP_WAIT (10s) first -- the button counts down ("SKIP in 8") and only then goes live.
+-- DEVS (see DEV_IDS/DEV_NAMES) get an instantly-clickable SKIP so they aren't stuck
+-- re-watching the cinematic every test join. Pressing it cancels the cinematic
+-- immediately (restores camera/controls/HUD and notifies the server).
 -- ============================================================================
 
 local Players          = game:GetService("Players")
@@ -30,6 +33,17 @@ local playerGui = player:WaitForChild("PlayerGui")
 
 local GardenIntroEvent     = ReplicatedStorage:WaitForChild("GardenIntroEvent", 30)
 local GardenIntroDoneEvent = ReplicatedStorage:WaitForChild("GardenIntroDoneEvent", 30)
+
+-- ---- SKIP GATE ------------------------------------------------------------
+-- Everyone waits SKIP_WAIT seconds before the SKIP button goes live (so a first-time
+-- player actually sees the opening), EXCEPT devs, who can skip on frame one.
+-- Same allow-list as the realm-teleport testers (BlackHoleTeleport / RealmPortals).
+-- Names are LOWER-CASE keys and the lookup lower-cases too -- matching on raw
+-- plr.Name is how a dev ends up locked out over a single capital letter.
+local SKIP_WAIT = 10
+local DEV_IDS   = { [1086836724] = true, [1418148401] = true, [3911540303] = true } -- lando5485, Broskie310111, Itsmaddmax1
+local DEV_NAMES = { ["lando5485"] = true, ["broskie310111"] = true, ["itsmaddmax1"] = true, ["itsmaddmax2"] = true }
+local IS_DEV = DEV_IDS[player.UserId] == true or DEV_NAMES[string.lower(player.Name)] == true
 
 -- ---- DIALOGUE -------------------------------------------------------------
 -- INTRO ONLY: short, fast-reading lines. Farmer/Cow/Pig all have the SAME number of slides (4) -- keep them
@@ -241,7 +255,7 @@ local function playIntro()
 	coverGui.Name = "GardenIntroCover"
 	coverGui.IgnoreGuiInset = true
 	coverGui.ResetOnSpawn = false
-	coverGui.DisplayOrder = 1500000 -- above the letterbox + title card (skip button at 2000000 sits above, fades in at SKIP_AFTER)
+	coverGui.DisplayOrder = 1500000 -- above the letterbox + title card (the skip button at 2000000 sits above this)
 	coverGui.Parent = playerGui
 	local coverBlack = Instance.new("Frame")
 	coverBlack.Size = UDim2.fromScale(1, 1)
@@ -475,23 +489,24 @@ local function playIntro()
 	skipBtn.Modal = true
 	skipBtn.Active = true
 	skipBtn.Selectable = true
-	skipBtn.BackgroundColor3 = Color3.fromRGB(54, 116, 50)  -- bright ready green (skip is live immediately)
+	-- Devs start on the live green "SKIP ➜"; everyone else starts on the dim grey countdown.
+	skipBtn.BackgroundColor3 = IS_DEV and Color3.fromRGB(54, 116, 50) or Color3.fromRGB(58, 62, 58)
 	skipBtn.Font = Enum.Font.FredokaOne                     -- game's bold rounded font
-	skipBtn.Text = "SKIP  \xE2\x9E\x9C"                     -- "SKIP ➜" -- clickable from the very first frame (no countdown)
+	skipBtn.Text = IS_DEV and "SKIP  \xE2\x9E\x9C" or ("SKIP in " .. SKIP_WAIT)
 	skipBtn.TextColor3 = Color3.fromRGB(255, 247, 230)      -- cream
 	skipBtn.TextScaled = true
-	skipBtn.BackgroundTransparency = 0.05                   -- fully visible (skip is active right away)
-	skipBtn.TextTransparency = 0
+	skipBtn.BackgroundTransparency = IS_DEV and 0.05 or 0.35 -- dimmed while it's still counting down
+	skipBtn.TextTransparency = IS_DEV and 0 or 0.25
 	skipBtn.ZIndex = 2
 	skipBtn.Parent = skipGui
-	print("[GARDEN INTRO] SKIP button shown (active immediately)")
+	print("[GARDEN INTRO] SKIP button shown (" .. (IS_DEV and "DEV -> active immediately" or ("locked for " .. SKIP_WAIT .. "s")) .. ")")
 	local skCorner = Instance.new("UICorner"); skCorner.CornerRadius = UDim.new(0, 12); skCorner.Parent = skipBtn
 	local skBorder = Instance.new("UIStroke"); skBorder.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	skBorder.Color = Color3.fromRGB(255, 247, 230); skBorder.Thickness = 2.5; skBorder.Transparency = 0.35; skBorder.Parent = skipBtn
 	local skPad = Instance.new("UIPadding")
 	skPad.PaddingTop = UDim.new(0, 8); skPad.PaddingBottom = UDim.new(0, 8)
 	skPad.PaddingLeft = UDim.new(0, 14); skPad.PaddingRight = UDim.new(0, 14); skPad.Parent = skipBtn
-	local skipReady = true -- skip is available IMMEDIATELY (no countdown gate)
+	local skipReady = IS_DEV -- devs: live on frame one. Everyone else: unlocked by the countdown below.
 	local function doSkip()
 		print("[GARDEN INTRO] SKIP button CLICKED (skipReady=" .. tostring(skipReady) .. ", skipped=" .. tostring(skipped) .. ")")
 		if not skipReady then return end -- still counting down ("SKIP in N") -> not clickable yet
@@ -505,9 +520,35 @@ local function playIntro()
 	skipBtn.Activated:Connect(doSkip)
 	skipBtn.MouseButton1Click:Connect(doSkip)
 	skipBtn.TouchTap:Connect(doSkip)
-	-- SKIP is available IMMEDIATELY -- the button is styled ready above and skipReady starts true, so a player can
-	-- bail out of the intro the instant they join (no countdown). skBorder brightened up front to match.
-	pcall(function() skBorder.Transparency = 0 end)
+	-- COUNTDOWN: devs are already live (styled ready above, skipReady true), so nothing to do. For everyone else
+	-- tick "SKIP in N" down once a second, then flip the button to the ready green and set skipReady. Runs in its
+	-- own thread so the cinematic keeps playing; it bails early if the intro ends first (skipGui destroyed in
+	-- cleanup) so it can never touch a dead instance.
+	local function makeSkipReady()
+		skipReady = true
+		pcall(function()
+			skipBtn.Text = "SKIP  \xE2\x9E\x9C"
+			skipBtn.BackgroundColor3 = Color3.fromRGB(54, 116, 50)
+			skipBtn.BackgroundTransparency = 0.05
+			skipBtn.TextTransparency = 0
+			skBorder.Transparency = 0
+		end)
+		print("[GARDEN INTRO] SKIP now available")
+	end
+	if IS_DEV then
+		makeSkipReady()
+	else
+		task.spawn(function()
+			for remaining = SKIP_WAIT - 1, 1, -1 do
+				task.wait(1)
+				if skipped or not skipGui or not skipGui.Parent then return end
+				pcall(function() skipBtn.Text = "SKIP in " .. remaining end)
+			end
+			task.wait(1)
+			if skipped or not skipGui or not skipGui.Parent then return end
+			makeSkipReady()
+		end)
+	end
 
 	-- ---- one subject segment: pan in, auto-advance ALL the NPC's lines across `window` seconds total ----
 	-- `window` (seconds) is divided EVENLY across this NPC's lines, so the whole set fills the 8-10s window

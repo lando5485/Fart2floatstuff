@@ -135,7 +135,6 @@ local function destroyAll() for _, nd in ipairs(pool) do pcall(function() nd:Des
 local started   = false
 local stage     = 1
 local override  = nil    -- Vector3 set by _G.guideTrailTo(); nil = fall back to the tutorial route
-local npcTarget = nil    -- Vector3 set by _G.guideTrailNpc(); LOWER priority than override
 local flownOnce = false  -- LATCH: true forever once the player first fart-flies. Ends the TUTORIAL route only.
 
 -- ===== SAY WHICH LEG THE ARROWS ARE ON =====
@@ -200,14 +199,15 @@ end
 _G.guideTrailClear = function()
 	override = nil
 end
--- SECOND, LOWER-PRIORITY SLOT: the island's quest NPC (owned by NpcGuideArrow).
+-- REMOVED: the low-priority "island quest NPC" slot. Landing on an island no longer lays a chevron
+-- trail to its quest giver -- the bouncing ▼ over that NPC's head (NpcWaypointArrow) is the only
+-- pointer now, which is enough to find them without a line of arrows dragging your eye across the floor.
 --
--- Two slots rather than one because with a single slot whichever script wrote last would win each
--- frame, and the trail would FLICKER between a hatchable egg and an NPC instead of choosing one.
--- An egg always beats an NPC: it's the thing the player is mid-way through.
-_G.guideTrailNpc = function(pos)
-	npcTarget = (typeof(pos) == "Vector3") and pos or nil
-end
+-- The function is KEPT as a deliberate no-op rather than deleted: NpcGuideArrow still exists (it drives
+-- the ▼), and a stale baked-in copy of it in StarterPlayerScripts would happily keep calling this. A stub
+-- that ignores the position means the ground trail cannot come back no matter who calls it, and nobody
+-- errors on a missing global.
+_G.guideTrailNpc = function() end
 
 local conn
 conn = RunService.RenderStepped:Connect(function()
@@ -236,15 +236,13 @@ conn = RunService.RenderStepped:Connect(function()
 	-- Mid-flight there is no ground to lay chevrons on. HIDE, do not destroy -- we want the egg trail back on landing.
 	if _G.isFlying then hideFrom(1); return end
 
-	-- PRIORITY: a hatchable egg (override) > the tutorial route > the island's quest NPC.
-	-- With none of them, the trail idles.
+	-- PRIORITY: a hatchable egg (override) > the tutorial route. With neither, the trail idles.
+	-- (The island quest NPC used to sit below both; it no longer draws a trail at all.)
 	local tpos
 	if override then
 		tpos = override
 	elseif started and stage < 3 and not flownOnce then
 		tpos = (stage == 1) and gardenerPos() or standPos()
-	elseif npcTarget then
-		tpos = npcTarget
 	end
 	if not tpos then hideFrom(1); return end -- nothing to point at, or the target is not in the world yet
 
@@ -256,9 +254,9 @@ conn = RunService.RenderStepped:Connect(function()
 		-- Arriving at an EGG must not advance the tutorial stage -- the two routes are unrelated, and letting an
 		-- egg tick the tutorial forward would silently skip the food stand for anyone who hatched a pet first.
 		-- PetFollow stops calling guideTrailTo once the egg is hatched, so the trail clears itself.
-		-- ...and neither must arriving at an NPC. Any third consumer added here MUST be in this
-		-- guard too, or walking up to it silently advances the Bean Farm tutorial past the stand.
-		if not override and not npcTarget then
+		-- Any second consumer added here MUST be in this guard too, or walking up to it silently
+		-- advances the Bean Farm tutorial past the stand.
+		if not override then
 			stage += 1
 			publishStep() -- the card follows the arrows to the next leg on the same frame they re-route
 			if stage == 2 then print("[GardenGuideTrail] reached the Gardener -> re-routing to the FOOD STAND")
@@ -293,4 +291,5 @@ conn = RunService.RenderStepped:Connect(function()
 	hideFrom(placed + 1)
 end)
 
-print("[GardenGuideTrail] loaded -- tutorial route after the intro, plus _G.guideTrailTo(pos) for eggs")
+print("[GardenGuideTrail] loaded -- tutorial route after the intro, plus _G.guideTrailTo(pos) for eggs"
+	.. " (island-NPC trail removed; the \xE2\x96\xBC over their head is the only NPC pointer)")
