@@ -117,7 +117,7 @@ local function mkStatBadge(parent, x, y, w, icon, txt, pulse)
 	return tx
 end
 local BW, BX = 208, { 12, 230, 448 }
-local curCoin  = mkStatBadge(statCard, BX[1], 44, BW, "\xF0\x9F\xAA\x99", "Coins x1.00", true)
+local curCoin  = mkStatBadge(statCard, BX[1], 44, BW, "\xF0\x9F\x92\xB0", "Coins x1.00", true)
 local curSpeed = mkStatBadge(statCard, BX[2], 44, BW, "\xE2\x9A\xA1", "Speed x1.00", true)
 local curLuck  = mkStatBadge(statCard, BX[3], 44, BW, "\xF0\x9F\x8D\x80", "Luck x1.00", true)
 
@@ -126,7 +126,7 @@ nextHdr.BackgroundTransparency = 1; nextHdr.Position = UDim2.fromOffset(0, 82); 
 nextHdr.Font = Enum.Font.GothamBold; nextHdr.TextScaled = true; nextHdr.TextColor3 = COL_GREEN
 nextHdr.TextXAlignment = Enum.TextXAlignment.Center; nextHdr.Text = "Next Rebirth Rewards"; nextHdr.Parent = statCard
 do local c = Instance.new("UITextSizeConstraint", nextHdr); c.MaxTextSize = 15 end
-local nxtCoin  = mkStatBadge(statCard, BX[1], 104, BW, "\xF0\x9F\xAA\x99", "Coins x1.25")
+local nxtCoin  = mkStatBadge(statCard, BX[1], 104, BW, "\xF0\x9F\x92\xB0", "Coins x1.25")
 local nxtSpeed = mkStatBadge(statCard, BX[2], 104, BW, "\xE2\x9A\xA1", "Speed x1.03")
 local nxtLuck  = mkStatBadge(statCard, BX[3], 104, BW, "\xF0\x9F\x8D\x80", "Luck x1.15")
 
@@ -377,11 +377,11 @@ local function mkChip(order, icon, col)
 	local sc = Instance.new("UIScale"); sc.Scale = 0; sc.Parent = chip
 	return { val = tx, sc = sc }
 end
-local chipCoins = mkChip(1, "\xF0\x9F\xAA\x99", COL_GOLD)
+local chipCoins = mkChip(1, "\xF0\x9F\x92\xB0", COL_GOLD)
 local chipSpeed = mkChip(2, "\xE2\x9A\xA1", Color3.fromRGB(90, 150, 240))
 local chipLuck  = mkChip(3, "\xF0\x9F\x8D\x80", COL_GREEN)
 
-local CONFETTI     = { "\xE2\x9C\xA6", "\xF0\x9F\xAA\x99", "\xE2\xAD\x90", "\xF0\x9F\x8E\x89" }
+local CONFETTI     = { "\xE2\x9C\xA6", "\xF0\x9F\x92\xB0", "\xE2\xAD\x90", "\xF0\x9F\x8E\x89" }
 local CONFETTI_COL = { Color3.fromRGB(255,214,90), Color3.fromRGB(255,120,220), Color3.fromRGB(120,200,255), Color3.fromRGB(140,255,150), Color3.fromRGB(255,255,255) }
 
 local function playSound(id, vol, speed)

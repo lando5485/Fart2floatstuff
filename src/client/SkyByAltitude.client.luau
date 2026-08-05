@@ -37,9 +37,16 @@ local player = Players.LocalPlayer
 -- Daylight holds all the way to ISLAND 10 (Butter Swamp, Y≈12,014). From there it darkens steadily, island by
 -- island, and Pizza Palms is night.
 local KEYS = {
-	{	y = 245,     -- 1 BEAN FARM. Humid, hazy, warm. You can smell the farm.
-		density = 0.42, offset = 0.15, haze = 2.6, glare = 0.15,
-		color = Color3.fromRGB(206, 190, 170), decay = Color3.fromRGB(106, 118, 140),
+	{	y = 245,     -- 1 BEAN FARM. Warm and bright, with just enough air to have a mood.
+		-- WAS density 0.42 / haze 2.6 / decay (106,118,140) -- the heaviest atmosphere of all fourteen
+		-- islands by a wide margin (the next one down is 1.9). "Humid and hazy" was the intent, but the
+		-- result was a grey-blue veil sitting over the whole of Bean Farm: dark, flat, and the very first
+		-- thing a new player sees. It also stacked with the chimney plumes, which is why the smoke read as
+		-- island-wide gloom rather than as two cosy fires.
+		-- Density and haze come down to roughly island-4 levels and the decay tint is brightened and warmed,
+		-- so there is still air and depth here -- it is simply sunlit air instead of smog.
+		density = 0.22, offset = 0.10, haze = 0.9, glare = 0.12,
+		color = Color3.fromRGB(222, 212, 196), decay = Color3.fromRGB(158, 176, 198),
 		space = 0,
 	},
 	{	y = 2492,    -- 4 TURNIP TRANQUIL. The haze starts to lift; you can see further.

@@ -11,7 +11,7 @@ local MPS = MarketplaceService
 local GAMEPASS_IDS = {TwoXForever=1862015450, GlitterTrail=1859714979}
 local PRODUCT_IDS = {TwoXOneHour=3600302990, MidAirRecharge=3600303163, SkipIsland=3600303265, BirdNuke=3600303082}
 -- Shared coin icon IMAGE: the SAME verified asset used by the coin counter and daily-rewards
--- icons (emoji glyphs like 🪙 don't render in Roblox text). Literal here so it's correct
+-- icons (emoji glyphs like 💰 don't render in Roblox text). Literal here so it's correct
 -- regardless of script load order. Shop prices show this image instead of the missing emoji.
 local COIN_IMAGE = "rbxassetid://106760789458573"
 
@@ -102,7 +102,7 @@ local foodEmojiImg=Instance.new("ImageLabel"); foodEmojiImg.Name="FoodEmojiImg"
 foodEmojiImg.AnchorPoint=Vector2.new(0.5,0.5); foodEmojiImg.Position=UDim2.new(0.5,0,0,70); foodEmojiImg.Size=UDim2.new(0,120,0,120) -- centered in the 120px icon box; updateFoodShop applies the per-food scale
 foodEmojiImg.BackgroundTransparency=1; foodEmojiImg.ScaleType=Enum.ScaleType.Fit; foodEmojiImg.Visible=false; foodEmojiImg.Parent=foodLeftPanel
 local foodName=mkLabel(foodLeftPanel,{Text="Beans",Font=Enum.Font.GothamBold,TextSize=26,TextColor3=Color3.fromRGB(255,255,255),Size=UDim2.new(1,-10,0,35),Position=UDim2.new(0,5,0,135),TextXAlignment=Enum.TextXAlignment.Center})
--- Price row: a centered [coin IMAGE][price text] pair (replaces the non-rendering 🪙 emoji
+-- Price row: a centered [coin IMAGE][price text] pair (replaces the non-rendering 💰 emoji
 -- prefix). foodPrice stays the price TextLabel so the live update below works unchanged.
 local foodPriceRow=mkFrame(foodLeftPanel,{Name="PriceRow",Size=UDim2.new(1,-10,0,28),Position=UDim2.new(0,5,0,174),BackgroundTransparency=1})
 local fprLayout=Instance.new("UIListLayout"); fprLayout.FillDirection=Enum.FillDirection.Horizontal
@@ -145,7 +145,7 @@ for _,f in ipairs(_G.foods) do
 	iconImg.Image=foodImages[f.name] or ""; iconImg.Visible=(foodImages[f.name]~=nil); iconImg.Parent=emojiFrame
 	if foodImages[f.name] then emojiLabel.Visible=false end
 	mkLabel(cell,{Name="NameLabel",Text=f.name,Font=Enum.Font.GothamBold,TextSize=13,TextColor3=Color3.fromRGB(30,30,30),Size=UDim2.new(1,-62,0,30),Position=UDim2.new(0,60,0,5),TextXAlignment=Enum.TextXAlignment.Left})
-	-- Coin IMAGE for the cell's price row (replaces the 🪙 emoji prefix). Toggled with the
+	-- Coin IMAGE for the cell's price row (replaces the 💰 emoji prefix). Toggled with the
 	-- price text in updateFoodShop (hidden for locked cells, shown for unlocked/priced cells).
 	local priceIcon=Instance.new("ImageLabel"); priceIcon.Name="PriceIcon"
 	priceIcon.Size=UDim2.new(0,14,0,14); priceIcon.Position=UDim2.new(0,60,0,41); priceIcon.BackgroundTransparency=1
@@ -730,7 +730,7 @@ task.defer(function()
 					d.BackgroundColor3 = Color3.fromRGB(255,206,92); d.BackgroundTransparency = 0; d.TextColor3 = Color3.fromRGB(92,58,8)
 					d.Size = UDim2.fromOffset(128,24); d.LayoutOrder = 9 -- gold price capsule (same width as the coin cards), centered above the button
 					local pg = d:FindFirstChildOfClass("UIGradient") or Instance.new("UIGradient"); pg.Color = ColorSequence.new(Color3.fromRGB(255,238,176), Color3.fromRGB(240,190,60)); pg.Rotation = 90; pg.Parent = d -- glossy
-					if not d.Text:find("\xF0\x9F\xAA\x99") then d.Text = "\xF0\x9F\xAA\x99 " .. d.Text end
+					if not d.Text:find("\xF0\x9F\x92\xB0") then d.Text = "\xF0\x9F\x92\xB0 " .. d.Text end
 					local pc = d:FindFirstChildOfClass("UICorner") or Instance.new("UICorner"); pc.CornerRadius = UDim.new(1,0); pc.Parent = d
 					local ps = d:FindFirstChildOfClass("UIStroke"); if ps then ps.Color = Color3.fromRGB(180,122,20); ps.Thickness = 2 end
 					break
@@ -886,11 +886,11 @@ task.defer(function()
 			end
 		end
 		local nm=Instance.new("TextLabel"); nm.BackgroundTransparency=1; nm.Position=UDim2.fromOffset(4,66); nm.Size=UDim2.new(1,-8,0,22); nm.Font=Enum.Font.FredokaOne; nm.TextScaled=true; nm.TextColor3=Color3.new(1,1,1); nm.Text=pk.name; nm.ZIndex=53; nm.Parent=card; stroke(nm,Color3.new(0,0,0),1.5); maxsize(nm,16)
-		local amt=Instance.new("TextLabel"); amt.BackgroundTransparency=1; amt.Position=UDim2.fromOffset(4,88); amt.Size=UDim2.new(1,-8,0,20); amt.Font=Enum.Font.GothamBold; amt.TextScaled=true; amt.TextColor3=GOLD; amt.Text="\xF0\x9F\xAA\x99 "..pk.beans.." Coins"; amt.ZIndex=53; amt.Parent=card; stroke(amt,Color3.new(0,0,0),1.5); maxsize(amt,15)
+		local amt=Instance.new("TextLabel"); amt.BackgroundTransparency=1; amt.Position=UDim2.fromOffset(4,88); amt.Size=UDim2.new(1,-8,0,20); amt.Font=Enum.Font.GothamBold; amt.TextScaled=true; amt.TextColor3=GOLD; amt.Text="\xF0\x9F\x92\xB0 "..pk.beans.." Coins"; amt.ZIndex=53; amt.Parent=card; stroke(amt,Color3.new(0,0,0),1.5); maxsize(amt,15)
 		if pk.bonus then
 			local bb=Instance.new("TextLabel"); bb.AnchorPoint=Vector2.new(0.5,0); bb.Position=UDim2.new(0.5,0,0,112); bb.Size=UDim2.fromOffset(106,17); bb.BackgroundColor3=GREEN; bb.Font=Enum.Font.FredokaOne; bb.TextScaled=true; bb.TextColor3=Color3.new(1,1,1); bb.Text="\xF0\x9F\x8E\x81 BONUS "..pk.bonus; bb.ZIndex=53; bb.Parent=card; corner(bb,9); stroke(bb,Color3.fromRGB(28,84,44),1.5); maxsize(bb,11)
 		end
-		local price=Instance.new("TextLabel"); price.AnchorPoint=Vector2.new(0.5,0); price.Position=UDim2.new(0.5,0,0,135); price.Size=UDim2.fromOffset(128,24); price.BackgroundColor3=GOLD; price.Font=Enum.Font.FredokaOne; price.TextScaled=true; price.TextColor3=Color3.fromRGB(92,58,8); price.Text="\xF0\x9F\xAA\x99 "..pk.price; price.ZIndex=53; price.Parent=card; corner(price,13); stroke(price,Color3.fromRGB(180,122,20),2); vgrad(price,Color3.fromRGB(255,238,176),Color3.fromRGB(240,190,60),90); maxsize(price,16)
+		local price=Instance.new("TextLabel"); price.AnchorPoint=Vector2.new(0.5,0); price.Position=UDim2.new(0.5,0,0,135); price.Size=UDim2.fromOffset(128,24); price.BackgroundColor3=GOLD; price.Font=Enum.Font.FredokaOne; price.TextScaled=true; price.TextColor3=Color3.fromRGB(92,58,8); price.Text="\xF0\x9F\x92\xB0 "..pk.price; price.ZIndex=53; price.Parent=card; corner(price,13); stroke(price,Color3.fromRGB(180,122,20),2); vgrad(price,Color3.fromRGB(255,238,176),Color3.fromRGB(240,190,60),90); maxsize(price,16)
 		local buy=Instance.new("TextButton"); buy.AnchorPoint=Vector2.new(0.5,1); buy.Position=UDim2.new(0.5,0,1,-8); buy.Size=UDim2.new(1,-24,0,36); buy.BackgroundColor3=GREEN; buy.Font=Enum.Font.FredokaOne; buy.TextScaled=true; buy.TextColor3=Color3.new(1,1,1); buy.Text="\xF0\x9F\x9B\x92 Purchase"; buy.ZIndex=53; buy.Parent=card; corner(buy,18); stroke(buy,Color3.fromRGB(46,120,68),1.5); vgrad(buy,Color3.fromRGB(142,226,160),Color3.fromRGB(86,184,112),90); pad(buy,6); maxsize(buy,16)
 		local buyS=Instance.new("UIScale"); buyS.Parent=buy
 		buy.MouseEnter:Connect(function() TS:Create(buyS,TweenInfo.new(0.1),{Scale=1.05}):Play() end)

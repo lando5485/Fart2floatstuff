@@ -336,7 +336,7 @@ mkCorner(coinPill,25); mkStroke(coinPill,Color3.fromRGB(180,120,0),3)
 local coinGrad=Instance.new("UIGradient")
 coinGrad.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromRGB(255,190,20)),ColorSequenceKeypoint.new(1,Color3.fromRGB(200,140,0))})
 coinGrad.Rotation=90; coinGrad.Parent=coinPill
--- Shared coin / checkmark IMAGE assets. Emoji glyphs (🪙 / ✅) do NOT render in Roblox
+-- Shared coin / checkmark IMAGE assets. Emoji glyphs (💰 / ✅) do NOT render in Roblox
 -- text labels, so we use real images instead. Defined on _G so BOTH the coin counter
 -- here and the daily-rewards icons below reference the EXACT SAME asset (consistency),
 -- and so we add no new main-chunk locals (Luau 200-local-per-function limit). To change
@@ -699,7 +699,11 @@ local shopSideFrame,shopSideClick=mkSideBtn(-90*scale,Color3.fromRGB(50,180,50),
 -- PETS button (was WORMHOLE -> was REBIRTH -> was INVITE). Var names kept (inviteSideFrame/inviteSideClick) so the
 -- HUD layout + restyle passes still target this slot. Wormhole moved into the MORE+ menu -- fast travel is a
 -- sometimes action; the pet hub is an every-minute one, so Pets holds the always-visible slot.
-local inviteSideFrame,inviteSideClick=mkSideBtn(0,Color3.fromRGB(80,170,70),"\xF0\x9F\x90\xBE","PETS")
+-- PURPLE, not green. SHOP (50,180,50), PETS and Stomach (both 80,170,70) made three green buttons in a
+-- vertical row -- nothing told them apart at a glance. Purple is already this UI's second accent (the 2x
+-- Fart Power button on the right panel is 130,50,200), so the sidebar borrows it rather than inventing a
+-- colour, and Pets is now the one button in the row you can find without reading the labels.
+local inviteSideFrame,inviteSideClick=mkSideBtn(0,Color3.fromRGB(140,70,210),"\xF0\x9F\x90\xBE","PETS")
 -- SWAP: the STOMACH button now lives here on the main screen, in the PETS button's OLD slot (same anchor/position/
 -- size/styling). It keeps its OWN icon (GUT_IMAGE), label ("Stomach"), and click action (opens the stomach shop).
 -- Var names dailySideFrame/dailySideClick are kept so the existing HUD layout + restyle code still target this slot.
@@ -1889,6 +1893,9 @@ local trailBtnContainer=mkFrame(trailPanel,{Size=UDim2.new(1,0,0,0),Position=UDi
 local trailBtnLayout=Instance.new("UIListLayout"); trailBtnLayout.FillDirection=Enum.FillDirection.Vertical
 trailBtnLayout.HorizontalAlignment=Enum.HorizontalAlignment.Center; trailBtnLayout.Padding=UDim.new(0,6); trailBtnLayout.Parent=trailBtnContainer
 _G.customTrailColor=nil; _G.useCustomTrail=false; _G.selectedTrail="default"; _G.unlockedTrails={}
+-- GLITTER TRAIL IS OPT-IN, NOT AUTOMATIC. Owning the gamepass makes the toggle AVAILABLE (in Settings);
+-- it does not equip the look. Default false = everyone, owner or not, flies the normal green gas trail.
+_G.glitterTrailOn=false
 local selectedTrailBtn=nil
 local function highlightTrailBtn(btn)
 	if selectedTrailBtn then
@@ -1953,6 +1960,8 @@ do
 	local rtSg = Instance.new("ScreenGui"); rtSg.Name="ReturnIslandGui"; rtSg.ResetOnSpawn=false; rtSg.IgnoreGuiInset=true; rtSg.Parent=PlayerGui
 	-- Off to the side: left edge, vertically centered, clear of the left sidebar, the
 	-- bottom fart/gas controls, and the right stats panel. Never covers the middle.
+	-- (This is the PERMANENT "return to your highest island" button and it stays here. The button that
+	-- moved above the fart meter is the ROCKET EVENT's temporary "Go to Island 1" -- see RocketUI.)
 	local rtBtn = mkButton(rtSg,{
 		Name="ReturnBtn",
 		Size=UDim2.new(0,180*scale,0,56*scale),
@@ -2169,7 +2178,7 @@ task.spawn(function()
 			buyBtn.Position=UDim2.new(1,-158,0.5,0); buyBtn.AnchorPoint=Vector2.new(0,0.5); buyBtn.BorderSizePixel=0
 			if tier.cost==0 then buyBtn.BackgroundColor3=Color3.fromRGB(100,100,100); buyBtn.Text="\xe2\x9c\x93 FREE"
 			elseif tier.robux then buyBtn.BackgroundColor3=Color3.fromRGB(255,160,20); buyBtn.Text=tostring(tier.cost).." R$"
-			else buyBtn.BackgroundColor3=Color3.fromRGB(50,220,50); buyBtn.Text="\xF0\x9F\xAA\x99 "..tostring(tier.cost) end
+			else buyBtn.BackgroundColor3=Color3.fromRGB(50,220,50); buyBtn.Text="\xF0\x9F\x92\xB0 "..tostring(tier.cost) end
 			buyBtn.Font=Enum.Font.FredokaOne; buyBtn.TextScaled=true; buyBtn.TextColor3=Color3.fromRGB(255,255,255); buyBtn.Parent=card
 			mkCorner(buyBtn,10); mkStroke(buyBtn,Color3.fromRGB(0,0,0),2)
 			buyBtn.MouseButton1Click:Connect(function()
@@ -2697,33 +2706,69 @@ local function getWindArrow(wx,wz)
 	else return wz>0 and "\xe2\x86\x93" or "\xe2\x86\x91" end
 end
 
-local gColors={Color3.fromRGB(0,200,50),Color3.fromRGB(50,220,80),Color3.fromRGB(100,255,100),Color3.fromRGB(80,180,40)}
-local rainbowHue=0
+-- ===== FART TRAIL: layered comedic gas, not lone neon bubbles =====
+-- Called every 0.1s of thrust. Each tick lays down a small CLUSTER instead of one ball:
+--   1) a big soft matte GAS CLOUD that EXPANDS as it fades -- gas dissipating, not a bubble popping;
+--   2) two glossy neon MINI-BUBBLES that scatter outward and shrink (the fizz inside the cloud);
+--   3) ~1-in-7 ticks, an exaggerated TOOT PULSE: a translucent sphere that balloons out fast.
+-- Color priority is unchanged (custom > rainbow > glitter gamepass > default gas green); the glitter
+-- pass keeps its dainty sparkle identity (small bright motes, no big cloud). Everything is local-only
+-- (client-spawned parts never replicate), anchored, and non-collidable -- pure cosmetics.
 local function spawnCloud()
 	local ch=player.Character; local h=ch and ch:FindFirstChild("HumanoidRootPart"); if not h then return end
-	local cloud=Instance.new("Part"); cloud.Shape=Enum.PartType.Ball
-	local sz=math.random(10,25)/10
-	cloud.Size=Vector3.new(sz,sz,sz)
 	local gp=_G.playerGamepasses
+	local baseColor, glitter
 	if _G.useCustomTrail and _G.customTrailColor then
-		cloud.Color=_G.customTrailColor
+		baseColor=_G.customTrailColor
 	elseif _G.selectedTrail=="rainbow" and _G.hasRainbowTrail then
-		local hue=(tick()*0.5)%1
-		cloud.Color=Color3.fromHSV(hue,1,1)
-	elseif gp and gp.glitterTrail then
-		cloud.Color=Color3.fromRGB(255,220,255)
-		cloud.Material=Enum.Material.Neon
-		cloud.Size=Vector3.new(sz*0.5,sz*0.5,sz*0.5)
+		baseColor=Color3.fromHSV((tick()*0.5)%1,1,1)
+	elseif gp and gp.glitterTrail and _G.glitterTrailOn == true then
+		-- OWNING THE PASS NO LONGER FORCE-EQUIPS IT. This branch used to fire on ownership alone, so anyone
+		-- who owned (or was given) the Glitter Trail pass -- including the game's own creator, who owns every
+		-- pass automatically -- was permanently stuck with small white sparkles and had no way back to the
+		-- default green gas. The trail picker that would have offered the choice is disabled (see
+		-- updateTrailSelector), so there was no opt-out anywhere in the game.
+		-- _G.glitterTrailOn defaults to FALSE (set below) and is toggled by the Glitter Trail row in the
+		-- Settings menu, which only appears for owners. Default trail unless you deliberately turn it on.
+		baseColor=Color3.fromRGB(255,220,255); glitter=true
 	else
-		local greens={Color3.fromRGB(0,200,50),Color3.fromRGB(50,220,80),Color3.fromRGB(100,255,100)}
-		cloud.Color=greens[math.random(1,#greens)]
+		local gasGreens={Color3.fromRGB(96,200,84),Color3.fromRGB(124,186,58),Color3.fromRGB(152,214,72),Color3.fromRGB(84,170,66)}
+		baseColor=gasGreens[math.random(1,#gasGreens)]
 	end
-	cloud.Material=Enum.Material.Neon; cloud.Transparency=0.3
-	cloud.CanCollide=false; cloud.Anchored=true; cloud.CastShadow=false
-	cloud.Position=h.Position+Vector3.new(math.random(-15,15)/10,math.random(-10,5)/10,math.random(-15,15)/10)
-	cloud.Parent=workspace
-	local tw=TweenService:Create(cloud,TweenInfo.new(1.5,Enum.EasingStyle.Linear),{Transparency=1.0,Size=Vector3.new(0.1,0.1,0.1)})
-	tw:Play(); tw.Completed:Connect(function() cloud:Destroy() end)
+	-- one throwaway puff part: spawn at offset, tween to (pos+drift, size*grow, invisible), then clean up
+	local function puff(size,color,mat,transp,offset,drift,grow,life)
+		local p=Instance.new("Part"); p.Shape=Enum.PartType.Ball
+		p.Size=Vector3.new(size,size,size); p.Color=color; p.Material=mat; p.Transparency=transp
+		p.CanCollide=false; p.Anchored=true; p.CastShadow=false; p.CanQuery=false; p.CanTouch=false
+		p.Position=h.Position+offset
+		p.Parent=workspace
+		local tw=TweenService:Create(p,TweenInfo.new(life,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),
+			{Transparency=1, Size=Vector3.new(size*grow,size*grow,size*grow), Position=p.Position+drift})
+		tw:Play(); tw.Completed:Connect(function() p:Destroy() end)
+	end
+	local jx,jz=math.random(-14,14)/10, math.random(-14,14)/10
+	if glitter then -- glitter gamepass: small bright sparkle motes, exactly the old dainty look
+		puff(math.random(5,9)/10, baseColor, Enum.Material.Neon, 0.15,
+			Vector3.new(jx, math.random(-10,4)/10, jz),
+			Vector3.new(jx*1.6, -0.8, jz*1.6), 0.3, 1.0)
+		return
+	end
+	-- 1) the big comedic gas cloud (drifts down + outward behind the climb)
+	puff(math.random(16,26)/10, baseColor, Enum.Material.SmoothPlastic, 0.35,
+		Vector3.new(jx, math.random(-12,2)/10, jz),
+		Vector3.new(jx*1.4, -1.6, jz*1.4), 2.0, 1.1)
+	-- 2) layered fizz: two glossy mini-bubbles scattering out of the cloud
+	for _=1,2 do
+		local bx,bz=math.random(-20,20)/10, math.random(-20,20)/10
+		puff(math.random(4,8)/10, baseColor:Lerp(Color3.new(1,1,1),0.35), Enum.Material.Neon, 0.1,
+			Vector3.new(bx*0.5, math.random(-8,6)/10, bz*0.5),
+			Vector3.new(bx, math.random(-4,10)/10, bz), 0.12, 0.8)
+	end
+	-- 3) occasional exaggerated toot pulse (fast ballooning translucent sphere, yellow-green flash)
+	if math.random(1,7)==1 then
+		puff(2.2, baseColor:Lerp(Color3.fromRGB(230,255,120),0.5), Enum.Material.SmoothPlastic, 0.55,
+			Vector3.new(0,-0.6,0), Vector3.new(0,-1.0,0), 3.2, 0.55)
+	end
 end
 
 -- ===== LANDING DETECTION =====
@@ -3093,17 +3138,22 @@ RunService.Heartbeat:Connect(function(dt)
 				local ppos = p.Position
 				table.remove(_G.activeGasPockets, i)
 				if _G.popGasPocket then _G.popGasPocket(p) end   -- VISUAL pop
-				-- GAS BUBBLE BOOST. The meter is 0-100 and currentPower = (gasMeter / maxGasMeter) * stomachMax,
-				-- so at the base Tiny Gut (100 max power) 1 meter point IS 1 fart power -- this grants exactly
-				-- +2 fart power there, and stays 2% of the tank on bigger guts so a bubble does not become
-				-- worthless the moment you upgrade. For a flat +2 power at EVERY tier instead, this would have to
-				-- be (2 / stomachMax) * 100 -- which pays 0.06 of a meter point on an Iron Gut, i.e. nothing.
-				-- Fires whether the player is RISING or FALLING (this loop runs OUTSIDE the isFlying block).
-				local BUBBLE_GAS_BOOST = 2
+				-- GAS BUBBLE BOOST -- SCALED BY GUT TIER. The meter is 0-100 and currentPower =
+				-- (gasMeter / maxGasMeter) * stomachMax, so a meter point is always a fixed FRACTION of the
+				-- tank -- the old flat +2 was 2% at every tier, which never became worthless but also never
+				-- felt like anything once the climbs got long. The boost now steps UP with the gut: 3% of the
+				-- tank on a Tiny Gut rising to 6% on the biggest -- upgrading your gut makes every bubble
+				-- worth visibly more raw power AND a bigger slice of the meter, so they stay rewarding to
+				-- chase all game. Still bounded (a bubble is never more than 6% of a tank, respawn is 45s),
+				-- so they cannot replace eating. Fires whether the player is RISING or FALLING (this loop
+				-- runs OUTSIDE the isFlying block).
+				local sm = stomachMax
+				local BUBBLE_GAS_BOOST = (sm <= 40 and 3) or (sm <= 96 and 3.5) or (sm <= 282 and 4)
+					or (sm <= 603 and 4.5) or (sm <= 1425 and 5) or (sm <= 2639 and 5.5) or 6
 				local gasBefore = gasMeter
 				gasMeter = math.min(maxGasMeter, gasMeter + BUBBLE_GAS_BOOST)
 				updateMeter()
-				print(string.format("[BUBBLE] popped - gas before=%.1f, +%d, gas after=%.1f", gasBefore, BUBBLE_GAS_BOOST, gasMeter))
+				print(string.format("[BUBBLE] popped - gas before=%.1f, +%.1f (gut %d), gas after=%.1f", gasBefore, BUBBLE_GAS_BOOST, sm, gasMeter))
 				showFloatingText("+\xF0\x9F\x92\xA8 GAS BOOST!", Color3.fromRGB(0, 255, 100))
 				task.delay(45, function() if _G.spawnGasPocket then _G.spawnGasPocket(ppos) end end)
 			end
@@ -3125,7 +3175,7 @@ RunService.Heartbeat:Connect(function(dt)
 				_G.ringsCollectedFlight = _G.ringsCollectedFlight + 1
 				_G.ringBonusFlight = (_G.ringBonusFlight or 0) + bonus -- track ring-bonus coins for FLIGHT DEBUG
 				if CoinEvent then pcall(function() CoinEvent:FireServer(bonus) end) end
-				showFloatingText("+" .. bonus .. " \xF0\x9F\xAA\x99 x" .. string.format("%.1f", ringMultiplier), Color3.fromRGB(255, 215, 0))
+				showFloatingText("+" .. bonus .. " \xF0\x9F\x92\xB0 x" .. string.format("%.1f", ringMultiplier), Color3.fromRGB(255, 215, 0))
 				task.delay(30, function() if _G.spawnRing then _G.spawnRing(rpos, rcol, ridx, rdir) end end)
 			end
 		else table.remove(_G.activeRings, i) end
@@ -3481,11 +3531,13 @@ end)()
 	shS.Color = Color3.fromRGB(30,120,30); shS.Thickness = 3; shS.Parent = shopSideFrame
 
 	-- PETS BUTTON  (variable kept as inviteSideFrame; was WORMHOLE, which moved into MORE+)
-	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70) -- pets green, matching the paw button
+	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(140,70,210) -- PETS purple (see the build site: it
+	-- breaks up the three-green sidebar row). This restyle pass runs AFTER the build, so it has to carry
+	-- the same colour or it stamps the old green straight back over it.
 	local inC = inviteSideFrame:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
 	inC.CornerRadius = UDim.new(0,16); inC.Parent = inviteSideFrame
 	local inS = inviteSideFrame:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
-	inS.Color = Color3.fromRGB(40,110,40); inS.Thickness = 3; inS.Parent = inviteSideFrame
+	inS.Color = Color3.fromRGB(88,36,148); inS.Thickness = 3; inS.Parent = inviteSideFrame
 
 	-- PETS BUTTON  (variable kept as dailySideFrame; repurposed paw button)
 	dailySideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70)
@@ -3578,7 +3630,7 @@ end)()
 		ColorSequenceKeypoint.new(1,   Color3.fromRGB(0,255,80)),
 	}) end
 	shopSideFrame.BackgroundColor3 = Color3.fromRGB(50,220,50)
-	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70) -- PETS button (Wormhole moved into MORE+)
+	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(140,70,210) -- PETS button: purple, matching the build site
 	dailySideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70)
 	shopSideFrame.Size = UDim2.new(0,95,0,95)
 	inviteSideFrame.Size = UDim2.new(0,95,0,95)

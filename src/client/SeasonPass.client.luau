@@ -220,7 +220,7 @@ end
 --
 -- _G.COIN_IMAGE is set by CoreClient; the literal is the fallback for the case where this
 -- panel builds before CoreClient has run.
-local COIN_EMOJI = "\xF0\x9F\xAA\x99"
+local COIN_EMOJI = "\xF0\x9F\x92\xB0"
 local COIN_IMAGE = "rbxassetid://106760789458573"
 
 local function mkReward(card, emoji, text, ink)
@@ -274,12 +274,12 @@ local function buildColumns()
 		local numStroke = stroke(numPill, Color3.fromRGB(200, 188, 240), 1.5)
 
 		local free = mkCard(col, 36, 150, COL_FREE_A, COL_FREE_B, COL_GREEN)
-		mkReward(free, "\xF0\x9F\xAA\x99", tostring(t.freeCoins), COL_GREENINK)
+		mkReward(free, "\xF0\x9F\x92\xB0", tostring(t.freeCoins), COL_GREENINK)
 		local fBtn = mkClaim(free, "free", i)
 
 		local prem = mkCard(col, 194, 150, COL_PREM_A, COL_PREM_B, COL_GOLD)
 		local ptxt = tostring(t.premCoins)
-		local pemoji = "\xF0\x9F\xAA\x99"
+		local pemoji = "\xF0\x9F\x92\xB0"
 		if t.premPet and t.premPet > 0 then ptxt = ptxt .. "  +" .. t.premPet .. "\xF0\x9F\x90\xBE"; pemoji = "\xF0\x9F\x91\x91" end
 		mkReward(prem, pemoji, ptxt, COL_GOLDINK)
 		local pBtn = mkClaim(prem, "prem", i)

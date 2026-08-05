@@ -122,13 +122,14 @@ end
 --======================================================================
 local teleportBtn = Instance.new("TextButton")
 teleportBtn.Name = "GoToIsland1Btn"
--- TOP-RIGHT STATUS COLUMN, below the coin pill (y=10) and the event countdown pill (y=66). This used
--- to be hard-coded to the SAME top-centre spot as the countdown pill (both y=12), so an active rocket
--- event simply drew this button over the pill's countdown. Top-centre is now reserved for transient
--- banners (NotifyCenter hero lane) + the objective card; persistent controls live down the right edge.
-teleportBtn.AnchorPoint = Vector2.new(1, 0)
-teleportBtn.Position = UDim2.new(1, -10, 0, 120)
-teleportBtn.Size = UDim2.new(0, 210, 0, 50)
+-- JUST ABOVE THE FART METER, bottom-centre. It lived in the top-right status column, which is where the
+-- coin capsule, the gear and the stats panel all live -- on a scaled screen it overlapped them. The strip
+-- directly above the bottom HUD stack is the one place nothing else claims, and this button is only ever
+-- on screen during the rocket event, so borrowing that strip costs nothing the rest of the time.
+-- Compact, and positioned for real against the stack's live top edge by placeTeleportBtn() below.
+teleportBtn.AnchorPoint = Vector2.new(0.5, 1)
+teleportBtn.Position = UDim2.new(0.5, 0, 1, -260)
+teleportBtn.Size = UDim2.new(0, 190, 0, 44)
 teleportBtn.BackgroundColor3 = Color3.fromRGB(55, 170, 90)
 teleportBtn.AutoButtonColor = true
 teleportBtn.Font = Enum.Font.GothamBold
@@ -167,6 +168,31 @@ teleportBtn.Activated:Connect(function()
 	GoToIsland1Event:FireServer()   -- server teleports us to island 1's stand
 end)
 
+-- SIT IT ON THE BOTTOM STACK'S LIVE TOP EDGE. The stack (gut pill / gas meter / fart button) changes
+-- height with device scale and with which of its rows are showing, so a fixed offset would gap on one
+-- screen and overlap on another. CoreClient publishes the frame as _G.gui.bottomStack and both guis use
+-- IgnoreGuiInset, so they share a coordinate space and AbsolutePosition can be used directly. Falls back
+-- to a safe bottom-centre offset if the stack has not laid out yet.
+local function placeTeleportBtn()
+	local bs = _G.gui and _G.gui.bottomStack
+	if bs and bs.AbsoluteSize.Y > 0 then
+		teleportBtn.Position = UDim2.new(0.5, 0, 0, math.floor(bs.AbsolutePosition.Y) - 10)
+	else
+		teleportBtn.Position = UDim2.new(0.5, 0, 1, -260)
+	end
+end
+do
+	local bs = _G.gui and _G.gui.bottomStack
+	if bs then -- follow the stack as it lays out / rescales, but only while the button is up
+		bs:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
+			if teleportBtn.Visible then placeTeleportBtn() end
+		end)
+		bs:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			if teleportBtn.Visible then placeTeleportBtn() end
+		end)
+	end
+end
+
 -- Show/hide helpers: toggle Visible AND the transparencies together so the
 -- button is genuinely invisible when no rocket event is running.
 local function showTeleportBtn()
@@ -176,6 +202,7 @@ local function showTeleportBtn()
 	tbStroke.Transparency = 0
 	teleportBtn.Active = true        -- clickable ONLY now (event is running)
 	teleportBtn.Selectable = true
+	placeTeleportBtn()               -- re-measure every time it appears (scale may have changed since load)
 	teleportBtn.Visible = true
 	print("[RocketBtn] event active=true -> button visible=true")
 end

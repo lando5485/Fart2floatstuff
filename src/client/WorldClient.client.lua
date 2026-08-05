@@ -26,7 +26,8 @@ local getStandPosition -- forward-declared (assigned below) so the drift can der
 local function startBubbleDrift(part, homePos, HR, VR)
 	task.spawn(function()
 		local rng = Random.new()
-		local SPEED = 12 -- studs/sec: ~2.4x the old 5 -- a real chase, but still catchable by a determined flyer
+		local SPEED = 15 -- studs/sec (was 12, originally 5): livelier wandering so pickups clearly read as
+		                 -- moving targets worth chasing, still well under flight speed so they stay catchable
 		local function randDir()
 			local d = Vector3.new(rng:NextNumber()-0.5, (rng:NextNumber()-0.5)*0.7, rng:NextNumber()-0.5)
 			return (d.Magnitude > 0) and d.Unit or Vector3.new(1,0,0)
@@ -77,7 +78,7 @@ local function spawnRing(pos, color, dataIndex, dirVec)
 	-- is unchanged (orientation no longer matters for a ball).
 	local ring=Instance.new("Part"); ring.Shape=Enum.PartType.Ball; ring.Size=Vector3.new(24,24,24)
 	ring.Material=Enum.Material.Neon; ring.Color=color; ring.CanCollide=false; ring.Anchored=true; ring.Transparency=0.2; ring.CastShadow=false; ring.Position=pos; ring.Parent=workspace
-	makeBillboard(ring,"\xF0\x9F\xAA\x99 +BONUS",Color3.new(1,1,1),14)
+	makeBillboard(ring,"\xF0\x9F\x92\xB0 +BONUS",Color3.new(1,1,1),14)
 	local entry={part=ring,pos=pos,color=color,idx=dataIndex,dir=dirVec}
 	table.insert(_G.activeRings,entry)
 	startBubbleDrift(ring, pos, 180, 280) -- ~4x bigger wander zone (was 45/70); Y clamped to the island gap inside startBubbleDrift

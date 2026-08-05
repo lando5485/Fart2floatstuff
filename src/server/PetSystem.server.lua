@@ -1388,6 +1388,24 @@ local function sendAllEquipsTo(target)
 	end
 end
 
+-- ===== CLIENT-READY RE-SYNC: fixes "my friend saw my pet, I couldn't see theirs" =====
+-- The join-time catch-up above fires the moment the SAVE loads -- often seconds before the joining
+-- client's RemotePets script has connected its OnClientEvent. Remote fires that land before a client
+-- connects a handler are simply lost, so the late joiner missed the whole catch-up burst (while their
+-- own "join" broadcast reached everyone else's already-running clients -- hence the one-way visibility).
+-- RemotePets now fires this remote UPWARD when its listener is live; the server answers with a fresh
+-- catch-up and re-announces the requester to everyone (covers the mirror case: their join broadcast
+-- fired while some OTHER client was still loading). Debounced so a spammy client costs nothing.
+local lastEquipSync = {}
+PetEquipBroadcast.OnServerEvent:Connect(function(player)
+	local t = os.clock()
+	if lastEquipSync[player] and t - lastEquipSync[player] < 3 then return end
+	lastEquipSync[player] = t
+	sendAllEquipsTo(player)
+	broadcastEquip(player, "client-ready")
+end)
+Players.PlayerRemoving:Connect(function(p) lastEquipSync[p] = nil end)
+
 -- Level a pet up by one (the XP auto-level loop and the Robux/test skip all funnel here). Re-syncs follower + GUI.
 local function levelUp(player, petId, via)
 	local def = PETS[petId]; local d = getPetData(player, petId)

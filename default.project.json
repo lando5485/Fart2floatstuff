@@ -486,6 +486,9 @@
         "Campfire": {
           "$path": "src/client/Campfire.client.luau"
         },
+        "CampfirePromptWindow": {
+          "$path": "src/client/CampfirePromptWindow.client.luau"
+        },
         "SocialRewards": {
           "$path": "src/client/SocialRewards.client.luau"
         },

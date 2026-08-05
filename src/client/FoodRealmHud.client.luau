@@ -1,20 +1,19 @@
 --======================================================================
 -- FoodRealmHud.client.luau   (StarterPlayerScripts, LocalScript)
 --======================================================================
--- ONE unified bottom HUD -- stomach readout + shop call-to-action in a single panel, in the
--- colours of the world it sits in: sunbaked stone, wells of dark earth cut into it, chunky
--- golden-yellow trim, and an amber CTA. This is a dinosaur realm, so nothing in here is blue --
--- the navy the panel used to share with the Stats panel is what made it read as a stock
--- simulator HUD dropped on top of the game rather than as part of it.
+-- ONE unified bottom HUD -- stomach readout + shop call-to-action in a single panel, restyled
+-- FLAT ROYAL BLUE to match the right-side menu / stats / currency panels. (An earlier pass
+-- painted it sunbaked-stone brown with heavy bevels; it read as muddy and over-shaded next to
+-- the rest of the UI, so the palette went back to the game's blue -- see PALETTE below.)
 --
--- Warm from front to back: stone shell, gold rim, amber -> burnt orange -> warm red button,
--- brown shadows throughout. No emoji anywhere on the button -- see the caption scrub below.
+-- Flat blue shell, gold rim, green gas fill, amber CTA with a gentle two-shade ramp, navy
+-- shadows throughout. No emoji anywhere on the button -- see the caption scrub below.
 --
 --    . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .    <- halo, 484 x 158
---   +================================================================+   <- gold rim, 4px
---   |  (( ))   Tiny Gut                                              |   <- recessed well, layered ring
+--   +================================================================+   <- dark-blue outline, 3px
+--   |  (( ))   Tiny Gut                                              |   <- recessed well, gut icon
 --   |  ((ic))  [############ 0/100 ##############]                   |   <- inset bar, 382 x 36
---   |  [  (cart)   BUY FOOD FIRST!                              ]    |   <- 446 x 52, amber->orange->red
+--   |  [            BUY FOOD FIRST!                             ]    |   <- 446 x 52, amber -> orange
 --   +================================================================+
 --                CARD 470 x 144  -- measured, see LAYOUT
 --
@@ -46,42 +45,76 @@ local PlayerGui    = player:WaitForChild("PlayerGui")
 --======================================================================
 -- PALETTE -- the game's existing UI colours, verbatim
 --======================================================================
--- THE SHELL -- sunbaked stone, not navy. The panel used to borrow the blue of the Stats panel
--- and the currency bar, which is exactly what made this HUD read as a generic simulator: a cold
--- slab under a warm world. It is now the sandstone of the paths, lit from above, and the wells
--- cut into it are the wet earth underneath.
-local STONE_TOP  = Color3.fromRGB(192, 134, 80)   -- #C08650  lit from above
-local STONE_MID  = Color3.fromRGB(160, 102, 56)   -- #A06638
-local STONE_BOT  = Color3.fromRGB(126, 72, 36)    -- #7E4824
-local WELL       = Color3.fromRGB(58, 31, 15)     -- recessed: icon holder, bar track
-local WELL_TOP   = Color3.fromRGB(82, 46, 24)
-local WELL_DEEP  = Color3.fromRGB(42, 21, 9)      -- the darkest point of an inset, right at its top lip
-local GOLD       = Color3.fromRGB(244, 180, 0)    -- #F4B400
+-- THE SHELL -- FLAT ROYAL BLUE, matched to the right-side menu / stats panels (the 30,100,200
+-- family that TokenHud and the flight-stats card already wear). The sunbaked-stone brown read
+-- as muddy next to them, and its steep top->bottom ramps gave the panel a heavy 3D bevel the
+-- rest of the UI doesn't have. The constant NAMES survive from the stone pass (every gradient
+-- below references them); only the values changed. The three shell stops now sit a few percent
+-- apart, so the "gradient" renders as a single clean blue with the faintest vertical light --
+-- flat, per the art direction, without touching any of the geometry that uses them.
+-- ===== THE RIGHT-SIDE PANEL'S REAL COLOUR IS (30, 140, 255) =====
+-- An earlier pass matched Color3.fromRGB(30, 90, 200) -- which is what CoreClient BUILDS the right panel
+-- as, and is NOT what it ends up. Two later restyle passes repaint it, and the last one (CoreClient's
+-- final HUD pass) sets Color3.fromRGB(30, 140, 255): a much lighter, brighter blue. Matching the build
+-- colour is exactly why this HUD still looked dark next to the menu it was supposed to match.
+local PANEL_BLUE = Color3.fromRGB(30, 140, 255)   -- the LIGHT blue actually on screen at the right edge
+
+-- ===== A WHISPER OF GRADIENT -- ENOUGH TO BREATHE, NOT ENOUGH TO LOOK MOULDED =====
+-- Fully flat fills fixed the plastic 3D look but went too far the other way: flat shapes stacked on flat
+-- shapes read as paper cut-outs. `lift` returns a colour a few percent up or down from a base, which is
+-- all a subtle top-to-bottom ramp needs -- around 8%, versus the 30-40% swings the original build used.
+-- One knob: raise AMT if the panels still feel dead, lower it if any moulding creeps back in.
+local LIFT_AMT = 0.08
+local function lift(c, dir) -- dir +1 = slightly lighter (top), -1 = slightly darker (bottom)
+	local k = 1 + LIFT_AMT * dir
+	return Color3.new(math.clamp(c.R * k, 0, 1), math.clamp(c.G * k, 0, 1), math.clamp(c.B * k, 0, 1))
+end
+
+local STONE_TOP  = lift(PANEL_BLUE,  1)
+local STONE_MID  = PANEL_BLUE
+local STONE_BOT  = lift(PANEL_BLUE, -1)
+-- OUTLINE-ONLY. This deeper blue used to be the FILL of the icon holder and the gas-bar track, which is
+-- what made the HUD read as a dark panel with a bright frame -- the exact inverse of the right-side menu.
+-- It is now only ever a stroke, and the wells are a flat LIGHTER blue than the panel, so an inset reads
+-- as a lit slot rather than a hole punched in the HUD.
+local OUTLINE    = Color3.fromRGB(16, 92, 178)    -- the subtle darker outline, used ONLY as a stroke
+local WELL       = Color3.fromRGB(96, 178, 255)   -- recessed: icon holder, bar track
+local WELL_TOP   = lift(WELL,  1)                 -- the same faint lift as the shell, so an inset has
+local WELL_DEEP  = lift(WELL, -1)                 -- some life in it without turning back into a pit
+local GOLD       = Color3.fromRGB(244, 180, 0)    -- #F4B400  gold trim stays: it is the game's accent on blue
 local GOLD_LT    = Color3.fromRGB(255, 222, 108)
 local GOLD_DEEP  = Color3.fromRGB(186, 128, 0)
-local FILL_HI    = Color3.fromRGB(255, 240, 170)
-local FILL_YEL   = Color3.fromRGB(255, 216, 74)   -- #FFD84A
-local FILL_ORG   = Color3.fromRGB(245, 166, 35)   -- #F5A623
+-- GAS FILL: green, with the same faint lift as everything else so the bar looks lit rather than printed.
+local FILL_BASE  = Color3.fromRGB(76, 206, 88)
+local FILL_HI    = lift(FILL_BASE,  1)
+local FILL_YEL   = FILL_BASE
+local FILL_ORG   = lift(FILL_BASE, -1)
 local BLACK      = Color3.fromRGB(0, 0, 0)
 local WHITE      = Color3.fromRGB(255, 255, 255)
 
--- THE CTA'S OWN WARM SET -- golden amber down through burnt orange into a warm red foot, the
--- same ramp as the dirt paths outside. Nothing in here is a blue-grey: even the shadows are
--- brown, because a black shadow under an orange button reads as soot rather than as depth.
-local AMBER      = Color3.fromRGB(255, 178, 52)   -- #FFB234  golden amber, the lit top
-local ORANGE_BRN = Color3.fromRGB(230, 112, 30)   -- #E6701E  burnt orange, the body
-local RED_WARM   = Color3.fromRGB(186, 58, 30)    -- #BA3A1E  warm red, the shaded foot
-local AMBER_DIM  = Color3.fromRGB(236, 164, 60)   -- the same ramp, a shade deeper, for "no food yet"
-local ORANGE_DIM = Color3.fromRGB(206, 102, 34)
-local RED_DIM    = Color3.fromRGB(162, 54, 28)
-local ORANGE_LIT = Color3.fromRGB(255, 158, 74)   -- the soft inner stroke: light bouncing round the rim
-local RIM_HI     = Color3.fromRGB(255, 234, 158)  -- warm gold trim, lit from above
-local RIM_MID    = Color3.fromRGB(250, 194, 68)
-local RIM_LO     = Color3.fromRGB(158, 92, 20)
+-- ===== THE CTA IS GREEN, AND FLAT =====
+-- "TAP TO FART!" is the fart button, and the fart button has always been green everywhere else in this
+-- game (CoreClient builds it as Color3.fromRGB(50,180,50); the sidebar SHOP tile is the same family).
+-- This file was painting it amber -> burnt orange -> warm red, which is both the wrong colour for the
+-- action and a three-stop ramp -- the single most 3D-looking thing on the HUD.
+-- The names below are kept because the skin code references them in several places; only the values
+-- changed, and every ramp is now one flat green (identical stops = nothing for UIGradient to blend).
+local GREEN_MAIN = Color3.fromRGB(50, 190, 60)    -- the fart-button green
+local GREEN_DIM  = Color3.fromRGB(44, 150, 52)    -- the same green, dimmed, for "no food yet"
+local AMBER      = lift(GREEN_MAIN,  1)           -- top: a touch lighter
+local ORANGE_BRN = GREEN_MAIN                     -- body
+local RED_WARM   = lift(GREEN_MAIN, -1)           -- foot: a touch darker. ~8% end to end, no bevel.
+local AMBER_DIM  = lift(GREEN_DIM,  1)
+local ORANGE_DIM = GREEN_DIM
+local RED_DIM    = lift(GREEN_DIM, -1)
+local ORANGE_LIT = Color3.fromRGB(120, 226, 128)  -- the soft inner stroke, now a light green
+local RIM_HI     = Color3.fromRGB(22, 110, 32)    -- the CTA's outline: ONE dark green, flat
+local RIM_MID    = Color3.fromRGB(22, 110, 32)
+local RIM_LO     = Color3.fromRGB(22, 110, 32)
 local CREAM      = Color3.fromRGB(255, 246, 222)  -- the gloss across the top
-local CREAM_GOLD = Color3.fromRGB(255, 228, 164)  -- the cart's body
-local BROWN_INK  = Color3.fromRGB(74, 34, 14)     -- outlines: the cart, the caption
-local BROWN_SHD  = Color3.fromRGB(58, 24, 10)     -- shadows: under the button, inside its rim
+local CREAM_GOLD = Color3.fromRGB(255, 228, 164)  -- (was the drawn cart's body; the cart is removed)
+local BROWN_INK  = Color3.fromRGB(18, 34, 80)     -- outlines: the cart, the caption (navy ink now)
+local BROWN_SHD  = Color3.fromRGB(12, 26, 66)     -- shadows: under the button, inside its rim (navy)
 
 --======================================================================
 -- LAYOUT -- MEASURED, not invented. Every number below is read off the lower GUI as it renders
@@ -155,34 +188,37 @@ local function drop(parent, ...)
 	end
 end
 
--- A GOLD RIM WITH DEPTH. Two strokes rather than one: a dark base ring sitting a pixel out,
--- and the lit gradient ring on top of it. That reads as a rounded metal trim catching light
--- from above instead of a flat outline -- the same look the Stats panel and Shop buttons use.
--- hi/mid/lo are optional: the CTA passes a warmer gold so its trim sits with amber rather than
--- with navy. Omitted, it is the panel's existing yellow-gold, unchanged.
-local function goldRim(o, thickness, hi, mid, lo)
-	hi, mid, lo = hi or GOLD_LT, mid or GOLD, lo or GOLD_DEEP
-	local shade = deco(o, "Frame", "RimShade")
-	shade.BackgroundTransparency = 1
-	shade.Position = UDim2.fromOffset(-1, 0)
-	shade.Size = UDim2.new(1, 2, 1, 2)
-	shade.ZIndex = 0
-	local sc = o:FindFirstChildOfClass("UICorner")
-	corner(shade, sc and sc.CornerRadius.Scale == 1 and "pill" or ((sc and sc.CornerRadius.Offset or 8) + 1))
-	stroke(shade, lo, thickness, 0.25)
-
-	local s = stroke(o, WHITE, thickness, 0)
+-- ===== ONE SUBTLE OUTLINE. NO GOLD, NO METAL TRIM. =====
+-- This was goldRim(): a two-ring lit gold bevel (a dark base ring plus a gradient ring on top). It
+-- fought every other panel in the game -- the right-side menu, the stats panel and the currency capsule
+-- all carry a single thin outline and no metalwork -- and the gold band around a blue HUD was the loudest
+-- thing on screen. It is now exactly what those panels use: ONE flat stroke in the darker blue.
+--
+-- The NAME is kept (every call site below calls goldRim) and so is the hi/mid/lo signature, which is now
+-- ignored -- the CTA passed a warmer gold through it, and letting that keep arriving harmlessly is a far
+-- smaller change than rewriting nine call sites to a new name. The RimShade frame from the old two-ring
+-- build is actively cleared, or a stale one left by an earlier run would keep drawing the outer gold ring.
+local function goldRim(o, thickness, _hi, _mid, _lo)
+	local stale = o:FindFirstChild("RimShade")
+	if stale then stale:Destroy() end
+	local s = stroke(o, OUTLINE, math.max(1, (thickness or 3) - 1), 0)
 	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-	local g = s:FindFirstChildOfClass("UIGradient") or Instance.new("UIGradient")
-	g.Color = three(hi, mid, lo); g.Rotation = 90; g.Parent = s
+	local g = s:FindFirstChildOfClass("UIGradient") -- kill the old lit-gold gradient if one survives
+	if g then g:Destroy() end
 	return s
 end
 
--- SOFT INNER SHADOW. Roblox has no inset stroke, so this is an empty frame inset by N pixels
--- carrying a black rounded stroke. Called more than once at different insets and opacities,
--- the rings stack into a soft gradient inward from the edge rather than one hard line.
--- col is optional: black inside the navy panel, warm brown (or a lit orange) inside the CTA.
-local function innerRing(parent, name, inset, radius, thickness, trans, col)
+-- ===== INNER SHADOW RINGS DISABLED (flat UI) =====
+-- These stacked 2-3 dark rounded strokes just inside each panel's edge, at increasing inset and
+-- transparency, so the edge faded inward like a moulded recess. Together with topLight() above that is
+-- what made the HUD look embossed. Same approach as topLight: the helper stays, deletes any ring an
+-- earlier run left behind, and returns nil -- so no call site needs touching and nothing is drawn.
+local function innerRing(parent, name, _inset, _radius, _thickness, _trans, _col)
+	local stale = parent:FindFirstChild(name)
+	if stale then stale:Destroy() end
+	return nil
+end
+local function innerRingUNUSED(parent, name, inset, radius, thickness, trans, col)
 	local s = deco(parent, "Frame", name)
 	s.BackgroundTransparency = 1
 	s.Position = UDim2.fromOffset(inset, inset)
@@ -193,22 +229,15 @@ local function innerRing(parent, name, inset, radius, thickness, trans, col)
 	return s
 end
 
--- Ambient highlight -- depth without gloss. Scale-sized so it can never collapse into a stub.
-local function topLight(parent, radius, strength, zi, col)
-	local hi = deco(parent, "Frame", "TopLight")
-	hi.BackgroundColor3 = col or WHITE
-	hi.BorderSizePixel = 0
-	hi.Position = UDim2.fromScale(0, 0)
-	hi.Size = UDim2.new(1, 0, 0.46, 0)
-	hi.ZIndex = zi or 1
-	corner(hi, radius)
-	local g = hi:FindFirstChildOfClass("UIGradient") or Instance.new("UIGradient")
-	g.Rotation = 90
-	g.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, strength), NumberSequenceKeypoint.new(1, 1),
-	})
-	g.Parent = hi
-	return hi
+-- ===== TOP LIGHT DISABLED (flat UI) =====
+-- This laid a white-to-clear gradient across the top 46% of a panel to fake a lit, curved surface. It is
+-- the single biggest contributor to the "3D look" and nothing else in this game's UI has one. The helper
+-- stays and every call site still calls it -- it now just DELETES any highlight left by an earlier run
+-- and returns nil, so the panels render as flat fills with no rewiring of the ten-odd call sites.
+local function topLight(parent, _radius, _strength, _zi, _col)
+	local stale = parent:FindFirstChild("TopLight")
+	if stale then stale:Destroy() end
+	return nil
 end
 
 -- The game's type: bold white, thick black outline.
@@ -287,20 +316,11 @@ local function skinTop()
 	innerRing(panel, "InnerRing1", 1, R_OUTER - 1, 3, 0.28, BROWN_SHD)
 	innerRing(panel, "InnerRing2", 5, R_OUTER - 4, 5, 0.74, BROWN_SHD)
 
-	-- THE HALO -- 484 x 158, i.e. GLOW_OUT proud of the card on every side, built as two rings
-	-- rather than one so it falls off softly instead of ending in a hard line. Both are CHILDREN
-	-- of the card (a child always draws in front of its parent), so only the part of each stroke
-	-- lying outside the card's own edge is ever visible -- the fill never washes over the card.
-	for i, ring in ipairs({ { 4, 3, 0.62 }, { GLOW_OUT, 3, 0.84 } }) do
-		local out, thick, trans = ring[1], ring[2], ring[3]
-		local halo = deco(panel, "Frame", "OuterGlow" .. i)
-		halo.BackgroundTransparency = 1
-		halo.Position = UDim2.fromOffset(-out, -out)
-		halo.Size = UDim2.new(1, out * 2, 1, out * 2)
-		halo.ZIndex = 0
-		corner(halo, R_OUTER + out)
-		stroke(halo, AMBER, thick, trans)
-	end
+	-- HALO REMOVED. Two soft rings sat GLOW_OUT proud of the card on every side to make it glow against
+	-- the world. Nothing else in this UI glows, and an amber halo round a blue panel was part of what made
+	-- the HUD look like a lit 3D object. Destroyed rather than skipped, since this runs on a repeating
+	-- tick and a ring built by an earlier version would otherwise persist for the session.
+	for i = 1, 2 do drop(panel, "OuterGlow" .. i) end
 
 	buildHolder(panel)
 
@@ -363,26 +383,16 @@ local function skinTop()
 	-- nub is painted at zero.
 	local fill = g.gasFill
 	if fill and fill.Parent then
-		drop(fill, "FillGloss", "LeadingEdge")
-		fill.BackgroundColor3 = WHITE          -- white so the gradient reads true
+		-- FLAT GREEN, NO GLOSS. The bar was a three-stop gradient with a white gloss strip lying over its
+		-- top third -- a glass-tube look. It is now one solid green, and the gloss frame is actively
+		-- destroyed (this runs on a repeating tick, so a leftover from an earlier build must be removed
+		-- rather than merely not re-created).
+		drop(fill, "FillGloss", "LeadingEdge", "FillLight")
+		fill.BackgroundColor3 = FILL_YEL
 		fill.ZIndex = 3
 		corner(fill, "pill")
-		grad(fill, three(FILL_HI, FILL_YEL, FILL_ORG), 90)
+		grad(fill, three(FILL_HI, FILL_YEL, FILL_ORG), 90) -- the faint ~8% lift, not the old glass ramp
 		fill.Visible = fill.Size.X.Scale > 0.005
-
-		local gloss = deco(fill, "Frame", "FillLight")
-		gloss.BackgroundColor3 = WHITE
-		gloss.BorderSizePixel = 0
-		gloss.Position = UDim2.fromScale(0, 0.08)
-		gloss.Size = UDim2.new(1, 0, 0.34, 0)
-		gloss.ZIndex = 4
-		corner(gloss, "pill")
-		local gg = gloss:FindFirstChildOfClass("UIGradient") or Instance.new("UIGradient")
-		gg.Rotation = 90
-		gg.Transparency = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.55), NumberSequenceKeypoint.new(1, 1),
-		})
-		gg.Parent = gloss
 	end
 
 	-- THE READOUT -- centred in the bar, larger, on a thicker black outline.
@@ -400,14 +410,13 @@ end
 --======================================================================
 -- BOTTOM SECTION -- the CTA, built into the panel
 --======================================================================
--- The caption still fills the button and centres by geometry; the only asymmetry is the left
--- inset, which is the cart's slot -- so the words centre in the space the cart LEAVES instead
--- of running underneath it. Top/bottom stay small and equal.
--- Re-fitted to the measured 446 x 52 box: on a 52px-tall button the cart drops to 30 (11px clear
--- top and bottom) and the paddings come in with it.
+-- CART REMOVED. A hand-drawn shopping trolley (five rounded frames + two ribs) used to sit at the left
+-- of this button. At 30px it did not read as a trolley -- it read as a cluster of random shapes -- and
+-- nothing else in the HUD carries a drawn icon. The caption now centres in the WHOLE button, so the left
+-- inset that reserved the cart's slot is gone too and CAP_LEFT matches CAP_SIDE.
+-- (The GUT icon in the holder on the left of the panel is a DIFFERENT thing and is untouched.)
 local CAP_SIDE, CAP_TB = 22, 7                  -- the right/vertical padding
-local CART_X, CART_S   = 14, 30                 -- the cart's left offset and box
-local CAP_LEFT         = CART_X + CART_S + 12   -- 56: past the cart, with a breath after it
+local CAP_LEFT         = CAP_SIDE               -- symmetric now: no icon to leave room for
 local pressWired = false
 
 -- EMOJI OUT OF THE CAPTION. In UTF-8 every byte of a plain ASCII letter is < 128 and every byte
@@ -456,80 +465,26 @@ local VEINS = {    -- {x scale, y scale, px long, degrees}
 	{ 0.14, 0.38, 118, -5 }, { 0.58, 0.64, 92, 4 }, { 0.36, 0.21, 64, -3 },
 }
 
+-- FOSSIL GRAIN REMOVED. Fifteen specks and three hairline veins were scattered across the button to
+-- break up its gradient and read as weathered stone. With the gradient gone and the button now a flat
+-- green, the speckling is just dirt on a clean surface -- and it belonged to the sunbaked-stone palette
+-- this HUD no longer uses. Destroys any speck a previous build left behind (this runs on a tick).
 local function fossilGrain(frame)
-	for i, f in ipairs(FLECKS) do
-		local d = deco(frame, "Frame", "Fleck" .. i)
-		d.AnchorPoint = Vector2.new(0.5, 0.5)
-		d.Position = UDim2.fromScale(f[1], f[2])
-		d.Size = UDim2.fromOffset(f[3], f[3])
-		d.BackgroundColor3 = f[4] and BROWN_SHD or CREAM
-		d.BackgroundTransparency = f[4] and 0.88 or 0.85
-		d.BorderSizePixel = 0
-		d.ZIndex = 2
-		corner(d, "pill")
-	end
-	for i, v in ipairs(VEINS) do
-		local d = deco(frame, "Frame", "Vein" .. i)
-		d.AnchorPoint = Vector2.new(0.5, 0.5)
-		d.Position = UDim2.fromScale(v[1], v[2])
-		d.Size = UDim2.fromOffset(v[3], 2)
-		d.Rotation = v[4]
-		d.BackgroundColor3 = CREAM
-		d.BackgroundTransparency = 0.94
-		d.BorderSizePixel = 0
-		d.ZIndex = 2
-		corner(d, "pill")
-	end
+	for i = 1, #FLECKS do drop(frame, "Fleck" .. i) end
+	for i = 1, #VEINS  do drop(frame, "Vein"  .. i) end
 end
 
 --======================================================================
 -- THE CART -- drawn, not typed.
---======================================================================
--- A 🛒 emoji cannot be recoloured: the font renders it in its own colours and TextColor3 is
--- ignored, so it would stay the one cold blue-grey object on a warm button. Five rounded frames
--- give the same read at this size AND take the palette -- cream-gold body, dark brown edge.
-local function buildCart(frame)
-	local cart = deco(frame, "Frame", "CartIcon")
-	cart.BackgroundTransparency = 1
-	cart.AnchorPoint = Vector2.new(0, 0.5)
-	cart.Position = UDim2.new(0, CART_X, 0.5, -1)
-	cart.Size = UDim2.fromOffset(CART_S, CART_S)
-	cart.ZIndex = 7
-
-	-- Drawn to a 30px box (CART_S), the size that leaves 11px clear above and below inside the
-	-- measured 52px button. Thinner outline on the wheels: 2px round a 7px circle is nearly all
-	-- outline.
-	local function piece(name, x, y, w, h, r, rot, edge)
-		local p = deco(cart, "Frame", name)
-		p.BackgroundColor3 = CREAM_GOLD
-		p.BorderSizePixel = 0
-		p.Position = UDim2.fromOffset(x, y)
-		p.Size = UDim2.fromOffset(w, h)
-		p.Rotation = rot or 0
-		p.ZIndex = 7
-		corner(p, r)
-		local s = stroke(p, BROWN_INK, edge or 2, 0)
-		s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-		return p
-	end
-
-	piece("Handle",     1,  6, 11,  4, 2, -30)  -- the push bar, angled up out of the basket
-	piece("BasketRim",  6,  8, 23,  4, 2)       -- the lip
-	local body = piece("BasketBody", 8, 11, 19, 11, 3)
-	piece("Wheel1",    11, 22,  7,  7, "pill", 0, 1.5)
-	piece("Wheel2",    20, 22,  7,  7, "pill", 0, 1.5)
-
-	for i = 1, 2 do                             -- two ribs, so the basket reads as a basket
-		local rib = deco(body, "Frame", "Rib" .. i)
-		rib.BackgroundColor3 = BROWN_INK
-		rib.BackgroundTransparency = 0.55
-		rib.BorderSizePixel = 0
-		rib.Position = UDim2.fromOffset(4 + (i - 1) * 6, 3)
-		rib.Size = UDim2.fromOffset(2, 5)
-		rib.ZIndex = 8
-		corner(rib, 1)
-	end
-	return cart
+-- REMOVE the drawn shopping-cart icon (and any leftovers from earlier passes that built it).
+-- It was five rounded frames plus two ribs meant to read as a trolley; at 30px on the button it just
+-- looked like a handful of random shapes, and no other element in this HUD has a drawn icon.
+-- This is a DESTRUCTOR, not a builder: the CTA is re-skinned on a repeating tick, so it also has to
+-- clear a cart left behind by a previous run (or by a stale duplicate script) rather than only skip
+-- drawing a new one. The gut icon lives in the panel's holder, not here, and is not touched.
+local function removeCart(frame)
+	local cart = frame:FindFirstChild("CartIcon")
+	if cart then cart:Destroy() end
 end
 
 --======================================================================
@@ -561,9 +516,10 @@ local function paintCTA(frame, btn)
 	end
 	local s = frame:FindFirstChildOfClass("UIStroke")
 	if s then
-		-- WHITE, because the gold lives in the gradient CHILD of this stroke and a coloured stroke
-		-- would tint it. CoreClient's green/grey goes here; white is the neutral that lets the gold through.
-		s.Color = WHITE
+		-- The stroke is now a FLAT dark-blue outline (the lit-gold gradient child it used to carry is
+		-- gone), so it must be the outline colour itself -- forcing WHITE here, as this did while the
+		-- gradient existed, would leave a bright white ring round the button and undo the restyle.
+		s.Color = OUTLINE
 		s.Thickness = RIM_INNER
 	end
 	painting = false
@@ -620,59 +576,20 @@ local function skinCTA()
 	end
 
 	fossilGrain(frame)
-	topLight(frame, R_INNER - 2, 0.82, 3, CREAM)   -- faint ambient lift; the gloss below does the shine
+	topLight(frame, R_INNER - 2, 0.82, 3, CREAM)   -- now a no-op destructor (see topLight)
 
-	-- THE GLOSS -- a single cream band across the top, inset a few px from the sides so it reads
-	-- as light lying ON a curved face rather than as a paler stripe painted edge to edge.
-	local gloss = deco(frame, "Frame", "Gloss")
-	gloss.BackgroundColor3 = CREAM
-	gloss.BorderSizePixel = 0
-	gloss.Position = UDim2.fromOffset(7, 4)
-	gloss.Size = UDim2.new(1, -14, 0.36, 0)
-	gloss.ZIndex = 4
-	corner(gloss, R_INNER - 5)
-	do
-		local gg = gloss:FindFirstChildOfClass("UIGradient") or Instance.new("UIGradient")
-		gg.Rotation = 90
-		gg.Transparency = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, live and 0.52 or 0.66),
-			NumberSequenceKeypoint.new(0.55, 0.86),
-			NumberSequenceKeypoint.new(1, 1),
-		})
-		gg.Parent = gloss
-	end
+	-- ===== THE BUTTON IS A FLAT GREEN SLAB =====
+	-- It used to carry FOUR separate depth layers on top of its gradient: a cream GLOSS band across the
+	-- top, a BottomShade bevel across the bottom, a top light, and a CtaBase shadow plate offset 6px
+	-- below it. Stacked, that is a moulded plastic button -- the exact "3D look" being removed. All four
+	-- are destroyed (not merely skipped): this function runs on a repeating tick, so anything an earlier
+	-- build created has to be actively cleared or it stays for the session.
+	drop(frame, "Gloss", "BottomShade", "TopLight")
+	drop(panel, "CtaBase")
 
-	local shade = deco(frame, "Frame", "BottomShade")   -- the lower half of the bevel
-	shade.AnchorPoint = Vector2.new(0, 1)
-	shade.BackgroundColor3 = BROWN_SHD                  -- brown, not black: shadow, not soot
-	shade.BorderSizePixel = 0
-	shade.Position = UDim2.fromScale(0, 1)
-	shade.Size = UDim2.new(1, 0, 0.34, 0)
-	shade.ZIndex = 4
-	corner(shade, R_INNER - 2)
-	do
-		local sg = shade:FindFirstChildOfClass("UIGradient") or Instance.new("UIGradient")
-		sg.Rotation = 90
-		sg.Transparency = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0.78),
-		})
-		sg.Parent = shade
-	end
+	removeCart(frame)
 
-	buildCart(frame)
-
-	-- the plate the button sits on: warm brown, so the shadow belongs to this button in this
-	-- world and not to a blue one borrowed from somewhere else
-	local base = deco(panel, "Frame", "CtaBase")
-	base.Position = UDim2.fromOffset(PAD, BTN_Y + 6)
-	base.Size = UDim2.new(1, -(PAD * 2), 0, BTN_H)
-	base.BackgroundColor3 = BROWN_SHD
-	base.BackgroundTransparency = 0.5
-	base.BorderSizePixel = 0
-	base.ZIndex = 2
-	corner(base, R_INNER)
-
-	-- THE CAPTION -- bold white on a dark brown outline, sat in the space right of the cart.
+	-- THE CAPTION -- bold white on a dark outline, centred in the whole button now the cart is gone.
 	-- CoreClient owns the words and Active across its three states; this owns the ink and the box.
 	if btn and btn.Parent then
 		btn.Font = Enum.Font.FredokaOne

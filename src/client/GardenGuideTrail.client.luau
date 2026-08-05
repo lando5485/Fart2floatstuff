@@ -134,6 +134,7 @@ local function destroyAll() for _, nd in ipairs(pool) do pcall(function() nd:Des
 -- ============================================================================
 local started   = false
 local stage     = 1
+local airborneSince = nil -- os.clock() the player left the ground (nil while grounded); see the airborne gate
 local override  = nil    -- Vector3 set by _G.guideTrailTo(); nil = fall back to the tutorial route
 local npcTarget = nil    -- Vector3 set by _G.guideTrailNpc(); LOWER priority than override
 local flownOnce = false  -- LATCH: true forever once the player first fart-flies. Ends the TUTORIAL route only.
@@ -159,6 +160,28 @@ local function publishStep()
 	if _G.gardenGuideStep ~= s then _G.gardenGuideStep = s end
 end
 publishStep()
+
+-- ===== WATERING COMPLETES THE GARDENER LEG =====
+-- The gardener leg used to end ONLY by proximity: step within STOP_DIST (7 studs) of the gardener's pivot.
+-- But the actual interaction happens at prompt range and then over at the plots -- take the can, walk to the
+-- field, water it -- so a player can finish the whole gardener step without ever tripping the 7-stud check
+-- (and the arrival guard below deliberately refuses to advance while an NPC target is live). Result: they
+-- watered the garden and the arrows still pointed back at the gardener.
+--
+-- The server publishes HasWateredGarden on the first successful water (CommunityGarden.server.lua) -- that IS
+-- "the gardener interaction is complete", stated by the authority. The moment it lands, re-route to the stand.
+-- Checked once on load too, for a player who watered before this script (or the trail) started.
+local function gardenerLegDone()
+	if stage == 1 then
+		stage = 2
+		publishStep()
+		print("[GardenGuideTrail] garden watered -> gardener leg complete, re-routing to the FOOD STAND")
+	end
+end
+if player:GetAttribute("HasWateredGarden") == true then gardenerLegDone() end
+player:GetAttributeChangedSignal("HasWateredGarden"):Connect(function()
+	if player:GetAttribute("HasWateredGarden") == true then gardenerLegDone() end
+end)
 
 -- ===== THE ARROWS WAIT FOR THE STARTER-PET CARD =====
 -- GardenIntro calls this the instant the cinematic finishes or is skipped -- and that is the SAME moment
@@ -235,6 +258,19 @@ conn = RunService.RenderStepped:Connect(function()
 
 	-- Mid-flight there is no ground to lay chevrons on. HIDE, do not destroy -- we want the egg trail back on landing.
 	if _G.isFlying then hideFrom(1); return end
+
+	-- AIRBORNE WITHOUT FLYING = ALSO NO GROUND ARROWS. Falling after a fart (isFlying already false),
+	-- getting knocked off an edge, drifting down under glide -- in all of those the ground rays below
+	-- find nothing and fell back to "chevron at body height", which drew a line of arrows FLOATING in
+	-- open sky that followed the player down. Ground guidance only means anything when there is ground.
+	-- The 0.35s grace keeps ordinary hops from blinking the trail off.
+	local humA = char:FindFirstChildOfClass("Humanoid")
+	if humA and humA.FloorMaterial == Enum.Material.Air then
+		airborneSince = airborneSince or os.clock()
+		if os.clock() - airborneSince > 0.35 then hideFrom(1); return end
+	else
+		airborneSince = nil
+	end
 
 	-- PRIORITY: a hatchable egg (override) > the tutorial route > the island's quest NPC.
 	-- With none of them, the trail idles.

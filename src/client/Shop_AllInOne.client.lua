@@ -11,7 +11,7 @@ local MPS = MarketplaceService
 local GAMEPASS_IDS = {TwoXForever=1862015450, GlitterTrail=1859714979}
 local PRODUCT_IDS = {TwoXOneHour=3600302990, MidAirRecharge=3600303163, SkipIsland=3600303265, BirdNuke=3600303082}
 -- Shared coin icon IMAGE: the SAME verified asset used by the coin counter and daily-rewards
--- icons (emoji glyphs like 🪙 don't render in Roblox text). Literal here so it's correct
+-- icons (emoji glyphs like 💰 don't render in Roblox text). Literal here so it's correct
 -- regardless of script load order. Shop prices show this image instead of the missing emoji.
 local COIN_IMAGE = "rbxassetid://106760789458573"
 
@@ -92,7 +92,7 @@ local foodEmojiImg=Instance.new("ImageLabel"); foodEmojiImg.Name="FoodEmojiImg"
 foodEmojiImg.AnchorPoint=Vector2.new(0.5,0.5); foodEmojiImg.Position=UDim2.new(0.5,0,0,70); foodEmojiImg.Size=UDim2.new(0,120,0,120) -- centered in the 120px icon box; updateFoodShop applies the per-food scale
 foodEmojiImg.BackgroundTransparency=1; foodEmojiImg.ScaleType=Enum.ScaleType.Fit; foodEmojiImg.Visible=false; foodEmojiImg.Parent=foodLeftPanel
 local foodName=mkLabel(foodLeftPanel,{Text="Beans",Font=Enum.Font.GothamBold,TextSize=26,TextColor3=Color3.fromRGB(255,255,255),Size=UDim2.new(1,-10,0,35),Position=UDim2.new(0,5,0,135),TextXAlignment=Enum.TextXAlignment.Center})
--- Price row: a centered [coin IMAGE][price text] pair (replaces the non-rendering 🪙 emoji
+-- Price row: a centered [coin IMAGE][price text] pair (replaces the non-rendering 💰 emoji
 -- prefix). foodPrice stays the price TextLabel so the live update below works unchanged.
 local foodPriceRow=mkFrame(foodLeftPanel,{Name="PriceRow",Size=UDim2.new(1,-10,0,28),Position=UDim2.new(0,5,0,174),BackgroundTransparency=1})
 local fprLayout=Instance.new("UIListLayout"); fprLayout.FillDirection=Enum.FillDirection.Horizontal
@@ -135,7 +135,7 @@ for _,f in ipairs(_G.foods) do
 	iconImg.Image=foodImages[f.name] or ""; iconImg.Visible=(foodImages[f.name]~=nil); iconImg.Parent=emojiFrame
 	if foodImages[f.name] then emojiLabel.Visible=false end
 	mkLabel(cell,{Name="NameLabel",Text=f.name,Font=Enum.Font.GothamBold,TextSize=13,TextColor3=Color3.fromRGB(30,30,30),Size=UDim2.new(1,-62,0,30),Position=UDim2.new(0,60,0,5),TextXAlignment=Enum.TextXAlignment.Left})
-	-- Coin IMAGE for the cell's price row (replaces the 🪙 emoji prefix). Toggled with the
+	-- Coin IMAGE for the cell's price row (replaces the 💰 emoji prefix). Toggled with the
 	-- price text in updateFoodShop (hidden for locked cells, shown for unlocked/priced cells).
 	local priceIcon=Instance.new("ImageLabel"); priceIcon.Name="PriceIcon"
 	priceIcon.Size=UDim2.new(0,14,0,14); priceIcon.Position=UDim2.new(0,60,0,41); priceIcon.BackgroundTransparency=1

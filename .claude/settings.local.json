@@ -256,7 +256,12 @@
       "Bash(xargs wc -l)",
       "Bash(grep -rn '\"/\\\\|Chatted' --include=*.lua --include=*.luau src/server/)",
       "Bash(awk 'NR>=4640 && NR<=4646' src/client/PetFollow.client.lua)",
-      "Bash(awk 'NR>=4678 && NR<=4690' src/client/PetFollow.client.lua)"
+      "Bash(awk 'NR>=4678 && NR<=4690' src/client/PetFollow.client.lua)",
+      "PowerShell(Get-ChildItem src -Recurse -File | Sort-Object DirectoryName, Name | ForEach-Object { \"{0}  {1,6:N1} KB\" -f $_.FullName.Replace\\(\"$PWD\\\\src\\\\\",''\\), \\($_.Length/1KB\\) })",
+      "Bash(grep -c 'xAA\\\\\\\\x99' src/client/EventClient.client.lua)",
+      "Bash(grep -c 'x92\\\\\\\\xB0' src/client/EventClient.client.lua)",
+      "Bash(sed -n '372,580p' src/client/Campfire.client.luau)",
+      "Read(//tmp/**)"
     ]
   }
 }

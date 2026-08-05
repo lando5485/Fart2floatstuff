@@ -49,17 +49,23 @@ local PLUMES = {
 		-- below, IS a pure marker and stays hidden.
 		hideHost = false,
 		find = "SmokeBrick", label = "chimney smoke (Bean Farm)",
-		-- DARKER AND THICKER. Three separate levers, all pulled -- one on its own would not have been enough:
-		--   * RATE 7 -> 16      : twice as many puffs, so it is a continuous column instead of a dotted line
-		--   * TRANS 0.45 -> 0.12: nearly opaque at its densest. The old value was see-through and washed out
-		--                         against a bright sky, which is where this smoke actually lives.
-		--   * COLOUR            : starts a dirty grey rather than near-white, and DARKENS as it rises. Real smoke
-		--                         from a wood fire is sooty at the source; near-white reads as steam, not smoke.
-		rate = 16, speed = { 1.2, 2.6 }, lifetime = { 4.5, 8 }, spread = 14,
+		-- ===== LIGHTENED: A CHIMNEY, NOT A HAZE OVER THE WHOLE ISLAND =====
+		-- A previous pass pushed this to nearly-opaque near-black soot (rate 16, trans 0.12, size up to 11,
+		-- lifetime up to 8s, colour fading to 64,62,68). Each lever was defensible alone; together, on the
+		-- STARTING island, with the chimney sweep below attaching the same spec to every part named "smoke",
+		-- the plumes overlapped and lingered into one large dark cloud hanging over Bean Farm -- the first
+		-- thing a new player ever sees, and it read as gloom rather than as a cosy fire.
+		-- The smoke STAYS -- it is just a lighter, thinner, shorter-lived version of itself:
+		--   * RATE 16 -> 8      : half the puffs, so columns stop merging into a sheet
+		--   * TRANS 0.12 -> 0.5 : clearly see-through; it tints the sky instead of blocking it
+		--   * SIZE  11 -> 6     : a column that billows, not a cloud bank that swallows the rooftops
+		--   * LIFETIME 8 -> 4.5 : thins out and is GONE, so it can never accumulate into standing haze
+		--   * COLOUR            : light warm grey that stays light -- wood smoke in daylight, not soot
+		rate = 8, speed = { 1.2, 2.6 }, lifetime = { 2.5, 4.5 }, spread = 14,
 		accel = Vector3.new(1.6, 2.2, 0.6),             -- rises AND leans: a chimney in a breeze, not a rocket
-		size = { 1.6, 11 },                             -- billows out wide as it climbs and cools
-		trans = { 0.12, 1 },
-		color = ColorSequence.new(Color3.fromRGB(120, 118, 122), Color3.fromRGB(64, 62, 68)),
+		size = { 1.4, 6 },                              -- billows out as it climbs, without engulfing the island
+		trans = { 0.5, 1 },
+		color = ColorSequence.new(Color3.fromRGB(214, 212, 216), Color3.fromRGB(178, 176, 182)),
 		offsetY = 0.6,                                  -- just above the brick's top face
 	},
 	{
@@ -72,11 +78,13 @@ local PLUMES = {
 		-- player through the building.
 		hideHost = true,
 		find = "SmokeBrick1", label = "chimney smoke 2 (Bean Farm)",
-		rate = 16, speed = { 1.2, 2.6 }, lifetime = { 4.5, 8 }, spread = 14,
+		-- same lightened chimney values as its twin above (see the note there) -- the two must match, or
+		-- one roof smokes light grey while the roof beside it smokes soot
+		rate = 8, speed = { 1.2, 2.6 }, lifetime = { 2.5, 4.5 }, spread = 14,
 		accel = Vector3.new(1.6, 2.2, 0.6),
-		size = { 1.6, 11 },
-		trans = { 0.12, 1 },
-		color = ColorSequence.new(Color3.fromRGB(120, 118, 122), Color3.fromRGB(64, 62, 68)),
+		size = { 1.4, 6 },
+		trans = { 0.5, 1 },
+		color = ColorSequence.new(Color3.fromRGB(214, 212, 216), Color3.fromRGB(178, 176, 182)),
 		offsetY = 0.6,
 	},
 	{
@@ -362,13 +370,16 @@ end)
 -- bricks the named specs already handled.
 -- ============================================================================================================
 task.spawn(function()
+	-- Lightened to match the two named chimney specs at the top of the file (see the note on the first one).
+	-- THIS copy mattered most for the dark haze: the sweep attaches it to EVERY part named "smoke" on Bean
+	-- Farm, so the heavy old values were multiplied by however many such parts exist in the place.
 	local CHIMNEY = {
 		hideHost = false,
-		rate = 16, speed = { 1.2, 2.6 }, lifetime = { 4.5, 8 }, spread = 14,
+		rate = 8, speed = { 1.2, 2.6 }, lifetime = { 2.5, 4.5 }, spread = 14,
 		accel = Vector3.new(1.6, 2.2, 0.6),
-		size = { 1.6, 11 },
-		trans = { 0.12, 1 },
-		color = ColorSequence.new(Color3.fromRGB(120, 118, 122), Color3.fromRGB(64, 62, 68)),
+		size = { 1.4, 6 },
+		trans = { 0.5, 1 },
+		color = ColorSequence.new(Color3.fromRGB(214, 212, 216), Color3.fromRGB(178, 176, 182)),
 		offsetY = 0.6,
 	}
 

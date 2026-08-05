@@ -19,8 +19,18 @@
 -- ONE GEAR ONLY. This file was never listed in default.project.json, so for its whole life it could only
 -- have been running as a copy baked into the place. Registering it with Rojo (done in the same pass) means
 -- a synced copy and any baked-in copy can now both be alive at once -- two gears, two panels, two SFX
--- groups, and the second one to load silently wins every toggle. Same guard the campfire scripts use.
-if _G.__SettingsMenuClient then return end
+-- groups, and the second one to load silently wins every toggle.
+--
+-- ===== NEWEST BUILD WINS, NOT FIRST LOADER =====
+-- This was a plain first-loader-wins claim, which has a nasty failure mode: when a STALE baked-in copy
+-- wins the race, the freshly-synced Rojo script returns here and never runs, so changes made in this
+-- file have no effect at all and the game silently keeps the old behaviour. (That is exactly what
+-- happened with the campfire client -- same pattern, same symptom.) The claim is now VERSIONED: bump
+-- SETTINGS_BUILD when behaviour changes and the newest copy always takes over. The old flag is still
+-- set, because baked-in copies test it -- that is what makes THEM stand down when we win the race.
+local SETTINGS_BUILD = 2   -- 2 = adds the owner-only Glitter Trail toggle
+if (_G.__SettingsMenuClientBuild or 0) >= SETTINGS_BUILD then return end
+_G.__SettingsMenuClientBuild = SETTINGS_BUILD
 _G.__SettingsMenuClient = true
 
 local Players      = game:GetService("Players")
@@ -73,10 +83,32 @@ end
 --======================================================================
 -- UI: gear button (top-left) + settings panel.
 --======================================================================
+-- CLEAR ANY STALE SettingsGui FIRST. If a baked-in copy of this script won the load race it has already
+-- built its own gear and panel; ours would then be the SECOND, and TokenHud (which adopts "the" gear
+-- into the currency row) can just as easily pick theirs -- leaving the player using an old panel with no
+-- Glitter Trail row on it. Ours is stamped BuiltByLiveScript so this can tell them apart; repeated
+-- shortly after, because a stale copy that loads AFTER us is only reachable once it has built itself.
+local function nukeStaleSettingsUi()
+	local removed = 0
+	for _, inst in ipairs(PlayerGui:GetChildren()) do
+		if inst:IsA("ScreenGui") and inst.Name == "SettingsGui" and not inst:GetAttribute("BuiltByLiveScript") then
+			pcall(function() inst:Destroy() end); removed = removed + 1
+		end
+	end
+	if removed > 0 then
+		warn("[Settings] cleared " .. removed .. " STALE SettingsGui copy/copies baked into the place. "
+			.. "Delete the duplicate SettingsMenu LocalScripts in Studio for good.")
+	end
+end
+nukeStaleSettingsUi()
+
 local sg = Instance.new("ScreenGui")
 -- IgnoreGuiInset matches the coin counter's CoinGui (also IgnoreGuiInset=true) so the gear's Y lines up
 -- exactly with the coins (same coordinate origin at the very top of the screen).
 sg.Name = "SettingsGui"; sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true; sg.DisplayOrder = 60; sg.Parent = PlayerGui
+sg:SetAttribute("BuiltByLiveScript", true)   -- the stamp nukeStaleSettingsUi() recognises as "ours"
+task.delay(2, nukeStaleSettingsUi); task.delay(6, nukeStaleSettingsUi)
+print(("[Settings] build %d ACTIVE (this is the Rojo copy)"):format(SETTINGS_BUILD))
 
 -- Gear button — sits in the TOP-RIGHT area, immediately to the LEFT of the coin counter. Its exact
 -- size/position are set relative to the coin pill (see placeNextToCoins at the bottom) so it tucks in
@@ -165,6 +197,7 @@ closeBtn.TextScaled = true; closeBtn.TextColor3 = Color3.fromRGB(255,255,255); c
 do local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,8); c.Parent=closeBtn end
 
 -- Build one labeled ON/OFF toggle row. getOn() reads current state; setOn(v) applies it.
+-- Returns the row so a caller can show/hide it (the Glitter row is owner-only).
 local function makeToggleRow(yOff, labelText, getOn, setOn)
 	local row = Instance.new("Frame")
 	row.Size = UDim2.new(1, -24, 0, 40); row.Position = UDim2.new(0, 12, 0, yOff); row.BackgroundTransparency = 1
@@ -187,10 +220,38 @@ local function makeToggleRow(yOff, labelText, getOn, setOn)
 		refresh()
 	end)
 	refresh()
+	return row, refresh
 end
 
 makeToggleRow(46,  "Music",         function() return musicOn end, function(v) musicOn = v; applyMusic() end)
 makeToggleRow(96,  "Sound Effects", function() return sfxOn   end, function(v) sfxOn   = v; applySFX()   end)
+
+-- ===== GLITTER FART TRAIL (owners only) =====
+-- The gamepass used to force its look on anyone who owned it, with no way back to the default trail --
+-- and the game's creator owns every pass automatically, so they could never see their own default trail.
+-- The pass now UNLOCKS this switch instead of equipping itself: default OFF, and the row only exists for
+-- owners so it never advertises itself to players who cannot use it. CoreClient reads _G.glitterTrailOn.
+do
+	local glitterRow, refreshGlitter = makeToggleRow(146, "Glitter Trail",
+		function() return _G.glitterTrailOn == true end,
+		function(v) _G.glitterTrailOn = v and true or false end)
+	glitterRow.Visible = false
+	-- The gamepass flag arrives from the server a moment after join (GamepassEvent), and can change mid-
+	-- session on a live purchase -- so poll rather than read once. Cheap: one table lookup a second.
+	task.spawn(function()
+		while true do
+			local gp = _G.playerGamepasses
+			local owns = (gp ~= nil) and gp.glitterTrail == true
+			if glitterRow.Visible ~= owns then
+				glitterRow.Visible = owns
+				-- the panel is 150 tall for two rows; owners get a third, so it grows to fit
+				panel.Size = UDim2.new(0, 260, 0, owns and 200 or 150)
+				if owns then refreshGlitter() end
+			end
+			task.wait(1)
+		end
+	end)
+end
 
 -- Open/close.
 gearBtn.MouseButton1Click:Connect(function()

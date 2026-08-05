@@ -653,55 +653,32 @@ local function ensureCrackUI()
 	return crackUI
 end
 -- Per-coconut difficulty for the TUG-OF-WAR crack: drain = how fast the bar falls/sec; fill = how much each
--- tap pushes it up. Success when the bar reaches the TOP (need taps/sec > drain/fill). Tuned EASIER than the
--- old tap-count -- a few easy, a couple medium, a couple hard; even the hard ones are doable by a fast tapper.
--- RETUNED FOR LENGTH: a coconut used to crack in ~2 seconds. Two things now hold it to 15s+:
---   * each tap moves the bar a small amount, so it's ~40-50 taps of real work, and
---   * `secs` is a HARD FLOOR -- the bar is clamped to a ceiling that rises over exactly that many seconds,
---     so no amount of mashing finishes a coconut early. Tapping SLOWER than the ceiling still costs you time,
---     the ceiling only stops you going faster.
+-- tap pushes it up. Success when the bar reaches the TOP (need taps/sec > drain/fill). `secs` is a HARD
+-- FLOOR -- the bar is clamped to a ceiling that rises over exactly that many seconds, so no amount of
+-- mashing finishes a coconut early; tapping slower than the ceiling still costs extra time.
 --
--- ===== 75% FEWER TAPS THAN THE ORIGINAL (40%, 10% x3, 15% x2, THEN 20%) =====
--- Every `fill` below has been divided by 0.6, then 0.9 three times, then 0.85 twice, then 0.8 -- 0.252 of
--- the original tap cost, so a coconut now takes a quarter of the taps it did originally, and 80% of the
--- last pass.
+-- ===== RETUNED SHORT AGAIN: 2.5-4s FLOORS (was 6-11s, before that 15-19s) =====
+-- `secs` is the only number that decides how long a coconut ACTUALLY takes, because the ceiling it drives
+-- is a hard clamp -- no amount of mashing beats it. 6-11s still read as slow across seven coconuts, so the
+-- floors come down to "a few seconds each": 2.5s on the first, 4s on the last.
 --
--- `drain` and `secs` are deliberately UNCHANGED, every time. The ask was fewer clicks, not a shorter quest:
--- the `secs` floor still holds each coconut at 15-19 seconds no matter how fast you tap, so the pacing of
--- Coconut Cove -- and the total length of the climb -- is exactly as it always was. What changed is how hard
--- a finger works to fill that same window.
+-- `fill` is raised to match. The ceiling now rises ~0.34/sec, so the bar needs ~2.5 taps/sec just to keep
+-- pace with it -- at the old fill values a player would tap well UNDER the ceiling and the real time would
+-- drift back over the floor, which is exactly how the 15-19s floors played as 45s. A big fill keeps normal
+-- tapping pinned to the ceiling, so the floor is what players actually experience.
 --
 -- Taps to crack = (rise + drain x secs) / fill, where rise = 1 - CRACK_START:
---   coconut 1   68 -> 41 -> 37 -> 33 -> 30 -> 26 -> 21 -> 17 taps    coconut 7   89 -> ... -> 28 -> 22
---   whole quest 536 -> 322 -> 290 -> 261 -> 235 -> 200 -> 169 -> 135 taps
---
--- The difficulty CURVE is untouched -- easy 1-3, medium 4-5, hard 6-7 all scale by the same factor every
--- time, so 7 is still nominally harder than 1.
---
--- ===== `fill` IS NOW SPENT AS A LEVER, ON EVERY COCONUT =====
--- The tap rate needed to out-pace the drain is drain/fill. Below 1.0 the `secs` ceiling rises faster than
--- the bar drains, so the bar climbs on its own: the coconut cannot be failed, only waited out.
---
---   1: 0.63   2: 0.63   3: 0.68   |   4: 0.71   5: 0.75   6: 0.77   |   7: 0.81
---
--- ALL SEVEN are now well under 1.0 -- the highest sits at 0.81. Every coconut is a 15-19 second wait with
--- light tapping; none of them can be lost, and the "difficulty curve" above is now a difference in the
--- number on the label rather than anything a player experiences.
---
--- Cutting `fill` again would change nothing anyone can feel: the bar already out-climbs the drain by a
--- wide margin everywhere, so fewer taps just means more idle seconds staring at a bar that fills itself.
--- The ONLY remaining cost is `secs` -- 7 coconuts x 15-19s, about two minutes of Coconut Cove. If this
--- still feels long, that is the number to change, but it makes the quest SHORTER rather than easier and
--- it moves the pacing of the whole climb.
+--   coconut 1 ~4 taps ... coconut 7 ~5 taps; whole quest ~31 taps and ~23s of floors (was ~57s, orig ~115s).
+-- Still a real tapping minigame -- just a short one. The easy/medium/hard curve keeps its shape.
 local CRACK_START = 0.16 -- where the bar starts (also fixes how far it has to climb)
 local CRACK_DIFFICULTY = {
-	[1] = { drain = 0.070, fill = 0.1109, secs = 15, name = "Easy" },
-	[2] = { drain = 0.070, fill = 0.1109, secs = 15, name = "Easy" },
-	[3] = { drain = 0.075, fill = 0.1109, secs = 16, name = "Easy" },
-	[4] = { drain = 0.082, fill = 0.1148, secs = 17, name = "Medium" },
-	[5] = { drain = 0.086, fill = 0.1148, secs = 17, name = "Medium" },
-	[6] = { drain = 0.092, fill = 0.1189, secs = 18, name = "Hard" },
-	[7] = { drain = 0.096, fill = 0.1189, secs = 19, name = "Hard" },
+	[1] = { drain = 0.05, fill = 0.24, secs = 2.5, name = "Easy" },
+	[2] = { drain = 0.05, fill = 0.24, secs = 2.5, name = "Easy" },
+	[3] = { drain = 0.06, fill = 0.23, secs = 3,   name = "Easy" },
+	[4] = { drain = 0.06, fill = 0.22, secs = 3,   name = "Medium" },
+	[5] = { drain = 0.07, fill = 0.21, secs = 3.5, name = "Medium" },
+	[6] = { drain = 0.07, fill = 0.20, secs = 3.5, name = "Hard" },
+	[7] = { drain = 0.08, fill = 0.20, secs = 4,   name = "Hard" },
 }
 
 -- TUG-OF-WAR crack: the fill bar constantly DRAINS down; each tap pushes it UP. Fill it to the TOP to crack.
@@ -710,9 +687,9 @@ local function openCrackMinigame(onCracked, diff)
 	if crackBusy then return end
 	crackBusy = true
 	local ui = ensureCrackUI()
-	-- fill scaled by the same factor as CRACK_DIFFICULTY above -- an 8th coconut falling back to this default
+	-- default matches the retuned CRACK_DIFFICULTY above -- an 8th coconut falling back to this default
 	-- would otherwise be the one that still cost the old number of taps
-	diff = diff or { drain = 0.082, fill = 0.1148, secs = 16, name = "" }
+	diff = diff or { drain = 0.06, fill = 0.22, secs = 3, name = "" }
 	local fill = CRACK_START -- small head start so the long crack still starts near-empty
 	-- TIME FLOOR: `ceiling` rises from the start position to full over diff.secs and the bar is clamped to it,
 	-- so the crack can NEVER complete faster than that no matter how fast the player taps.
@@ -4183,7 +4160,6 @@ refreshQuestHUD = function()
 		trkLabel.Text = def.objective or ""; trkLabel.TextColor3 = Color3.fromRGB(255,240,150)
 		trkSub.Visible = false
 	else
-		tracker.Size = UDim2.new(0,200,0,38)
 		trkLabel.TextWrapped = false
 		trkLabel.Position = UDim2.new(0,36,0,0); trkLabel.Size = UDim2.new(1,-44,1,0) -- centered (icon left ~36, equal-ish right margin)
 		trkSub.Visible = false
@@ -4196,6 +4172,13 @@ refreshQuestHUD = function()
 			trkLabel.Text = (total ~= nil) and (word.." "..found.."/"..total) or (word..": "..found)
 			trkLabel.TextColor3 = Color3.fromRGB(255,255,255)
 		end
+		-- SIZE THE PILL TO ITS TEXT. The pill was a fixed 200 wide with an unwrapped, unscaled, CENTRED
+		-- label -- any counter longer than ~156px of glyphs ("Coconut 1/7" on some fonts, every longer
+		-- nextStep line) spilled past BOTH rounded edges of the background. Measure the rendered text and
+		-- fit the pill around it: icon column (36) + side padding, floored at the old 200 so short counters
+		-- keep the familiar footprint.
+		local tw = trkLabel.TextBounds.X
+		tracker.Size = UDim2.new(0, math.max(200, 52 + math.ceil(tw) + 14), 0, 38)
 	end
 	_G.__petTrackerSet(true) -- "quest is live" -> the gate decides whether a banner is currently in the way
 end
@@ -4444,11 +4427,25 @@ end
 do
 	-- Remember the last state the server sent, so accepting a quest can re-apply it with no round trip.
 	local lastPetState = {}
+	local stateReceived = false -- true once a REAL server state has landed (guards the re-apply below)
 	if PetStateEvent then -- guarded: a missing remote can't crash the script
 		PetStateEvent.OnClientEvent:Connect(function(state)
 			lastPetState = state or lastPetState
+			stateReceived = true
 			applyState(lastPetState)
 		end)
+	end
+
+	-- ===== BUILD-AFTER-STATE FIX: "broccoli / film reels / coconuts sometimes never appear" =====
+	-- Every quest world builds its pieces HIDDEN and waits for applyState to reveal them -- but applyState
+	-- only runs when a PetStateEvent arrives. The marker fetch can take a long time (the server's scan may
+	-- hold the RF for up to 90s), so the world routinely finishes building AFTER the last state push...
+	-- and then nothing ever reveals the pieces. The startup builder calls this hook right after each
+	-- buildPetWorld to re-apply the latest known state to the freshly built (still hidden) pieces.
+	-- Gated on stateReceived so a build finishing before ANY real state cannot reveal pieces to a player
+	-- who might own the pet (the original reason they build hidden).
+	_G.petWorldBuilt = function()
+		if stateReceived then applyState(lastPetState) end
 	end
 
 -- ===== ACCEPTING A QUEST OPENS IT, IMMEDIATELY =====
@@ -4690,23 +4687,39 @@ for petId, def in pairs(PETS) do
 	-- markers, no pieces and no island world to build. They only ever appear as the equipped follower.
 	if def.questType == "seasonal" or def.questType == "starter" or def.questType == "collection" then continue end
 	task.spawn(function()
-		if not PetGetMarkers then
-			warn("[Pet][DIAG] PetGetMarkers RemoteFunction MISSING -- cannot build "..petId.." (server PetSystem not loaded/synced?)")
-			return
+		-- RETRY, DON'T GIVE UP: this used to be one attempt, and every failure path was terminal -- a nil
+		-- from the server (its marker scan can time out at 90s on a slow start), a failed invoke, or the
+		-- remote itself missing all meant that pet's collectibles never existed for the whole session, with
+		-- only a warn to show for it. That IS the "broccoli / reels / coconuts randomly don't render" bug's
+		-- other half. Retries with growing gaps cover a slow server scan; the cap keeps a genuinely broken
+		-- marker set (already loudly warned server-side) from polling forever.
+		local positions
+		for attempt = 1, 6 do
+			if not PetGetMarkers then -- late re-acquire: the 30s WaitForChild at the top may have timed out
+				PetGetMarkers = RS:FindFirstChild("PetGetMarkers")
+			end
+			if PetGetMarkers then
+				local ok, result = pcall(function() return PetGetMarkers:InvokeServer(petId) end)
+				if ok and type(result) == "table" then
+					positions = result
+					if attempt > 1 then print("[Pet][DIAG] marker positions for "..petId.." arrived on retry #"..attempt) end
+					break
+				end
+				warn("[Pet][DIAG] PetGetMarkers attempt "..attempt.."/6 for "..petId.." failed ("
+					..(ok and "server had no positions yet" or tostring(result))..")"..(attempt < 6 and " -- retrying" or " -- giving up"))
+			else
+				warn("[Pet][DIAG] PetGetMarkers RemoteFunction still missing (attempt "..attempt.."/6) for "..petId)
+			end
+			if attempt < 6 then task.wait(8 * attempt) end -- 8,16,24,32,40s between tries (~2 min window on top of the server's own wait)
 		end
-		local ok, positions = pcall(function() return PetGetMarkers:InvokeServer(petId) end)
-		if not ok then
-			warn("[Pet][DIAG] PetGetMarkers invoke FAILED for "..petId..": "..tostring(positions))
-			return
-		end
-		if type(positions) ~= "table" then
-			warn("[Pet][DIAG] received NIL/invalid positions for "..petId.." -- server had no markers (check the server '[Pet] markers found' logs)")
-			return
-		end
+		if not positions then return end
 		local pp = positions.pieces or {}
 		local function v(p) return (typeof(p) == "Vector3") and string.format("(%.0f,%.0f,%.0f)", p.X, p.Y, p.Z) or "nil" end
 		print("[Pet][DIAG] received positions: piece1="..v(pp[1]).." piece2="..v(pp[2]).." piece3="..v(pp[3]).." egg="..v(positions.egg))
 		buildPetWorld(petId, def, positions)
+		-- the world just built with every piece HIDDEN -- re-apply the latest server state so uncollected
+		-- pieces reveal NOW instead of waiting for a state push that may never come (see _G.petWorldBuilt)
+		if _G.petWorldBuilt then _G.petWorldBuilt() end
 	end)
 end
 
@@ -4862,7 +4875,7 @@ do
 	local tl = Instance.new("TextLabel"); tl.Name = "Value"; tl.BackgroundTransparency = 1
 	tl.Size = UDim2.new(1,-10,1,0); tl.Position = UDim2.new(0,5,0,0)
 	tl.Font = Enum.Font.GothamBold; tl.TextSize = 14; tl.TextColor3 = Color3.fromRGB(255,215,0)
-	tl.Text = "\xF0\x9F\xAA\x99 0"; tl.Parent = tokChip
+	tl.Text = "\xF0\x9F\x92\xB0 0"; tl.Parent = tokChip
 	-- CoreClient force-sets TextScaled on every PlayerGui TextLabel, so cap it here or a long balance grows
 	do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 14; c.Parent = tl; tl.TextScaled = true end
 end
@@ -4908,7 +4921,7 @@ do
 	_G.PetHub.setTokens = function(n)
 		local chip = header:FindFirstChild("HubTokens")
 		local lbl = chip and chip:FindFirstChild("Value")
-		if lbl then lbl.Text = "\xF0\x9F\xAA\x99 " .. tostring(math.floor(tonumber(n) or 0)) end
+		if lbl then lbl.Text = "\xF0\x9F\x92\xB0 " .. tostring(math.floor(tonumber(n) or 0)) end
 	end
 	-- SkinCrateClient calls this whenever the server pushes a new balance, so the hub header and the crate
 	-- panel can never show two different token counts.

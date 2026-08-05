@@ -615,6 +615,15 @@ end
 PetEquipBroadcast.OnClientEvent:Connect(onBroadcast)
 Players.PlayerRemoving:Connect(function(plr) removeRemotePet(plr.UserId, "left") end)
 
+-- ===== "I'M READY" HANDSHAKE: ask the server for everyone's current equips =====
+-- The server's late-join catch-up fires when OUR SAVE loads -- routinely before this script has
+-- connected onBroadcast above, and remote fires that land before a handler exists are lost. That
+-- made pet visibility one-way: players already here saw our join broadcast, we never saw their
+-- catch-up. Now that the listener is live, request a fresh burst (the server also re-announces us
+-- to everyone). One early ask + one delayed retry, in case PetSystem itself is still booting.
+pcall(function() PetEquipBroadcast:FireServer() end)
+task.delay(6, function() pcall(function() PetEquipBroadcast:FireServer() end) end)
+
 -- FOLLOW + ANIMATE loop: each remote pet glides behind ITS player's character (reads the live character
 -- each frame, so it auto-re-targets on respawn). Same smooth glide/face feel as PetFollow's own-pet loop.
 RunService.RenderStepped:Connect(function(dt)

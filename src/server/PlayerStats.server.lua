@@ -2071,7 +2071,7 @@ end)
 -- ===== SERVER-WIDE EVENT LOOP =====
 local eventPool = {
 	{name="FART_STORM",   dispName="\xF0\x9F\x92\xA8 FART STORM",   weight=15, dur=7, msg="\xF0\x9F\x92\xA8 FART STORM! Everyone flies faster for 7 seconds!",       r=100,g=200,b=255},
-	{name="COIN_RUSH",    dispName="\xF0\x9F\xAA\x99 COIN RUSH",    weight=15, dur=7, msg="\xF0\x9F\xAA\x99 COIN RUSH! Double coins for 7 seconds!",                  r=255,g=200,b=0},
+	{name="COIN_RUSH",    dispName="\xF0\x9F\x92\xB0 COIN RUSH",    weight=15, dur=7, msg="\xF0\x9F\x92\xB0 COIN RUSH! Double coins for 7 seconds!",                  r=255,g=200,b=0},
 	-- DISPLAY-NAME-ONLY rename: shown to players as "HIGH GRAVITY". The internal key
 	-- stays "LOW_GRAVITY" so the client handler (EventClient ~938) and all mechanics
 	-- (speed/gas-drain multipliers, weight, 10s duration) are completely unchanged.
@@ -2155,7 +2155,20 @@ end
 -- route into the SAME code. REMOVE BEFORE LAUNCH.
 local function handleTestChat(player, msg)
 		local cmd = string.lower(tostring(msg or "")):match("^%s*(.-)%s*$") -- trim + lowercase
-		if cmd == "/thunderstorm" then
+		if cmd == "/birdnuke" then
+			-- BIRD NUKE COMMAND -- its OWN allow-list, DELIBERATELY TIGHTER than ALLOWED_TEST_USERS:
+			-- exclusively lando5485 and Broskie310111 may fire it. The shared test list also carries the
+			-- itsmaddmax accounts, and they must NOT have this -- a nuke hits every player on the server.
+			-- Routes through triggerBirdNuke, the same path a real purchase takes, so the effect/announce/
+			-- knockdown behave identically to a paid nuke.
+			local nm = string.lower(player.Name)
+			if nm ~= "lando5485" and nm ~= "broskie310111" then
+				print("[BirdNuke] DENIED /birdnuke for '" .. player.Name .. "' -- owner-only command.")
+				return
+			end
+			print("[BirdNuke] /birdnuke fired by " .. player.Name .. " (owner command)")
+			triggerBirdNuke(player)
+		elseif cmd == "/thunderstorm" then
 			if not isAllowedTestUser(player) then return end -- shared test-user allow-list (lando5485 + the two test accounts)
 			print("[TEST] /thunderstorm command used by " .. player.Name .. " - firing thunderstorm event. REMOVE BEFORE LAUNCH.")
 			fireThunderstormNow()
@@ -2248,6 +2261,7 @@ do
 			end)
 		end
 		reg("TestPetsCommand",       "/allpets",      "/rarepets")
+		reg("BirdNukeCommand",       "/birdnuke") -- owner-only inside handleTestChat (lando5485 + Broskie310111 ONLY)
 		reg("TestCollectionCommand", "/10pets",       "/thunderstorm")
 		reg("TestOfflineCommand",    "/offline",      "/goisland")
 		reg("TestGutCommand1",       "/gettinygut",   "/getsmallgut")

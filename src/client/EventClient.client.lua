@@ -43,15 +43,20 @@ local CHASE_DURATION_MAX = 4.5
 local CHASE_SPEED_MULT = 1.5       -- chasers fly a bit faster than cruise
 -- Ranged spread shooting
 local MAX_SHOOTERS = 2             -- HARD cap: never more than 2 planes shooting the player at once
-local SHOOT_COOLDOWN_MIN = 3.5     -- seconds a plane rests between its OWN bursts (paced, not constant)
-local SHOOT_COOLDOWN_MAX = 6.5
+local SHOOT_COOLDOWN_MIN = 3.0     -- seconds a plane rests between its OWN bursts (paced, not constant)
+local SHOOT_COOLDOWN_MAX = 5.5
 local SHOOT_RANGE = 280            -- studs: only lock on/shoot when the player is within this range
-local TELEGRAPH_TIME = 0.8         -- seconds the shooter flashes / aims before firing (readable warning)
-local SPREAD_COUNT = 5             -- projectiles per cluster (a fan toward the player)
-local SPREAD_HALF_ANGLE = 0.26     -- radians: half-width of the fan (total spread ~2x this) — challenging-but-fair
+local TELEGRAPH_TIME = 1.1         -- seconds of LASER LOCK before firing: a red targeting beam tracks the
+                                   -- player for this long (readable warning), then the burst comes. Longer
+                                   -- than the old 0.8s flash because the laser is the dodge cue now.
+local SPREAD_COUNT = 5             -- projectiles per cluster (ODD, so the centre shot flies exactly at the
+                                   -- aim point -- a player who does not move eats that one every time)
+local SPREAD_HALF_ANGLE = 0.22     -- radians: tighter fan than the old 0.26 -- hovering in place is likely a
+                                   -- hit; moving sideways still threads it (fair)
 local SPREAD_VJITTER = 6           -- studs of small random vertical scatter per projectile (cluster feel)
-local LEAD_FACTOR = 0.5            -- how strongly aim leads the player's velocity (0 = aim where they ARE)
-local BULLET_SPEED = 95            -- studs/sec: fast but still visibly dodgeable
+local LEAD_FACTOR = 0.65           -- stronger lead than the old 0.5: flying dead-straight is punished; any
+                                   -- direction CHANGE after the laser lock still dodges cleanly
+local BULLET_SPEED = 110           -- studs/sec: harder to simply outrun, still clearly visible in flight
 local BULLET_SIZE = 1.8            -- bullet cross-section (studs) — chunky, clearly visible
 local BULLET_RANGE = 360           -- studs a projectile travels before despawning
 local BULLET_LIFETIME = 6          -- seconds hard-cap despawn (backup)
@@ -677,7 +682,36 @@ local function startShoot(pl, idx)
 		hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 		pcall(function() hl.Parent = pl.model end)
 		pl.highlight = hl
-		task.wait(TELEGRAPH_TIME)
+		-- LASER LOCK: a thin red targeting beam from the plane's nose that FOLLOWS the player for the whole
+		-- telegraph -- the classic "you are being locked on" cue. It tracks live (re-aimed every frame), so
+		-- the player watches it sweep with them and knows exactly which plane fires and when to juke. The
+		-- laser is the WARNING, not the weapon: it never deals a hit itself.
+		local laser = Instance.new("Part")
+		laser.Name = "TargetLaser"; laser.Material = Enum.Material.Neon; laser.Color = Color3.fromRGB(255, 40, 40)
+		laser.Anchored = true; laser.CanCollide = false; laser.CastShadow = false
+		laser.CanQuery = false; laser.CanTouch = false; laser.Transparency = 0.3
+		laser.Size = Vector3.new(0.15, 0.15, 1)
+		laser.Parent = workspace
+		local t0 = os.clock()
+		while os.clock() - t0 < TELEGRAPH_TIME do
+			local ch2 = player.Character
+			local hrp2 = ch2 and ch2:FindFirstChild("HumanoidRootPart")
+			if hrp2 and pl.model and pl.model.Parent then
+				local origin = (pl.model:GetPivot() * CFrame.new(0, 0, -9.5 * PLANE_SCALE)).Position
+				local d = hrp2.Position - origin
+				local mag = d.Magnitude
+				if mag > 1 then
+					laser.Size = Vector3.new(0.15, 0.15, mag)
+					laser.CFrame = CFrame.lookAt(origin, hrp2.Position) * CFrame.new(0, 0, -mag / 2)
+				end
+				-- the beam pulses hotter as the shot approaches, so the timing is readable too
+				laser.Transparency = 0.45 - 0.35 * ((os.clock() - t0) / TELEGRAPH_TIME)
+			else
+				laser.Transparency = 1 -- no target/plane this frame: hide rather than strobe a stale beam
+			end
+			task.wait()
+		end
+		pcall(function() laser:Destroy() end)
 		pcall(function() hl:Destroy() end); pl.highlight = nil
 		-- Re-check: only fire if the player is still AIRBORNE (don't shoot someone who just landed).
 		local char = player.Character
@@ -716,6 +750,17 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 
 	for idx,pl in ipairs(planes) do
+		-- ---- SELF-HEAL: rebuild a plane whose model something else destroyed ----
+		-- Anything can Destroy() a workspace model out from under us (sweeps, resets); without this the
+		-- loop kept flying an invisible corpse forever. Rebuild in place and carry on.
+		if not (pl.model and pl.model.Parent) then
+			local model, blade = buildPlane()
+			model.Parent = workspace
+			model:PivotTo(CFrame.new(pl.pos))
+			pl.model, pl.blade = model, blade
+			pl.shooting = false
+			print(string.format("[Planes] plane %d model was destroyed externally -> rebuilt in place", idx))
+		end
 		-- ---- DECIDE DESTINATION (roam waypoint, or the chased plane) ----
 		pl.retargetTimer = pl.retargetTimer - dt
 		if pl.mode == "chase" then
@@ -1247,8 +1292,14 @@ local function stopStormSky()
 end
 
 local function cleanupWeather()
+	-- NOTE: HazardPlane / PlaneTracer are deliberately NOT in this sweep any more. The planes are not
+	-- weather -- they have their own lifecycle (cleared the moment the player leaves the plane band) --
+	-- and this sweep runs every time a storm/wind event ends. If the player was mid-band when an event
+	-- ended, it destroyed the LIVE planes while the plane system kept flying the corpses: invisible
+	-- planes, never respawned until the player left and re-entered the band. That was the "planes
+	-- sometimes fail to render" bug. (The plane loop also self-heals a destroyed model now, as a backstop.)
 	for _,obj in ipairs(workspace:GetChildren()) do
-		if obj.Name=="RainDrop" or obj.Name=="WindStreak" or obj.Name=="AggressiveBird" or obj.Name=="SpaceJunk" or obj.Name=="HazardPlane" or obj.Name=="PlaneTracer" then
+		if obj.Name=="RainDrop" or obj.Name=="WindStreak" or obj.Name=="AggressiveBird" or obj.Name=="SpaceJunk" then
 			pcall(function() obj:Destroy() end)
 		end
 	end
@@ -1340,7 +1391,7 @@ local function spawnFloatingCoinEmoji()
 	if not _G.serverEventActive then return end
 	local sg2=Instance.new("ScreenGui"); sg2.ResetOnSpawn=false; sg2.ZIndexBehavior=Enum.ZIndexBehavior.Global; sg2.Parent=PlayerGui
 	addEventSg(sg2)
-	local lbl=Instance.new("TextLabel"); lbl.Text="\xF0\x9F\xAA\x99"; lbl.Font=Enum.Font.GothamBold; lbl.TextSize=24
+	local lbl=Instance.new("TextLabel"); lbl.Text="\xF0\x9F\x92\xB0"; lbl.Font=Enum.Font.GothamBold; lbl.TextSize=24
 	lbl.BackgroundTransparency=1; lbl.TextColor3=Color3.fromRGB(255,215,0)
 	lbl.Size=UDim2.new(0,40,0,40); lbl.Position=UDim2.new(math.random(5,90)/100,0,1.05,0); lbl.ZIndex=6; lbl.Parent=sg2
 	TweenService:Create(lbl,TweenInfo.new(3,Enum.EasingStyle.Linear),{Position=UDim2.new(math.random(5,90)/100,0,-0.1,0)}):Play()
@@ -1665,7 +1716,7 @@ task.spawn(function()
 	-- own one-shot and lets it play out normally). If it fails to load, the effect still runs — the
 	-- teleport is server-driven. NUKE_BOOM_VOLUME is the single adjustable volume.
 	local NUKE_BOOM_SOUND_ID = "rbxassetid://89988274755984"
-	local NUKE_BOOM_VOLUME = 0.8
+	local NUKE_BOOM_VOLUME = 1
 	local function playBoomSound()
 		local boom = Instance.new("Sound")
 		boom.Name = "BirdNukeBoom"
@@ -1689,17 +1740,44 @@ task.spawn(function()
 			cam.CFrame = cam.CFrame * CFrame.new((math.random()-0.5)*2*m, (math.random()-0.5)*2*m, 0)
 		end)
 	end
-	-- Server-wide nuke explosion, shown to EVERYONE (incl. the buyer): boom sound + orange screen
-	-- flash + screen shake, all fired immediately when the nuke goes off.
+	-- Server-wide nuke explosion, shown to EVERYONE (incl. the buyer). DRAMATIC ON PURPOSE -- a nuke
+	-- that reads like a polite camera bump isn't worth Robux. Three layers, all screen-space and all
+	-- self-cleaning: (1) a hard WHITE detonation pop that cuts to a long orange wash -- two stages read
+	-- as a real blast where one flat flash never does; (2) a much longer, harder camera shake that
+	-- decays over 1.4s; (3) a panicked FLOCK of bird emojis scrambling across the whole screen -- the
+	-- "every bird in the world just took off at once" beat that sells it as a BIRD nuke.
 	local function nukeExplosion()
 		playBoomSound()
+		local white=mkFrame(stormSg,{
+			Size=UDim2.new(1,0,1,0),Position=UDim2.new(0,0,0,0),
+			BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=0.08,ZIndex=19
+		})
+		TweenService:Create(white,TweenInfo.new(0.18),{BackgroundTransparency=1}):Play()
+		Debris:AddItem(white,0.3)
 		local nukeFlash=mkFrame(stormSg,{
 			Size=UDim2.new(1,0,1,0),Position=UDim2.new(0,0,0,0),
-			BackgroundColor3=Color3.fromRGB(255,80,0),BackgroundTransparency=0.4,ZIndex=18
+			BackgroundColor3=Color3.fromRGB(255,80,0),BackgroundTransparency=0.35,ZIndex=18
 		})
-		TweenService:Create(nukeFlash,TweenInfo.new(0.5),{BackgroundTransparency=1}):Play()
-		Debris:AddItem(nukeFlash,0.6)
-		screenShake(0.6, 2.5)
+		TweenService:Create(nukeFlash,TweenInfo.new(1.1),{BackgroundTransparency=1}):Play()
+		Debris:AddItem(nukeFlash,1.2)
+		screenShake(1.4, 5)
+		for _=1,16 do
+			task.delay(math.random()*0.7,function()
+				pcall(function()
+					local ltr = (math.random(1,2)==1) -- half fly left-to-right, half the other way
+					local b=Instance.new("TextLabel")
+					b.BackgroundTransparency=1; b.Font=Enum.Font.GothamBold; b.TextSize=28+math.random(0,26)
+					b.Text="\xF0\x9F\x90\xA6"; b.TextColor3=Color3.new(1,1,1); b.ZIndex=20
+					b.Rotation=math.random(-25,25)
+					b.Size=UDim2.new(0,54,0,54)
+					b.Position=UDim2.new(ltr and -0.12 or 1.12, 0, math.random()*0.85, 0)
+					b.Parent=stormSg
+					TweenService:Create(b,TweenInfo.new(0.9+math.random()*0.8,Enum.EasingStyle.Linear),
+						{Position=UDim2.new(ltr and 1.12 or -0.12, 0, math.random()*0.85, 0)}):Play()
+					Debris:AddItem(b,1.9)
+				end)
+			end)
+		end
 	end
 	BirdNukeEvent2.OnClientEvent:Connect(function(buyerName)
 		pcall(function()
@@ -1717,7 +1795,7 @@ task.spawn(function()
 			else
 				playBirdSound()
 				if _G.showFloatingText then _G.showFloatingText("\xF0\x9F\x90\xA6\xF0\x9F\x92\xA5 BIRD NUKE INCOMING!",Color3.fromRGB(255,80,0)) end
-				for i=1,30 do
+				for i=1,42 do -- 30 -> 42: the swarm should feel like a SWARM (same stagger, ~4.2s of arrivals)
 					task.delay((i-1)*0.1,function()
 						pcall(function()
 							local char2=player.Character; local hrp2=char2 and char2:FindFirstChild("HumanoidRootPart"); if not hrp2 then return end

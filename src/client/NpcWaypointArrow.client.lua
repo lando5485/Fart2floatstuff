@@ -77,7 +77,15 @@ local function build(npc)
 
 	local top = part.Position.Y + 3
 	local ok, cf, size = pcall(function() return npc:GetBoundingBox() end)
-	if ok and cf then top = cf.Position.Y + size.Y * 0.5 end
+	if ok and cf then
+		local btop = cf.Position.Y + size.Y * 0.5
+		-- TRUST THE BOX ONLY INSIDE A RIG-SIZED ENVELOPE. GetBoundingBox measured mid-stream (parts
+		-- still arriving) or on a model that holds more than the rig can put its top tens or hundreds
+		-- of studs above the actual character -- and the arrow then floats high in empty sky instead
+		-- of over anyone's head. A humanoid rig's top is always within a few studs of its root part,
+		-- so anything outside that band is a bad measurement and the fallback (root + 3) wins.
+		if btop > part.Position.Y - 2 and btop < part.Position.Y + 12 then top = btop end
+	end
 
 	adornee    = part
 	baseOffset = Vector3.new(0, (top - part.Position.Y) + ARROW_MARGIN, 0)

@@ -20,9 +20,21 @@ local gui     = player:WaitForChild("PlayerGui")
 -- stale bar instead of this one -- and the oldest copy has no Remove button at all. That is why the buttons
 -- felt dead: you were pressing a different script's.
 --
--- First loader wins and clears the others out. Repeated on a timer because we do not choose load order: a
--- stale copy that starts after us is only reachable once it has built itself.
-if _G.__CampfireClient then return end
+-- ===== NEWEST BUILD WINS -- NOT "FIRST LOADER WINS" =====
+-- This used to be a plain `if _G.__CampfireClient then return end`, i.e. whichever copy loaded first
+-- owned the feature. Load order is not ours to choose, so when a STALE baked-in copy won the race the
+-- freshly-synced Rojo script hit that `return` and never ran -- and the game kept behaving like the old
+-- build no matter what was changed in this file. That is a genuinely confusing failure: the source on
+-- disk is correct, Rojo reports a clean sync, and the game ignores all of it.
+--
+-- So the claim is VERSIONED. Bump CAMPFIRE_BUILD whenever the behaviour here changes; a copy only
+-- stands down for a build >= its own, so the newest code always takes over regardless of order.
+-- _G.__CampfireClient is still set, because the OLD copies test that flag -- setting it is what makes
+-- them stand down when we win the race, and nukeStaleCampfireUi() below removes them outright when
+-- they win it.
+local CAMPFIRE_BUILD = 4   -- 4 = timed 4s prompt window, prompt stays usable via Custom style
+if (_G.__CampfireClientBuild or 0) >= CAMPFIRE_BUILD then return end
+_G.__CampfireClientBuild = CAMPFIRE_BUILD
 _G.__CampfireClient = true
 
 local function nukeStaleCampfireUi()
@@ -42,6 +54,29 @@ local function nukeStaleCampfireUi()
 	end
 end
 nukeStaleCampfireUi()
+print(("[Campfire] build %d ACTIVE (this is the Rojo copy). If you do not see this line, a stale "
+	.. "baked-in copy won the race -- delete the duplicate Campfire LocalScripts in Studio."):format(CAMPFIRE_BUILD))
+
+-- ===== UNDO WHAT A STALE COPY DID ON ITS WAY OUT =====
+-- A stale copy that loaded before us has already been running its own prompt loop, and older builds
+-- hid the marshmallow prompt by setting Enabled=false / MaxActivationDistance=0. Destroying the script
+-- above stops the loop but leaves those writes on the prompt, so without this the prompt could stay
+-- dead for the session even though the new code owns it. Put every campfire prompt back to a known
+-- good state; the loop further down then manages it from there.
+task.spawn(function()
+	local Workspace = game:GetService("Workspace")
+	for _ = 1, 12 do            -- the campfires build server-side over the first minute
+		for _, d in ipairs(Workspace:GetDescendants()) do
+			if d:IsA("ProximityPrompt") and d.Name == "TakeMarshmallowStick" then
+				local base = d:GetAttribute("F2FBaseDist")
+				if base and d.MaxActivationDistance ~= base then d.MaxActivationDistance = base end
+				if d.MaxActivationDistance <= 0 then d.MaxActivationDistance = 12 end
+				if not d.Enabled then d.Enabled = true end
+			end
+		end
+		task.wait(2)
+	end
+end)
 
 local screen = Instance.new("ScreenGui")
 screen.Name = "CampfireHud"; screen.ResetOnSpawn = false; screen.IgnoreGuiInset = true
@@ -333,5 +368,15 @@ if stickRemote then
 		end
 	end)
 end
+
+-- ===== THE MARSHMALLOW-PROMPT WINDOW LIVES IN CampfirePromptWindow.client.luau NOW =====
+-- It was here, and it could never take effect. The duplicate guard at the top of this file has every
+-- copy DESTROY the other copies on load ("inst.Disabled = true; inst:Destroy()"), so whenever one of
+-- the stale baked-in campfire clients won the load race it deleted this freshly-synced script and the
+-- new code simply never ran. No guard inside this file can fix that -- a check in a destroyed script
+-- does not execute.
+--
+-- So the prompt windowing moved to a file with a DIFFERENT NAME, which those copies cannot target.
+-- It also handles the campfire SIGN billboards, so nothing about it needs to live here.
 
 print("[Campfire] client ready -- roasting buttons wired")
