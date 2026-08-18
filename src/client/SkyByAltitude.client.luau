@@ -37,19 +37,38 @@ local player = Players.LocalPlayer
 -- Daylight holds all the way to ISLAND 10 (Butter Swamp, Y≈12,014). From there it darkens steadily, island by
 -- island, and Pizza Palms is night.
 local KEYS = {
-	{	y = 245,     -- 1 BEAN FARM. Humid, hazy, warm. You can smell the farm.
-		density = 0.42, offset = 0.15, haze = 2.6, glare = 0.15,
-		color = Color3.fromRGB(206, 190, 170), decay = Color3.fromRGB(106, 118, 140),
+	-- ===== THE GREY BACKGROUND IS GONE: HAZE IS 0 EVERYWHERE =====
+	-- This has now been reported twice. The first pass only TURNED THE GREY DOWN -- ground haze went 2.6 -> 0.80
+	-- and density 0.42 -> 0.30 -- and a thinner grey veil is still a grey veil. It was still visibly laid over
+	-- the sky at Bean Farm, which is where nearly all playtime happens.
+	--
+	-- HAZE is the property that does it. Density scatters light over DISTANCE (far islands go blue-ish, which is
+	-- what you actually want from air); Haze washes the SKYBOX ITSELF toward the atmosphere colour, so any
+	-- non-zero Haze paints a flat film in front of the sky no matter how good the skybox is. Offset and Glare
+	-- make it worse by pushing that film toward the camera and blooming it around the sun.
+	--
+	-- So haze, offset and glare are 0 at EVERY keyframe -- the sky is now the skybox, untouched, at all heights.
+	-- Density stays (low, and falling with altitude) purely for distance falloff, and the colours are pushed off
+	-- neutral to a clean sky blue so what little scattering remains reads as air, never as grey.
+	--
+	-- The gradient's SHAPE is unchanged: thicker low down, thinning as you climb, vacuum at the top so the stars
+	-- stay crisp. The day -> night darkening is driven by `space` (ClockTime/Brightness/Ambient), NOT by haze, so
+	-- zeroing haze costs the climb nothing.
+	--
+	-- Values must stay MONOTONICALLY DECREASING with altitude or the sky gets hazier as you climb.
+	{	y = 245,     -- 1 BEAN FARM. Clear sky, faint blue on the far islands.
+		density = 0.09, offset = 0.00, haze = 0, glare = 0,
+		color = Color3.fromRGB(196, 214, 236), decay = Color3.fromRGB(106, 118, 140),
 		space = 0,
 	},
-	{	y = 2492,    -- 4 TURNIP TRANQUIL. The haze starts to lift; you can see further.
-		density = 0.36, offset = 0.10, haze = 1.9, glare = 0.10,
-		color = Color3.fromRGB(198, 198, 196), decay = Color3.fromRGB(96, 112, 142),
+	{	y = 2492,    -- 4 TURNIP TRANQUIL. The blue starts to show.
+		density = 0.08, offset = 0.00, haze = 0, glare = 0,
+		color = Color3.fromRGB(186, 206, 232), decay = Color3.fromRGB(96, 112, 142),
 		space = 0,
 	},
 	{	y = 8182,    -- 8 POPCORN PINNACLE. Proper altitude. Thin, clean, the blue deepens.
-		density = 0.26, offset = 0.04, haze = 1.0, glare = 0.05,
-		color = Color3.fromRGB(180, 194, 214), decay = Color3.fromRGB(70, 96, 140),
+		density = 0.07, offset = 0.00, haze = 0, glare = 0,
+		color = Color3.fromRGB(172, 192, 222), decay = Color3.fromRGB(70, 96, 140),
 		space = 0,
 	},
 	-- ISLANDS 10 -> 14 ARE THE DARKENING. The curve ACCELERATES rather than running straight: 10 has only just
@@ -57,32 +76,32 @@ local KEYS = {
 	-- would make island 10 look half-dark the moment you land on it, which gives the whole climb away at once
 	-- -- the point is that it creeps up on you.
 	{	y = 12014,   -- 10 BUTTER SWAMP. The light has *just* begun to cool. Barely noticeable, deliberately.
-		density = 0.21, offset = 0.00, haze = 0.68, glare = 0.03,
-		color = Color3.fromRGB(162, 182, 214), decay = Color3.fromRGB(52, 76, 122),
+		density = 0.06, offset = 0.00, haze = 0, glare = 0,
+		color = Color3.fromRGB(158, 180, 216), decay = Color3.fromRGB(52, 76, 122),
 		space = 0.06,
 	},
 	{	y = 14174,   -- 11 ICE CREAM ISLE. Late afternoon. You can tell now, if you look up.
-		density = 0.18, offset = 0.00, haze = 0.52, glare = 0.02,
-		color = Color3.fromRGB(150, 172, 206), decay = Color3.fromRGB(44, 66, 110),
+		density = 0.05, offset = 0.00, haze = 0, glare = 0,
+		color = Color3.fromRGB(146, 170, 208), decay = Color3.fromRGB(44, 66, 110),
 		space = 0.18,
 	},
 	{	y = 17179,   -- 12 BURGER BLUFF. Evening. Blue going deep; a first star or two.
-		density = 0.14, offset = 0.00, haze = 0.34, glare = 0.01,
-		color = Color3.fromRGB(134, 156, 196), decay = Color3.fromRGB(32, 50, 92),
+		density = 0.035, offset = 0.00, haze = 0, glare = 0,
+		color = Color3.fromRGB(130, 154, 196), decay = Color3.fromRGB(32, 50, 92),
 		space = 0.38,
 	},
 	{	y = 20240,   -- 13 BURRITO BARRENS. Dusk. Stars are properly out; the sky is nearly black.
-		density = 0.07, offset = 0.00, haze = 0.14, glare = 0.00,
+		density = 0.02, offset = 0.00, haze = 0, glare = 0,
 		color = Color3.fromRGB(112, 132, 174), decay = Color3.fromRGB(18, 30, 62),
 		space = 0.66,
 	},
 	{	y = 24012,   -- 14 PIZZA PALMS. Night. Density near zero so the stars are CRISP, not washed out.
-		density = 0.015, offset = 0.00, haze = 0.0, glare = 0.00,
+		density = 0.005, offset = 0.00, haze = 0, glare = 0,
 		color = Color3.fromRGB(88, 106, 148), decay = Color3.fromRGB(4, 7, 18),
 		space = 1,
 	},
 	{	y = 27000,   -- ABOVE THE TOWER (the black hole sits at ~25,500). Vacuum.
-		density = 0.0, offset = 0.00, haze = 0.0, glare = 0.00,
+		density = 0.0, offset = 0.00, haze = 0, glare = 0,
 		color = Color3.fromRGB(80, 96, 136), decay = Color3.fromRGB(2, 3, 10),
 		space = 1,
 	},

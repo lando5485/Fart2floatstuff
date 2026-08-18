@@ -41,7 +41,7 @@ local EXPECTED = {
 	"IslandNPCs", "IslandStreaming", "LateJoinEventSync", "LeaderboardService", "MeatballShooter",
 	"MeteorImpact", "MeteorManager", "MeteorReward", "MeteorSpawn", "MilkCap", "MusicManager",
 	"PetSystem", "PlanetSelectService", "PlayerState", "PlayerStats", "PopcornTrees",
-	"RainbowBeamManager", "RealmPortals", "RealmReturnReceiver", "RebirthSystem", "RewardsService",
+	"RainbowBeamManager", "RealmPortalsHub", "RealmReturnReceiver", "RebirthSystem", "RewardsService",
 	"RocketEffects", "RocketEventManager", "RocketLogic", "RocketNPCs", "SeasonPass",
 	"SecretTrader", "SecretTreeDoor", "SecurityGuard", "SkinCrateService", "SocialRewards",
 	"SquirrelEasterEgg", "ToasterEasterEgg", "WormholeService",

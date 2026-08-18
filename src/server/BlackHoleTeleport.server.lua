@@ -58,8 +58,12 @@ enterEvent.OnServerEvent:Connect(function(player)
 		return
 	end
 	teleporting[player] = true
-	pcall(function() enterEvent:FireClient(player, "traveling") end) -- client shows "Traveling to Space Realm..."
-	task.wait(1.2) -- brief intentional pause so it feels deliberate, THEN teleport
+	pcall(function() enterEvent:FireClient(player, "traveling") end) -- client plays the SUCKED-IN cinematic
+	-- MUST match CINEMATIC_SECONDS in WorldClient's black-hole section. The client's shot ends on full black
+	-- and deliberately never restores; the teleport happens UNDER that black, which is what hides the place
+	-- boundary and makes the crossing read as one continuous shot instead of a loading screen. Teleporting
+	-- early (this was 1.2s) cuts the cinematic off mid-fall; teleporting late leaves them staring at black.
+	task.wait(6.2)
 	if not player.Parent then teleporting[player] = nil; return end -- player left during the pause
 	print("[BlackHole] teleporting " .. player.Name .. " to SpaceRealm (placeId " .. SPACE_REALM_PLACE_ID .. ")")
 	local ok, err = pcall(function()

@@ -36,6 +36,7 @@ local PetTraits   = require(Shared:WaitForChild("PetTraits"))
 local SkinCrates  = require(Shared:WaitForChild("SkinCrates"))
 local CrateTokens = require(Shared:WaitForChild("CrateTokens"))
 local PetCollection = require(Shared:WaitForChild("PetCollection"))
+local Gamepasses  = require(Shared:WaitForChild("Gamepasses"))
 
 local SkinRemotes    = ReplicatedStorage:WaitForChild("SkinRemotes", 30)
 local GetSkinState   = SkinRemotes:WaitForChild("GetSkinState")
@@ -45,6 +46,7 @@ local BuyTokens      = SkinRemotes:WaitForChild("BuyTokens")
 local SkinStateEvent = SkinRemotes:WaitForChild("SkinStateEvent")
 local GoldAnnounce   = SkinRemotes:WaitForChild("GoldAnnounce")
 local TradeUpRF      = SkinRemotes:WaitForChild("TradeUp")
+local AssignPetLevels = SkinRemotes:WaitForChild("AssignPetLevels")  -- c->s RF: pour pending levels into a pet
 local CollectAnnounce = SkinRemotes:WaitForChild("CollectAnnounce")
 
 -- ===== SOUNDS =====
@@ -75,10 +77,10 @@ local function mkFrame(p, props) local f = Instance.new("Frame"); for k, v in pa
 local function mkButton(p, props) local b = Instance.new("TextButton"); for k, v in pairs(props) do b[k] = v end; b.Parent = p; return b end
 
 -- House palette: bright blue / white / lime / gold. No dark panels.
-local PANEL      = Color3.fromRGB( 30, 120, 220)
-local PANEL_DARK = Color3.fromRGB( 20,  60, 160)
-local HEADER     = Color3.fromRGB( 15,  60, 140)
-local CARD       = Color3.fromRGB( 20,  90, 200)
+local PANEL      = Color3.fromRGB(220, 30, 152)
+local PANEL_DARK = Color3.fromRGB(160, 20, 83)
+local HEADER     = Color3.fromRGB(140, 15, 81)
+local CARD       = Color3.fromRGB(200, 20, 120)
 local GOLD       = Color3.fromRGB(255, 220,   0)
 local LIME       = Color3.fromRGB( 50, 220,  50)
 local LIME_DARK  = Color3.fromRGB( 30, 130,  30)
@@ -277,9 +279,24 @@ local previewWorking = false
 local function basePetModel(petId)
 	local cached = previewBase[petId]
 	if cached then return cached end
-	-- PetFollow owns model construction (server union templates, with client fallbacks). Guarded because this
-	-- script must still work if PetFollow failed to load -- the cells just keep their placeholder.
-	if not _G.petBuildModel then return nil end
+	-- PetFollow owns model construction (server union templates, with client fallbacks).
+	--
+	-- WAIT for it, do not just bail. This used to be a one-shot `if not _G.petBuildModel then return nil end`,
+	-- and that is why every crate cell here showed a paw instead of the pet: PetFollow publishes the builder
+	-- near the END of a very long script, so cells queued before that moment failed the check, kept their
+	-- placeholder, and were never revisited -- the worker only builds each cell once. A missing builder is a
+	-- STARTUP-ORDER problem, not a permanent one, so the right response is to wait a beat rather than give up.
+	--
+	-- Bounded at ~5s so a genuinely dead PetFollow still degrades to the paw instead of hanging the worker,
+	-- and only the FIRST cell pays the wait -- by then the builder is up and the rest resolve instantly.
+	if not _G.petBuildModel then
+		local deadline = os.clock() + 5
+		while not _G.petBuildModel and os.clock() < deadline do task.wait(0.1) end
+		if not _G.petBuildModel then
+			warn("[SkinCrate] _G.petBuildModel never appeared -- pet thumbnails stay as placeholders")
+			return nil
+		end
+	end
 	local ok, built = pcall(_G.petBuildModel, petId)
 	if not ok or typeof(built) ~= "Instance" or not built:IsA("Model") then return nil end
 	built.Parent = nil
@@ -359,7 +376,7 @@ local function makePetPreview(parent, petId, skinId, traitId, size, pos, static)
 	vp.CurrentCamera = cam
 	local ph = mkLabel(vp, {
 		Text = "\xF0\x9F\x90\xBE", Font = Enum.Font.FredokaOne, TextScaled = true,
-		TextColor3 = Color3.fromRGB(150, 180, 235), Size = UDim2.new(1, 0, 1, 0),
+		TextColor3 = Color3.fromRGB(235, 150, 194), Size = UDim2.new(1, 0, 1, 0),
 	})
 	previewQueue[#previewQueue + 1] = {
 		vp = vp, cam = cam, ph = ph, petId = petId, skin = skinId, trait = traitId,
@@ -373,8 +390,10 @@ end
 -- ============================================================================================================
 -- STATE (a local mirror of the server's push; never used to decide what the player owns)
 -- ============================================================================================================
-local state = { tokens = 0, skins = {}, equipped = {}, unlocked = {}, collection = {} }
+local state = { tokens = 0, skins = {}, equipped = {}, unlocked = {}, collection = {},
+	levelPets = {}, pendingLevels = 0 }
 local refreshTabs -- forward
+local levelPickerRefresh -- forward; assigned with the picker ~1700 lines down
 -- FORWARD DECL. The tab-click handler (which hands PETS/TRADE/QUESTS back to the Pet Hub) has to close
 -- this panel, but setOpen is defined ~1000 lines below with the rest of the open/close plumbing. Without
 -- this line that handler compiles `setOpen` as a GLOBAL, finds nil at click time, and errors -- which is
@@ -388,11 +407,16 @@ local function applyState(s)
 	state.equipped = s.equipped or {}
 	state.unlocked = s.unlocked or {}
 	state.collection = s.collection or {}
+	state.levelPets  = s.levelPets or {}
+	-- pendingLevels of 0 is the normal resting state: it only goes above zero between opening a Pet Level
+	-- crate and choosing where those levels land.
+	state.pendingLevels = tonumber(s.pendingLevels) or 0
 	-- Publish the balance so the Pet Hub header can show the same number this panel does. Pushed on the
 	-- SERVER's state, not on a local guess, so the two headers cannot drift apart.
 	_G.crateTokenBalance = state.tokens
 	if _G.petHubTokensChanged then pcall(_G.petHubTokensChanged, state.tokens) end
 	if refreshTabs then refreshTabs() end
+	if levelPickerRefresh then pcall(levelPickerRefresh) end
 end
 
 -- ============================================================================================================
@@ -424,7 +448,7 @@ local titleLbl = mkLabel(header, {
 mkStroke(titleLbl, Color3.new(0, 0, 0), 2)
 mkLabel(header, {
 	Text = "Collect skins for every pet. Traits roll separately.", Font = Enum.Font.Gotham, TextSize = 13,
-	TextScaled = true, TextColor3 = Color3.fromRGB(215, 228, 255), Size = UDim2.new(0, 330, 0, 15),
+	TextScaled = true, TextColor3 = Color3.fromRGB(255, 215, 235), Size = UDim2.new(0, 330, 0, 15),
 	Position = UDim2.new(0, 14, 0, 40), TextXAlignment = Enum.TextXAlignment.Left,
 })
 
@@ -596,7 +620,7 @@ local function buildCratesTab()
 		end
 		mkLabel(card, {
 			Text = crate.blurb or "", Font = Enum.Font.Gotham, TextSize = 13, TextScaled = true,
-			TextColor3 = Color3.fromRGB(205, 224, 255), Size = UDim2.new(1, -260, 0, 32),
+			TextColor3 = Color3.fromRGB(255, 205, 232), Size = UDim2.new(1, -260, 0, 32),
 			Position = UDim2.new(0, 92, 0, 40), TextXAlignment = Enum.TextXAlignment.Left,
 			TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true,
 		})
@@ -612,7 +636,12 @@ local function buildCratesTab()
 			local ll = Instance.new("UIListLayout"); ll.FillDirection = Enum.FillDirection.Horizontal
 			ll.Padding = UDim.new(0, 4); ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Parent = bandRow
 		end
-		local odds = SkinCrates.effectiveOdds(crate.id)
+		-- THE PILLS SHOW *YOUR* ODDS, not the base table. luckFor() folds in rebirth luck (from the replicated
+		-- Rebirths leaderstat) and the Lucky Pass, so a player who has paid for better odds is shown the better
+		-- odds -- and a player who has not sees exactly the numbers this panel always showed, because luckFor
+		-- returns 1.0 for them and 1.0 leaves the weights bit-for-bit untouched.
+		-- The server re-derives luck itself at roll time, so this is display only and cannot influence a roll.
+		local odds = SkinCrates.effectiveOdds(crate.id, Gamepasses.luckFor(player))
 		for oi, rarity in ipairs(SkinCrates.RARITY_ORDER) do
 			if (counts[rarity] or 0) > 0 then
 				local pill = mkFrame(bandRow, {
@@ -623,7 +652,7 @@ local function buildCratesTab()
 				mkLabel(pill, {
 					-- one decimal, not two: at half width "79.92%" was eating the tier name off the front of the pill
 				Text = string.format("%s %.1f%%", rarity, odds[rarity] or 0), Font = Enum.Font.GothamBold,
-					TextSize = 11, TextScaled = true, TextColor3 = Color3.fromRGB(30, 30, 40),
+					TextSize = 11, TextScaled = true, TextColor3 = Color3.fromRGB(40, 30, 32),
 					Size = UDim2.new(1, -6, 1, 0), Position = UDim2.new(0, 3, 0, 0),
 					TextXAlignment = Enum.TextXAlignment.Center,
 				})
@@ -642,12 +671,12 @@ local function buildCratesTab()
 
 		local openBtn = mkButton(card, {
 			Size = UDim2.new(0, 150, 0, 44), Position = UDim2.new(1, -162, 0, 72),
-			BackgroundColor3 = canAfford and LIME or Color3.fromRGB(120, 130, 145),
+			BackgroundColor3 = canAfford and LIME or Color3.fromRGB(145, 120, 134),
 			Text = canAfford and "OPEN" or "NEED TOKENS", Font = Enum.Font.FredokaOne,
 			TextSize = canAfford and 20 or 14, TextScaled = true, TextColor3 = WHITE,
 			AutoButtonColor = canAfford,
 		})
-		mkCorner(openBtn, 12); mkStroke(openBtn, canAfford and LIME_DARK or Color3.fromRGB(80, 88, 100), 2)
+		mkCorner(openBtn, 12); mkStroke(openBtn, canAfford and LIME_DARK or Color3.fromRGB(100, 80, 91), 2)
 		openBtn.MouseButton1Click:Connect(function()
 			playUIClick()
 			if not canAfford then
@@ -676,7 +705,7 @@ local function buildCratesTab()
 	do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 15; c.Parent = noteTitle end
 	local noteBody = mkLabel(note, {
 		Text = "Rarity rolls first, then a random item from it, then the trait.",
-		Font = Enum.Font.Gotham, TextSize = 12, TextScaled = true, TextColor3 = Color3.fromRGB(196, 214, 250),
+		Font = Enum.Font.Gotham, TextSize = 12, TextScaled = true, TextColor3 = Color3.fromRGB(250, 196, 223),
 		Size = UDim2.new(1, -20, 0, 18), Position = UDim2.new(0, 10, 0, 33),
 		TextXAlignment = Enum.TextXAlignment.Center,
 	})
@@ -748,7 +777,7 @@ local function buildInventoryTab()
 		if it.count > 1 then metaBits[#metaBits + 1] = "x" .. it.count end
 		mkLabel(row, {
 			Text = table.concat(metaBits, "   \xE2\x80\xA2   "), Font = Enum.Font.GothamBold, TextSize = 13,
-			TextScaled = true, TextColor3 = PetTraits.isNone(it.trait) and Color3.fromRGB(205, 224, 255) or PetTraits.color(it.trait),
+			TextScaled = true, TextColor3 = PetTraits.isNone(it.trait) and Color3.fromRGB(255, 205, 232) or PetTraits.color(it.trait),
 			Size = UDim2.new(1, -360, 0, 18), Position = UDim2.new(0, 84, 0, 34),
 			TextXAlignment = Enum.TextXAlignment.Left,
 		})
@@ -757,7 +786,7 @@ local function buildInventoryTab()
 			-- LOCKED PET: the skin is owned and safe, it just can't be worn yet. Say exactly what to do about it.
 			local lock = mkFrame(row, {
 				Size = UDim2.new(0, 250, 0, 34), Position = UDim2.new(1, -262, 0.5, 0),
-				AnchorPoint = Vector2.new(0, 0.5), BackgroundColor3 = Color3.fromRGB(120, 130, 145),
+				AnchorPoint = Vector2.new(0, 0.5), BackgroundColor3 = Color3.fromRGB(145, 120, 134),
 			})
 			mkCorner(lock, 10)
 			mkLabel(lock, {
@@ -874,7 +903,7 @@ local function buildTokensTab()
 		-- The FRAME grows; every label inside keeps its exact height, so the type stays the size it always was and
 		-- the entire gain lands as whitespace. That is "less crowded" without being "redesigned".
 		local r = mkFrame(earnList, { Size = UDim2.new(1, -6, 0, earnRowH), BackgroundColor3 = HEADER, LayoutOrder = ei })
-		mkCorner(r, 10); mkStroke(r, Color3.fromRGB(90, 130, 200), 1.5)
+		mkCorner(r, 10); mkStroke(r, Color3.fromRGB(200, 90, 148), 1.5)
 		mkLabel(r, {
 			Text = e.icon, Font = Enum.Font.FredokaOne, TextSize = 20, TextScaled = true, TextColor3 = WHITE,
 			Size = UDim2.new(0, 26, 0, 26), Position = UDim2.new(0, 8, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5),
@@ -886,7 +915,7 @@ local function buildTokensTab()
 		})
 		mkLabel(r, {
 			Text = e.note, Font = Enum.Font.Gotham, TextSize = 11, TextScaled = true,
-			TextColor3 = Color3.fromRGB(190, 210, 240), Size = UDim2.new(1, -110, 0, 14),
+			TextColor3 = Color3.fromRGB(240, 190, 218), Size = UDim2.new(1, -110, 0, 14),
 			Position = UDim2.new(0, 42, 0, earnTextY + 21), TextXAlignment = Enum.TextXAlignment.Left,
 		})
 		local amt = mkLabel(r, {
@@ -925,25 +954,33 @@ local function buildTokensTab()
 	-- CHEAPEST FIRST. Sorted here rather than trusting the order they happen to be authored in, so adding a pack
 	-- to SkinCrates.TOKEN_PACKS can never drop it in the middle of the ladder.
 	--
-	-- THREE SHOWN. A fourth rung forces every card down to 77px -- SMALLER than the 86 they already were -- so it
-	-- would cost the other three their size and the column its air. The three that stay cover all three jobs a pack
-	-- ladder has: an approachable entry price, the "Popular" rung and the "Best Value" rung. The 5,000 pack is what
-	-- drops off, and it is HIDDEN, not deleted -- the product, the receipt handler and SkinCrates.TOKEN_PACKS are
-	-- all untouched, so raising PACK_LIMIT to 4 brings it straight back.
-	local PACK_LIMIT = 3
-	local PACK_GAP   = 16
+	-- ALL OF THEM. This used to keep only the cheapest three, because back when the column had to fit its
+	-- contents without scrolling a fourth rung squeezed every card down to 77px and cost the other three
+	-- their air.
+	--
+	-- That trade is gone: the cards now have a minimum height and the list is a ScrollingFrame, so a pack
+	-- that does not fit scrolls into view instead of shrinking everything. Truncating is also the worse
+	-- failure by far -- the two most expensive packs were silently dropped, which looks exactly like a
+	-- broken scroll from the player's side and quietly hid the best-value rung the whole ladder builds up
+	-- to. A list that scrolls is a list; a list that deletes its own last rows is a bug.
+	local PACK_GAP = 16
 	local packs = {}
 	for _, pk in ipairs(SkinCrates.TOKEN_PACKS) do packs[#packs + 1] = pk end
 	table.sort(packs, function(a, b) return (a.robux or 0) < (b.robux or 0) end)
-	while #packs > PACK_LIMIT do table.remove(packs) end
 	do
 		local ll = Instance.new("UIListLayout"); ll.Padding = UDim.new(0, PACK_GAP)
 		ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Parent = packList
 	end
-	-- same rule as the earn rows: divide the column, never guess it
-	local packCardH = math.floor(((rowH - 46) - PACK_GAP * (#packs - 1)) / #packs)
+	-- Divide the row between the packs, but never below what a card actually needs.
+	--
+	-- This used to be a pure division, which quietly assumed the pack count would never change. It just
+	-- did -- four packs became five -- and an unclamped divide answers that by shrinking every card ~20%
+	-- until the buy button is hanging out of the bottom of its own frame. The list is a ScrollingFrame with
+	-- AutomaticCanvasSize on, so the honest answer to "they do not all fit" is to let it scroll rather than
+	-- to crush them until they do.
+	local packCardH = math.max(96, math.floor(((rowH - 46) - PACK_GAP * (#packs - 1)) / #packs))
 	-- amount (26) + 6 + rate (14) + 10 + button (28) = an 84px stack, centred in the card
-	local packTextY = math.floor((packCardH - 84) / 2)
+	local packTextY = math.max(6, math.floor((packCardH - 84) / 2))
 	for i, pack in ipairs(packs) do
 		local card = mkFrame(packList, { Size = UDim2.new(1, -6, 0, packCardH), BackgroundColor3 = HEADER, LayoutOrder = i })
 		mkCorner(card, 12); mkStroke(card, GOLD, 2)
@@ -957,10 +994,38 @@ local function buildTokensTab()
 		mkLabel(card, {
 			Text = (pack.tag and (pack.tag .. "   \xE2\x80\xA2   ") or "")
 				.. math.floor(pack.tokens / math.max(1, pack.robux) * 10) / 10 .. " tokens per R$",
-			Font = Enum.Font.Gotham, TextSize = 11, TextScaled = true, TextColor3 = Color3.fromRGB(205, 224, 255),
+			Font = Enum.Font.Gotham, TextSize = 11, TextScaled = true, TextColor3 = Color3.fromRGB(255, 205, 232),
 			Size = UDim2.new(1, -20, 0, 14), Position = UDim2.new(0, 10, 0, packTextY + 32),
 			TextXAlignment = Enum.TextXAlignment.Left,
 		})
+		-- EXTRA VALUE BADGE. How much further a Robux goes on THIS pack than on the smallest one.
+		--
+		-- Measured against the cheapest pack because that is a price a player can actually pay. The usual way
+		-- to get a percentage onto every card is to invent a "single token" price nobody sells and discount
+		-- everything off that -- but a saving against a price that does not exist is a made-up saving, and
+		-- made-up savings are what consumer rules and storefront policy are both written about. This number is
+		-- real: at +100% a Robux genuinely buys twice what it buys on the 25 R$ pack, and the card shows the
+		-- tokens-per-R$ right next to it so anyone can check.
+		--
+		-- The entry pack therefore carries no badge. It is the thing everything else is better THAN, and
+		-- stamping it with a discount against itself would be the one dishonest label on the shelf.
+		local basePack = SkinCrates.TOKEN_PACKS[1]
+		local baseRate = basePack and (basePack.tokens / math.max(1, basePack.robux)) or 0
+		local thisRate = pack.tokens / math.max(1, pack.robux)
+		local bonus    = (baseRate > 0) and math.floor((thisRate / baseRate - 1) * 100 + 0.5) or 0
+		if bonus >= 1 then
+			local badge = mkFrame(card, {
+				Size = UDim2.new(0, 96, 0, 26), Position = UDim2.new(1, -104, 0, packTextY - 2),
+				BackgroundColor3 = Color3.fromRGB(46, 168, 84),
+			})
+			mkCorner(badge, 8); mkStroke(badge, Color3.fromRGB(24, 96, 48), 2)
+			local bl = mkLabel(badge, {
+				Text = "+" .. bonus .. "% VALUE",
+				Font = Enum.Font.FredokaOne, TextSize = 14, TextScaled = true, TextColor3 = WHITE,
+				Size = UDim2.new(1, -6, 1, -6), Position = UDim2.new(0, 3, 0, 3),
+			})
+			mkStroke(bl, Color3.new(0, 0, 0), 2)
+		end
 		local buy = mkButton(card, {
 			Size = UDim2.new(1, -20, 0, 28), Position = UDim2.new(0, 10, 0, packTextY + 56),
 			BackgroundColor3 = LIME, Text = pack.robux .. " R$", Font = Enum.Font.FredokaOne, TextSize = 17,
@@ -1065,7 +1130,7 @@ local function confirmTradeUp(tier, target, keys, onYes)
 	mkLabel(box, {
 		Text = "These " .. #keys .. " will be DESTROYED for 1 random " .. target .. ". The pet, the skin and the "
 			.. "trait are all rolled fresh.",
-		Font = Enum.Font.GothamBold, TextSize = 13, TextScaled = true, TextColor3 = Color3.fromRGB(215, 228, 255),
+		Font = Enum.Font.GothamBold, TextSize = 13, TextScaled = true, TextColor3 = Color3.fromRGB(255, 215, 235),
 		Size = UDim2.new(1, -24, 0, 34), Position = UDim2.new(0, 12, 0, 46), TextWrapped = true, ZIndex = 62,
 	})
 
@@ -1121,7 +1186,7 @@ local function buildTradeUpTab()
 	mkLabel(intro, {
 		Text = "TRADE UP MACHINE\nGive " .. SkinCrates.TRADE_UP.COST .. " skins of one rarity, get 1 random skin "
 			.. "of the next rarity up. Duplicates are perfect for this.",
-		Font = Enum.Font.GothamBold, TextSize = 13, TextScaled = true, TextColor3 = Color3.fromRGB(215, 228, 255),
+		Font = Enum.Font.GothamBold, TextSize = 13, TextScaled = true, TextColor3 = Color3.fromRGB(255, 215, 235),
 		Size = UDim2.new(1, -16, 1, -8), Position = UDim2.new(0, 8, 0, 4),
 		TextXAlignment = Enum.TextXAlignment.Center, TextWrapped = true,
 	})
@@ -1145,7 +1210,7 @@ local function buildTradeUpTab()
 			or (tier .. "  \xE2\x80\xA2  top rarity")
 		local nameLbl = mkLabel(row, {
 			Text = title, Font = Enum.Font.FredokaOne, TextSize = 19, TextScaled = true,
-			TextColor3 = target and WHITE or Color3.fromRGB(170, 182, 200),
+			TextColor3 = target and WHITE or Color3.fromRGB(200, 170, 187),
 			Size = UDim2.new(1, -290, 0, 24), Position = UDim2.new(0, 22, 0, 8),
 			TextXAlignment = Enum.TextXAlignment.Left,
 		})
@@ -1159,7 +1224,7 @@ local function buildTradeUpTab()
 		end
 		mkLabel(row, {
 			Text = sub, Font = Enum.Font.GothamBold, TextSize = 13, TextScaled = true,
-			TextColor3 = canDo and Color3.fromRGB(180, 255, 190) or Color3.fromRGB(205, 224, 255),
+			TextColor3 = canDo and Color3.fromRGB(180, 255, 190) or Color3.fromRGB(255, 205, 232),
 			Size = UDim2.new(1, -290, 0, 18), Position = UDim2.new(0, 22, 0, 34),
 			TextXAlignment = Enum.TextXAlignment.Left,
 		})
@@ -1167,11 +1232,11 @@ local function buildTradeUpTab()
 		if target then
 			local btn = mkButton(row, {
 				Size = UDim2.new(0, 150, 0, 42), Position = UDim2.new(1, -162, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5),
-				BackgroundColor3 = canDo and LIME or Color3.fromRGB(120, 130, 145),
+				BackgroundColor3 = canDo and LIME or Color3.fromRGB(145, 120, 134),
 				Text = canDo and "TRADE UP" or (math.min(total, need) .. " / " .. need),
 				Font = Enum.Font.FredokaOne, TextSize = 16, TextScaled = true, TextColor3 = WHITE,
 			})
-			mkCorner(btn, 10); mkStroke(btn, canDo and LIME_DARK or Color3.fromRGB(90, 98, 112), 2)
+			mkCorner(btn, 10); mkStroke(btn, canDo and LIME_DARK or Color3.fromRGB(112, 90, 102), 2)
 			if canDo then
 				btn.MouseButton1Click:Connect(function()
 					playUIClick()
@@ -1230,7 +1295,12 @@ local function buildCollectionTab()
 	for petId in pairs(sets) do petSet[petId] = true end
 	for _, crate in ipairs(SkinCrates.CRATES) do
 		for _, pool in pairs(crate.contents) do
-			for _, e in ipairs(pool) do petSet[e.pet] = true end
+			-- `if e.pet` is load-bearing: the PET LEVEL crate's entries are { levels = N } with no species at
+			-- all, so the unguarded version did `petSet[nil] = true` and threw "table index is nil", taking the
+			-- whole Collection tab down the moment it was opened.
+			for _, e in ipairs(pool) do
+				if e.pet then petSet[e.pet] = true end
+			end
 		end
 	end
 	local pets = {}
@@ -1247,7 +1317,7 @@ local function buildCollectionTab()
 	mkLabel(intro, {
 		Text = "COLLECTION BOOK   \xE2\x80\xA2   " .. doneCount .. " / " .. #pets .. " pets completed\n"
 			.. "Complete a pet's set for a title, an aura, a badge and an exclusive skin.",
-		Font = Enum.Font.GothamBold, TextSize = 13, TextScaled = true, TextColor3 = Color3.fromRGB(215, 228, 255),
+		Font = Enum.Font.GothamBold, TextSize = 13, TextScaled = true, TextColor3 = Color3.fromRGB(255, 215, 235),
 		Size = UDim2.new(1, -16, 1, -8), Position = UDim2.new(0, 8, 0, 4),
 		TextXAlignment = Enum.TextXAlignment.Center, TextWrapped = true,
 	})
@@ -1263,7 +1333,7 @@ local function buildCollectionTab()
 		local cardH = 40 + gridRows * (cellH + cellPad) + 8
 
 		local card = mkFrame(body, { Size = UDim2.new(1, -8, 0, cardH), BackgroundColor3 = CARD, LayoutOrder = pi + 1 })
-		mkCorner(card, 12); mkStroke(card, isDone and GOLD or Color3.fromRGB(90, 130, 200), isDone and 3 or 2)
+		mkCorner(card, 12); mkStroke(card, isDone and GOLD or Color3.fromRGB(200, 90, 148), isDone and 3 or 2)
 		if isDone then applyRarityFlair(card, "Gold") end -- a finished set gets the jackpot treatment
 
 		local hdr = mkLabel(card, {
@@ -1288,14 +1358,14 @@ local function buildCollectionTab()
 		for ri, r in ipairs(rows) do
 			local cell = mkFrame(grid, {
 				Size = UDim2.new(0, 128, 0, cellH), LayoutOrder = ri,
-				BackgroundColor3 = r.owned and r.color or Color3.fromRGB(58, 66, 80),
+				BackgroundColor3 = r.owned and r.color or Color3.fromRGB(80, 58, 70),
 				BackgroundTransparency = r.owned and 0.25 or 0.4,
 			})
 			mkCorner(cell, 6)
 			mkLabel(cell, {
 				Text = (r.owned and "\xE2\x9C\x85 " or "\xE2\x9D\x8C ") .. r.name,
 				Font = Enum.Font.GothamBold, TextSize = 12, TextScaled = true,
-				TextColor3 = r.owned and WHITE or Color3.fromRGB(150, 160, 175),
+				TextColor3 = r.owned and WHITE or Color3.fromRGB(175, 150, 164),
 				Size = UDim2.new(1, -8, 1, 0), Position = UDim2.new(0, 4, 0, 0),
 				TextXAlignment = Enum.TextXAlignment.Left,
 			})
@@ -1598,7 +1668,7 @@ local resultTrait = mkLabel(resultCard, {
 	TextXAlignment = Enum.TextXAlignment.Center, TextXAlignment = Enum.TextXAlignment.Center,
 })
 local resultNote = mkLabel(resultCard, {
-	Text = "", Font = Enum.Font.Gotham, TextSize = 13, TextScaled = true, TextColor3 = Color3.fromRGB(205, 224, 255),
+	Text = "", Font = Enum.Font.Gotham, TextSize = 13, TextScaled = true, TextColor3 = Color3.fromRGB(255, 205, 232),
 	Size = UDim2.new(0, 462, 0, 20), Position = UDim2.new(0, 8, 0, 82),
 	TextXAlignment = Enum.TextXAlignment.Center, TextXAlignment = Enum.TextXAlignment.Center,
 })
@@ -1660,7 +1730,7 @@ local function buildCell(parent, x, item)
 	if item.levels then
 		local plate = mkFrame(cell, {
 			Size = UDim2.new(1, -24, 0, 222), Position = UDim2.new(0, 12, 0, 20),
-			BackgroundColor3 = isTop and Color3.fromRGB(46, 34, 8) or Color3.fromRGB(18, 34, 66),
+			BackgroundColor3 = isTop and Color3.fromRGB(46, 34, 8) or Color3.fromRGB(66, 18, 42),
 		})
 		mkCorner(plate, 12); mkStroke(plate, tierCol, 3)
 		local disc = mkFrame(plate, {
@@ -1668,12 +1738,12 @@ local function buildCell(parent, x, item)
 			AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = tierCol,
 		})
 		do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(1, 0); c.Parent = disc end
-		mkStroke(disc, Color3.fromRGB(12, 24, 48), 2)
+		mkStroke(disc, Color3.fromRGB(48, 12, 30), 2)
 		do local g = Instance.new("UIGradient"); g.Rotation = 90; g.Parent = disc
 			g.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), tierCol) end
 		mkLabel(disc, {
 			Text = "+" .. item.levels, Font = Enum.Font.FredokaOne, TextSize = 56, TextScaled = true,
-			TextColor3 = Color3.fromRGB(18, 34, 66), Size = UDim2.new(1, -22, 1, -22),
+			TextColor3 = Color3.fromRGB(66, 18, 42), Size = UDim2.new(1, -22, 1, -22),
 			Position = UDim2.new(0, 11, 0, 11),
 		})
 		mkLabel(cell, {
@@ -1684,7 +1754,7 @@ local function buildCell(parent, x, item)
 		})
 		mkLabel(cell, {
 			Text = "PET LEVELS", Font = Enum.Font.Gotham, TextSize = 20, TextScaled = true,
-			TextColor3 = Color3.fromRGB(205, 224, 255), Size = UDim2.new(1, -16, 0, 28),
+			TextColor3 = Color3.fromRGB(255, 205, 232), Size = UDim2.new(1, -16, 0, 28),
 			Position = UDim2.new(0, 8, 0, 292), TextXAlignment = Enum.TextXAlignment.Center, TextWrapped = true,
 		})
 		applyRarityFlair(cell, item.rarity, true)
@@ -1697,7 +1767,7 @@ local function buildCell(parent, x, item)
 	if item.trait then
 		local plate = mkFrame(cell, {
 			Size = UDim2.new(1, -24, 0, 222), Position = UDim2.new(0, 12, 0, 20),
-			BackgroundColor3 = isTop and Color3.fromRGB(46, 34, 8) or Color3.fromRGB(18, 34, 66),
+			BackgroundColor3 = isTop and Color3.fromRGB(46, 34, 8) or Color3.fromRGB(66, 18, 42),
 		})
 		mkCorner(plate, 12); mkStroke(plate, tierCol, 3)
 		local disc = mkFrame(plate, {
@@ -1705,12 +1775,12 @@ local function buildCell(parent, x, item)
 			AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = PetTraits.color(item.trait) or tierCol,
 		})
 		do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(1, 0); c.Parent = disc end
-		mkStroke(disc, Color3.fromRGB(12, 24, 48), 2)
+		mkStroke(disc, Color3.fromRGB(48, 12, 30), 2)
 		do local g = Instance.new("UIGradient"); g.Rotation = 90; g.Parent = disc
 			g.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), PetTraits.color(item.trait) or tierCol) end
 		mkLabel(disc, {
 			Text = "â¨", Font = Enum.Font.FredokaOne, TextSize = 56, TextScaled = true,
-			TextColor3 = Color3.fromRGB(18, 34, 66), Size = UDim2.new(1, -22, 1, -22),
+			TextColor3 = Color3.fromRGB(66, 18, 42), Size = UDim2.new(1, -22, 1, -22),
 			Position = UDim2.new(0, 11, 0, 11),
 		})
 		mkLabel(cell, {
@@ -1721,7 +1791,7 @@ local function buildCell(parent, x, item)
 		})
 		mkLabel(cell, {
 			Text = "TRAIT", Font = Enum.Font.Gotham, TextSize = 20, TextScaled = true,
-			TextColor3 = Color3.fromRGB(205, 224, 255), Size = UDim2.new(1, -16, 0, 28),
+			TextColor3 = Color3.fromRGB(255, 205, 232), Size = UDim2.new(1, -16, 0, 28),
 			Position = UDim2.new(0, 8, 0, 292), TextXAlignment = Enum.TextXAlignment.Center, TextWrapped = true,
 		})
 		applyRarityFlair(cell, item.rarity, true)
@@ -1754,7 +1824,7 @@ local function buildCell(parent, x, item)
 		-- colour even while the reel is a blur, and gives the 3D pet something to sit against.
 		local swatch = mkFrame(cell, {
 			Size = UDim2.new(1, -24, 0, 222), Position = UDim2.new(0, 12, 0, 20),
-			BackgroundColor3 = (skin and skin.color) or Color3.fromRGB(120, 130, 145),
+			BackgroundColor3 = (skin and skin.color) or Color3.fromRGB(145, 120, 134),
 		})
 		mkCorner(swatch, 12); mkStroke(swatch, Color3.new(0, 0, 0), 1)
 		-- THE ACTUAL ITEM: this pet, wearing this skin.
@@ -1763,14 +1833,18 @@ local function buildCell(parent, x, item)
 	-- Both captions are NAMED so the payoff can rewrite them in place when a masked Gold card lands.
 	local skinLbl = mkLabel(cell, {
 		-- masked for the top tier: printing 'Cosmic' here would undo everything the rosette just did
-		Text = isTop and "???" or ((skin and skin.displayName) or item.skin), Font = Enum.Font.FredokaOne, TextSize = 15,
+		-- A PET CRATE cell has no skin, so the old `(skin and skin.displayName) or item.skin` resolved to nil,
+		-- and assigning nil to .Text is a hard error in Roblox -- it would kill the reel build mid-strip. The
+		-- species name is the right label there anyway: the PET is the prize and the tier colour carries rarity.
+		Text = isTop and "???" or ((skin and skin.displayName) or item.skin or PetSkins.prettyPet(item.pet)),
+		Font = Enum.Font.FredokaOne, TextSize = 15,
 		TextScaled = true, TextColor3 = isTop and GOLD or WHITE, Size = UDim2.new(1, -16, 0, 44), Position = UDim2.new(0, 8, 0, 250),
 		TextXAlignment = Enum.TextXAlignment.Center,
 	})
 	skinLbl.Name = "SkinName"
 	local petLbl = mkLabel(cell, {
 		Text = isTop and "MYSTERY PRIZE" or PetSkins.prettyPet(item.pet), Font = Enum.Font.Gotham, TextSize = 20, TextScaled = true,
-		TextColor3 = Color3.fromRGB(205, 224, 255), Size = UDim2.new(1, -16, 0, 28),
+		TextColor3 = Color3.fromRGB(255, 205, 232), Size = UDim2.new(1, -16, 0, 28),
 		Position = UDim2.new(0, 8, 0, 292), TextXAlignment = Enum.TextXAlignment.Center, TextWrapped = true,
 	})
 	petLbl.Name = "PetName"
@@ -1798,7 +1872,7 @@ local function unmaskWinner(cell, petId, skinId, traitId)
 	-- one that was never masked -- no second code path to keep in step.
 	local swatch = mkFrame(cell, {
 		Size = UDim2.new(1, -24, 0, 222), Position = UDim2.new(0, 12, 0, 20),
-		BackgroundColor3 = (skin and skin.color) or Color3.fromRGB(120, 130, 145),
+		BackgroundColor3 = (skin and skin.color) or Color3.fromRGB(145, 120, 134),
 	})
 	mkCorner(swatch, 12); mkStroke(swatch, Color3.new(0, 0, 0), 1)
 	-- the real trait too, not nil: the reel passes nil while scrolling, but the winner should show what was
@@ -1956,11 +2030,54 @@ local function openReveal(crate, result)
 	-- Only the ~5 cells that can be on screen are touched, found by arithmetic rather than by walking all
 	-- STRIP_LEN of them -- this runs every frame of the spin.
 	local FOCUS_MIN = 0.80
+
+	-- ---- OFFSCREEN VIEWPORTS ARE PARKED --------------------------------------------------------------
+	-- A ViewportFrame renders its 3D contents every frame whenever it is Visible. Being scrolled outside a
+	-- ClipsDescendants parent does NOT stop that -- the cost is paid for all STRIP_LEN cells even though only
+	-- about five can be seen. With 56 cells of 11-53 parts each that is the whole reel re-rendered every
+	-- frame, and it is what makes the spin stutter.
+	--
+	-- So each frame only the cells in the focus window stay live; the rest have their ViewportFrame hidden.
+	-- Visible=false is the cheap switch here: it stops the render but keeps the model, so a cell coming back
+	-- into view costs nothing to restore -- no rebuild, no re-queue, no flicker.
+	--
+	-- Toggling is done on the DELTA (cells entering/leaving the window), not by sweeping all 56 -- this runs
+	-- every frame of a 6-second spin.
+	local vpCache = {}   -- [index] = the cell's ViewportFrame, resolved once
+	local liveFirst, liveLast = nil, nil
+	local function viewportOf(i)
+		local hit = vpCache[i]
+		if hit ~= nil then return hit or nil end
+		local c = cells[i]
+		local vp = c and c:FindFirstChildWhichIsA("ViewportFrame", true)
+		vpCache[i] = vp or false -- cache the miss too: a mystery/level cell has no viewport at all
+		return vp
+	end
+	local function setLive(i, live)
+		local vp = viewportOf(i)
+		if vp then vp.Visible = live end
+	end
+
 	local function applyFocus()
 		local x = strip.Position.X.Offset
 		local centre = -x + windowW / 2 -- strip-space X currently under the marker
 		local first = math.max(1, math.floor((centre - windowW / 2) / CELL_W))
 		local last  = math.min(STRIP_LEN, math.ceil((centre + windowW / 2) / CELL_W) + 1)
+
+		if first ~= liveFirst or last ~= liveLast then
+			if liveFirst then -- retire the cells that just left the window
+				for i = liveFirst, liveLast do
+					if i < first or i > last then setLive(i, false) end
+				end
+			else              -- first pass: nothing on screen has been shown yet, so park everything else
+				for i = 1, STRIP_LEN do
+					if i < first or i > last then setLive(i, false) end
+				end
+			end
+			for i = first, last do setLive(i, true) end
+			liveFirst, liveLast = first, last
+		end
+
 		for i = first, last do
 			local c = cells[i]
 			if c then
@@ -2092,10 +2209,17 @@ local function openReveal(crate, result)
 	-- this exact skin; rendering it again into the 260x260 holder painted a duplicate directly on top of it.
 	-- That holder exists ONLY for trade-ups, which have no reel to show the item. Win visuals go on the card
 	-- that is already there -- see the highlight block above.
-	-- A LEVEL pull says what it gave and WHERE it went. `grants` is the server's list of which pets actually
-	-- took the levels (it spills across pets so none are wasted at the cap), so the player never has to guess.
+	-- A LEVEL pull says what it gave; where it GOES is the player's call now. Nothing is levelled at this
+	-- point -- the levels sit in the server's pending pool until the picker places them.
+	-- Remember WHAT KIND this reveal was: the CONTINUE hand-off below keys on it, not on the pool.
+	_G.__lastCrateRevealWasLevels = (result.kind == "levels")
 	if result.kind == "levels" then
 		resultName.Text = "+" .. tostring(result.levels) .. (result.levels == 1 and " Pet Level" or " Pet Levels")
+	elseif result.kind == "pets" then
+		-- The PET is the prize and the band above it is its permanent rarity, so the name is just the species.
+		-- Routed before the skin branch because a pet pull carries no skin and displayName(nil, ...) would
+		-- have rendered the reveal as a blank.
+		resultName.Text = PetSkins.prettyPet(result.pet)
 	elseif result.kind == "trait" then
 		resultName.Text = PetTraits.displayName(result.trait) .. " Trait"
 	else
@@ -2107,25 +2231,36 @@ local function openReveal(crate, result)
 	-- One clean line, always the same shape ("Trait: Smoky"), so the eye knows where to look whether or not
 	-- the pull had a trait. The old SHOUTED, sparkle-wrapped version changed width on every reveal.
 	if result.kind == "levels" then
-		-- no trait on a level pull; the slot carries the pet that was levelled instead of sitting empty
-		local g = result.grants and result.grants[1]
-		resultTrait.Text = g and (g.name .. "  Lv " .. g.from .. " -> " .. g.to) or "Pet levelled up!"
+		-- Nothing has been levelled YET -- these are pending until the picker places them, so this line can no
+		-- longer name a pet (the server used to send `grants`; it does not decide any more).
+		resultTrait.Text = "Choose which pet gets them"
+		resultTrait.TextColor3 = Color3.fromRGB(150, 255, 170)
+	elseif result.kind == "pets" then
+		-- Say the quiet part out loud on the first pull: the band just rolled is the ONLY thing about this pet
+		-- that will never change. Its size is a separate axis, grown by playing.
+		resultTrait.Text = "Rarity is permanent \xE2\x80\x94 it grows from Baby as you play"
 		resultTrait.TextColor3 = Color3.fromRGB(150, 255, 170)
 	elseif result.kind == "trait" then
 		resultTrait.Text = "A permanent effect â stacks with other traits"
 		resultTrait.TextColor3 = PetTraits.color(result.trait) or Color3.fromRGB(150, 255, 170)
 	elseif PetTraits.isNone(result.trait) then
 		resultTrait.Text = "Trait: None"
-		resultTrait.TextColor3 = Color3.fromRGB(180, 190, 205)
+		resultTrait.TextColor3 = Color3.fromRGB(205, 180, 194)
 	else
 		resultTrait.Text = "Trait: " .. PetTraits.displayName(result.trait)
 		resultTrait.TextColor3 = PetTraits.color(result.trait)
 	end
 
 	if result.kind == "levels" then
-		-- Say plainly where the rest went when a pull spilled across more than one pet.
-		local n = result.grants and #result.grants or 0
-		resultNote.Text = (n > 1) and ("Levelled " .. n .. " pets") or "Levelled up!"
+		resultNote.Text = "Tap CONTINUE to pick a pet"
+		resultNote.TextColor3 = Color3.fromRGB(150, 255, 170)
+	elseif result.kind == "pets" then
+		-- A duplicate is progress, not a miss. Naming the stack size is what teaches that, so the second copy
+		-- reads as "2 toward a fuse" instead of "I already had this".
+		local n = tonumber(result.count) or 1
+		resultNote.Text = (n > 1)
+			and string.format("You now have x%d \xE2\x80\x94 fuse duplicates in the Pet Hub", n)
+			or "Added to your pets"
 		resultNote.TextColor3 = Color3.fromRGB(150, 255, 170)
 	elseif result.kind == "trait" then
 		resultNote.Text = "In your Trait Collection â open INVENTORY to pick its pet"
@@ -2152,12 +2287,177 @@ local function openReveal(crate, result)
 	spinning = false
 end
 
+-- ============================================================================================================
+-- PET LEVEL PICKER
+-- ============================================================================================================
+-- A Pet Level crate no longer decides for you. The server BANKS what you won and this panel spends it, so the
+-- levels land on the pet you actually want stronger instead of on whatever the spill order happened to reach.
+--
+-- IT REOPENS UNTIL THE POOL IS EMPTY. Pick a pet that caps after 3 of your 7 and the other 4 stay pending,
+-- so the panel stays up for the next choice.
+--
+-- NOTHING CAN BE STRANDED. The pool is the server's: walk away, close the game, or ignore this panel entirely
+-- and the server spills whatever is left across your pets on the way out (equipped first, then lowest level).
+-- Skipping is a real choice, not a way to lose levels.
+local levelPickGui = Instance.new("ScreenGui")
+levelPickGui.Name = "PetLevelPickerGui"; levelPickGui.ResetOnSpawn = false
+levelPickGui.DisplayOrder = 210; levelPickGui.Enabled = false; levelPickGui.Parent = PlayerGui
+
+local lpPanel = mkFrame(levelPickGui, {
+	Size = UDim2.new(0, 700, 0, 520), Position = UDim2.new(0.5, 0, 0.5, -45),
+	AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = PANEL,
+})
+mkCorner(lpPanel, 22); mkStroke(lpPanel, WHITE, 4)
+
+local lpHead = mkFrame(lpPanel, { Size = UDim2.new(1, 0, 0, 66), BackgroundColor3 = CARD })
+mkCorner(lpHead, 22)
+local lpTitle = mkLabel(lpHead, {
+	Text = "WHERE DO THE LEVELS GO?", Font = Enum.Font.FredokaOne, TextSize = 28, TextScaled = true,
+	TextColor3 = GOLD, Size = UDim2.new(1, -40, 1, -16), Position = UDim2.new(0, 20, 0, 8),
+	TextXAlignment = Enum.TextXAlignment.Left,
+})
+do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 28; c.MinTextSize = 14; c.Parent = lpTitle end
+
+local lpCount = mkLabel(lpPanel, {
+	Text = "", Font = Enum.Font.FredokaOne, TextSize = 22, TextScaled = true, TextColor3 = WHITE,
+	Size = UDim2.new(1, -40, 0, 30), Position = UDim2.new(0, 20, 0, 74),
+	TextXAlignment = Enum.TextXAlignment.Left,
+})
+do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 22; c.MinTextSize = 12; c.Parent = lpCount end
+
+local lpList = Instance.new("ScrollingFrame")
+lpList.Size = UDim2.new(1, -40, 0, 340); lpList.Position = UDim2.new(0, 20, 0, 110)
+lpList.BackgroundTransparency = 1; lpList.BorderSizePixel = 0; lpList.ScrollBarThickness = 6
+lpList.ScrollBarImageColor3 = GOLD; lpList.CanvasSize = UDim2.new(0, 0, 0, 0); lpList.Parent = lpPanel
+do
+	local lay = Instance.new("UIListLayout")
+	lay.Padding = UDim.new(0, 8); lay.SortOrder = Enum.SortOrder.LayoutOrder; lay.Parent = lpList
+end
+
+-- SKIP is deliberately present and deliberately safe. A player who does not want to decide should not be
+-- trapped in a modal -- the server spills the remainder for them, exactly as it did before this panel existed.
+local lpSkip = mkButton(lpPanel, {
+	Size = UDim2.new(1, -40, 0, 46), Position = UDim2.new(0, 20, 1, -58),
+	BackgroundColor3 = CARD, Text = "", AutoButtonColor = false,
+})
+mkCorner(lpSkip, 12); mkStroke(lpSkip, WHITE, 2)
+mkLabel(lpSkip, {
+	Text = "Decide for me", Font = Enum.Font.FredokaOne, TextSize = 20, TextScaled = true,
+	TextColor3 = WHITE, Size = UDim2.fromScale(1, 1),
+})
+
+local function lpClose()
+	levelPickGui.Enabled = false
+	if _G.MainMenuManager then pcall(_G.MainMenuManager.notifyClosed, "PetLevelPicker") end
+end
+
+local function lpBuild()
+	for _, ch in ipairs(lpList:GetChildren()) do
+		if ch:IsA("GuiObject") then ch:Destroy() end
+	end
+	local pending = tonumber(state.pendingLevels) or 0
+	lpCount.Text = ("%d level%s to place"):format(pending, pending == 1 and "" or "s")
+
+	local pets = state.levelPets or {}
+	local n = 0
+	for _, pt in ipairs(pets) do
+		n += 1
+		local maxed = pt.maxed and true or false
+		local row = mkButton(lpList, {
+			Size = UDim2.new(1, -10, 0, 56), BackgroundColor3 = maxed and Color3.fromRGB(64, 48, 55) or CARD,
+			Text = "", AutoButtonColor = not maxed, LayoutOrder = n,
+		})
+		mkCorner(row, 12); mkStroke(row, maxed and Color3.fromRGB(102, 80, 90) or GOLD, 2)
+
+		mkLabel(row, {
+			Text = tostring(pt.name or pt.petId), Font = Enum.Font.FredokaOne, TextSize = 20, TextScaled = true,
+			TextColor3 = maxed and Color3.fromRGB(172, 150, 160) or WHITE,
+			Size = UDim2.new(0.6, -20, 1, -14), Position = UDim2.new(0, 16, 0, 7),
+			TextXAlignment = Enum.TextXAlignment.Left,
+		})
+		mkLabel(row, {
+			-- A maxed pet still LISTS -- greyed and unpickable. Hiding it would read as "that pet is gone";
+			-- showing it greyed reads as "that one is finished", which is the true and more useful statement.
+			Text = maxed and "MAX" or ("Lv " .. tostring(pt.level or 1)),
+			Font = Enum.Font.FredokaOne, TextSize = 18, TextScaled = true,
+			TextColor3 = maxed and Color3.fromRGB(172, 150, 160) or GOLD,
+			Size = UDim2.new(0.4, -20, 1, -14), Position = UDim2.new(0.6, 4, 0, 7),
+			TextXAlignment = Enum.TextXAlignment.Right,
+		})
+
+		if not maxed then
+			row.MouseButton1Click:Connect(function()
+				playUIClick()
+				row.AutoButtonColor = false      -- one tap per row; the state push re-enables it
+				task.spawn(function()
+					local ok, res = pcall(function() return AssignPetLevels:InvokeServer(pt.petId) end)
+					if not (ok and type(res) == "table" and res.ok) then
+						lpBuild()                 -- refused (raced to max, etc): redraw off the truth
+						return
+					end
+					if _G.showHudBanner then
+						pcall(_G.showHudBanner,
+							("%s  Lv %d -> %d"):format(tostring(pt.name or pt.petId), res.from, res.to),
+							Color3.fromRGB(150, 255, 170), 3)
+					end
+					-- Levels left over (the pet capped mid-pour) -> stay open for the next pick.
+					if (tonumber(res.remaining) or 0) > 0 then lpBuild() else lpClose() end
+				end)
+			end)
+		end
+	end
+
+	if n == 0 then
+		mkLabel(lpList, {
+			Text = "You don't own any pets yet!", Font = Enum.Font.FredokaOne, TextSize = 20, TextScaled = true,
+			TextColor3 = WHITE, Size = UDim2.new(1, -10, 0, 56), LayoutOrder = 1,
+		})
+	end
+	lpList.CanvasSize = UDim2.new(0, 0, 0, math.max(1, n) * 64 + 8)
+end
+
+-- Republished so applyState refreshes the open panel when levels land, a pet hatches, or a trade completes.
+levelPickerRefresh = function()
+	if levelPickGui.Enabled then lpBuild() end
+end
+
+local function lpOpen()
+	if (tonumber(state.pendingLevels) or 0) <= 0 then return end
+	if _G.MainMenuManager and _G.MainMenuManager.closeAll then pcall(_G.MainMenuManager.closeAll) end
+	lpBuild()
+	levelPickGui.Enabled = true
+	if _G.MainMenuManager then pcall(_G.MainMenuManager.notifyOpened, "PetLevelPicker") end
+end
+_G.openPetLevelPicker = lpOpen
+
+lpSkip.MouseButton1Click:Connect(function() playUIClick(); lpClose() end)
+if _G.MainMenuManager then
+	pcall(_G.MainMenuManager.register, "PetLevelPicker", function() levelPickGui.Enabled = false end)
+end
+
 resultBtn.MouseButton1Click:Connect(function()
 	playUIClick()
 	revealGui.Enabled = false
-	gui.Enabled = true -- the crate panel was hidden while the reveal covered it; this reveal always starts there
 	resultCard.Visible = false
 	resultPetHolder.Visible = false
+
+	-- A LEVEL PULL HANDS OFF TO THE PICKER instead of dropping you back on the crate list. The levels are
+	-- sitting in the server's pending pool at this point and the only thing left to do is say where they go,
+	-- so putting the crate panel back up first would be a step the player has to click past.
+	--
+	-- ⚠ ONLY when THIS reveal was a Pet Levels crate. The pool check alone is not enough: pendingLevels is
+	-- the SERVER's session pool, and any levels left in it (a skipped picker; in this realm, levels that
+	-- cannot be poured at all) keep it above zero indefinitely -- which made the picker pop up after EVERY
+	-- later crate, skins included. The kind of the reveal is what the player actually opened; the pool is
+	-- just what is still lying around.
+	if _G.__lastCrateRevealWasLevels and (tonumber(state.pendingLevels) or 0) > 0 then
+		_G.__lastCrateRevealWasLevels = false
+		lpOpen()
+		return
+	end
+	_G.__lastCrateRevealWasLevels = false
+
+	gui.Enabled = true -- the crate panel was hidden while the reveal covered it; this reveal always starts there
 	refreshTabs()
 end)
 
@@ -2190,7 +2490,7 @@ showTradeUpResult = function(result)
 	-- the pull had a trait. The old SHOUTED, sparkle-wrapped version changed width on every reveal.
 	if PetTraits.isNone(result.trait) then
 		resultTrait.Text = "Trait: None"
-		resultTrait.TextColor3 = Color3.fromRGB(180, 190, 205)
+		resultTrait.TextColor3 = Color3.fromRGB(205, 180, 194)
 	else
 		resultTrait.Text = "Trait: " .. PetTraits.displayName(result.trait)
 		resultTrait.TextColor3 = PetTraits.color(result.trait)
@@ -2414,6 +2714,7 @@ end)
 
 -- `wantTab` lets the Pet Hub nav open this panel straight onto CRATES or TOKENS. Omitted elsewhere, which
 -- keeps the plain toggle behaviour every other caller already relies on.
+
 _G.toggleSkinCrates = function(fromHub, wantTab) setOpen(not gui.Enabled, fromHub, wantTab) end
 
 -- ===== SKIN METADATA, for the Pet Hub's Pet Skins page =====
@@ -2430,7 +2731,7 @@ _G.petSkinMeta = function(skinId)
 		name      = (ok and sk and sk.displayName) or tostring(skinId),
 		tier      = PetSkins.tierOf(skinId) or "Common",
 		tierColor = PetSkins.tierColor(skinId) or WHITE,
-		color     = (ok and sk and sk.color) or Color3.fromRGB(120,130,145),
+		color     = (ok and sk and sk.color) or Color3.fromRGB(145, 120, 134),
 	}
 end
 -- How many skins exist in total, for the page's 'Skins Owned: X / N' readout. +1 for the Default look, which

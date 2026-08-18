@@ -26,6 +26,12 @@ local TweenService    = game:GetService("TweenService")
 local Debris          = game:GetService("Debris")
 local TextChatService = game:GetService("TextChatService")
 
+-- DECLARED FALSE AT BOOT, not left nil. Every reader today uses `not _G.jellyQuestComplete`,
+-- and nil is falsy, so this changes no behaviour -- but a later `== false` test would
+-- silently never match on a flag that was never declared, and this states up front that
+-- island4 Jelly Tower owns it.
+_G.jellyQuestComplete = false
+
 local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
 
@@ -280,17 +286,28 @@ local function fireworks(from)
 		end)
 	end
 end
+-- ⚠ ANNOUNCEMENTS GO THROUGH THE ONE REALM BANNER -- NEVER A ScreenGui OF THEIR OWN.
+-- This is realm 1's rule (see its CoreClient, and NotifyCenter.luau here: push/pin is the whole
+-- API). It used to build its own card in the middle of the screen, which meant a quest win could
+-- land on top of the objective banner, an island arrival or a live event -- several cards in the
+-- same band, none of them aware of the others. NotifyCenter already ranks, queues and preempts,
+-- so a win is one more push and takes its turn like everything else.
+--
+-- EVENT priority, deliberately: finishing a quest has to outrank the objective banner that is
+-- pinned underneath it (REWARD), but must not talk over a real Robux purchase (PURCHASE).
 local function winBanner()
-	local g = Instance.new("ScreenGui"); g.Name = "JellyWin"; g.ResetOnSpawn = false; g.DisplayOrder = 20; g.IgnoreGuiInset = true; g.Parent = PlayerGui
-	local f = Instance.new("Frame"); f.AnchorPoint = Vector2.new(0.5,0.5); f.Position = UDim2.new(0.5,0,0.42,0); f.Size = UDim2.new(0,0,0,90); f.BackgroundColor3 = FILL; f.Parent = g
-	Instance.new("UICorner", f).CornerRadius = UDim.new(0,18)
-	do local s = Instance.new("UIStroke"); s.Color = STROKE; s.Thickness = 4; s.Parent = f end
-	local l = Instance.new("TextLabel"); l.BackgroundTransparency = 1; l.Size = UDim2.fromScale(1,1); l.Font = Enum.Font.FredokaOne; l.TextColor3 = TEXTC; l.TextScaled = true
-	l.Text = "\xF0\x9F\x9A\xA9 You conquered the Jelly Tower!"; l.Parent = f
-	Instance.new("UIPadding", l).PaddingLeft = UDim.new(0,24); l:FindFirstChildOfClass("UIPadding").PaddingRight = UDim.new(0,24)
-	Instance.new("UITextSizeConstraint", l).MaxTextSize = 32
-	TweenService:Create(f, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = UDim2.new(0,640,0,90) }):Play()
-	task.delay(5, function() TweenService:Create(f, TweenInfo.new(0.4), { BackgroundTransparency = 1 }):Play(); TweenService:Create(l, TweenInfo.new(0.4), { TextTransparency = 1 }):Play(); task.delay(0.5, function() g:Destroy() end) end)
+	local msg = "\xF0\x9F\x9A\xA9 You conquered the Jelly Tower!"
+	if _G.NotifyCenter and _G.NotifyCenter.push then
+		pcall(function() _G.NotifyCenter.push({
+			top      = "â¨ QUEST COMPLETE",
+			text     = msg,
+			color    = STROKE,
+			priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT or nil,
+			duration = 5,
+		}) end)
+	else
+		print("[JellyTower] " .. tostring(msg))
+	end
 end
 
 local flagPart, flagPos
@@ -428,6 +445,11 @@ task.spawn(function()
 
 	refreshBanner()
 	print(("[JellyTower] ready -- %d/%d tiers, flag %s, NPC %s"):format(count, LEVELS, flagPart and "found" or "MISSING", npcHead and "wired" or "MISSING"))
+	-- RETAINER SIGNAL: the quest reached the end of its build with its world objects up. QuestRetainer
+	-- watches this flag; anything still false once its island has streamed in gets force-streamed and
+	-- re-run. It is set HERE, at the ready print, not at the top of the file -- a quest that bailed
+	-- early on a missing marker must NOT look built. See QuestRetainer.client.luau.
+	_G.questBuilt_jelly = true
 end)
 
 -- ============================================================================

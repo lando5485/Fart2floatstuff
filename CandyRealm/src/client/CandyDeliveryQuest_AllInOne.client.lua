@@ -38,6 +38,12 @@ local TweenService    = game:GetService("TweenService")
 local Debris          = game:GetService("Debris")
 local TextChatService = game:GetService("TextChatService")
 
+-- DECLARED FALSE AT BOOT, not left nil. Every reader today uses `not _G.deliveryQuestComplete`,
+-- and nil is falsy, so this changes no behaviour -- but a later `== false` test would
+-- silently never match on a flag that was never declared, and this states up front that
+-- island5 Candy Delivery owns it.
+_G.deliveryQuestComplete = false
+
 local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
 
@@ -313,17 +319,28 @@ local function fireworks(from)
 		end)
 	end
 end
+-- ⚠ ANNOUNCEMENTS GO THROUGH THE ONE REALM BANNER -- NEVER A ScreenGui OF THEIR OWN.
+-- This is realm 1's rule (see its CoreClient, and NotifyCenter.luau here: push/pin is the whole
+-- API). It used to build its own card in the middle of the screen, which meant a quest win could
+-- land on top of the objective banner, an island arrival or a live event -- several cards in the
+-- same band, none of them aware of the others. NotifyCenter already ranks, queues and preempts,
+-- so a win is one more push and takes its turn like everything else.
+--
+-- EVENT priority, deliberately: finishing a quest has to outrank the objective banner that is
+-- pinned underneath it (REWARD), but must not talk over a real Robux purchase (PURCHASE).
 local function winBanner()
-	local g = Instance.new("ScreenGui"); g.Name = "DeliveryWin"; g.ResetOnSpawn = false; g.DisplayOrder = 20; g.IgnoreGuiInset = true; g.Parent = PlayerGui
-	local f = Instance.new("Frame"); f.AnchorPoint = Vector2.new(0.5,0.5); f.Position = UDim2.new(0.5,0,0.42,0); f.Size = UDim2.new(0,0,0,90); f.BackgroundColor3 = FILL; f.Parent = g
-	Instance.new("UICorner", f).CornerRadius = UDim.new(0,18)
-	do local s = Instance.new("UIStroke"); s.Color = STROKE; s.Thickness = 4; s.Parent = f end
-	local l = Instance.new("TextLabel"); l.BackgroundTransparency = 1; l.Size = UDim2.fromScale(1,1); l.Font = Enum.Font.FredokaOne; l.TextColor3 = TEXTC; l.TextScaled = true
-	l.Text = "\xF0\x9F\x8D\xAC Candy delivery complete!"; l.Parent = f
-	local pad = Instance.new("UIPadding"); pad.PaddingLeft = UDim.new(0,24); pad.PaddingRight = UDim.new(0,24); pad.Parent = l
-	Instance.new("UITextSizeConstraint", l).MaxTextSize = 32
-	TweenService:Create(f, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = UDim2.new(0,660,0,90) }):Play()
-	task.delay(5, function() TweenService:Create(f, TweenInfo.new(0.4), { BackgroundTransparency = 1 }):Play(); TweenService:Create(l, TweenInfo.new(0.4), { TextTransparency = 1 }):Play(); task.delay(0.5, function() g:Destroy() end) end)
+	local msg = "\xF0\x9F\x8D\xAC Candy delivery complete!"
+	if _G.NotifyCenter and _G.NotifyCenter.push then
+		pcall(function() _G.NotifyCenter.push({
+			top      = "â¨ QUEST COMPLETE",
+			text     = msg,
+			color    = STROKE,
+			priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT or nil,
+			duration = 5,
+		}) end)
+	else
+		print("[Delivery] " .. tostring(msg))
+	end
 end
 local function winQuest()
 	if done then return end
@@ -596,6 +613,11 @@ local function buildFactory(prod)
 	Instance.new("UICorner", shadow).CornerRadius = UDim.new(0,28)
 	local panel = Instance.new("Frame"); panel.AnchorPoint = Vector2.new(0.5,0.5); panel.Position = UDim2.new(0.5,0,0.5,0); panel.Size = UDim2.new(0,468,0,400)
 	panel.BackgroundColor3 = FILL; panel.Parent = hud
+	-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+	-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
+	-- The panel keeps its own size and every child keeps its own pixel coordinates;
+	-- it is centred in the house shell and scaled to fit, so nothing inside moves.
+	pcall(_G.housePanel, panel)   -- island5 delivery card
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0,24)
 	do local s = Instance.new("UIStroke"); s.Color = STROKE; s.Thickness = 3; s.Parent = panel end
 	do local g = Instance.new("UIGradient"); g.Rotation = 90; g.Color = ColorSequence.new(Color3.new(1,1,1), Color3.fromRGB(255,236,246)); g.Parent = panel end
@@ -1050,7 +1072,17 @@ local function growTree(at, flavor, idx)
 	prompt.Triggered:Connect(function()
 		if done then return end
 		if not accepted then
-			flashBanner("\xF0\x9F\x8D\xAC Talk to the Candy Npc first!")
+			-- ON THE REALM BANNER, not in this quest's own strip. "You have not taken this job"
+			-- is the same sentence on every island, so it belongs in the one place a player
+			-- already watches for news -- _G.questLocked (DoneCommand.client.luau) routes it
+			-- through NotifyCenter at EVENT priority. The local strip is the fallback for a
+			-- server where that script has not loaded.
+			if _G.questLocked then
+				pcall(_G.questLocked, "the Candy Delivery",
+					"\xF0\x9F\x8D\xAC Talk to the Candy NPC first -- she hands out the job!")
+			else
+				flashBanner("\xF0\x9F\x8D\xAC Talk to the Candy Npc first!")
+			end
 			return
 		end
 		if carrying then

@@ -26,7 +26,8 @@ local getStandPosition -- forward-declared (assigned below) so the drift can der
 local function startBubbleDrift(part, homePos, HR, VR)
 	task.spawn(function()
 		local rng = Random.new()
-		local SPEED = 12 -- studs/sec: ~2.4x the old 5 -- a real chase, but still catchable by a determined flyer
+		local SPEED = 15 -- studs/sec (was 12, originally 5): livelier wandering so pickups clearly read as
+		                 -- moving targets worth chasing, still well under flight speed so they stay catchable
 		local function randDir()
 			local d = Vector3.new(rng:NextNumber()-0.5, (rng:NextNumber()-0.5)*0.7, rng:NextNumber()-0.5)
 			return (d.Magnitude > 0) and d.Unit or Vector3.new(1,0,0)
@@ -50,6 +51,18 @@ local function startBubbleDrift(part, homePos, HR, VR)
 		end)
 		if yMin > yMax then yMin, yMax = homePos.Y, homePos.Y end -- degenerate-gap guard
 		while part.Parent do
+			-- COIN MAGNET HAND-OFF. While the magnet has hold of this pickup it owns the Position, and this
+			-- loop must not write it -- two loops setting .CFrame on the same frame produce a jitter that
+			-- looks exactly like lag. The magnet sets the attribute when it grabs and clears it if the player
+			-- flies out of range, at which point the drift picks up from wherever the part now is.
+			--
+			-- `last` is reset on the way out so the first frame after a hand-back uses a real dt instead of
+			-- the whole duration of the pull, which would teleport the bubble across its box.
+			if part:GetAttribute("Magnetized") then
+				last = os.clock()
+				task.wait()
+				continue
+			end
 			local now = os.clock(); local dt = math.min(now - last, 0.2); last = now
 			retime = retime - dt
 			if retime <= 0 then -- re-aim OFTEN with a SHARP turn -> erratic, darting, hard to predict
@@ -77,7 +90,7 @@ local function spawnRing(pos, color, dataIndex, dirVec)
 	-- is unchanged (orientation no longer matters for a ball).
 	local ring=Instance.new("Part"); ring.Shape=Enum.PartType.Ball; ring.Size=Vector3.new(24,24,24)
 	ring.Material=Enum.Material.Neon; ring.Color=color; ring.CanCollide=false; ring.Anchored=true; ring.Transparency=0.2; ring.CastShadow=false; ring.Position=pos; ring.Parent=workspace
-	makeBillboard(ring,"\xF0\x9F\xAA\x99 +BONUS",Color3.new(1,1,1),14)
+	makeBillboard(ring,"\xF0\x9F\x92\xB0 +BONUS",Color3.new(1,1,1),14)
 	local entry={part=ring,pos=pos,color=color,idx=dataIndex,dir=dirVec}
 	table.insert(_G.activeRings,entry)
 	startBubbleDrift(ring, pos, 180, 280) -- ~4x bigger wander zone (was 45/70); Y clamped to the island gap inside startBubbleDrift
@@ -301,27 +314,567 @@ local function buildBlackHole(center)
 	touchDisk.Anchored = true; touchDisk.CanCollide = false; touchDisk.CanQuery = false; touchDisk.CanTouch = true
 	touchDisk.Transparency = 1; touchDisk.CastShadow = false; touchDisk.Parent = model
 
-	-- small centered status message ("Traveling..." / "Coming soon!" / error)
-	local msgGui = Instance.new("ScreenGui"); msgGui.Name = "SpaceRealmMsg"; msgGui.ResetOnSpawn = false; msgGui.IgnoreGuiInset = true; msgGui.DisplayOrder = 60; msgGui.Parent = player:WaitForChild("PlayerGui")
-	local msgLbl = Instance.new("TextLabel"); msgLbl.AnchorPoint = Vector2.new(0.5,0.5); msgLbl.Position = UDim2.new(0.5,0,0.42,0); msgLbl.Size = UDim2.new(0,540,0,72)
-	msgLbl.BackgroundColor3 = Color3.fromRGB(20,8,40); msgLbl.BackgroundTransparency = 1; msgLbl.Font = Enum.Font.FredokaOne; msgLbl.TextSize = 30; msgLbl.TextColor3 = Color3.fromRGB(215,175,255)
-	msgLbl.Text = ""; msgLbl.Visible = false; msgLbl.Parent = msgGui -- box (background) HIDDEN by default; only shown with a message
-	Instance.new("UICorner", msgLbl).CornerRadius = UDim.new(0,14)
-	local mstk = Instance.new("UIStroke", msgLbl); mstk.Color = Color3.fromRGB(150,70,230); mstk.Thickness = 2
-	local function showMsg(t) msgLbl.Text = t; msgLbl.BackgroundTransparency = 0.2; msgLbl.Visible = true end -- box + text appear together
-	local function hideMsg() msgLbl.Visible = false; msgLbl.BackgroundTransparency = 1; msgLbl.Text = "" end   -- box + text hide together
+	-- ===== STATUS MESSAGES ARE BANNERS NOW -- the mid-screen box is deleted =====
+	-- This was a 540x72 label at y 0.42 in its own ScreenGui ("SpaceRealmMsg"), shown by flipping Visible
+	-- and hidden by an unguarded task.delay that ALSO cleared the `traveling` debounce. Two failure modes
+	-- fell out of that: an older timer could hide a newer message, and any error between the show and the
+	-- hide left the box on screen for good (ResetOnSpawn = false, so it outlives the character).
+	--
+	-- These are the same class of message as the wormhole's "land on an island first" -- a short answer to
+	-- something the player just tried -- so they go in the hero lane with every other answer: same card,
+	-- same size, same place, same priority order. EVENT priority means a travel refusal never shoves an
+	-- island landing off screen, and it queues behind the watering directions and any exclusive tutorial
+	-- moment instead of talking over them. NotifyCenter owns the hide, so no timer here can strand anything.
+	local SPACE_PURPLE = Color3.fromRGB(150, 70, 230)
+	local function showMsg(t)
+		local NC = _G.NotifyCenter
+		if NC and NC.push then
+			pcall(NC.push, {
+				text     = t,
+				color    = SPACE_PURPLE,
+				priority = (NC.PRIORITY and NC.PRIORITY.EVENT) or 80,
+				duration = 2.5,
+			})
+			return
+		end
+		warn("[WorldClient][BlackHole] " .. t .. "  (NotifyCenter unavailable -- not shown on screen)")
+	end
+	-- SWEEP THE OLD BOX: one left by a previous session or by a stale baked-in copy of this script has
+	-- nothing left to hide it.
+	task.spawn(function()
+		local pg = player:FindFirstChild("PlayerGui")
+		for _ = 1, 5 do
+			local old = pg and pg:FindFirstChild("SpaceRealmMsg")
+			if old then
+				old:Destroy()
+				print("[WorldClient][BlackHole] removed a leftover SpaceRealmMsg box -- status is a banner now")
+			end
+			task.wait(2)
+		end
+	end)
+
+	-- ============================================================================================
+	-- "SUCKED IN" -- the crossing into the Space Realm.
+	-- ============================================================================================
+	-- Built in the same spirit as the Space Realm's own DinoRift shot (camera locked Scriptable every frame,
+	-- os.clock beats, one idempotent restore, ends on black and lets the teleport BE the cut) but deliberately
+	-- NOT the same effect. That one is time travel: rings collapse straight in, a year counter spins back,
+	-- amber and jungle. This is GRAVITY, so everything here says "falling in" instead:
+	--
+	--   * rings collapse WHILE ROTATING -- a spiral, not a straight fall. Spin is the whole difference
+	--     between "time is rewinding" and "something is pulling me".
+	--   * FOV NARROWS instead of punching wide. Wide reads as being thrown forward; narrow reads as
+	--     being squeezed down a drain, which is the sensation we want.
+	--   * YOUR HUD GETS SUCKED IN. Before the interface is hidden, every visible piece of it is measured
+	--     and a ghost rectangle is spawned over the real thing, then spiralled into the singularity. The
+	--     game itself comes apart and goes down the hole -- that is the "video HUD" beat.
+	--   * purple/white, the black hole's own palette, not the wormhole's blue or the rift's amber.
+	--
+	-- Every FX touch is pcall'd, so a bad tween or a missing part costs a detail and never the teleport.
+	-- Function-scoped, like everything else in this section -- WorldClient declares neither of these at
+	-- module level, and the black-hole block's rule is that it adds no module-scope locals.
+	local Lighting = game:GetService("Lighting")
+	local Debris   = game:GetService("Debris")
+
+	-- THE SAME TRAVEL SOUND THE REALM PORTALS USE. Both are "you are leaving this place through a hole in
+	-- it", and one recurring travel cue across every crossing is what makes them feel like one mechanic
+	-- rather than three unrelated set pieces. 2D, because it is the player's own crossing.
+	local TRAVEL_SOUND_ID = "rbxassetid://111559442515692"
+	local TRAVEL_VOLUME   = 0.8
+	local travelSound = Instance.new("Sound")
+	travelSound.Name = "BlackHoleTravel"
+	travelSound.SoundId = TRAVEL_SOUND_ID
+	travelSound.Volume = TRAVEL_VOLUME
+	travelSound.Parent = game:GetService("SoundService")
+	task.spawn(function()
+		pcall(function()
+			game:GetService("ContentProvider"):PreloadAsync({ travelSound }, function(_, status)
+				if status == Enum.AssetFetchStatus.Success then
+					print(string.format("[BlackHole] travel sound %s loaded OK (length %.2fs)",
+						TRAVEL_SOUND_ID, travelSound.TimeLength))
+				else
+					warn(string.format("[BlackHole] travel sound %s FAILED to load (%s) -- not an audio asset, "
+						.. "or not approved for this experience's creator.", TRAVEL_SOUND_ID, tostring(status)))
+				end
+			end)
+		end)
+	end)
+
+	local CINEMATIC_SECONDS = 6.2 -- MUST match the task.wait in BlackHoleTeleport.server.lua
+	local T_GRAB, T_SPIRAL, T_HORIZON, T_BLACK = 1.2, 2.6, 1.4, 1.0
+	-- Shifted off magenta as well: 178,108,255 had enough red in it to read pink once dozens of rings and
+	-- streaks overlapped. This is the same brightness in blue-indigo, so the shot keeps its colour without
+	-- ever going candy-coloured.
+	local VIOLET = Color3.fromRGB(120, 110, 255)
+	local WHITEHOT = Color3.fromRGB(225, 232, 255)
+
+	local suckRunning = false
+	local function playSuckIn()
+		if suckRunning then return end
+		suckRunning = true
+
+		-- ONCE, AND THEN LEFT ALONE.
+		-- This is a LONG cue, and the rift has TWO touch volumes (the core orb and the accretion disk), so
+		-- arriving at speed can trip both in the same instant. Calling :Play() on a Sound that is already
+		-- playing RESTARTS it from zero -- so a retrigger does not double the sound, it truncates it: you
+		-- hear the first fraction of a second over and over and the clip never gets anywhere. Setting
+		-- TimePosition = 0 does the same thing for the same reason.
+		--
+		-- So: if it is already running, leave it running. A cue that is mid-play is already doing its job,
+		-- and the correct response to "play this again" is to do nothing at all.
+		pcall(function()
+			if travelSound.IsPlaying then return end
+			travelSound:Play()
+			print(string.format("[BlackHole] travel sound started (loaded=%s vol=%.2f)",
+				tostring(travelSound.IsLoaded), travelSound.Volume))
+		end)
+
+		local cam = workspace.CurrentCamera
+		local origFov = cam and cam.FieldOfView or 70
+		local currentCF = cam and cam.CFrame or CFrame.new()
+		local restored, renderConn, guiAddedConn, blur, cc, gui = false, nil, nil, nil, nil, nil
+		local hidden = {}
+		local shakeMag, squeeze = 0, 0
+
+		-- ONE teardown, every failure path lands here. The SUCCESS path never calls it: we hold on black
+		-- and the teleport takes us. (Studio, where the teleport does nothing, is rescued by the timeout.)
+		local function restore()
+			if restored then return end
+			restored = true
+			if renderConn then renderConn:Disconnect() end
+			if guiAddedConn then guiAddedConn:Disconnect() end
+			pcall(function()
+				local c = workspace.CurrentCamera
+				if c then
+					c.CameraType = Enum.CameraType.Custom
+					local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+					if hum then c.CameraSubject = hum end
+					c.FieldOfView = origFov
+				end
+			end)
+			if blur then pcall(function() blur:Destroy() end) end
+			if cc then pcall(function() cc:Destroy() end) end
+			for sg, wasOn in pairs(hidden) do pcall(function() sg.Enabled = wasOn end) end
+			pcall(function() game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.All, true) end)
+			if gui then pcall(function() gui:Destroy() end) end
+			suckRunning = false
+		end
+		task.delay(CINEMATIC_SECONDS + 12, restore) -- hard backstop if the teleport never happens
+
+		gui = Instance.new("ScreenGui")
+		gui.Name = "BlackHoleSuckIn"; gui.ResetOnSpawn = false; gui.IgnoreGuiInset = true
+		gui.ZIndexBehavior = Enum.ZIndexBehavior.Global; gui.DisplayOrder = 10000
+		gui.Parent = player:WaitForChild("PlayerGui")
+
+		local shell = Instance.new("Frame") -- everything rides in here; shaking = offsetting this
+		shell.Size = UDim2.new(1, 0, 1, 0); shell.BackgroundTransparency = 1; shell.ZIndex = 2
+		shell.Parent = gui
+
+		-- ---------- MEASURE THE HUD, THEN TAKE IT APART ----------
+		-- Snapshot each visible piece where it actually sits on screen, so the ghosts line up exactly with
+		-- what the player was looking at a frame ago. Capped: a couple of dozen shards reads as "everything",
+		-- and spawning one per GuiObject in this game would be hundreds of frames of tweening.
+		local ghosts = {}
+		pcall(function()
+			-- The old exclusion was `sg ~= msgGui` -- the bespoke status box, so the words telling you what
+			-- was happening did not shatter along with the HUD. That box is gone (its messages are hero
+			-- banners now), so the exclusion moves to the banner lanes by NAME: NotifyHero/NotifySocial are
+			-- live messages, not furniture, and ghosting them would tear up a sentence mid-read.
+			local NO_GHOST = { NotifyHero = true, NotifySocial = true }
+			for _, sg in ipairs(player.PlayerGui:GetChildren()) do
+				if sg:IsA("ScreenGui") and sg.Enabled and sg ~= gui and not NO_GHOST[sg.Name] then
+					for _, obj in ipairs(sg:GetChildren()) do
+						if #ghosts >= 24 then break end
+						if obj:IsA("GuiObject") and obj.Visible and obj.AbsoluteSize.X > 24 and obj.AbsoluteSize.Y > 12 then
+							local g = Instance.new("Frame")
+							g.Position = UDim2.fromOffset(obj.AbsolutePosition.X, obj.AbsolutePosition.Y)
+							g.Size = UDim2.fromOffset(obj.AbsoluteSize.X, obj.AbsoluteSize.Y)
+							g.BackgroundColor3 = obj.BackgroundColor3
+							-- FAINT, AND WITH NO EDGE. A ghost at full opacity with a corner radius and a coloured
+							-- outline is a RECTANGLE flying across the screen, and the eye names it instantly.
+							-- Faint, un-outlined, and feathered to nothing at both ends, it reads as a smear of
+							-- the colour that used to be there -- an interface dissolving rather than furniture
+							-- being thrown around. The outline is the single biggest tell; it is gone.
+							g.BackgroundTransparency = math.clamp(obj.BackgroundTransparency, 0.55, 0.82)
+							g.BorderSizePixel = 0; g.ZIndex = 8; g.Parent = shell
+							local gg = Instance.new("UIGradient")
+							gg.Transparency = NumberSequence.new({
+								NumberSequenceKeypoint.new(0, 1),
+								NumberSequenceKeypoint.new(0.5, 0),
+								NumberSequenceKeypoint.new(1, 1),
+							})
+							gg.Rotation = 90
+							gg.Parent = g
+							ghosts[#ghosts + 1] = g
+						end
+					end
+				end
+			end
+		end)
+
+		local function hideOne(child)
+			if child == gui or not child:IsA("ScreenGui") then return end
+			if hidden[child] == nil then hidden[child] = child.Enabled; child.Enabled = false end
+		end
+		for _, c in ipairs(player.PlayerGui:GetChildren()) do hideOne(c) end
+		guiAddedConn = player.PlayerGui.ChildAdded:Connect(hideOne) -- catch anything that appears mid-shot
+		pcall(function() game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.All, false) end)
+
+		-- ---------- backdrop + the singularity you are falling into ----------
+		local backdrop = Instance.new("Frame")
+		backdrop.Size = UDim2.new(1, 0, 1, 0); backdrop.BackgroundColor3 = Color3.fromRGB(6, 2, 14)
+		backdrop.BackgroundTransparency = 1; backdrop.BorderSizePixel = 0; backdrop.ZIndex = 1
+		backdrop.Parent = gui
+
+		local core = Instance.new("Frame")
+		core.AnchorPoint = Vector2.new(0.5, 0.5); core.Position = UDim2.new(0.5, 0, 0.5, 0)
+		core.Size = UDim2.new(0, 10, 0, 10)
+		core.BackgroundColor3 = Color3.new(0, 0, 0)
+		core.BackgroundTransparency = 1; core.BorderSizePixel = 0; core.ZIndex = 10; core.Parent = shell
+		Instance.new("UICorner", core).CornerRadius = UDim.new(1, 0)
+		-- NO STROKE. A coloured ring drawn round a black circle is a clean geometric outline sitting dead
+		-- centre and growing -- the most object-like thing that was on screen, and the eye locks onto it.
+		-- Instead the disc feathers to nothing through a gradient, so it has no boundary at all: it simply
+		-- stops being dark. Nothing here has an edge you can point at.
+		do
+			local cg = Instance.new("UIGradient")
+			cg.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 1),
+				NumberSequenceKeypoint.new(0.42, 0),
+				NumberSequenceKeypoint.new(0.58, 0),
+				NumberSequenceKeypoint.new(1, 1),
+			})
+			cg.Parent = core
+		end
+		-- the light around it: a wider, softer disc that also fades out to nothing at its rim
+		local halo = Instance.new("Frame")
+		halo.AnchorPoint = Vector2.new(0.5, 0.5); halo.Position = UDim2.new(0.5, 0, 0.5, 0)
+		halo.Size = UDim2.new(0, 10, 0, 10)
+		halo.BackgroundColor3 = VIOLET
+		halo.BackgroundTransparency = 1; halo.BorderSizePixel = 0; halo.ZIndex = 9; halo.Parent = shell
+		Instance.new("UICorner", halo).CornerRadius = UDim.new(1, 0)
+		do
+			local hg = Instance.new("UIGradient")
+			hg.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 1),
+				NumberSequenceKeypoint.new(0.3, 0.45),
+				NumberSequenceKeypoint.new(0.5, 0.15),
+				NumberSequenceKeypoint.new(0.7, 0.45),
+				NumberSequenceKeypoint.new(1, 1),
+			})
+			hg.Parent = halo
+		end
+
+		-- vignette: the edges closing in as gravity narrows what you can still see
+		local vign = Instance.new("Frame")
+		vign.Size = UDim2.new(1, 0, 1, 0); vign.BackgroundTransparency = 1; vign.BorderSizePixel = 0
+		vign.ZIndex = 14; vign.Parent = gui
+		do
+			local vg = Instance.new("UIGradient")
+			vg.Color = ColorSequence.new(Color3.new(0, 0, 0))
+			vg.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.5, 1), NumberSequenceKeypoint.new(1, 0),
+			})
+			vg.Parent = vign
+		end
+
+		-- ---------- a ring that collapses AND spins: the spiral read ----------
+		local function spawnSpiralRing()
+			local r = Instance.new("Frame")
+			r.AnchorPoint = Vector2.new(0.5, 0.5); r.Position = UDim2.new(0.5, 0, 0.5, 0)
+			r.Size = UDim2.new(0, 1500, 0, 1500) -- born past the screen edge...
+			r.BackgroundTransparency = 1; r.BorderSizePixel = 0; r.ZIndex = 4; r.Parent = shell
+			Instance.new("UICorner", r).CornerRadius = UDim.new(1, 0)
+			local st = Instance.new("UIStroke", r)
+			st.Color = (math.random() < 0.5) and VIOLET or WHITEHOT
+			-- Thinner and much fainter than before (was up to 7px at 0.3). A crisp bright ring is a drawn
+			-- circle; a faint one is a wavefront. A UIGradient INSIDE the stroke then fades it away around
+			-- its own circumference, so no ring is ever a complete, evenly-lit outline -- it is an arc of
+			-- light that happens to curve, which is what kills the "geometry" read.
+			st.Thickness = 1 + math.random() * 2.5; st.Transparency = 0.62
+			local sg = Instance.new("UIGradient")
+			sg.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 1),
+				NumberSequenceKeypoint.new(0.5, 0),
+				NumberSequenceKeypoint.new(1, 1),
+			})
+			sg.Rotation = math.random(0, 359)
+			sg.Parent = st
+			local dur = 0.8 + math.random() * 0.3
+			pcall(function()
+				-- ...and is dragged down to a point. Easing In means it ACCELERATES as it falls, which is
+				-- what a gravity well does and a constant-speed collapse does not.
+				TweenService:Create(r, TweenInfo.new(dur, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+					Size = UDim2.new(0, 8, 0, 8), Rotation = 120 + math.random() * 90,
+				}):Play()
+				TweenService:Create(st, TweenInfo.new(dur, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+					Transparency = 1,
+				}):Play()
+			end)
+			Debris:AddItem(r, dur + 0.1)
+		end
+
+		-- ---------- matter streaks: thrown outward-ish, then curved in ----------
+		local function spawnStreak()
+			local s = Instance.new("Frame")
+			local ang = math.rad(math.random(0, 359))
+			local dist = 0.55 + math.random() * 0.5
+			s.AnchorPoint = Vector2.new(0.5, 0.5)
+			s.Position = UDim2.new(0.5 + math.cos(ang) * dist, 0, 0.5 + math.sin(ang) * dist, 0)
+			s.Size = UDim2.new(0, 2 + math.random() * 2, 0, 26 + math.random() * 70)
+			s.BackgroundColor3 = (math.random() < 0.4) and VIOLET or WHITEHOT
+			s.BackgroundTransparency = 0.35; s.BorderSizePixel = 0
+			s.Rotation = math.deg(ang) + 90 -- lie along the direction of travel, so it streaks rather than tumbles
+			s.ZIndex = 5; s.Parent = shell
+			-- THE BIGGEST SINGLE FIX. A rounded rectangle is a capsule -- a little pill tumbling across the
+			-- screen, and forty of them look like confetti. Fading it to nothing at BOTH ends turns the same
+			-- frame into a streak of light with no start and no finish: motion blur rather than an object.
+			-- The corner radius goes with it; once both ends are transparent there is no corner left to see.
+			local sg = Instance.new("UIGradient")
+			sg.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 1),
+				NumberSequenceKeypoint.new(0.45, 0.1),
+				NumberSequenceKeypoint.new(1, 1),
+			})
+			sg.Rotation = 90 -- along the streak's long axis
+			sg.Parent = s
+			local dur = 0.3 + math.random() * 0.3
+			pcall(function()
+				TweenService:Create(s, TweenInfo.new(dur, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+					Position = UDim2.new(0.5, 0, 0.5, 0),
+					Size = UDim2.new(0, 1, 0, 8),
+					BackgroundTransparency = 1,
+					Rotation = s.Rotation + 80, -- the curve: matter does not fall straight in, it winds in
+				}):Play()
+			end)
+			Debris:AddItem(s, dur + 0.1)
+		end
+
+		-- ---------- camera held Scriptable EVERY frame; shake + squeeze applied to the shell ----------
+		renderConn = RunService.RenderStepped:Connect(function()
+			if restored then return end
+			local c = workspace.CurrentCamera
+			if c then c.CameraType = Enum.CameraType.Scriptable; c.CFrame = currentCF end
+			local ox = (shakeMag > 0) and math.random(-10, 10) * shakeMag or 0
+			local oy = (shakeMag > 0) and math.random(-10, 10) * shakeMag or 0
+			-- SQUEEZE: the whole frame shrinks toward the middle late in the shot, so the picture itself
+			-- looks like it is being pulled through the hole rather than merely covered by an overlay.
+			local k = squeeze
+			shell.Size = UDim2.new(1 - k, 0, 1 - k, 0)
+			shell.Position = UDim2.new(k / 2, ox, k / 2, oy)
+		end)
+
+		blur = Instance.new("BlurEffect"); blur.Size = 0; blur.Parent = Lighting
+		cc = Instance.new("ColorCorrectionEffect"); cc.Parent = Lighting
+
+		local ok, err = pcall(function()
+			-- Look at the hole from wherever the player is, and ride toward it.
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			local target = model.PrimaryPart and model.PrimaryPart.Position or (hrp and hrp.Position)
+			local from = hrp and (hrp.Position + Vector3.new(0, 4, 0)) or currentCF.Position
+			if target then currentCF = CFrame.lookAt(from, target) end
+
+			-- ===== BEAT 1: GRAB (1.2s) -- it notices you =====
+			pcall(function()
+				TweenService:Create(backdrop, TweenInfo.new(T_GRAB), { BackgroundTransparency = 0.25 }):Play()
+				TweenService:Create(blur, TweenInfo.new(T_GRAB), { Size = 14 }):Play()
+				TweenService:Create(vign, TweenInfo.new(T_GRAB), { BackgroundTransparency = 0.35 }):Play()
+				TweenService:Create(halo, TweenInfo.new(T_GRAB), {
+					BackgroundTransparency = 0.25, Size = UDim2.new(0, 320, 0, 320),
+				}):Play()
+				TweenService:Create(core, TweenInfo.new(T_GRAB), {
+					BackgroundTransparency = 0, Size = UDim2.new(0, 70, 0, 70),
+				}):Play()
+			end)
+			local t0 = os.clock()
+			while not restored and (os.clock() - t0) < T_GRAB do
+				local a = (os.clock() - t0) / T_GRAB
+				local e = TweenService:GetValue(a, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+				shakeMag = e * 0.8
+				if cam then cam.FieldOfView = origFov - e * 18 end -- NARROWING: squeezed, not thrown
+				if target and hrp then
+					currentCF = CFrame.lookAt(from:Lerp(target, e * 0.5), target)
+				end
+				task.wait()
+			end
+			if restored then return end
+
+			-- ===== BEAT 2: SPIRAL (2.6s) -- the HUD and everything else goes down the drain =====
+			-- The ghosts launch together on the first frame of this beat: the interface coming apart is the
+			-- moment the player understands they are the thing being pulled, not the scenery.
+			for i, g in ipairs(ghosts) do
+				local delay = (i - 1) * 0.045
+				task.delay(delay, function()
+					pcall(function()
+						TweenService:Create(g, TweenInfo.new(0.85 + math.random() * 0.4,
+							Enum.EasingStyle.Quint, Enum.EasingDirection.In), {
+							Position = UDim2.new(0.5, 0, 0.5, 0),
+							Size = UDim2.fromOffset(6, 6),
+							Rotation = (math.random() < 0.5 and -1 or 1) * (180 + math.random(0, 220)),
+							BackgroundTransparency = 1,
+						}):Play()
+					end)
+				end)
+				Debris:AddItem(g, 2)
+			end
+
+			pcall(function()
+				TweenService:Create(backdrop, TweenInfo.new(0.8), { BackgroundTransparency = 0 }):Play()
+			end)
+			local ringClock, streakClock = 0, 0
+			t0 = os.clock()
+			while not restored and (os.clock() - t0) < T_SPIRAL do
+				local dt = task.wait()
+				local a = (os.clock() - t0) / T_SPIRAL
+				shakeMag = 0.6 + a * 0.9
+				squeeze = a * 0.10
+				if cam then cam.FieldOfView = origFov - 18 - a * 16 end
+				-- NO PINK. This used to hold red and blue at full while pulling GREEN down, which is exactly
+				-- how you make magenta -- it washed the whole shot pink. Pulling RED down instead leaves a
+				-- cold blue-white, which is what a collapsing star should look like anyway.
+				cc.TintColor = Color3.fromRGB(255 - math.floor(a * 55), 255 - math.floor(a * 18), 255)
+				cc.Contrast = a * 0.4
+				pcall(function()
+					local d = 70 + a * 130
+					core.Size = UDim2.new(0, d, 0, d)
+					halo.Size = UDim2.new(0, d * 3.4, 0, d * 3.4) -- the glow always outruns the dark centre
+				end)
+				-- the barrel roll TIGHTENS as we fall -- the spin of the accretion disk taking us with it
+				currentCF = currentCF * CFrame.Angles(0, 0, math.rad(dt * (30 + a * 90)))
+				ringClock += dt; streakClock += dt
+				-- FEWER, NOT MORE. Restraint is most of what separates a finished transition from a busy one:
+				-- the old rates (a ring every 0.11s, two streaks every 0.025s) put so much on screen at once
+				-- that you stopped seeing an effect and started seeing individual moving parts.
+				if ringClock > 0.19 then ringClock = 0; spawnSpiralRing() end
+				if streakClock > 0.045 then streakClock = 0; spawnStreak() end
+			end
+			if restored then return end
+
+			-- ===== BEAT 3: HORIZON (1.4s) -- crossing it =====
+			pcall(function() blur.Size = 26 end)
+			for _ = 1, 18 do spawnStreak() end -- was 50; a wall of them read as debris, not speed
+			local flash = Instance.new("Frame")
+			flash.Size = UDim2.new(1, 0, 1, 0); flash.BackgroundColor3 = WHITEHOT
+			flash.BackgroundTransparency = 1; flash.BorderSizePixel = 0; flash.ZIndex = 20; flash.Parent = gui
+			pcall(function()
+				-- the hole swells to swallow the frame, then the crossing whites out
+				TweenService:Create(core, TweenInfo.new(T_HORIZON * 0.7, Enum.EasingStyle.Quint,
+					Enum.EasingDirection.In), { Size = UDim2.new(2.2, 0, 2.2, 0) }):Play()
+				TweenService:Create(halo, TweenInfo.new(T_HORIZON * 0.7, Enum.EasingStyle.Quint,
+					Enum.EasingDirection.In), { Size = UDim2.new(5, 0, 5, 0), BackgroundTransparency = 0 }):Play()
+				TweenService:Create(flash, TweenInfo.new(T_HORIZON * 0.55, Enum.EasingStyle.Quad,
+					Enum.EasingDirection.In), { BackgroundTransparency = 0 }):Play()
+			end)
+			t0 = os.clock()
+			while not restored and (os.clock() - t0) < T_HORIZON do
+				local a = (os.clock() - t0) / T_HORIZON
+				shakeMag = 2.2 * (1 - a)
+				squeeze = 0.10 + a * 0.16
+				if cam then cam.FieldOfView = origFov - 34 + a * 10 end
+				task.wait()
+			end
+			if restored then return end
+
+			-- ===== BEAT 4: BLACK (1.0s) -- hold. The teleport is the cut. =====
+			shakeMag = 0
+			-- Same card treatment as the realm portals, so both crossings end the same way: a near-black
+			-- tinted toward the destination rather than flat black, a wide feathered glow behind the words
+			-- so there is depth instead of absence, a title that settles from oversized rather than simply
+			-- appearing, and a feathered light under it. See the long note in RealmPortals for the reasoning.
+			local black = Instance.new("Frame")
+			black.Size = UDim2.new(1, 0, 1, 0)
+			black.BackgroundColor3 = VIOLET:Lerp(Color3.new(0, 0, 0), 0.94)
+			black.BackgroundTransparency = 1; black.BorderSizePixel = 0; black.ZIndex = 25; black.Parent = gui
+
+			local cglow = Instance.new("Frame")
+			cglow.AnchorPoint = Vector2.new(0.5, 0.5); cglow.Position = UDim2.new(0.5, 0, 0.5, 0)
+			cglow.Size = UDim2.new(1.4, 0, 0, 420)
+			cglow.BackgroundColor3 = VIOLET
+			cglow.BackgroundTransparency = 1; cglow.BorderSizePixel = 0; cglow.ZIndex = 26; cglow.Parent = gui
+			Instance.new("UICorner", cglow).CornerRadius = UDim.new(1, 0)
+			do
+				local gg = Instance.new("UIGradient")
+				gg.Transparency = NumberSequence.new({
+					NumberSequenceKeypoint.new(0, 1),
+					NumberSequenceKeypoint.new(0.5, 0.82),
+					NumberSequenceKeypoint.new(1, 1),
+				})
+				gg.Parent = cglow
+			end
+
+			local card = Instance.new("TextLabel")
+			card.AnchorPoint = Vector2.new(0.5, 0.5); card.Position = UDim2.new(0.5, 0, 0.5, 0)
+			card.Size = UDim2.new(1.02, 0, 0, 102); card.BackgroundTransparency = 1
+			card.Font = Enum.Font.FredokaOne; card.TextScaled = true
+			card.TextColor3 = WHITEHOT; card.TextTransparency = 1
+			card.Text = "SPACE REALM"; card.ZIndex = 28; card.Parent = gui
+			do local c = Instance.new("UITextSizeConstraint", card); c.MaxTextSize = 58 end
+			local cardStroke = Instance.new("UIStroke", card)
+			cardStroke.Color = VIOLET; cardStroke.Thickness = 3; cardStroke.Transparency = 1
+
+			local sub = Instance.new("TextLabel")
+			sub.AnchorPoint = Vector2.new(0.5, 0.5); sub.Position = UDim2.new(0.5, 0, 0.5, 62)
+			sub.Size = UDim2.new(0.8, 0, 0, 30); sub.BackgroundTransparency = 1
+			sub.Font = Enum.Font.GothamMedium; sub.TextScaled = true
+			sub.TextColor3 = VIOLET; sub.TextTransparency = 1
+			sub.Text = "\xF0\x9F\x9A\x80  through the black hole"
+			sub.ZIndex = 28; sub.Parent = gui
+			do local c = Instance.new("UITextSizeConstraint", sub); c.MaxTextSize = 20 end
+
+			local line = Instance.new("Frame")
+			line.AnchorPoint = Vector2.new(0.5, 0.5); line.Position = UDim2.new(0.5, 0, 0.5, 38)
+			line.Size = UDim2.new(0, 0, 0, 2)
+			line.BackgroundColor3 = VIOLET
+			line.BackgroundTransparency = 0.25; line.BorderSizePixel = 0; line.ZIndex = 28; line.Parent = gui
+			do
+				local lg = Instance.new("UIGradient")
+				lg.Transparency = NumberSequence.new({
+					NumberSequenceKeypoint.new(0, 1),
+					NumberSequenceKeypoint.new(0.5, 0),
+					NumberSequenceKeypoint.new(1, 1),
+				})
+				lg.Parent = line
+			end
+
+			pcall(function()
+				TweenService:Create(black, TweenInfo.new(0.45, Enum.EasingStyle.Quad,
+					Enum.EasingDirection.In), { BackgroundTransparency = 0 }):Play()
+			end)
+			task.wait(0.45)
+			pcall(function()
+				TweenService:Create(cglow, TweenInfo.new(0.6), { BackgroundTransparency = 0 }):Play()
+				TweenService:Create(card, TweenInfo.new(0.45, Enum.EasingStyle.Quint,
+					Enum.EasingDirection.Out), { TextTransparency = 0, Size = UDim2.new(0.9, 0, 0, 90) }):Play()
+				TweenService:Create(cardStroke, TweenInfo.new(0.45), { Transparency = 0 }):Play()
+				TweenService:Create(line, TweenInfo.new(0.55, Enum.EasingStyle.Quint,
+					Enum.EasingDirection.Out), { Size = UDim2.new(0.42, 0, 0, 2) }):Play()
+			end)
+			task.delay(0.2, function()
+				pcall(function()
+					TweenService:Create(sub, TweenInfo.new(0.4), { TextTransparency = 0.25 }):Play()
+				end)
+			end)
+			-- HOLD ON BLACK -- no restore. The server teleports us while this is up.
+		end)
+
+		if not ok then
+			warn("[BlackHole] suck-in cinematic error: " .. tostring(err))
+			restore()
+		end
+	end
 
 	local enterEvent = game:GetService("ReplicatedStorage"):WaitForChild("BlackHoleEnterEvent", 30)
 	local traveling = false -- per-player debounce (this is the local player's client)
 	if enterEvent then
 		enterEvent.OnClientEvent:Connect(function(status) -- the SERVER tells us what to show
 			if status == "traveling" then
-				showMsg("\xE2\x9C\xA8 Traveling to Space Realm...") -- shows during the brief travel; the server teleports us shortly
-				task.delay(5, function() if traveling then hideMsg(); traveling = false end end) -- fallback: if the teleport never completes (e.g. in Studio), don't leave the box up forever
+				task.spawn(playSuckIn) -- the shot replaces the old "Traveling..." text box entirely
+			-- The banner hides itself; these timers now only release the touch debounce. Untangling the two
+			-- is the point -- a missed hide and a stuck debounce used to be the same bug.
 			elseif status == "locked" then
-				showMsg("\xF0\x9F\x94\x92 Space Realm \xE2\x80\x94 Coming soon!"); task.delay(2.5, function() hideMsg(); traveling = false end)
+				showMsg("\xF0\x9F\x94\x92 Space Realm \xE2\x80\x94 Coming soon!"); task.delay(2.5, function() traveling = false end)
 			elseif status == "error" then
-				showMsg("Couldn't travel right now, try again"); task.delay(2.5, function() hideMsg(); traveling = false end)
+				showMsg("Couldn't travel right now, try again"); task.delay(2.5, function() traveling = false end)
 			end
 		end)
 	end

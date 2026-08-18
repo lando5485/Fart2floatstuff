@@ -35,10 +35,19 @@ local PILL_TOP = 16
 local PILL_H_PHONE = 66
 local BANNER_GAP = 8 -- reference px between the pill's bottom and the banner; multiplied by the live UIScale
 
--- DESKTOP banner spot: the same top-centre location, sitting BELOW the desktop HUD strip (slim Planet title + the
--- RaceBoard leaderboard). Desktop is NOT scaled by ResponsiveUI, so it keeps a fixed authored offset.
-PhoneHUD.BANNER_POS_DESKTOP = UDim2.new(0.5, 0, 0, 180)
-PhoneHUD.BANNER_OFFSCREEN_DESKTOP = UDim2.new(0.5, 0, 0, 140) -- just above the rest spot, for slide-in banners
+-- DESKTOP banner spot: TOP-CENTRE at y=10 -- the exact spot the FOOD realm puts its hero banner
+-- (NotifyCenter.client HERO_SHOWN = UDim2.new(0.5, 0, 0, 10) / HERO_HIDDEN = ...0, -100).
+--
+-- ⚠ THIS WAS 180, AND 180 WAS SPACE REALM'S NUMBER, NOT CANDY'S. The comment that used to sit here explained it
+-- as sitting "below the desktop HUD strip (slim Planet title + the RaceBoard leaderboard)" -- Candy has neither
+-- a planet title nor a RaceBoard, so nothing was ever under there to clear. It arrived with the file.
+-- The visible effect was that Candy's banner sat a third of the way down the screen, in its own spot, while the
+-- eleven quest objective banners still lived up at y=12 where the realm's banner has always been.
+--
+-- Nothing else in this realm reads the banner spot (checked: NotifyCenter is the only consumer), so moving it
+-- moves the banner and nothing else.
+PhoneHUD.BANNER_POS_DESKTOP = UDim2.new(0.5, 0, 0, 10)
+PhoneHUD.BANNER_OFFSCREEN_DESKTOP = UDim2.new(0.5, 0, 0, -100) -- off the top edge, for slide-in banners
 
 function PhoneHUD.isPhone(): boolean
 	return UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled

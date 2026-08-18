@@ -30,8 +30,16 @@ local PLANE_SCALE = PLANE_SIZE / 16 -- derived uniform scale applied to the whol
 local PLANE_SPEED = 72             -- studs/sec cruising/roaming speed
 local PLANE_TURN_RATE = 2.2        -- how fast velocity steers toward the desired heading (higher = snappier turns)
 local PLANE_BANK = 0.5             -- max roll (radians) banked into a turn (visual)
-local GAP_RADIUS = 175             -- horizontal radius (studs) of the roaming airspace, centered on X=0,Z=0
+local GAP_RADIUS = 260             -- horizontal radius (studs) of the roaming airspace, centered on X=0,Z=0.
+                                   -- WAS 175, which was smaller than the flight corridor it was supposed to
+                                   -- cover: island 5's column sits 256 studs from X=0,Z=0 and island 6's sits
+                                   -- 284 out, so the planes were penned into the middle of the gap and the
+                                   -- clamp bounced them back every time they drifted toward the player.
 local GAP_VMARGIN = 90             -- studs kept clear of the band's lo/hi so planes stay inside the gap
+local GAP_PLAYER_PAD = 70          -- the airspace ALWAYS stretches to include the player's own column (their
+                                   -- horizontal distance + this pad). A fixed cylinder can never contain both
+                                   -- island columns and the player; this makes the zone follow the corridor,
+                                   -- so a hunter can always physically reach firing range.
 -- Roaming wander
 local WANDER_RETARGET_MIN = 2.0    -- seconds between picking a new random roam waypoint
 local WANDER_RETARGET_MAX = 4.5
@@ -41,22 +49,66 @@ local CHASE_CHANCE = 0.12          -- per-second chance an idle roaming plane st
 local CHASE_DURATION_MIN = 2.5     -- seconds a chase lasts before breaking off back to roaming
 local CHASE_DURATION_MAX = 4.5
 local CHASE_SPEED_MULT = 1.5       -- chasers fly a bit faster than cruise
+-- HUNTING (the "lock onto you" behaviour). Roaming alone almost never produced an engagement: 4 planes
+-- scattered over a ~1000-stud-tall band only randomly wander into a 280-stud firing range. So while the
+-- player is AIRBORNE in the band, the closest planes with a ready cooldown actively CLOSE IN to standoff
+-- range, lock on and fire. They still never ram -- a hunter stops closing at HUNT_STANDOFF and orbits.
+local HUNT_ENABLED = true
+local HUNT_STANDOFF = 130          -- studs: hunters close to about this distance and hold there (no kamikaze)
+local HUNT_SPEED_MULT = 1.35       -- hunters fly a bit faster than cruise while closing
+local HUNT_TIMEOUT = 10            -- seconds a hunt lasts before the plane gives up and goes back to roaming
+local HUNT_MAX = 2                 -- how many planes may hunt at once (matches MAX_SHOOTERS)
+local SPAWN_VSPREAD = 320          -- studs above/below the player's entry altitude the 4 planes spawn into
 -- Ranged spread shooting
 local MAX_SHOOTERS = 2             -- HARD cap: never more than 2 planes shooting the player at once
-local SHOOT_COOLDOWN_MIN = 3.5     -- seconds a plane rests between its OWN bursts (paced, not constant)
-local SHOOT_COOLDOWN_MAX = 6.5
-local SHOOT_RANGE = 280            -- studs: only lock on/shoot when the player is within this range
-local TELEGRAPH_TIME = 0.8         -- seconds the shooter flashes / aims before firing (readable warning)
-local SPREAD_COUNT = 5             -- projectiles per cluster (a fan toward the player)
-local SPREAD_HALF_ANGLE = 0.26     -- radians: half-width of the fan (total spread ~2x this) — challenging-but-fair
+local SHOOT_COOLDOWN_MIN = 3.0     -- seconds a plane rests between its OWN bursts (paced, not constant)
+local SHOOT_COOLDOWN_MAX = 5.5
+local SHOOT_RANGE = 360            -- studs: only lock on/shoot when the player is within this range (280 ->
+                                   -- 360 so a hunter can open fire as it arrives instead of having to sit
+                                   -- almost on top of the player first)
+local TELEGRAPH_TIME = 1.1         -- seconds of LASER LOCK before firing: a red targeting beam tracks the
+                                   -- player for this long (readable warning), then the burst comes. Longer
+                                   -- than the old 0.8s flash because the laser is the dodge cue now.
+local SPREAD_COUNT = 5             -- projectiles per cluster (ODD, so the centre shot flies exactly at the
+                                   -- aim point -- a player who does not move eats that one every time)
+local SPREAD_HALF_ANGLE = 0.22     -- radians: tighter fan than the old 0.26 -- hovering in place is likely a
+                                   -- hit; moving sideways still threads it (fair)
 local SPREAD_VJITTER = 6           -- studs of small random vertical scatter per projectile (cluster feel)
-local LEAD_FACTOR = 0.5            -- how strongly aim leads the player's velocity (0 = aim where they ARE)
-local BULLET_SPEED = 95            -- studs/sec: fast but still visibly dodgeable
+local LEAD_FACTOR = 0.65           -- stronger lead than the old 0.5: flying dead-straight is punished; any
+                                   -- direction CHANGE after the laser lock still dodges cleanly
+local BULLET_SPEED = 110           -- studs/sec: harder to simply outrun, still clearly visible in flight
 local BULLET_SIZE = 1.8            -- bullet cross-section (studs) — chunky, clearly visible
 local BULLET_RANGE = 360           -- studs a projectile travels before despawning
 local BULLET_LIFETIME = 6          -- seconds hard-cap despawn (backup)
 local BULLET_HIT_RADIUS = 5        -- studs: distance to the player that counts as a hit
 local MAX_BULLETS = 90             -- perf cap on live projectiles (excess shots skipped — purely a part-count limit)
+-- Engine fly-by sound: a 3D sound welded to each plane's fuselage, fired as a ONE-SHOT when the plane
+-- comes close enough to count as a pass. One-shot (not looped) so a short whoosh/engine clip doesn't
+-- machine-gun; the per-plane cooldown keeps a circling plane from re-triggering every second.
+local PLANE_SOUND_ID = "rbxassetid://126002361266903"
+-- ===== TUNED DOWN: A PASS, NOT AN ATMOSPHERE =====
+-- These were TRIGGER=200 / MIN=140 / MAX=600 / VOL=3, and that combination is why the engine seemed to be
+-- playing "just because you were on an island" rather than because a plane went past. Two things stacked up:
+-- a plane 200 studs away already counted as a fly-by, and once playing it stayed audible for a further 600
+-- studs as it flew off. The result was a plane you could hear for most of its circuit while never actually
+-- seeing it near you -- ambient engine noise you didn't ask for, over the top of everything else.
+--
+-- Now the audible window is roughly a third as wide: nothing fires until a plane is genuinely close, and it
+-- has faded out by 260 studs instead of trailing to 600. The INVARIANT below still holds -- ROLLOFF_MIN is
+-- kept at TRIGGER_DIST, so the cue never begins already-attenuated (that bug is what pushed MIN to 140 in
+-- the first place; it is fixed by lowering both together, not by widening the radius).
+local FLYBY_VOLUME = 2.2           -- loudness at the source (rolls off with distance). Was 3 -- it no longer
+                                   -- needs to carry across 600 studs, so it can sit lower in the mix.
+local FLYBY_TRIGGER_DIST = 85      -- studs: a plane this close to the player counts as a fly-by. Triggers
+                                   -- BEFORE the closest point of the pass, so the engine is already audible
+                                   -- as the plane comes at you rather than starting once it's gone by.
+local FLYBY_COOLDOWN = 4.0         -- seconds before the SAME plane can trigger its fly-by sound again
+local FLYBY_ROLLOFF_MIN = 85       -- studs of FULL volume before any falloff starts. MUST stay at or above
+                                   -- FLYBY_TRIGGER_DIST: a sound triggered at 150 studs with a 30-stud
+                                   -- full-volume radius is already down to a fifth of its volume the instant
+                                   -- it starts, which is the original "the pass was inaudible" bug.
+local FLYBY_ROLLOFF_MAX = 260      -- studs: inaudible beyond this. Was 600 -- far too generous, it kept a
+                                   -- departing plane droning long after it stopped being an event.
 
 -- [BALANCE TESTING] While TRUE, no ambient/random birds spawn during flights (so they don't
 -- interfere with balance testing). Set to false to re-enable birds. (Keep in sync with the matching
@@ -75,7 +127,7 @@ stormBlur.Parent = Lighting
 -- Windstorm ambient loop. One reusable Looped sound: :Play() when the windstorm starts,
 -- :Stop() when it ends. Single instance => never stacks; single tunable volume.
 local SoundService = game:GetService("SoundService")
-local WINDSTORM_VOLUME = 0.5
+local WINDSTORM_VOLUME = 0.6 -- 0.5 -> 0.6 (+20%)
 local windstormSound = Instance.new("Sound")
 windstormSound.Name = "WindstormSound"
 windstormSound.SoundId = "rbxassetid://101642229651469"
@@ -149,8 +201,22 @@ end
 -- This countdown previously sat top-RIGHT under the coin pill, because at its older top-centre position
 -- of y=12 it was covered by RocketUI's teleport button, which hard-codes that same spot. The quest lane
 -- sits ABOVE that (-20 vs 12), so the collision that drove it to the corner no longer applies.
-local countPill=mkFrame(countSg,{Size=UDim2.new(0,280,0,44),Position=UDim2.new(0.5,0,0,questLaneY()),AnchorPoint=Vector2.new(0.5,0),BackgroundColor3=Color3.fromRGB(180,60,220),Visible=false,ZIndex=14,BorderSizePixel=0})
-mkCorner(countPill,20); mkStroke(countPill,Color3.fromRGB(120,20,160),3)
+--
+-- ===== ONE BANNER SIZE FOR THE WHOLE GAME =====
+-- BANNER_W/H are the hero card's dimensions (NotifyCenter) and the big event banner's dimensions, which
+-- were already identical to each other -- 500 x 65. Everything that opens in the top-centre column now
+-- uses them, so a countdown pill, a milestone pill, an event banner and an island arrival are the same
+-- object at different moments rather than four different-shaped things that happen to share a lane.
+--
+-- The pills used to be 280 x 44 with a 20px radius: half the width and two-thirds the height of the
+-- banners they queue beside. That is what made the top of the screen look assembled from spare parts --
+-- a card would slide out and something visibly smaller would take its place in the same spot.
+-- CORNER 16 is the banners' radius too (the pills' 20 made a stadium out of a 44px-tall box; at 65 tall
+-- the same number would read as a completely different component from the card above it).
+local BANNER_W, BANNER_H, BANNER_CORNER = 500, 65, 16
+local BANNER_GAP = 8   -- the same gap TopCenterStack leaves between stacked banners
+local countPill=mkFrame(countSg,{Size=UDim2.new(0,BANNER_W,0,BANNER_H),Position=UDim2.new(0.5,0,0,questLaneY()),AnchorPoint=Vector2.new(0.5,0),BackgroundColor3=Color3.fromRGB(180,60,220),Visible=false,ZIndex=14,BorderSizePixel=0})
+mkCorner(countPill,BANNER_CORNER); mkStroke(countPill,Color3.fromRGB(120,20,160),3)
 local countLabel=mkLabel(countPill,{Text="",Font=Enum.Font.FredokaOne,TextScaled=true,TextColor3=Color3.fromRGB(255,255,255),Size=UDim2.new(1,-10,1,0),Position=UDim2.new(0,5,0,0),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=15})
 mkStroke(countLabel,Color3.fromRGB(0,0,0),2)
 
@@ -522,7 +588,19 @@ end)
 -- state); landed = they just roam. At most 2 planes shoot at once. A projectile hit reuses the
 -- rainbow knockdown (_G.applyBeamHit) -> knocked back to the most-recent island, every hit, no grace.
 -- Planes/bullets exist ONLY while the player is inside the plane band; cleared otherwise.
-local PLANE_BANDS = { {lo=3580, hi=4820} }   -- ONLY between islands 5 and 6 (Y 3580 -> 4820)
+-- ONLY between islands 5 and 6. The band is the GAP, and it must not include either island's deck.
+--
+-- `lo` was 3580, which is where island 5 is POSITIONED -- but Coconut Cove's walkable surface is up at
+-- Y~3672 (its stand is 3672.2, its highest coconut 3668). So standing on Coconut Cove put you INSIDE the
+-- band, and with GAP_VMARGIN (90) the planes' floor was 3670 -- exactly deck height. They spawned around
+-- you, roamed at head height and locked on the instant you lifted off, which is why they seemed to single
+-- you out on that island specifically.
+--
+-- The top of the band already got this right: hi=4820 sits BELOW island 6's stand (4857), so planes stay
+-- ~128 studs clear of it. `lo` now mirrors that -- 3710 puts the plane floor at 3800, ~128 studs above
+-- Coconut Cove. On the island you are outside the band entirely, so no planes exist to aim at you; climb
+-- into the gap and they appear as before.
+local PLANE_BANDS = { {lo=3710, hi=4820} }   -- the GAP between islands 5 and 6 (decks excluded)
 local function planeBandFor(y)
 	for _,b in ipairs(PLANE_BANDS) do
 		if y >= b.lo and y <= b.hi then return b end
@@ -568,15 +646,47 @@ local function buildPlane()
 	hub.CFrame=fus.CFrame*CFrame.new(0,0,-9)*CFrame.Angles(0,math.rad(90),0); pWeld(fus,hub)
 	local blade=pPart(model, Vector3.new(0.5,10,1.4), Color3.fromRGB(45,45,50), Enum.Material.SmoothPlastic, Enum.PartType.Block)
 	blade.Name="Prop"; blade.CFrame=fus.CFrame*CFrame.new(0,0,-9.2)  -- NOT welded; spun each frame
+	-- Fly-by engine sound, positional (parented to a Part => Roblox pans + attenuates it from the plane's
+	-- actual position). Played as a one-shot by the flight loop when the plane passes near the player.
+	local snd=Instance.new("Sound")
+	snd.Name="PlaneFlyBy"; snd.SoundId=PLANE_SOUND_ID; snd.Volume=FLYBY_VOLUME
+	snd.RollOffMode=Enum.RollOffMode.InverseTapered
+	snd.RollOffMinDistance=FLYBY_ROLLOFF_MIN; snd.RollOffMaxDistance=FLYBY_ROLLOFF_MAX
+	snd.Parent=fus
 	model:ScaleTo(PLANE_SCALE)  -- uniformly scale the whole plane (parts + welded offsets + blade) to PLANE_SIZE
 	return model, blade
 end
+
+-- Preload the engine clip once at startup so the FIRST fly-by isn't silent while Roblox fetches the asset
+-- (a plane pass lasts about a second -- a late-loading sound just never gets heard).
+-- It ALSO answers "is this asset id actually usable in this experience?" out loud. A Roblox audio id only
+-- plays if it is owned by / approved for this place's creator -- a bad id fails silently at :Play() time,
+-- which is indistinguishable from "the code never ran". This prints the verdict at boot either way.
+task.spawn(function()
+	pcall(function()
+		local warm = Instance.new("Sound")
+		warm.SoundId = PLANE_SOUND_ID; warm.Volume = 0; warm.Parent = workspace
+		game:GetService("ContentProvider"):PreloadAsync({warm}, function(_, status)
+			if status == Enum.AssetFetchStatus.Success then
+				print(string.format("[Planes] fly-by sound %s LOADED OK (length %.2fs) -- the id is good",
+					PLANE_SOUND_ID, warm.TimeLength))
+			else
+				warn(string.format("[Planes] fly-by sound %s FAILED to load (%s). The id is either not an "
+					.. "audio asset or not approved for this experience's creator -- no code change will "
+					.. "make it play. Upload/own the audio, or swap PLANE_SOUND_ID.",
+					PLANE_SOUND_ID, tostring(status)))
+			end
+		end)
+		warm:Destroy()
+	end)
+end)
 
 local planes = {}
 local bullets = {}
 local activeBand = nil          -- the PLANE_BANDS entry currently active (nil = player not in a band)
 local shooterCount = 0          -- how many planes are CURRENTLY mid-shoot (telegraph+fire); capped at MAX_SHOOTERS
 local lastAirborne = nil        -- last known airborne state (for the landed/flying transition diagnostics)
+local nextPlaneDiag = 0         -- os.clock() of the next throttled "why isn't anything shooting" report
 
 local function clearBullets()
 	for _,bl in ipairs(bullets) do pcall(function() if bl.part then bl.part:Destroy() end end) end
@@ -596,32 +706,41 @@ end
 
 -- A random point inside the gap airspace cylinder (radius GAP_RADIUS around X=0,Z=0, height between
 -- the band's padded lo/hi). sqrt() makes the points area-uniform so they don't bunch at the centre.
-local function randomGapPoint(band)
-	local r = GAP_RADIUS * math.sqrt(math.random())
+local function randomGapPoint(band, zoneR)
+	local r = (zoneR or GAP_RADIUS) * math.sqrt(math.random())
 	local a = math.random() * 2 * math.pi
 	local y = (band.lo + GAP_VMARGIN) + math.random() * ((band.hi - GAP_VMARGIN) - (band.lo + GAP_VMARGIN))
 	return Vector3.new(math.cos(a) * r, y, math.sin(a) * r)
 end
 
-local function spawnPlanes(band)
+-- `nearY` = the altitude the player entered the band at. Planes spawn AROUND that altitude (within
+-- SPAWN_VSPREAD) rather than scattered over the band's full ~1000-stud height -- 4 planes spread over
+-- the whole column meant the player usually flew the entire gap without one ever getting near them.
+local function spawnPlanes(band, zoneR, nearY)
 	clearPlanes(); activeBand = band
+	local loY, hiY = band.lo + GAP_VMARGIN, band.hi - GAP_VMARGIN
 	for i=1,PLANE_COUNT do
 		local model, blade = buildPlane()
 		model.Parent = workspace
-		local pos = randomGapPoint(band)
+		local pos = randomGapPoint(band, zoneR)
+		if nearY then
+			pos = Vector3.new(pos.X, math.clamp(nearY + (math.random()-0.5) * 2 * SPAWN_VSPREAD, loY, hiY), pos.Z)
+		end
 		model:PivotTo(CFrame.new(pos))
 		planes[i] = {
 			model = model, blade = blade, spin = 0,
 			pos = pos,
 			vel = Vector3.new((math.random()-0.5), 0, (math.random()-0.5) + 0.01).Unit * PLANE_SPEED,
-			target = randomGapPoint(band),
+			target = randomGapPoint(band, zoneR),
 			retargetTimer = WANDER_RETARGET_MIN + math.random() * (WANDER_RETARGET_MAX - WANDER_RETARGET_MIN),
-			mode = "roam",          -- "roam" | "chase"
+			mode = "roam",          -- "roam" | "chase" | "hunt"
 			chaseTarget = nil,      -- index of the plane being chased
 			chaseTimer = 0,
+			huntTimer = 0,          -- seconds left on this plane's hunt before it breaks off
 			shootCooldown = 1.5 + math.random() * 3,  -- stagger initial shots so they don't all fire at once
 			shooting = false,       -- true while this plane is mid telegraph+fire (counts toward the cap)
 			highlight = nil,        -- telegraph flash highlight (created on demand)
+			flybyCooldown = 0,      -- seconds until this plane may play its fly-by sound again
 		}
 	end
 	print("[Planes] spawned " .. PLANE_COUNT .. " planes in gap zone")
@@ -670,14 +789,49 @@ local function startShoot(pl, idx)
 	shooterCount = shooterCount + 1
 	print(string.format("[Planes] shooters active: %d (max %d)", shooterCount, MAX_SHOOTERS))
 	task.spawn(function()
+		-- The WHOLE sequence runs inside a pcall. shooterCount is a hard 2-slot budget: if this thread ever
+		-- died partway (destroyed instance, character swap mid-telegraph) the slot leaked, and once both
+		-- slots leaked NO plane could ever shoot again for the rest of the session -- exactly the "they
+		-- stopped shooting" symptom. Now the slot is always given back in the cleanup below.
+		local hl, laser   -- declared out here so the cleanup below can destroy them even on an error
+		local ok, err = pcall(function()
 		-- Telegraph: bright outline so the burst is readable.
-		local hl = Instance.new("Highlight")
+		hl = Instance.new("Highlight")
 		hl.FillColor = Color3.fromRGB(255,60,40); hl.FillTransparency = 0.55
 		hl.OutlineColor = Color3.fromRGB(255,230,120); hl.OutlineTransparency = 0
 		hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 		pcall(function() hl.Parent = pl.model end)
 		pl.highlight = hl
-		task.wait(TELEGRAPH_TIME)
+		-- LASER LOCK: a thin red targeting beam from the plane's nose that FOLLOWS the player for the whole
+		-- telegraph -- the classic "you are being locked on" cue. It tracks live (re-aimed every frame), so
+		-- the player watches it sweep with them and knows exactly which plane fires and when to juke. The
+		-- laser is the WARNING, not the weapon: it never deals a hit itself.
+		laser = Instance.new("Part")
+		laser.Name = "TargetLaser"; laser.Material = Enum.Material.Neon; laser.Color = Color3.fromRGB(255, 40, 40)
+		laser.Anchored = true; laser.CanCollide = false; laser.CastShadow = false
+		laser.CanQuery = false; laser.CanTouch = false; laser.Transparency = 0.3
+		laser.Size = Vector3.new(0.15, 0.15, 1)
+		laser.Parent = workspace
+		local t0 = os.clock()
+		while os.clock() - t0 < TELEGRAPH_TIME do
+			local ch2 = player.Character
+			local hrp2 = ch2 and ch2:FindFirstChild("HumanoidRootPart")
+			if hrp2 and pl.model and pl.model.Parent then
+				local origin = (pl.model:GetPivot() * CFrame.new(0, 0, -9.5 * PLANE_SCALE)).Position
+				local d = hrp2.Position - origin
+				local mag = d.Magnitude
+				if mag > 1 then
+					laser.Size = Vector3.new(0.15, 0.15, mag)
+					laser.CFrame = CFrame.lookAt(origin, hrp2.Position) * CFrame.new(0, 0, -mag / 2)
+				end
+				-- the beam pulses hotter as the shot approaches, so the timing is readable too
+				laser.Transparency = 0.45 - 0.35 * ((os.clock() - t0) / TELEGRAPH_TIME)
+			else
+				laser.Transparency = 1 -- no target/plane this frame: hide rather than strobe a stale beam
+			end
+			task.wait()
+		end
+		pcall(function() laser:Destroy() end)
 		pcall(function() hl:Destroy() end); pl.highlight = nil
 		-- Re-check: only fire if the player is still AIRBORNE (don't shoot someone who just landed).
 		local char = player.Character
@@ -688,8 +842,14 @@ local function startShoot(pl, idx)
 			fireSpread(pl, hrp)
 			print(string.format("[Planes] plane %d fired spread cluster at %s (aimed/lead)", idx, player.Name))
 		end
+		end)
+		if not ok then warn("[Planes] shoot sequence errored (slot still released): " .. tostring(err)) end
+		-- ALWAYS runs, error or not: bin the telegraph visuals, hand the shooter slot back, re-arm the plane.
+		pcall(function() if laser then laser:Destroy() end end)
+		pcall(function() if hl then hl:Destroy() end end); pl.highlight = nil
 		pl.shootCooldown = SHOOT_COOLDOWN_MIN + math.random() * (SHOOT_COOLDOWN_MAX - SHOOT_COOLDOWN_MIN)
 		pl.shooting = false
+		pl.mode = "roam"; pl.huntTimer = 0   -- burst delivered -> break off and go back to wandering
 		shooterCount = math.max(0, shooterCount - 1)
 	end)
 end
@@ -703,7 +863,14 @@ RunService.Heartbeat:Connect(function(dt)
 		lastAirborne = nil
 		return
 	end
-	if band ~= activeBand then spawnPlanes(band) end
+	-- ---- THE ROAMING ZONE FOLLOWS THE FLIGHT CORRIDOR ----
+	-- A cylinder fixed on X=0,Z=0 is not where the player flies: island 5's column is 256 studs out and
+	-- island 6's is 284, both OUTSIDE the old 175 radius, so the clamp below kept shoving planes away from
+	-- the only place the player ever is. The zone now always stretches far enough to contain the player.
+	local pFlat = Vector3.new(hrp.Position.X, 0, hrp.Position.Z)
+	local zoneR = math.max(GAP_RADIUS, pFlat.Magnitude + GAP_PLAYER_PAD)
+
+	if band ~= activeBand then spawnPlanes(band, zoneR, hrp.Position.Y) end
 
 	-- LANDED-vs-FLYING GATE: planes only target/shoot while the player is AIRBORNE (FloorMaterial Air).
 	-- Landed (standing on an island) = they just roam, no targeting/projectiles at the player.
@@ -715,15 +882,64 @@ RunService.Heartbeat:Connect(function(dt)
 		lastAirborne = airborne
 	end
 
+	-- ---- ASSIGN HUNTERS ----
+	-- While the player is airborne, the nearest planes that are off cooldown are ordered to close in and
+	-- attack, instead of waiting for a random waypoint to happen to drop them into firing range.
+	if HUNT_ENABLED and airborne then
+		local hunting = 0
+		for _,pl in ipairs(planes) do if pl.mode == "hunt" then hunting = hunting + 1 end end
+		if hunting < HUNT_MAX then
+			-- pick the closest eligible plane (roaming, off cooldown, not already mid-burst)
+			local best, bestD = nil, math.huge
+			for i,pl in ipairs(planes) do
+				if pl.mode == "roam" and not pl.shooting and pl.shootCooldown <= 0 then
+					local d = (hrp.Position - pl.pos).Magnitude
+					if d < bestD then best, bestD = i, d end
+				end
+			end
+			if best then
+				planes[best].mode = "hunt"
+				planes[best].huntTimer = HUNT_TIMEOUT
+				print(string.format("[Planes] plane %d HUNTING player (%.0f studs out)", best, bestD))
+			end
+		end
+	end
+
 	for idx,pl in ipairs(planes) do
-		-- ---- DECIDE DESTINATION (roam waypoint, or the chased plane) ----
+		-- ---- SELF-HEAL: rebuild a plane whose model something else destroyed ----
+		-- Anything can Destroy() a workspace model out from under us (sweeps, resets); without this the
+		-- loop kept flying an invisible corpse forever. Rebuild in place and carry on.
+		if not (pl.model and pl.model.Parent) then
+			local model, blade = buildPlane()
+			model.Parent = workspace
+			model:PivotTo(CFrame.new(pl.pos))
+			pl.model, pl.blade = model, blade
+			pl.shooting = false
+			print(string.format("[Planes] plane %d model was destroyed externally -> rebuilt in place", idx))
+		end
+		-- ---- DECIDE DESTINATION (roam waypoint, the chased plane, or the player) ----
 		pl.retargetTimer = pl.retargetTimer - dt
-		if pl.mode == "chase" then
+		if pl.mode == "hunt" then
+			-- Close on the player but STOP at standoff range: the aim point is HUNT_STANDOFF studs short of
+			-- them along the approach line, so the plane pulls up and circles instead of ramming (the body
+			-- is still harmless -- projectiles are the whole threat).
+			pl.huntTimer = pl.huntTimer - dt
+			local toPlayer = hrp.Position - pl.pos
+			local dist = toPlayer.Magnitude
+			if (not airborne) or pl.huntTimer <= 0 then
+				pl.mode = "roam"
+				pl.target = randomGapPoint(band, zoneR)
+				pl.retargetTimer = WANDER_RETARGET_MIN + math.random() * (WANDER_RETARGET_MAX - WANDER_RETARGET_MIN)
+				print(string.format("[Planes] plane %d broke off the hunt -> roaming", idx))
+			elseif dist > 1 then
+				pl.target = hrp.Position - toPlayer.Unit * HUNT_STANDOFF
+			end
+		elseif pl.mode == "chase" then
 			pl.chaseTimer = pl.chaseTimer - dt
 			local tgt = planes[pl.chaseTarget]
 			if pl.chaseTimer <= 0 or not tgt or not tgt.model.Parent then
 				pl.mode = "roam"; pl.chaseTarget = nil
-				pl.target = randomGapPoint(band)
+				pl.target = randomGapPoint(band, zoneR)
 				pl.retargetTimer = WANDER_RETARGET_MIN + math.random() * (WANDER_RETARGET_MAX - WANDER_RETARGET_MIN)
 				print(string.format("[Planes] plane %d roaming", idx))
 			else
@@ -732,7 +948,7 @@ RunService.Heartbeat:Connect(function(dt)
 		else
 			-- Roaming: pick a fresh waypoint on the timer or once we arrive (organic wandering).
 			if pl.retargetTimer <= 0 or (pl.pos - pl.target).Magnitude < WANDER_REACH_DIST then
-				pl.target = randomGapPoint(band)
+				pl.target = randomGapPoint(band, zoneR)
 				pl.retargetTimer = WANDER_RETARGET_MIN + math.random() * (WANDER_RETARGET_MAX - WANDER_RETARGET_MIN)
 			end
 			-- Occasionally start chasing another (currently roaming) plane for a few seconds.
@@ -749,25 +965,31 @@ RunService.Heartbeat:Connect(function(dt)
 		-- ---- STEER + MOVE (smooth velocity lerp -> organic banking flight) ----
 		local desired = pl.target - pl.pos
 		local desiredDir = (desired.Magnitude > 1) and desired.Unit or (pl.vel.Magnitude > 0.1 and pl.vel.Unit or Vector3.new(0,0,-1))
-		local speed = PLANE_SPEED * (pl.mode == "chase" and CHASE_SPEED_MULT or 1)
+		local speed = PLANE_SPEED * (pl.mode == "chase" and CHASE_SPEED_MULT or (pl.mode == "hunt" and HUNT_SPEED_MULT or 1))
 		local desiredVel = desiredDir * speed
 		pl.vel = pl.vel:Lerp(desiredVel, math.clamp(PLANE_TURN_RATE * dt, 0, 1))
 		pl.pos = pl.pos + pl.vel * dt
 
-		-- Clamp inside the gap airspace (cylinder radius + padded vertical band); bounce the heading
-		-- back inward and retarget so planes never wander off into irrelevant areas.
+		-- Clamp inside the gap airspace (corridor-following radius + padded vertical band); bounce the
+		-- heading back inward and retarget so planes never wander off into irrelevant areas. A HUNTER is
+		-- clamped in position but keeps its target: retargeting it here is what used to yank planes off
+		-- the player the instant they got close to the edge of the old fixed cylinder.
 		local flat = Vector3.new(pl.pos.X, 0, pl.pos.Z)
-		if flat.Magnitude > GAP_RADIUS then
-			flat = flat.Unit * GAP_RADIUS
+		if flat.Magnitude > zoneR then
+			flat = flat.Unit * zoneR
 			pl.pos = Vector3.new(flat.X, pl.pos.Y, flat.Z)
-			pl.target = randomGapPoint(band); pl.retargetTimer = 1.0
-			pl.vel = Vector3.new(pl.vel.X * -0.3, pl.vel.Y, pl.vel.Z * -0.3)
+			if pl.mode ~= "hunt" then
+				pl.target = randomGapPoint(band, zoneR); pl.retargetTimer = 1.0
+				pl.vel = Vector3.new(pl.vel.X * -0.3, pl.vel.Y, pl.vel.Z * -0.3)
+			end
 		end
 		local loY, hiY = band.lo + GAP_VMARGIN, band.hi - GAP_VMARGIN
 		if pl.pos.Y < loY or pl.pos.Y > hiY then
 			pl.pos = Vector3.new(pl.pos.X, math.clamp(pl.pos.Y, loY, hiY), pl.pos.Z)
-			pl.target = randomGapPoint(band); pl.retargetTimer = 1.0
-			pl.vel = Vector3.new(pl.vel.X, pl.vel.Y * -0.3, pl.vel.Z)
+			if pl.mode ~= "hunt" then
+				pl.target = randomGapPoint(band, zoneR); pl.retargetTimer = 1.0
+				pl.vel = Vector3.new(pl.vel.X, pl.vel.Y * -0.3, pl.vel.Z)
+			end
 		end
 
 		-- ---- ORIENT (look along velocity, bank into the horizontal turn) ----
@@ -781,13 +1003,51 @@ RunService.Heartbeat:Connect(function(dt)
 		pl.spin = pl.spin + dt*22
 		pl.blade.CFrame = fullCF * CFrame.new(0,0,-9.2*PLANE_SCALE) * CFrame.Angles(0,0,pl.spin)
 
+		-- ---- FLY-BY ENGINE SOUND ----
+		-- One-shot, positional, per-plane cooldown: it fires as the plane sweeps past the player and does
+		-- NOT retrigger while it circles. Independent of shooting -- roaming planes buzz you too.
+		pl.flybyCooldown = math.max(0, pl.flybyCooldown - dt)
+		local playerDist = (hrp.Position - pl.pos).Magnitude
+		if playerDist <= FLYBY_TRIGGER_DIST and pl.flybyCooldown <= 0 then
+			pl.flybyCooldown = FLYBY_COOLDOWN
+			pcall(function()
+				local prim = pl.model.PrimaryPart
+				local snd = prim and prim:FindFirstChild("PlaneFlyBy")
+				if not snd then
+					warn(string.format("[Planes] plane %d has no PlaneFlyBy sound instance", idx))
+					return
+				end
+				snd:Play()
+				-- Says whether the pass actually made noise. "fired but IsLoaded=false" = bad/unapproved
+				-- asset id; no line at all = the planes never got close enough to trigger.
+				print(string.format("[Planes] plane %d FLY-BY sound played at %.0f studs (loaded=%s vol=%.1f)",
+					idx, playerDist, tostring(snd.IsLoaded), snd.Volume))
+			end)
+		end
+
 		-- ---- SHOOT (only while airborne; respect per-plane cooldown + the global 2-shooter cap) ----
+		-- Hunters shoot too -- that is the whole point of hunting. Only a plane busy chasing ANOTHER plane
+		-- is exempt.
 		pl.shootCooldown = pl.shootCooldown - dt
-		if airborne and not pl.shooting and pl.mode == "roam" and pl.shootCooldown <= 0
+		if airborne and not pl.shooting and pl.mode ~= "chase" and pl.shootCooldown <= 0
 			and shooterCount < MAX_SHOOTERS and hrp
-			and (hrp.Position - pl.pos).Magnitude <= SHOOT_RANGE then
+			and playerDist <= SHOOT_RANGE then
 			startShoot(pl, idx)
 		end
+	end
+
+	-- ---- DIAGNOSTIC (throttled to every 3s while in the band) ----
+	-- If the planes ever go quiet again, this line says exactly which gate is holding them: the airborne
+	-- gate, the 2-shooter budget, the per-plane cooldowns, or plain distance.
+	if os.clock() >= nextPlaneDiag then
+		nextPlaneDiag = os.clock() + 3
+		local nearest, modes = math.huge, {}
+		for _,pl in ipairs(planes) do
+			nearest = math.min(nearest, (hrp.Position - pl.pos).Magnitude)
+			table.insert(modes, string.format("%s/%.1fs", pl.mode, math.max(0, pl.shootCooldown)))
+		end
+		print(string.format("[Planes] airborne=%s shooters=%d/%d nearest=%.0f (range %d) zoneR=%.0f [%s]",
+			tostring(airborne), shooterCount, MAX_SHOOTERS, nearest, SHOOT_RANGE, zoneR, table.concat(modes, " ")))
 	end
 
 	-- ---- PROJECTILES ----
@@ -836,15 +1096,23 @@ local function showMilestonePills(milestones)
 			_G.__msTag = (_G.__msTag or 0) + 1
 			local tag = "ms" .. _G.__msTag
 			_G.eventPillHold(tag, true)
-			local mSg=Instance.new("ScreenGui"); mSg.ResetOnSpawn=false; mSg.Parent=PlayerGui
-			local pill=Instance.new("Frame"); pill.AnchorPoint=Vector2.new(0.5,0); pill.Size=UDim2.new(0,280,0,42); pill.Position=UDim2.new(0.5,0,0,MS_TOP+(i-1)*52); pill.BackgroundColor3=Color3.fromRGB(40,190,40); pill.Parent=mSg
-			local co=Instance.new("UICorner"); co.CornerRadius=UDim.new(0,21); co.Parent=pill
+			-- SAME CARD AS EVERY OTHER BANNER: 500 x 65 at corner 16, not the old 280 x 42 stadium. The
+			-- per-pill step is the card height plus the shared 8px gap, so a batch of milestones stacks
+			-- with the identical rhythm TopCenterStack gives the banner column -- at 52 the new taller
+			-- cards would have overlapped each other by 13px.
+			local STEP = BANNER_H + BANNER_GAP
+			local mSg=Instance.new("ScreenGui"); mSg.Name="EventMilestonePill"; mSg.ResetOnSpawn=false; mSg.Parent=PlayerGui
+			local pill=Instance.new("Frame"); pill.AnchorPoint=Vector2.new(0.5,0); pill.Size=UDim2.new(0,BANNER_W,0,BANNER_H); pill.Position=UDim2.new(0.5,0,0,MS_TOP+(i-1)*STEP); pill.BackgroundColor3=Color3.fromRGB(40,190,40); pill.Parent=mSg
+			local co=Instance.new("UICorner"); co.CornerRadius=UDim.new(0,BANNER_CORNER); co.Parent=pill
 			local st=Instance.new("UIStroke"); st.Color=Color3.fromRGB(0,140,0); st.Thickness=2; st.Parent=pill
-			local lbl=Instance.new("TextLabel"); lbl.Text=m; lbl.Font=Enum.Font.GothamBold; lbl.TextSize=16; lbl.TextColor3=Color3.new(1,1,1); lbl.Size=UDim2.new(1,-10,1,0); lbl.Position=UDim2.new(0,5,0,0); lbl.BackgroundTransparency=1; lbl.TextXAlignment=Enum.TextXAlignment.Center; lbl.Parent=pill
+			-- TextScaled, not a fixed TextSize: the card is half as tall again as it was, so a hard 16px
+			-- left the text marooned in the middle of it. Capped so a short milestone is not shouted.
+			local lbl=Instance.new("TextLabel"); lbl.Text=m; lbl.Font=Enum.Font.GothamBold; lbl.TextScaled=true; lbl.TextColor3=Color3.new(1,1,1); lbl.Size=UDim2.new(1,-16,1,-14); lbl.Position=UDim2.new(0,8,0,7); lbl.BackgroundTransparency=1; lbl.TextXAlignment=Enum.TextXAlignment.Center; lbl.Parent=pill
+			do local c=Instance.new("UITextSizeConstraint"); c.MaxTextSize=22; c.Parent=lbl end
 			-- slide DOWN into place from 12px higher (it used to rise from below, which read as coming up
 			-- out of the middle of the screen -- wrong direction now that it lives at the top)
-			pill.BackgroundTransparency=1; pill.Position=UDim2.new(0.5,0,0,MS_TOP-12+(i-1)*52)
-			TweenService:Create(pill,TweenInfo.new(0.3,Enum.EasingStyle.Back),{BackgroundTransparency=0,Position=UDim2.new(0.5,0,0,MS_TOP+(i-1)*52)}):Play()
+			pill.BackgroundTransparency=1; pill.Position=UDim2.new(0.5,0,0,MS_TOP-12+(i-1)*STEP)
+			TweenService:Create(pill,TweenInfo.new(0.3,Enum.EasingStyle.Back),{BackgroundTransparency=0,Position=UDim2.new(0.5,0,0,MS_TOP+(i-1)*STEP)}):Play()
 			task.delay(2.5,function()
 				TweenService:Create(pill,TweenInfo.new(0.4),{BackgroundTransparency=1}):Play()
 				task.delay(0.4,function() mSg:Destroy(); _G.eventPillHold(tag, false) end)
@@ -1247,8 +1515,14 @@ local function stopStormSky()
 end
 
 local function cleanupWeather()
+	-- NOTE: HazardPlane / PlaneTracer are deliberately NOT in this sweep any more. The planes are not
+	-- weather -- they have their own lifecycle (cleared the moment the player leaves the plane band) --
+	-- and this sweep runs every time a storm/wind event ends. If the player was mid-band when an event
+	-- ended, it destroyed the LIVE planes while the plane system kept flying the corpses: invisible
+	-- planes, never respawned until the player left and re-entered the band. That was the "planes
+	-- sometimes fail to render" bug. (The plane loop also self-heals a destroyed model now, as a backstop.)
 	for _,obj in ipairs(workspace:GetChildren()) do
-		if obj.Name=="RainDrop" or obj.Name=="WindStreak" or obj.Name=="AggressiveBird" or obj.Name=="SpaceJunk" or obj.Name=="HazardPlane" or obj.Name=="PlaneTracer" then
+		if obj.Name=="RainDrop" or obj.Name=="WindStreak" or obj.Name=="AggressiveBird" or obj.Name=="SpaceJunk" then
 			pcall(function() obj:Destroy() end)
 		end
 	end
@@ -1340,7 +1614,7 @@ local function spawnFloatingCoinEmoji()
 	if not _G.serverEventActive then return end
 	local sg2=Instance.new("ScreenGui"); sg2.ResetOnSpawn=false; sg2.ZIndexBehavior=Enum.ZIndexBehavior.Global; sg2.Parent=PlayerGui
 	addEventSg(sg2)
-	local lbl=Instance.new("TextLabel"); lbl.Text="\xF0\x9F\xAA\x99"; lbl.Font=Enum.Font.GothamBold; lbl.TextSize=24
+	local lbl=Instance.new("TextLabel"); lbl.Text="\xF0\x9F\x92\xB0"; lbl.Font=Enum.Font.GothamBold; lbl.TextSize=24
 	lbl.BackgroundTransparency=1; lbl.TextColor3=Color3.fromRGB(255,215,0)
 	lbl.Size=UDim2.new(0,40,0,40); lbl.Position=UDim2.new(math.random(5,90)/100,0,1.05,0); lbl.ZIndex=6; lbl.Parent=sg2
 	TweenService:Create(lbl,TweenInfo.new(3,Enum.EasingStyle.Linear),{Position=UDim2.new(math.random(5,90)/100,0,-0.1,0)}):Play()
@@ -1665,7 +1939,7 @@ task.spawn(function()
 	-- own one-shot and lets it play out normally). If it fails to load, the effect still runs — the
 	-- teleport is server-driven. NUKE_BOOM_VOLUME is the single adjustable volume.
 	local NUKE_BOOM_SOUND_ID = "rbxassetid://89988274755984"
-	local NUKE_BOOM_VOLUME = 0.8
+	local NUKE_BOOM_VOLUME = 1
 	local function playBoomSound()
 		local boom = Instance.new("Sound")
 		boom.Name = "BirdNukeBoom"
@@ -1689,17 +1963,44 @@ task.spawn(function()
 			cam.CFrame = cam.CFrame * CFrame.new((math.random()-0.5)*2*m, (math.random()-0.5)*2*m, 0)
 		end)
 	end
-	-- Server-wide nuke explosion, shown to EVERYONE (incl. the buyer): boom sound + orange screen
-	-- flash + screen shake, all fired immediately when the nuke goes off.
+	-- Server-wide nuke explosion, shown to EVERYONE (incl. the buyer). DRAMATIC ON PURPOSE -- a nuke
+	-- that reads like a polite camera bump isn't worth Robux. Three layers, all screen-space and all
+	-- self-cleaning: (1) a hard WHITE detonation pop that cuts to a long orange wash -- two stages read
+	-- as a real blast where one flat flash never does; (2) a much longer, harder camera shake that
+	-- decays over 1.4s; (3) a panicked FLOCK of bird emojis scrambling across the whole screen -- the
+	-- "every bird in the world just took off at once" beat that sells it as a BIRD nuke.
 	local function nukeExplosion()
 		playBoomSound()
+		local white=mkFrame(stormSg,{
+			Size=UDim2.new(1,0,1,0),Position=UDim2.new(0,0,0,0),
+			BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=0.08,ZIndex=19
+		})
+		TweenService:Create(white,TweenInfo.new(0.18),{BackgroundTransparency=1}):Play()
+		Debris:AddItem(white,0.3)
 		local nukeFlash=mkFrame(stormSg,{
 			Size=UDim2.new(1,0,1,0),Position=UDim2.new(0,0,0,0),
-			BackgroundColor3=Color3.fromRGB(255,80,0),BackgroundTransparency=0.4,ZIndex=18
+			BackgroundColor3=Color3.fromRGB(255,80,0),BackgroundTransparency=0.35,ZIndex=18
 		})
-		TweenService:Create(nukeFlash,TweenInfo.new(0.5),{BackgroundTransparency=1}):Play()
-		Debris:AddItem(nukeFlash,0.6)
-		screenShake(0.6, 2.5)
+		TweenService:Create(nukeFlash,TweenInfo.new(1.1),{BackgroundTransparency=1}):Play()
+		Debris:AddItem(nukeFlash,1.2)
+		screenShake(1.4, 5)
+		for _=1,16 do
+			task.delay(math.random()*0.7,function()
+				pcall(function()
+					local ltr = (math.random(1,2)==1) -- half fly left-to-right, half the other way
+					local b=Instance.new("TextLabel")
+					b.BackgroundTransparency=1; b.Font=Enum.Font.GothamBold; b.TextSize=28+math.random(0,26)
+					b.Text="\xF0\x9F\x90\xA6"; b.TextColor3=Color3.new(1,1,1); b.ZIndex=20
+					b.Rotation=math.random(-25,25)
+					b.Size=UDim2.new(0,54,0,54)
+					b.Position=UDim2.new(ltr and -0.12 or 1.12, 0, math.random()*0.85, 0)
+					b.Parent=stormSg
+					TweenService:Create(b,TweenInfo.new(0.9+math.random()*0.8,Enum.EasingStyle.Linear),
+						{Position=UDim2.new(ltr and 1.12 or -0.12, 0, math.random()*0.85, 0)}):Play()
+					Debris:AddItem(b,1.9)
+				end)
+			end)
+		end
 	end
 	BirdNukeEvent2.OnClientEvent:Connect(function(buyerName)
 		pcall(function()
@@ -1717,7 +2018,7 @@ task.spawn(function()
 			else
 				playBirdSound()
 				if _G.showFloatingText then _G.showFloatingText("\xF0\x9F\x90\xA6\xF0\x9F\x92\xA5 BIRD NUKE INCOMING!",Color3.fromRGB(255,80,0)) end
-				for i=1,30 do
+				for i=1,42 do -- 30 -> 42: the swarm should feel like a SWARM (same stagger, ~4.2s of arrivals)
 					task.delay((i-1)*0.1,function()
 						pcall(function()
 							local char2=player.Character; local hrp2=char2 and char2:FindFirstChild("HumanoidRootPart"); if not hrp2 then return end

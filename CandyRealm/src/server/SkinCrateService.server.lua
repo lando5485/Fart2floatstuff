@@ -44,6 +44,7 @@ local SkinRemotes    = getOrCreate(ReplicatedStorage, "Folder", "SkinRemotes")
 local GetSkinState   = getOrCreate(SkinRemotes, "RemoteFunction", "GetSkinState")   -- c->s RF: () -> full state
 local OpenCrate      = getOrCreate(SkinRemotes, "RemoteFunction", "OpenCrate")      -- c->s RF: (crateId) -> result
 local TradeUp        = getOrCreate(SkinRemotes, "RemoteFunction", "TradeUp")        -- c->s RF: (tier, keys[]) -> result
+local AssignPetLevels = getOrCreate(SkinRemotes, "RemoteFunction", "AssignPetLevels") -- c->s RF: (petId) -> pour pending levels into that pet
 local EquipSkin      = getOrCreate(SkinRemotes, "RemoteEvent",    "EquipSkin")      -- c->s: (petId, skinId, traitId|false)
 local BuyTokens      = getOrCreate(SkinRemotes, "RemoteEvent",    "BuyTokens")      -- c->s: (packId)
 local SetTitle       = getOrCreate(SkinRemotes, "RemoteEvent",    "SetTitle")       -- c->s: (titleId|"")
@@ -59,6 +60,7 @@ local PetTraits   = require(Shared:WaitForChild("PetTraits"))
 local SkinCrates  = require(Shared:WaitForChild("SkinCrates"))
 local CrateTokens = require(Shared:WaitForChild("CrateTokens"))
 local PetCollection = require(Shared:WaitForChild("PetCollection"))
+local Gamepasses  = require(Shared:WaitForChild("Gamepasses"))
 
 local rng = Random.new()
 
@@ -74,6 +76,11 @@ _G.playerEquippedSkins = _G.playerEquippedSkins or {} -- [player] = { PizzaDrago
 -- to stop a BUG in a caller becoming an infinite faucet, not to limit a legitimate player, so a session-scoped
 -- counter is the right blast radius. A designed daily limit belongs in the quest system that awards it.
 local earnedThisSession = {} -- [player] = { [source] = number }
+
+-- Levels won from a Pet Level crate that the player has not placed yet. Declared up here because buildState
+-- (which is defined well before openCrate) has to ship the count on every push -- that field is the client's
+-- only cue to put the picker back up, including after a rejoin mid-decision.
+local pendingLevels = {}   -- [player] = levels waiting to be placed
 
 Players.PlayerRemoving:Connect(function(p)
 	earnedThisSession[p] = nil
@@ -135,11 +142,20 @@ local function speciesOf(key)
 	return (key:gsub(RARE_SUFFIX .. "$", ""))
 end
 
+-- CANDY DIFFERENCE: ownership comes from TWO sets. _G.playerOwnedPets is what a resident pet system would
+-- fill, and nothing in Candy does -- alone, it made every skin permanently "Unlock <Pet> to equip" here.
+-- _G.crossRealmCarriedPets (CrossRealmPets.server.luau) is the pets the player's teleport carried in from
+-- the Food realm, which ARE the pets a Candy player has. Consulting it here unlocks wearing skins on them,
+-- while trade keeps reading only _G.playerOwnedPets -- carried pets are not persisted by this realm, so they
+-- must never be tradable in it.
 local function ownsPetSpecies(player, petId)
-	local owned = _G.playerOwnedPets and _G.playerOwnedPets[player]
-	if not owned then return false end
-	for key in pairs(owned) do
-		if speciesOf(key) == petId then return true end
+	for _, source in ipairs({ _G.playerOwnedPets, _G.crossRealmCarriedPets }) do
+		local owned = source and source[player]
+		if owned then
+			for key in pairs(owned) do
+				if speciesOf(key) == petId then return true end
+			end
+		end
 	end
 	return false
 end
@@ -147,9 +163,11 @@ end
 -- The set of species this player has unlocked, for the client's "Unlock <Pet> to equip" labelling.
 local function unlockedSet(player)
 	local out = {}
-	local owned = _G.playerOwnedPets and _G.playerOwnedPets[player]
-	if owned then
-		for key in pairs(owned) do out[speciesOf(key)] = true end
+	for _, source in ipairs({ _G.playerOwnedPets, _G.crossRealmCarriedPets }) do
+		local owned = source and source[player]
+		if owned then
+			for key in pairs(owned) do out[speciesOf(key)] = true end
+		end
 	end
 	return out
 end
@@ -368,11 +386,27 @@ local function buildState(player)
 		if type(e) == "table" then equipped[petId] = { skin = e.skin, trait = e.trait } end
 	end
 	local c = collection(player)
+
+	-- THE PET ROSTER FOR THE LEVEL PICKER. The client has no other source for it: the pet system owns that
+	-- data and cannot publish a client-side list. Sending it on the state push that already exists costs one
+	-- small array and keeps the picker in step with hatches and trades for free -- each of those ends in a
+	-- pushState anyway.
+	local levelPets = {}
+	for _, pt in ipairs((_G.petListOwned and _G.petListOwned(player)) or {}) do
+		levelPets[#levelPets + 1] = {
+			petId = pt.petId, name = pt.displayName, level = pt.level, maxed = pt.maxed and true or false,
+		}
+	end
+
 	return {
 		tokens   = getTokens(player),
 		skins    = inv(player),
 		equipped = equipped,
 		unlocked = unlockedSet(player),
+		-- what the picker can choose from, and how many levels are waiting to be placed. pendingLevels > 0
+		-- is the client's cue to put the picker back up -- including on a rejoin mid-decision.
+		levelPets     = levelPets,
+		pendingLevels = pendingLevels[player] or 0,
 		-- Collection Book + rewards. Sent on every push so the book, the completion ticks and the title/aura
 		-- pickers all repaint from the same payload the inventory does -- there is no second fetch that could
 		-- show a stale "you're missing Galaxy" a moment after Galaxy landed.
@@ -505,6 +539,66 @@ local function grantPetLevels(player, amount)
 	return grants, (amount - left)
 end
 
+Players.PlayerRemoving:Connect(function(p)
+	local n = pendingLevels[p]
+	pendingLevels[p] = nil
+	if not n or n <= 0 then return end
+	-- SPILL ON THE WAY OUT. grantPetLevels already does the "equipped first, then lowest level" walk, so the
+	-- levels go somewhere sensible rather than nowhere. This is what makes it safe to hold levels back at all:
+	-- ignoring the picker, closing the game or being disconnected can never cost you the pull.
+	local grants, applied = grantPetLevels(p, n)
+	if grants then
+		print(("[SkinCrate] %s left with %d pending level(s) -- auto-applied %d across %d pet(s)")
+			:format(p.Name, n, applied or 0, #grants))
+	else
+		print(("[SkinCrate] %s left with %d pending level(s) but every pet is maxed -- nothing to apply")
+			:format(p.Name, n))
+	end
+	if _G.savePlayerData then pcall(function() _G.savePlayerData(p, "pending_levels_spill") end) end
+end)
+
+-- POUR the pending pool into ONE chosen pet. Returns a small result the picker reads to update itself.
+AssignPetLevels.OnServerInvoke = function(player, petId)
+	if type(petId) ~= "string" then return { ok = false, reason = "bad_pet" } end
+	local want = pendingLevels[player] or 0
+	if want <= 0 then return { ok = false, reason = "nothing_pending" } end
+
+	-- MUST OWN IT, AND IT MUST HAVE ROOM. Without the ownership check a crafted call could level a pet the
+	-- player has never had; without the maxed check the pool would be silently drained into a full pet.
+	local target
+	for _, p in ipairs((_G.petListOwned and _G.petListOwned(player)) or {}) do
+		if p.petId == petId then target = p; break end
+	end
+	if not target then return { ok = false, reason = "not_owned" } end
+	if target.maxed then return { ok = false, reason = "maxed" } end
+
+	local before = target.level or 1
+	local added, after = 0, before
+	if _G.petGrantLevels then
+		-- petGrantLevels returns THREE values (oldLevel, newLevel, levelsAdded), so pcall hands back
+		-- ok + all three. Reading only the first would take the OLD LEVEL as the count -- a level-1 pet fed
+		-- 7 levels would have reported "1 placed" and left 6 stuck in the pool forever.
+		local ok, oldL, newL, n = pcall(_G.petGrantLevels, player, petId, want)
+		if ok and n then
+			added = tonumber(n) or 0
+			before = tonumber(oldL) or before
+			after = tonumber(newL) or (before + added)
+		end
+	end
+	if added <= 0 then return { ok = false, reason = "grant_failed" } end
+
+	-- Only what LANDED comes out of the pool. A pet that capped after 3 of your 7 leaves 4 pending and the
+	-- picker stays up for the next choice -- that is the "select the ones you want" case.
+	local left = math.max(0, want - added)
+	pendingLevels[player] = (left > 0) and left or nil
+	pushState(player)
+	if _G.savePlayerData then pcall(function() _G.savePlayerData(player, "assign_levels") end) end
+
+	print(("[SkinCrate] %s poured %d level(s) into %s (%d -> %d); %d still pending")
+		:format(player.Name, added, petId, before, after, left))
+	return { ok = true, petId = petId, added = added, from = before, to = after, remaining = left }
+end
+
 local function openCrate(player, crateId, noSave)
 	local crate = SkinCrates.getCrate(crateId)
 	if not crate then return { ok = false, reason = "unknown_crate" } end
@@ -525,7 +619,12 @@ local function openCrate(player, crateId, noSave)
 	end
 
 	-- ROLL FIRST, so a crate that turns out to be unopenable (all bands empty) costs nothing.
-	local rarity, entry, reelIndex = SkinCrates.roll(rng, crateId)
+	-- LUCK is applied HERE and nowhere else on this path -- server-side, at the moment of the roll, from the
+	-- player's own rebirth count and Lucky Pass ownership (both server-owned). The client sends only "open crate
+	-- X", so it cannot influence its own odds. luckFor() returns exactly 1.0 for a player with no rebirths and
+	-- no pass, and at 1.0 the weights are bit-for-bit what they always were.
+	local luck = Gamepasses.luckFor(player)
+	local rarity, entry, reelIndex = SkinCrates.roll(rng, crateId, luck)
 	if not rarity or not entry then return { ok = false, reason = "empty_crate" } end
 	local traitId = PetTraits.roll(rng)
 
@@ -535,24 +634,54 @@ local function openCrate(player, crateId, noSave)
 	end
 	lastOpen[player] = now
 
-	-- LEVEL CRATE: grant levels and return early. Deliberately does NOT touch the skin inventory, does not roll
-	-- into the Collection Book, and cannot announce a Gold skin -- there is no skin involved at any point.
+	-- LEVEL CRATE: bank the levels and return early. Deliberately does NOT touch the skin inventory, does not
+	-- roll into the Collection Book, and cannot announce a Gold skin -- there is no skin involved at any point.
 	if SkinCrates.isLevelCrate(crate) then
-		local grants, applied = grantPetLevels(player, entry.levels)
-		if not grants then
-			-- Every pet maxed between the check above and here (a level-up landed mid-open). Refund and bail:
-			-- the tokens are already spent at this point, so returning without this would just eat them.
-			addTokens(player, crate.price, "refund: level crate had nothing to level")
-			return { ok = false, reason = "all_pets_maxed" }
-		end
-		print(string.format("[SkinCrate] %s opened %s -> [%s] +%d pet level(s), %d applied across %d pet(s)",
-			player.Name, crate.id, rarity, entry.levels, applied, #grants))
+		-- PEND, DO NOT APPLY. The reveal plays, then the client puts up the picker and the player decides
+		-- where these go now that they can see how many they won. Nothing is granted on this path at all.
+		pendingLevels[player] = (pendingLevels[player] or 0) + entry.levels
+		print(string.format("[SkinCrate] %s opened %s -> [%s] +%d pet level(s) PENDING (picker decides)",
+			player.Name, crate.id, rarity, entry.levels))
 		pushState(player)
 		if not noSave and _G.savePlayerData then pcall(function() _G.savePlayerData(player, "crate_open") end) end
 		return {
 			ok = true, crateId = crate.id, rarity = rarity, kind = "levels",
-			levels = entry.levels, applied = applied, grants = grants,
+			levels = entry.levels, pending = pendingLevels[player],
 			reelIndex = reelIndex, isGold = (rarity == SkinCrates.GOLD_TIER),
+			tokens = getTokens(player),
+		}
+	end
+
+	-- PET CRATE: grant the PET at the rolled band and return early. Like the level crate this never touches
+	-- the skin inventory, never rolls a trait and never enters the Collection Book -- there is no skin here.
+	--
+	-- THE BAND IS THE PRIZE. `rarity` is both the reel's landing tier and the pet's permanent rarity, so what
+	-- the reel showed and what lands in the inventory cannot disagree. A repeat pull stacks as a duplicate
+	-- rather than being wasted -- that is the fuel fusion runs on.
+	if SkinCrates.isPetCrate(crate) then
+		local granted, newPetCount = false, 0
+		if _G.grantPetAtRarity then
+			local ok2, g, n = pcall(_G.grantPetAtRarity, player, entry.pet, rarity)
+			if ok2 then granted, newPetCount = g and true or false, tonumber(n) or 0 end
+		end
+		if not granted then
+			-- PetRarityGrants not up, or an unknown species. Refunding is the only honest outcome: the player
+			-- paid tokens and the reel already promised them a pet.
+			warn(string.format("[SkinCrate] %s opened %s but the pet grant FAILED for '%s' -- refunding %d tokens",
+				player.Name, crate.id, tostring(entry.pet), crate.price))
+			addTokens(player, crate.price)
+			return { ok = false, err = "Pet could not be granted -- your tokens were refunded." }
+		end
+
+		local goldPet = (rarity == SkinCrates.GOLD_TIER)
+		print(string.format("[SkinCrate] %s opened %s -> [%s] PET %s (x%d)%s",
+			player.Name, crate.id, rarity, entry.pet, newPetCount, goldPet and "  *** GOLD ***" or ""))
+		pushState(player)
+		if not noSave and _G.savePlayerData then pcall(function() _G.savePlayerData(player, "crate_open") end) end
+		return {
+			ok = true, crateId = crate.id, rarity = rarity, kind = "pets",
+			pet = entry.pet, count = newPetCount,
+			reelIndex = reelIndex, isGold = goldPet,
 			tokens = getTokens(player),
 		}
 	end
@@ -801,6 +930,50 @@ end
 
 -- Grant a specific skin outside a crate (an event reward, a promo code, a quest-line prize). Rolls a trait too
 -- unless one is passed, so an event skin can still surprise you.
+-- ============================================================================================================
+-- GIFTING HOOKS (used by Gifting.server -- ported from the Food Realm)
+-- ============================================================================================================
+-- All three live HERE because this service owns the balance: no other script may touch _G.playerCrateTokens
+-- directly, and keeping the debit/credit primitives beside addTokens/spendTokens means the gifting feature
+-- cannot drift out of sync with the cap/clamp/save rules.
+
+-- ONLINE gift: debit and credit in one call with NO yield between them, so it can never create tokens and
+-- never destroy them -- the pair either both happen or (insufficient funds) neither does.
+_G.giftCrateTokens = function(sender, recipient, amount)
+	amount = math.floor(tonumber(amount) or 0)
+	if amount <= 0 then return false, "bad amount" end
+	if not (typeof(sender) == "Instance" and sender:IsA("Player")
+		and typeof(recipient) == "Instance" and recipient:IsA("Player")) then
+		return false, "bad players"
+	end
+	if getTokens(sender) < amount then return false, "not enough tokens" end
+	spendTokens(sender, amount)
+	addTokens(recipient, amount, "gift from " .. sender.Name)
+	pushState(sender); pushState(recipient)
+	return true
+end
+
+-- OFFLINE debit: takes the tokens BEFORE the mailbox write. The reverse order is a minting bug: a mailbox
+-- entry whose debit then fails is tokens the recipient will be paid that nobody ever spent.
+_G.debitCrateTokensForGift = function(sender, amount)
+	amount = math.floor(tonumber(amount) or 0)
+	if amount <= 0 then return false, "bad amount" end
+	if getTokens(sender) < amount then return false, "not enough tokens" end
+	spendTokens(sender, amount)
+	pushState(sender)
+	return true
+end
+
+-- RAW credit: mailbox claims and refunds. Deliberately NOT routed through _G.crateTokensAward -- these are
+-- tokens that were already debited from a real sender, so the anti-farm caps must never eat part of them.
+_G.addCrateTokensRaw = function(player, amount, reason)
+	amount = math.floor(tonumber(amount) or 0)
+	if amount <= 0 then return false end
+	addTokens(player, amount, reason or "gift")
+	pushState(player)
+	return true
+end
+
 _G.skinGrant = function(player, petId, skinId, traitId, howMany)
 	if typeof(player) ~= "Instance" or not player:IsA("Player") then return nil end
 	if type(petId) ~= "string" or not PetSkins.exists(skinId) then return nil end

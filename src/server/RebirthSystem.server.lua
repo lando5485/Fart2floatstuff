@@ -6,7 +6,13 @@
 -- re-beat them next loop, but you keep a PERMANENT, stacking boost:
 --     * +25% coins earned    (via _G.rebirthMult, applied in PlayerStats' CoinEvent)
 --     * +3%  flight speed     (client reads the Rebirths leaderstat -> _G.rebirthSpeedMult in CoreClient)
---     * better rare-pet luck  (via _G.rebirthLuck, applied in PetSystem's rare roll)
+--     * better crate luck     (via _G.rebirthLuck -> Gamepasses.luckFor, applied in every crate rarity roll)
+--
+-- ⚠ THAT LUCK LINE USED TO BE A LIE. It read "applied in PetSystem's rare roll", but nothing in the repo ever
+-- read _G.rebirthLuck, and the rare roll it named had been deleted (PetSystem hardcodes isRare = false --
+-- quest pets are never rare any more, rarity comes from crates). So the Rebirth panel advertised "Luck x1.15"
+-- for a stat with no effect at all. Luck is now read by SkinCrateService and CrateService at roll time via
+-- Gamepasses.luckFor, which is where rares actually come from.
 -- KEPT across rebirth: pets (incl. any rarer ones you earn later), gamepasses, rebirth count + multiplier,
 -- and lifetime totals (Total Coins Earned / Total Fart Power).
 --
@@ -24,7 +30,11 @@ local RunService        = game:GetService("RunService")
 --------------------------------------------------------------------------------
 local COIN_PER   = 0.25  -- +25% coins per rebirth
 local SPEED_PER  = 0.03  -- +3% flight speed per rebirth (kept here for docs; CoreClient reads the leaderstat)
-local LUCK_PER   = 0.15  -- rare-pet odds divided by (1 + 0.15 * rebirths)
+-- LUCK now comes from the shared Gamepasses module, which is what the crate rolls and the client-side odds
+-- panel both read. Keeping a second copy here is how the old value ended up advertised-but-unused: the panel
+-- promised "Luck x1.15" while NOTHING in the repo read _G.rebirthLuck at all.
+local Gamepasses = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Gamepasses"))
+local LUCK_PER   = Gamepasses.REBIRTH_LUCK_PER  -- +15% weight on every rarer crate band, per rebirth
 local REQ_ISLAND = 14    -- must have reached the last island to rebirth
 
 -- realm-completion stores (the SAME keys/fields RealmPortals.server reads)
@@ -44,7 +54,7 @@ local dinoStore  = DataStoreService:GetDataStore(DINO_STORE)
 local candyStore = DataStoreService:GetDataStore(CANDY_STORE)
 
 _G.rebirthMult = _G.rebirthMult or {} -- [player] = coin multiplier (read by PlayerStats CoinEvent)
-_G.rebirthLuck = _G.rebirthLuck or {} -- [player] = rare-pet odds DIVISOR (read by PetSystem rare roll)
+_G.rebirthLuck = _G.rebirthLuck or {} -- [player] = crate-luck MULTIPLIER (read by Gamepasses.luckFor)
 
 local rebirths = {} -- [player] = n
 local busy     = {} -- [player] = true while a rebirth is processing

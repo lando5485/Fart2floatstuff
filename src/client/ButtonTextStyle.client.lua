@@ -141,17 +141,51 @@ local function textOf(btn)
 end
 
 local SKIP_ATTR = "BTS_Skip" -- opt-out: "this button drives its own fill, keep out"
+local WATCH_ATTR = "BTS_Watched" -- we've already hooked this button's "am I eligible yet?" signals
 
-local function styleButton(btn)
+-- ===== WHY ELIGIBILITY IS WATCHED, NOT SAMPLED =====
+-- Whether a button gets styled depends on two things that are FALSE for a moment and TRUE just after: it needs
+-- text, and it needs an opaque fill. A panel builder creates the button, then sets .Text (and often fades the
+-- fill in) on a later frame. Sampling that state means the answer depends on exactly when a sweep happened:
+--
+--   * DescendantAdded fires before .Text is assigned  -> button skipped, left with its ORIGINAL look
+--   * the 3-second sweep comes round                  -> the SAME button suddenly restyles
+--
+-- In a tabbed panel like the Pets hub, where each tab builds its rows on open, that is visible as fonts and
+-- outlines changing on some labels and not others while you click between tabs, and again a few seconds later.
+--
+-- So: when a button is not eligible YET, hook the exact properties the decision rests on and restyle the
+-- instant they change. Every label then gets its treatment at the same moment it gets its text -- nothing
+-- changes appearance after the fact. Hooked once per button (WATCH_ATTR), so this cannot stack connections.
+local styleButton
+local function watchUntilEligible(btn)
+	if btn:GetAttribute(WATCH_ATTR) then return end
+	btn:SetAttribute(WATCH_ATTR, true)
+	local function recheck() task.defer(function() pcall(styleButton, btn) end) end
+	btn:GetPropertyChangedSignal("BackgroundTransparency"):Connect(recheck)
+	if btn:IsA("TextButton") then btn:GetPropertyChangedSignal("Text"):Connect(recheck) end
+	-- a caption label added or filled in later counts as the button gaining text
+	btn.ChildAdded:Connect(function(c)
+		if c:IsA("TextLabel") then
+			recheck()
+			c:GetPropertyChangedSignal("Text"):Connect(recheck)
+		end
+	end)
+	for _, c in ipairs(btn:GetChildren()) do
+		if c:IsA("TextLabel") then c:GetPropertyChangedSignal("Text"):Connect(recheck) end
+	end
+end
+
+function styleButton(btn)
 	if not (btn:IsA("TextButton") or btn:IsA("ImageButton")) then return end
 	-- SOME BUTTONS USE THEIR FILL TO MEAN SOMETHING. The campfire's Roast/Stop/Eat go grey when the action is
 	-- illegal, and that greying IS the feature -- it is how a button that cannot work is made to look like it
 	-- cannot work. This sweep re-asserting a remembered "original" colour every 3 seconds would repaint them
 	-- live again a moment after they greyed, so a dead button would look pressable. Worse than ugly text.
 	if btn:GetAttribute(SKIP_ATTR) then return end
-	if btn.BackgroundTransparency > 0.5 then return end -- see-through button: no fill to contrast against
+	if btn.BackgroundTransparency > 0.5 then watchUntilEligible(btn); return end -- see-through: no fill to contrast against
 	local label = textOf(btn)
-	if not label then return end
+	if not label then watchUntilEligible(btn); return end
 
 	local fill = originalFill(btn)
 	btn.BackgroundColor3 = darken(fill, FILL_MIX)

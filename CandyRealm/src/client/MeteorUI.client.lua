@@ -36,7 +36,15 @@ local Lighting = game:GetService("Lighting")
 local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
-local sync = ReplicatedStorage:WaitForChild("MeteorSync")
+-- BOUNDED WAIT. Nothing in the Candy realm ever creates MeteorSync -- it is a Food-realm event remote -- so
+-- an unbounded WaitForChild here yielded this script's thread forever and printed "Infinite yield possible on
+-- ReplicatedStorage:WaitForChild(\"MeteorSync\")" at every boot. Time out and bail instead: the meteor event
+-- simply does not exist here, and a script with nothing to listen to should exit, not hang.
+local sync = ReplicatedStorage:WaitForChild("MeteorSync", 30)
+if not sync then
+	warn("[MeteorUI] MeteorSync never appeared -- no meteor event in this realm, UI not built")
+	return
+end
 
 --======================================================================
 -- ScreenGui: banner (top) + small reward popup (bottom).

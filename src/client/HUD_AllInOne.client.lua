@@ -973,7 +973,13 @@ do
 			panel.Visible = false; catcher.Visible = false
 		end
 	end
-	catcher.MouseButton1Click:Connect(function() setMoreOpen(false) end)
+	-- THE CATCHER SWALLOWS THE CLICK, IT DOES NOT CLOSE THE MENU.
+	-- It used to call setMoreOpen(false), so a stray tap anywhere on screen shut MORE+ mid-read -- and on a
+	-- phone, where a "tap" is any finger brushing the glass, that happens constantly. It stays a full-screen
+	-- button so the press still cannot fall through to the world or the HUD underneath; it just no longer
+	-- treats "you touched the screen" as "you meant to leave". The MORE button itself toggles it, and each
+	-- card closes it on the way to whatever it opens.
+	catcher.MouseButton1Click:Connect(function() end)
 	moreX.MouseButton1Click:Connect(function() playUIClick(); setMoreOpen(false) end)
 end
 

@@ -13,7 +13,7 @@
 --   * Talk to the Candy Npc -> accept -> you're handed a Pickaxe (built in code).
 --   * Equip it and swing (click) at a crystal you're facing: each hit chips it smaller
 --     (base stays planted), and the final hit SHATTERS it in a candy spark burst.
---   * Mine them all -> firework + "Crystals mined!" + _G.crystalQuestComplete.
+--   * Mine NEED of them (8, not the whole field) -> firework + banner + _G.crystalQuestComplete.
 --   * /complete finishes it instantly (near island8).
 --======================================================================
 
@@ -23,6 +23,12 @@ local TweenService    = game:GetService("TweenService")
 local Debris          = game:GetService("Debris")
 local RunService      = game:GetService("RunService")   -- camera shake (cinematic + hazards)
 local TextChatService = game:GetService("TextChatService")
+
+-- DECLARED FALSE AT BOOT, not left nil. Every reader today uses `not _G.crystalQuestComplete`,
+-- and nil is falsy, so this changes no behaviour -- but a later `== false` test would
+-- silently never match on a flag that was never declared, and this states up front that
+-- island8 Crystal Mine owns it.
+_G.crystalQuestComplete = false
 
 local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
@@ -39,12 +45,26 @@ local HITS_PER_CRYSTAL  = 6                  -- pickaxe hits to shatter a crysta
 -- Halfway through, the NPC re-forges your pickaxe: it hits harder, so the back half of
 -- the job speeds up instead of dragging (the usual problem with "collect N" quests).
 local UPGRADE_AFTER     = 3                  -- crystals mined before the upgrade fires
+-- ⚠ HOW MANY YOU ACTUALLY HAVE TO MINE. The quest used to require EVERY crystal on the island,
+-- and island8 has 25 of them: at six hits each that is ~125 swings of a pickaxe to finish one
+-- island. No other island in this realm asks for anything close -- the cookie wants 6 chunks,
+-- the tractor 5 parts, the pancake 5 syrups.
+--
+-- So the field stays 25 strong (it should LOOK like a mine) and the quota is what closes the
+-- quest. Everything past the quota is still minable, still shatters, still stops its gas vent --
+-- it just is not homework. Clamped to what exists, so a world with fewer crystals still finishes.
+local NEED              = 8
 local UPGRADED_HITS     = 4                  -- hits per crystal once it's upgraded
 -- Cave hazards: gentle on purpose -- they push you back a step, they don't kill you.
 local HAZARDS_ON        = true
 local ROCK_DROP_NAME    = "rockdrop"         -- parts named "rock drop" are the ceiling holes
 local ROCKFALL_EVERY    = 12                 -- seconds between rockfalls at each drop point
 local ROCK_LINGER       = 4                  -- seconds a landed boulder stays solid before crumbling
+-- A boulder hitting the cave floor uses THE PLAYER'S OWN LANDING THUD -- the same asset, shaped the
+-- same way, that LandingImpact.client.luau plays when you slam into the ground (its THUD_ID). One
+-- impact sound for "heavy thing hits floor" anywhere in the realm is what makes the cave read as the
+-- same physical world rather than a set with its own foley; and it is a verified-working asset.
+local THUD_ID           = "rbxassetid://5801257793"
 -- Poison sugar-gas vents erupt from parts you named "gas vents" in Studio. While a vent
 -- is blowing you can't mine -- the gas fogs your view for a few seconds first.
 local VENT_NAME         = "gasvent"          -- matched loosely: "gas vents", "GasVent2", ...
@@ -191,10 +211,18 @@ objLabel.TextColor3 = TEXTC; objLabel.TextScaled = true; objLabel.Parent = objFr
 do local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 22; sz.Parent = objLabel
    local pad = Instance.new("UIPadding"); pad.PaddingLeft = UDim.new(0,14); pad.PaddingRight = UDim.new(0,14); pad.Parent = objLabel end
 
+-- THE GOAL, NOT THE FIELD SIZE: min(quota, what actually exists). One function so the banner,
+-- the NPC's dialogue and the win test can never disagree about what the number means.
+local function goalCount()
+	if total <= 0 then return NEED end
+	return math.min(NEED, total)
+end
+
 local function baseText()
-	if done then return "\xE2\x9B\x8F All crystals mined -- nice work!" end
+	-- "quota", not "all": you finish on NEED, and the rest of the field is still standing
+	if done then return "\xE2\x9B\x8F Quota filled -- nice work!" end
 	if not accepted then return "\xF0\x9F\x92\xAC Go talk to the Candy NPC!" end
-	return ("\xE2\x9B\x8F Equip your Pickaxe & mine the crystals:  %d/%d"):format(mined, math.max(total, mined))
+	return ("\xE2\x9B\x8F Equip your Pickaxe & mine the crystals:  %d/%d"):format(math.min(mined, goalCount()), goalCount())
 end
 local flashTok = 0
 local function refreshBanner() objLabel.Text = baseText() end
@@ -271,17 +299,28 @@ local function fireworks(from)
 		end)
 	end
 end
+-- ⚠ ANNOUNCEMENTS GO THROUGH THE ONE REALM BANNER -- NEVER A ScreenGui OF THEIR OWN.
+-- This is realm 1's rule (see its CoreClient, and NotifyCenter.luau here: push/pin is the whole
+-- API). It used to build its own card in the middle of the screen, which meant a quest win could
+-- land on top of the objective banner, an island arrival or a live event -- several cards in the
+-- same band, none of them aware of the others. NotifyCenter already ranks, queues and preempts,
+-- so a win is one more push and takes its turn like everything else.
+--
+-- EVENT priority, deliberately: finishing a quest has to outrank the objective banner that is
+-- pinned underneath it (REWARD), but must not talk over a real Robux purchase (PURCHASE).
 local function winBanner()
-	local g = Instance.new("ScreenGui"); g.Name = "CrystalWin"; g.ResetOnSpawn = false; g.DisplayOrder = 20; g.IgnoreGuiInset = true; g.Parent = PlayerGui
-	local f = Instance.new("Frame"); f.AnchorPoint = Vector2.new(0.5,0.5); f.Position = UDim2.new(0.5,0,0.42,0); f.Size = UDim2.new(0,0,0,90); f.BackgroundColor3 = FILL; f.Parent = g
-	Instance.new("UICorner", f).CornerRadius = UDim.new(0,18)
-	do local s = Instance.new("UIStroke"); s.Color = STROKE; s.Thickness = 4; s.Parent = f end
-	local l = Instance.new("TextLabel"); l.BackgroundTransparency = 1; l.Size = UDim2.fromScale(1,1); l.Font = Enum.Font.FredokaOne; l.TextColor3 = TEXTC; l.TextScaled = true
-	l.Text = "\xE2\x9B\x8F Crystals mined!"; l.Parent = f
-	local pad = Instance.new("UIPadding"); pad.PaddingLeft = UDim.new(0,24); pad.PaddingRight = UDim.new(0,24); pad.Parent = l
-	Instance.new("UITextSizeConstraint", l).MaxTextSize = 32
-	TweenService:Create(f, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = UDim2.new(0,560,0,90) }):Play()
-	task.delay(5, function() TweenService:Create(f, TweenInfo.new(0.4), { BackgroundTransparency = 1 }):Play(); TweenService:Create(l, TweenInfo.new(0.4), { TextTransparency = 1 }):Play(); task.delay(0.5, function() g:Destroy() end) end)
+	local msg = "\xE2\x9B\x8F Crystals mined!"
+	if _G.NotifyCenter and _G.NotifyCenter.push then
+		pcall(function() _G.NotifyCenter.push({
+			top      = "â¨ QUEST COMPLETE",
+			text     = msg,
+			color    = STROKE,
+			priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT or nil,
+			duration = 5,
+		}) end)
+	else
+		print("[CrystalMine] " .. tostring(msg))
+	end
 end
 -- CINEMATIC FINISH: pull the camera back onto the mine, thump it, then the fireworks.
 local function cinematicFinish(at)
@@ -342,7 +381,7 @@ local function winQuest()
 	refreshBanner()
 	local at = (islandRef or (player.Character and player.Character:GetPivot().Position)) + Vector3.new(0, 8, 0)
 	cinematicFinish(at)
-	if _G.NotifyCenter then pcall(function() _G.NotifyCenter.push({ text = "\xE2\x9B\x8F All crystals mined!", color = STROKE }) end) end
+	if _G.NotifyCenter then pcall(function() _G.NotifyCenter.push({ text = "\xE2\x9B\x8F Crystal quota filled!", color = STROKE }) end) end
 	task.delay(6, function() objFrame.Visible = false end)
 	print("[CrystalMine] complete -- all crystals mined")
 end
@@ -369,8 +408,59 @@ local function decorateCrystal(part)
 	pe.Parent = att
 	return pe
 end
+-- ⚠ ISLAND8 ONLY. scanCrystals() sweeps the WHOLE Workspace by name -- deliberately, so the
+-- quest does not depend on finding an "island8" model -- but isCrystalName() matches anything
+-- STARTING with "crystal", and this world has objects called crystal* on other islands too.
+--
+-- That is not a cosmetic over-count. islandRef is the CENTROID of every registered crystal, and
+-- islandRef is what findNPCNear() and nearMine() both measure from. Pull seven foreign crystals
+-- into the set and the centroid slides off island8 -- so the Candy Npc falls outside NPC_MAX_DIST
+-- (no quest, no E prompt) and nearMine() is false while you are standing in the cave (no gas, no
+-- rockfalls). The same world proved it twice: the run that registered 18 wired the NPC, the runs
+-- that registered 25 never did.
+--
+-- So: keep the by-name sweep, then FILTER BY DISTANCE from island8's real position.
+--
+-- ⚠ NOT BY ANCESTRY -- that was tried and it was worse. `IsDescendantOf(island8Model)` dropped 18
+-- of 25 and kept SEVEN, below the quest's own NEED of 8, because island8's crystals are not all
+-- parented inside the island8 Model (IslandStreaming's loose-part audit warns about exactly this
+-- kind of stray). Ancestry answers "who owns this in the Explorer tree", which is a question about
+-- how the place file was assembled. What the quest actually needs to know is "is this rock in the
+-- cave", and that is a question about WHERE IT IS.
+--
+-- 500 studs: the island is 300 x 357, so its half-diagonal is ~233 -- this covers the whole island
+-- with room to spare, and the nearest confusable crystals (island15's, in the run that exposed
+-- this) are 37,844 studs away. There is no ambiguity to get wrong.
+local ISLAND8_RADIUS = 500
+local island8Pos = nil
+local function resolveIsland8Pos()
+	if island8Pos then return island8Pos end
+	local isle = findIsland8()
+	if not isle then return nil end
+	if isle:IsA("Model") then
+		local cf, size = isle:GetBoundingBox()
+		-- a streamed-out Model is a HOLLOW SHELL whose box is a point at the origin. Taking that as
+		-- the island's position would put the filter 21,000 studs from the cave and reject every
+		-- real crystal -- so it does not count as resolved until there is geometry in it.
+		if size.Magnitude > 1 then island8Pos = cf.Position end
+	else
+		local bp = firstBasePart(isle)
+		if bp then island8Pos = bp.Position end
+	end
+	return island8Pos
+end
+
+local function onIsland8(inst)
+	local ref = resolveIsland8Pos()
+	if not ref then return true end   -- position not trustworthy yet: accept, and purge below once it is
+	local part = inst:IsA("BasePart") and inst or (inst.PrimaryPart or largestBasePart(inst))
+	if not part then return true end
+	return (part.Position - ref).Magnitude <= ISLAND8_RADIUS
+end
+
 local shimmerPhase = 0
 local function registerCrystal(inst)
+	if not onIsland8(inst) then return end
 	local part = inst:IsA("BasePart") and inst or (inst.PrimaryPart or largestBasePart(inst))
 	-- PrimaryPart could itself be the vent; fall back to the largest non-vent part
 	if part and isVentName(part.Name) and inst:IsA("Model") then part = largestBasePart(inst) end
@@ -383,7 +473,35 @@ local function registerCrystal(inst)
 	total += 1
 	refreshBanner()
 end
+
+-- Once island8's position is trustworthy, drop anything registered before it that turns out to be
+-- somewhere else. Runs on every sweep, not once: the position can resolve late, and crystals keep
+-- arriving after it does.
+local purgedOnce = false
+local function scopeToIsland8()
+	local ref = resolveIsland8Pos()
+	if not ref or purgedOnce then return end
+	local dropped = 0
+	for part, rec in pairs(crystals) do
+		if (part.Position - ref).Magnitude > ISLAND8_RADIUS then
+			if rec.pe and rec.pe.Parent then rec.pe.Parent:Destroy() end
+			crystals[part] = nil
+			total -= 1
+			dropped += 1
+		end
+	end
+	purgedOnce = true
+	if dropped > 0 then
+		print(("[CrystalMine] dropped %d crystal(s) more than %d studs from island8 -- %d left. "
+			.. "(Named crystal* but sitting on another island; counting them dragged the quest's "
+			.. "centre off the cave, which is what broke the NPC prompt and the hazards.)")
+			:format(dropped, ISLAND8_RADIUS, total))
+		refreshBanner()
+	end
+end
+
 local function scanCrystals()
+	scopeToIsland8()
 	-- scan ALL of Workspace by name (don't depend on finding an 'island8' model)
 	for _, d in ipairs(Workspace:GetDescendants()) do
 		if isCrystalName(d.Name) and (d:IsA("BasePart") or d:IsA("Model")) then registerCrystal(d) end
@@ -510,11 +628,11 @@ local function mineHit(part)
 		if rec.pe then rec.pe.Enabled = false; Debris:AddItem(rec.pe.Parent, 1.5) end -- stop the shimmer sparkle
 		mined += 1
 		if killVentsFor then killVentsFor(part) end   -- its geyser stops for good
-		flashBanner(("\xE2\x9B\x8F Crystal mined!  %d/%d"):format(mined, total))
+		flashBanner(("\xE2\x9B\x8F Crystal mined!  %d/%d"):format(math.min(mined, goalCount()), goalCount()))
 		refreshBanner()
-		if _G.NotifyCenter then pcall(function() _G.NotifyCenter.push({ text = ("\xE2\x9B\x8F Crystal mined (%d/%d)"):format(mined, total), color = STROKE }) end) end
-		if upgradePickaxe and mined == UPGRADE_AFTER and mined < total then upgradePickaxe() end
-		if mined >= total and total > 0 then winQuest() end
+		if _G.NotifyCenter then pcall(function() _G.NotifyCenter.push({ text = ("\xE2\x9B\x8F Crystal mined (%d/%d)"):format(math.min(mined, goalCount()), goalCount()), color = STROKE }) end) end
+		if upgradePickaxe and mined == UPGRADE_AFTER and mined < goalCount() then upgradePickaxe() end
+		if mined >= goalCount() then winQuest() end
 	end
 end
 
@@ -1040,7 +1158,8 @@ local function rockfallFrom(dropPart)
 	end
 
 	task.delay(0.85, function()
-		local boulder, core = buildBoulder(0.9 + math.random() * 0.5)
+		local rockScale = 0.9 + math.random() * 0.5
+		local boulder, core = buildBoulder(rockScale)
 		boulder:PivotTo(CFrame.new(start))
 		boulder.Parent = workspace
 
@@ -1064,6 +1183,30 @@ local function rockfallFrom(dropPart)
 				-- IMPACT
 				sparkBurst(core, 18, PINK)
 				nudgeCamera(1.6, 0.4)
+
+				-- THE THUD -- LandingImpact's curve, with the boulder's size standing in for fall speed:
+				-- volume up and PITCH DOWN together, because the same sample played lower reads as a bigger
+				-- object rather than just a louder one. A 1.4-scale rock lands noticeably heavier than a 0.9.
+				--
+				-- It gets its OWN anchored emitter rather than being parented to the boulder: the boulder is
+				-- crumbled and destroyed a few seconds later, and a Sound dies with its parent -- close enough
+				-- to the tail to clip it. The emitter is invisible, collides with nothing and removes itself.
+				do
+					local t = math.clamp((rockScale - 0.9) / 0.5, 0, 1) * 0.3 + 0.68
+					local emit = Instance.new("Part")
+					emit.Anchored = true; emit.CanCollide = false; emit.CanQuery = false; emit.CastShadow = false
+					emit.Transparency = 1; emit.Size = Vector3.new(0.2, 0.2, 0.2)
+					emit.CFrame = CFrame.new(Vector3.new(start.X, land.Y + 0.6, start.Z))
+					emit.Parent = workspace
+					local s = Instance.new("Sound")
+					s.SoundId       = THUD_ID
+					s.Volume        = 0.25 + 0.75 * t
+					s.PlaybackSpeed = 1.45 - 0.75 * t
+					s.RollOffMaxDistance = 220
+					s.Parent = emit
+					s:Play()
+					Debris:AddItem(emit, 6)
+				end
 
 				-- it's a real rock now: solid, you can bump into it or climb it
 				for _, p in ipairs(boulder:GetDescendants()) do
@@ -1129,28 +1272,80 @@ local function rockfallFrom(dropPart)
 	end)
 end
 
--- find the drop points and start each one cycling
-wireRockDrops = function()
-	for _, d in ipairs(workspace:GetDescendants()) do
-		if d:IsA("BasePart") and string.find(loose(d.Name), ROCK_DROP_NAME, 1, true) then
-			d.Transparency = 1; d.CanCollide = false; d.CanQuery = false   -- marker only
-			rockDrops[#rockDrops + 1] = d
+-- Find the drop points and start each one cycling.
+--
+-- ⚠ THIS RE-SCANS. It used to sweep Workspace ONCE at boot and hard-return if it found
+-- nothing -- which, with StreamingEnabled, is a coin flip on where you happened to be
+-- standing when the quest booted. Two runs of the same untouched world, minutes apart:
+-- one wired 5 rock drops and 6 gas vents, the next found ZERO of either and printed
+-- "no parts named 'rock drop' found". The placement blocks were in Studio the whole
+-- time; they simply had not replicated yet, and nothing ever looked again.
+--
+-- scanCrystals() twenty lines up already solved this for crystals -- one pass, then a
+-- rescan loop, then DescendantAdded for stragglers. The hazards never got the same
+-- treatment. Now they do: registration is INCREMENTAL (a `seen` set, so a re-scan can
+-- never double-wire a marker into two rockfall cycles), each drop starts its own cycle
+-- the moment it is found, and the "none found" line is only allowed to fire once the
+-- streaming window has actually closed.
+local seenDrops = {}
+local function registerDrop(d)
+	if seenDrops[d] then return false end
+	seenDrops[d] = true
+	d.Transparency = 1; d.CanCollide = false; d.CanQuery = false   -- marker only
+	rockDrops[#rockDrops + 1] = d
+	local i = #rockDrops
+	task.spawn(function()
+		-- stagger off this drop's index so late arrivals slot into the rhythm instead of
+		-- all firing together the instant they stream in
+		task.wait(4 + (i % 5) * (ROCKFALL_EVERY / 5))
+		while true do
+			if d.Parent and nearMine() then rockfallFrom(d) end
+			task.wait(ROCKFALL_EVERY)
 		end
-	end
-	if #rockDrops == 0 then
-		warn("[CrystalMine] no parts named 'rock drop' found -- no rockfalls")
-		return
-	end
-	print(("[CrystalMine] %d rock drop(s) wired"):format(#rockDrops))
-	for i, dp in ipairs(rockDrops) do
-		task.spawn(function()
-			task.wait(4 + i * (ROCKFALL_EVERY / math.max(1, #rockDrops)))
-			while true do
-				if nearMine() then rockfallFrom(dp) end
-				task.wait(ROCKFALL_EVERY)
+	end)
+	return true
+end
+
+wireRockDrops = function()
+	local function sweep()
+		local added = 0
+		for _, d in ipairs(workspace:GetDescendants()) do
+			if d:IsA("BasePart") and string.find(loose(d.Name), ROCK_DROP_NAME, 1, true) then
+				if registerDrop(d) then added += 1 end
 			end
-		end)
+		end
+		return added
 	end
+
+	sweep()
+	Workspace.DescendantAdded:Connect(function(d)
+		if d:IsA("BasePart") and string.find(loose(d.Name), ROCK_DROP_NAME, 1, true) then
+			if registerDrop(d) then
+				print(("[CrystalMine] rock drop streamed in late -- %d wired"):format(#rockDrops))
+			end
+		end
+	end)
+	-- keep sweeping for the same 40s the crystal scan uses, then report the real total
+	task.spawn(function()
+		local was = #rockDrops
+		for _ = 1, 40 do
+			task.wait(1)
+			sweep()
+		end
+		if #rockDrops == 0 then
+			warn("[CrystalMine] no parts named 'rock drop' found after 40s -- no rockfalls. "
+				.. "Check the blocks are named 'rock drop' AND live inside the island8 Model "
+				.. "(a marker parented straight to Workspace cannot inherit Persistent streaming).")
+		elseif #rockDrops ~= was then
+			print(("[CrystalMine] rock drops settled at %d (%d at boot)"):format(#rockDrops, was))
+		end
+	end)
+
+	if #rockDrops > 0 then
+		print(("[CrystalMine] %d rock drop(s) wired"):format(#rockDrops))
+	end
+	-- (no loop here: each drop's rockfall cycle is started by registerDrop() as it is found,
+	-- which is what lets a marker that streams in thirty seconds late still start dropping)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1369,81 +1564,126 @@ local function buildWarningSigns()
 	else warn("[CrystalMine] no parts named 'sign' found -- no warning signs") end
 end
 
-wireGasVents = function()
-	for _, d in ipairs(workspace:GetDescendants()) do
-		if d:IsA("BasePart") and isVentName(d.Name) then
-			-- the block is only a marker for where the gas comes from: invisible, no
-			-- collision, not clickable
-			d.Transparency = 1
-			d.CanCollide = false
-			d.CanQuery = false
-			-- cloud reach = the block's own footprint plus a margin, so a long vent gasses
-			-- a long strip instead of a fixed circle
-			local half = math.max(d.Size.X, d.Size.Z) * 0.5
-			vents[#vents + 1] = { part = d, active = false, radius = half + VENT_MARGIN }
-
-			-- (warning signs are built separately, on the parts you named "sign")
-		end
-	end
-
-	-- Link each vent to its crystal. The vents are modelled INSIDE the crystal models
-	-- (crystal1..crystal4), so ancestry is exact -- no names or distances to guess at.
-	for _, v in ipairs(vents) do
-		-- 1) walk up to the crystal model this vent is built into
-		local node = v.part.Parent
-		while node and node ~= workspace do
-			if node:IsA("Model") and isCrystalName(node.Name) then
-				for part in pairs(crystals) do
-					if part:IsDescendantOf(node) then v.crystal = part; v.owner = node; break end
-				end
-				if v.crystal then break end
-			end
-			node = node.Parent
-		end
-
-		-- 2) explicit override, if you ever list one
-		if not v.crystal then
-			local wanted = VENT_PAIRS[v.part.Name] or VENT_PAIRS[loose(v.part.Name)]
-			if wanted then
-				for part in pairs(crystals) do
-					if loose(part.Name) == loose(wanted) then v.crystal = part; break end
-				end
-			end
-		end
-
-		-- 3) last resort: nearest crystal
-		if not v.crystal then
-			local best, bestD
+-- ⚠ SAME STREAMING FIX AS THE ROCK DROPS, AND FOR THE SAME REASON. One boot wired 6 gas
+-- vents; the very next boot of the same untouched world found zero and printed "no parts
+-- named 'gas vents' found -- no gas hazard". A one-shot Workspace sweep only ever sees
+-- what has replicated at that instant.
+--
+-- Registration is now incremental and idempotent (`seenVents`), pairing runs PER VENT as
+-- it arrives rather than as one batch pass over the whole list, and each vent starts its
+-- own eruption cycle when it is registered. A vent that streams in a minute late joins
+-- the rotation instead of being lost for the session.
+local seenVents = {}
+local function pairVent(v)
+	-- 1) walk up to the crystal model this vent is built into
+	local node = v.part.Parent
+	while node and node ~= workspace do
+		if node:IsA("Model") and isCrystalName(node.Name) then
 			for part in pairs(crystals) do
-				local dd = (part.Position - v.part.Position).Magnitude
-				if not bestD or dd < bestD then best, bestD = part, dd end
+				if part:IsDescendantOf(node) then v.crystal = part; v.owner = node; break end
 			end
-			v.crystal = best
+			if v.crystal then break end
 		end
+		node = node.Parent
+	end
 
-		if v.crystal then
-			print(("[CrystalMine] vent '%s' -> crystal '%s'%s"):format(
-				v.part.Name, v.crystal.Name, v.owner and (" (inside " .. v.owner.Name .. ")") or " (by distance)"))
-		else
-			warn(("[CrystalMine] vent '%s' has no crystal to pair with"):format(v.part.Name))
+	-- 2) explicit override, if you ever list one
+	if not v.crystal then
+		local wanted = VENT_PAIRS[v.part.Name] or VENT_PAIRS[loose(v.part.Name)]
+		if wanted then
+			for part in pairs(crystals) do
+				if loose(part.Name) == loose(wanted) then v.crystal = part; break end
+			end
 		end
 	end
-	if #vents == 0 then
-		warn("[CrystalMine] no parts named 'gas vents' found -- no gas hazard")
-		return
+
+	-- 3) last resort: nearest crystal
+	if not v.crystal then
+		local best, bestD
+		for part in pairs(crystals) do
+			local dd = (part.Position - v.part.Position).Magnitude
+			if not bestD or dd < bestD then best, bestD = part, dd end
+		end
+		v.crystal = best
 	end
-	print(("[CrystalMine] %d gas vent(s) wired"):format(#vents))
-	buildWarningSigns()
-	for i, v in ipairs(vents) do
-		task.spawn(function()
-			task.wait(3 + i * (VENT_EVERY / math.max(1, #vents)))
-			while true do
-				if nearMine() then erupt(v) end
-				task.wait(VENT_EVERY)
-			end
-		end)
+
+	if v.crystal then
+		print(("[CrystalMine] vent '%s' -> crystal '%s'%s"):format(
+			v.part.Name, v.crystal.Name, v.owner and (" (inside " .. v.owner.Name .. ")") or " (by distance)"))
+	else
+		-- NOT a failure: the vent is real, its crystal just has not streamed in yet. Pairing is
+		-- retried below, so this only means "unpaired for now".
+		warn(("[CrystalMine] vent '%s' has no crystal to pair with yet -- retrying as crystals arrive"):format(v.part.Name))
 	end
 end
+
+local function registerVent(d)
+	if seenVents[d] then return false end
+	seenVents[d] = true
+	-- the block is only a marker for where the gas comes from: invisible, no
+	-- collision, not clickable
+	d.Transparency = 1
+	d.CanCollide = false
+	d.CanQuery = false
+	-- cloud reach = the block's own footprint plus a margin, so a long vent gasses
+	-- a long strip instead of a fixed circle
+	local half = math.max(d.Size.X, d.Size.Z) * 0.5
+	local v = { part = d, active = false, radius = half + VENT_MARGIN }
+	vents[#vents + 1] = v
+	pairVent(v)
+	local i = #vents
+	task.spawn(function()
+		task.wait(3 + (i % 5) * (VENT_EVERY / 5))
+		while true do
+			if d.Parent and nearMine() then erupt(v) end
+			task.wait(VENT_EVERY)
+		end
+	end)
+	return true
+end
+
+wireGasVents = function()
+	local function sweep()
+		for _, d in ipairs(workspace:GetDescendants()) do
+			if d:IsA("BasePart") and isVentName(d.Name) then registerVent(d) end
+		end
+	end
+	sweep()
+	Workspace.DescendantAdded:Connect(function(d)
+		if d:IsA("BasePart") and isVentName(d.Name) then
+			if registerVent(d) then
+				print(("[CrystalMine] gas vent streamed in late -- %d wired"):format(#vents))
+			end
+		end
+	end)
+	task.spawn(function()
+		local was = #vents
+		local signsDone = (#vents > 0)
+		if signsDone then buildWarningSigns() end
+		for _ = 1, 40 do
+			task.wait(1)
+			sweep()
+			-- crystals keep arriving too, so re-pair anything still orphaned
+			for _, v in ipairs(vents) do
+				if not v.crystal then pairVent(v) end
+			end
+			-- the signs sit on parts named "sign", which stream in on their own schedule --
+			-- build them the first moment there is a vent to warn about
+			if not signsDone and #vents > 0 then signsDone = true; buildWarningSigns() end
+		end
+		if #vents == 0 then
+			warn("[CrystalMine] no parts named 'gas vents' found after 40s -- no gas hazard. "
+				.. "Check the blocks are named 'gas vent' AND live inside the island8 Model "
+				.. "(a marker parented straight to Workspace cannot inherit Persistent streaming).")
+		elseif #vents ~= was then
+			print(("[CrystalMine] gas vents settled at %d (%d at boot)"):format(#vents, was))
+		end
+	end)
+
+	if #vents == 0 then return end
+	print(("[CrystalMine] %d gas vent(s) wired"):format(#vents))
+end
+
 
 -- (rockfalls and gas vents are both started from the GO block, once the world's parts
 --  have actually streamed in -- see wireRockDrops / wireGasVents)
@@ -1452,12 +1692,12 @@ end
 -- NPC DIALOGUE
 -- ============================================================================
 local function questPages()
-	if done then return { "You cleared out every crystal -- sweet work! \xE2\x9B\x8F" } end
-	if accepted then return { ("You've mined %d of %d crystals."):format(mined, total), "Equip your Pickaxe and swing at them!" } end
+	if done then return { "That's the load we needed -- sweet work! \xE2\x9B\x8F" } end
+	if accepted then return { ("You've mined %d of %d crystals."):format(math.min(mined, goalCount()), goalCount()), "Equip your Pickaxe and swing at them!" } end
 	return {
 		"Our candy crystals need harvesting!",
 		"Take this Pickaxe -- equip it and swing at each crystal to mine it.",
-		"Mine them all and come back!",
+		("Mine %d of them and come back!"):format(NEED),
 	}
 end
 local function wireNPC(head)
@@ -1503,24 +1743,93 @@ task.spawn(function()
 	Workspace.DescendantAdded:Connect(function(d) if isCrystalName(d.Name) and (d:IsA("BasePart") or d:IsA("Model")) then registerCrystal(d) end end)
 
 	-- reference for the NPC + firework = the crystals' centre (fall back to an island8 model, else nil)
+	-- THE ISLAND MODEL COMES FIRST, the crystal centroid second. It used to be the other way round,
+	-- which made the quest's one reference point a function of whatever had streamed in: every
+	-- crystal that arrived moved it, and a crystal from another island moved it a long way. The
+	-- island8 Model's own bounding box is the same spot on every client on every run, and both
+	-- consumers of islandRef -- findNPCNear (the E prompt) and nearMine (gas + rockfalls) -- are
+	-- distance checks that only make sense against a fixed centre.
+	--
+	-- The centroid is still the fallback, for a world where the Model is named something else.
 	islandRef = pollFor(function()
-		local c = crystalsCentroid()
-		if c then return c end
 		local isle = findIsland8()
 		if isle then
 			local cf = isle:IsA("Model") and isle:GetBoundingBox() or (firstBasePart(isle) and firstBasePart(isle).CFrame)
-			return cf and cf.Position or nil
+			if cf then return cf.Position end
 		end
-		return nil
+		return crystalsCentroid()
 	end, 30)
+	-- ...and re-centre once more after the streaming window: at boot the Model can be a hollow
+	-- shell whose bounding box is the origin, and a centre of (0,0,0) puts every distance check
+	-- 21,000 studs out -- silently, with no warning anywhere.
+	task.spawn(function()
+		task.wait(20)
+		local isle = findIsland8()
+		if isle and isle:IsA("Model") then
+			local cf, size = isle:GetBoundingBox()
+			if size.Magnitude > 1 then
+				local before = islandRef
+				islandRef = cf.Position
+				if before and (before - islandRef).Magnitude > 50 then
+					print(("[CrystalMine] re-centred on island8: %s -> %s (the boot reference was off by %.0f studs)")
+						:format(tostring(before), tostring(islandRef), (before - islandRef).Magnitude))
+				end
+			end
+		end
+	end)
 
-	npcHead = pollFor(function() return findNPCNear(islandRef) end, 45)
-	if npcHead then wireNPC(npcHead); print("[CrystalMine] Candy Npc wired") else warn("[CrystalMine] no 'Candy Npc' found near the crystals") end
-
+	-- ⚠ DO NOT BLOCK THE HAZARDS ON THE NPC. island8 has no 'Candy Npc', so this poll used to burn its full
+	-- FORTY-FIVE SECONDS right here -- with the gas vents, the rockfalls and the objective banner all queued
+	-- behind it. The same mistake cost island9 its waste piles, terminals and crane prompt for 30s. An
+	-- optional quest-giver must never gate the props.
+	--
+	-- One immediate look (islands are ModelStreamingMode = Persistent now, so she is here if she exists),
+	-- then keep watching in the background.
 	refreshBanner()
 	if HAZARDS_ON and wireGasVents then wireGasVents() end
 	if HAZARDS_ON and wireRockDrops then wireRockDrops() end
 	print(("[CrystalMine] ready -- %d crystal(s) found"):format(total))
+	-- ...and what it SETTLES at. The number above is whatever had streamed in at boot, which is
+	-- not the number of crystals on the island: two runs of the same untouched world logged 25
+	-- and 18. The rescan loop above keeps finding them, so this second line is the honest count
+	-- and the one to compare against Studio. goalCount() is a live function of `total`, so a
+	-- late arrival raises the field without ever moving the quota under the player.
+	task.spawn(function()
+		local was = total
+		task.wait(42)
+		if total ~= was then
+			print(("[CrystalMine] crystals settled at %d (%d at boot -- %d streamed in late)")
+				:format(total, was, total - was))
+		end
+	end)
+	-- RETAINER SIGNAL: the quest reached the end of its build with its world objects up. QuestRetainer
+	-- watches this flag; anything still false once its island has streamed in gets force-streamed and
+	-- re-run. It is set HERE, at the ready print, not at the top of the file -- a quest that bailed
+	-- early on a missing marker must NOT look built. See QuestRetainer.client.luau.
+	_G.questBuilt_crystal = true
+
+	npcHead = findNPCNear(islandRef)
+	if npcHead then
+		wireNPC(npcHead); print("[CrystalMine] Candy Npc wired")
+	else
+		-- 180s, not 45. findNPCNear measures against islandRef, and islandRef is re-centred at the
+		-- 20s mark once the island Model has real geometry -- so a 45s window could expire while
+		-- still measuring from a boot-time reference that was simply in the wrong place. The NPC
+		-- was there the whole time; the ruler was wrong. Outlasting the re-centre costs nothing
+		-- (one FindFirstChild sweep every half second) and is the difference between the island
+		-- having a quest and not.
+		task.spawn(function()
+			npcHead = pollFor(function() return findNPCNear(islandRef) end, 180)
+			if npcHead then
+				wireNPC(npcHead); print("[CrystalMine] Candy Npc streamed in late -- wired")
+			else
+				warn(("[CrystalMine] no 'Candy Npc' within %d studs of island8's centre (%s) after 180s "
+					.. "-- quest runs without a giver, so there is no E prompt. Check island8 has a model "
+					.. "named exactly 'Candy Npc' with a Head, inside the island8 Model.")
+					:format(NPC_MAX_DIST, tostring(islandRef)))
+			end
+		end)
+	end
 
 	-- DIAGNOSTIC: if nothing matched, list objects whose name has 'crystal'/'island8' so the real name shows
 	task.delay(6, function()

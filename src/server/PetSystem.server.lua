@@ -15,6 +15,13 @@ local Players   = game:GetService("Players")
 local RS        = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
+-- Rarity is a PERMANENT axis, separate from age/level. See src/shared/PetRarity.luau for why the two must
+-- never be conflated, and for the fusion cost ladder.
+local PetRarity = require(RS:WaitForChild("Shared"):WaitForChild("PetRarity"))
+-- Read-only here: the Pet Crate is the single source of the rarity odds this script publishes, so the number
+-- a player is shown and the number the crate rolls are the same value, not two copies that can drift.
+local SkinCrates = require(RS:WaitForChild("Shared"):WaitForChild("SkinCrates"))
+
 -- Shared ownership table (PlayerStats persists it under saved.ownedPets; we read/write it on claim).
 _G.playerOwnedPets = _G.playerOwnedPets or {}
 
@@ -222,10 +229,15 @@ local PetQuestDiscovered = getOrCreateRemote("PetQuestDiscoveredEvent") -- c->s:
 local PetFishRoll = getOrCreateRF("PetFishRollEvent")                 -- c->s RF: () player reeled in -> SERVER rolls the catch (pity)
 local PetDigEvent = getOrCreateRemote("PetDigEvent")                  -- c->s: (petId) player dug the REAL buried-egg spot -> server unlocks the claim
 local PetRareEvent = getOrCreateRemote("PetRareEvent")                -- s->c: (petId, rareName) a RARE hatched -> client plays the fanfare
+local PetRareAnnounce = getOrCreateRemote("PetRareAnnounceEvent")     -- s->ALL: (info) a RARE hatched -> the whole server hears about it
+local IslandTaskRewardEvent = getOrCreateRemote("IslandTaskRewardEvent") -- s->c: (island, islandName, tokens, petName) island task cleared -> client plays the reward moment
 local PetMilestoneEvent = getOrCreateRemote("PetMilestoneEvent")      -- s->c: (milestone) a COLLECTION milestone was reached -> celebration card
 local StarterPetEvent = getOrCreateRemote("StarterPetEvent")          -- s->c: (petId, displayName) the free first-join pet was granted -> client plays the welcome card
 local PetEquipBroadcast = getOrCreateRemote("PetEquipBroadcast")      -- s->c (ALL): a player's equipped-pet info {userId,petId,level,isRare,variant} -> RemotePets renders OTHER players' followers
 -- ===== STAGE 3 TRADE remotes (client sends INTENTS only; the server owns + validates everything) =====
+local PetFuseEvent    = getOrCreateRemote("PetFuseEvent")             -- c->s: (storageKey) fuse N duplicates -> 1 of the next rarity
+local PetFuseResult   = getOrCreateRemote("PetFuseResultEvent")       -- s->c: (ok, info) fusion outcome -> client plays the reveal / shows the reason
+
 local PetTradeRequest = getOrCreateRemote("PetTradeRequestEvent")     -- c->s: (targetUserId) ask to trade
 local PetTradeRespond = getOrCreateRemote("PetTradeRespondEvent")     -- c->s: (accept:bool) answer a request
 local PetTradeOffer   = getOrCreateRemote("PetTradeOfferEvent")       -- c->s: (petId, add:bool) add/remove a pet from your offer
@@ -982,17 +994,74 @@ local function ownsPet(player, key)
 	return op ~= nil and op[key] ~= nil -- value may be `true` (legacy) or a {level,height,time,count,rare} table
 end
 local RARE_SUFFIX = "#R"
-local function variantKey(petId, rare) return rare and (petId .. RARE_SUFFIX) or petId end -- (species,variant) -> storage key
-local function speciesOf(key) if type(key) ~= "string" then return key end return (key:gsub(RARE_SUFFIX .. "$", "")) end -- storage key -> species id
--- owns ANY variant (normal OR rare) of a species -- used by quest gates / "do you have this pet at all" checks.
-local function ownsSpecies(player, petId)
-	return ownsPet(player, petId) or ownsPet(player, petId .. RARE_SUFFIX)
+
+-- ===== STORAGE KEYS: ONE STACK PER (SPECIES, RARITY) ==========================================================
+-- A player holds a separate stack for each rarity of each species, because fusion needs to count copies at a
+-- SPECIFIC band ("5 Common Broccoli Bunnies", not "5 Broccoli Bunnies of any kind"). The key encodes both:
+--
+--     BroccoliPet            -- Common (the bare species id: this is also exactly what every pre-rarity save
+--                               already wrote, so old saves load as Common with no migration step)
+--     BroccoliPet#Uncommon   -- one stack per band above Common
+--     BroccoliPet#R          -- LEGACY. The old 1-in-750 "rare" flag, from before rarity was a ladder.
+--                               Read as Gold (it was the rarest thing a pet could be), never written again.
+--
+-- variantKey() takes EITHER a rarity string OR the old boolean, on purpose: there are 30+ existing call sites
+-- passing `true`/`false`/nil, and quietly reinterpreting a boolean as a band name would have silently rekeyed
+-- every one of them. A boolean still means what it always meant; strings are the new path.
+local function variantKey(petId, rarity)
+	if rarity == true  then return petId .. RARE_SUFFIX end -- legacy caller: the old rare slot
+	if rarity == nil or rarity == false or rarity == PetRarity.DEFAULT then return petId end
+	if not PetRarity.isValid(rarity) then return petId end  -- unknown band -> Common, never a junk key
+	return petId .. "#" .. rarity
 end
--- the storage keys a player owns for a species (0..2: the normal slot and/or the rare slot)
+
+-- storage key -> species id. Strips the legacy #R and any #Band suffix. Anchored to the END and matched
+-- against the KNOWN band list, so a species whose own id contained a '#' could never be truncated by accident.
+local function speciesOf(key)
+	if type(key) ~= "string" then return key end
+	if key:sub(-#RARE_SUFFIX) == RARE_SUFFIX then return key:sub(1, -#RARE_SUFFIX - 1) end
+	for _, band in ipairs(PetRarity.ORDER) do
+		local suf = "#" .. band
+		if key:sub(-#suf) == suf then return key:sub(1, -#suf - 1) end
+	end
+	return key
+end
+
+-- storage key -> the rarity band it represents (bare key = Common, legacy #R = Gold).
+local function rarityOfKey(key)
+	if type(key) ~= "string" then return PetRarity.DEFAULT end
+	if key:sub(-#RARE_SUFFIX) == RARE_SUFFIX then return PetRarity.TOP end -- legacy rare == top of the ladder
+	for _, band in ipairs(PetRarity.ORDER) do
+		local suf = "#" .. band
+		if key:sub(-#suf) == suf then return band end
+	end
+	return PetRarity.DEFAULT
+end
+
+-- every storage key that exists for a species, Common first then up the ladder, plus the legacy rare slot.
+local function allKeysOf(petId)
+	local t = { petId }
+	for _, band in ipairs(PetRarity.ORDER) do
+		if band ~= PetRarity.DEFAULT then t[#t + 1] = petId .. "#" .. band end
+	end
+	t[#t + 1] = petId .. RARE_SUFFIX -- legacy stacks still on disk from before the ladder
+	return t
+end
+
+-- owns ANY variant (any rarity) of a species -- used by quest gates / "do you have this pet at all" checks.
+local function ownsSpecies(player, petId)
+	for _, k in ipairs(allKeysOf(petId)) do
+		if ownsPet(player, k) then return true end
+	end
+	return false
+end
+
+-- the storage keys a player actually owns for a species, in ladder order (Common -> Gold, legacy last).
 local function ownedKeysOf(player, petId)
 	local t = {}
-	if ownsPet(player, petId) then t[#t + 1] = petId end
-	if ownsPet(player, petId .. RARE_SUFFIX) then t[#t + 1] = petId .. RARE_SUFFIX end
+	for _, k in ipairs(allKeysOf(petId)) do
+		if ownsPet(player, k) then t[#t + 1] = k end
+	end
 	return t
 end
 
@@ -1067,51 +1136,36 @@ local RARE_NAMES = {
 -- The Cosmic Duck is the single rarest thing in the game: 1 in 10,000. Every other pet's rare (Exotic) is 1 in 750.
 local function rareOdds(petId) return (petId == "ButterDuck") and 10000 or 750 end
 
--- ===== HATCH TIER ROLL ==================================================================================
--- A hatch no longer always gives a Level-1 Common. It ROLLS a starting tier, so a lucky egg can come out of the
--- shell already Rare, Epic or even Legendary -- every tier is a real pull with real odds, which is what the Pet
--- Hub's tier ladder now advertises. The starting LEVEL is the first level of the tier that was rolled, so the pet
--- still levels normally from there (a Legendary pull starts at 21 and grinds 21->25 like anyone else).
+-- ===== PET RARITY ODDS (was: the hatch-tier roll) =======================================================
+-- THE OLD TABLE IS GONE. It rolled a pet's starting AGE (Baby..Elder, weights out of 10000) at hatch time,
+-- and nothing rolls that any more: age is grown from flight and playtime, so every pet starts at Baby. The
+-- weights, the roll and the "1 in N" strings derived from them all described a mechanic that no longer
+-- exists -- leaving them would have kept advertising odds for a dice roll the game stopped making.
 --
--- Weights are out of 10000. Tuned so the whole ladder escalates cleanly and every step up feels genuinely scarce:
+-- What players actually want odds for now is RARITY, and the only place rarity is rolled is the Pet Crate.
+-- So the odds published here are read straight out of SkinCrates, via effectiveOdds() -- the SAME accessor
+-- the crate's own odds panel prints and the same numbers the roll uses. There is no second copy to drift:
+-- retune the crate and this follows automatically.
 --
---     Common     1 in 1.2      Uncommon   1 in 8       Rare       1 in 25
---     Epic       1 in 125      Exotic     1 in 750     Legendary  1 in 1000     Mythical  1 in 10,000
---
--- The two VARIANT tiers (Exotic/Mythical, rolled separately in rareOdds) interleave with the level tiers rather
--- than sitting on top of them: an Exotic (1/750) is rarer than an Epic but more common than a Legendary. That is
--- deliberate -- an Exotic is a different *look*, a Legendary is a huge *head start*. The Cosmic Duck (Mythical,
--- 1/10,000) remains the single rarest thing in the game.
---
--- ODDS SHOWN TO PLAYERS come from this exact table (HATCH_ODDS_TEXT below is derived from these weights, so the
--- ladder can never drift from the real probabilities -- change a weight and the displayed odds change with it).
-local HATCH_TIERS = { -- age-stage names (the level ladder stopped using rarity words; those belong to skins)
-	{ tier = "Baby",  level = 1,  weight = 8260 }, -- 82.6%   = 1 in 1.2
-	{ tier = "Kid",   level = 6,  weight = 1250 }, -- 12.5%   = 1 in 8
-	{ tier = "Teen",  level = 11, weight = 400  }, -- 4%      = 1 in 25
-	{ tier = "Adult", level = 16, weight = 80   }, -- 0.8%    = 1 in 125
-	{ tier = "Elder", level = 21, weight = 10   }, -- 0.1%    = 1 in 1000
-}
-local HATCH_TOTAL = 0
-for _, t in ipairs(HATCH_TIERS) do HATCH_TOTAL = HATCH_TOTAL + t.weight end
--- "1 in N" strings, computed FROM the weights above so the UI and the roll can never disagree.
-local HATCH_ODDS_TEXT = {}
-for _, t in ipairs(HATCH_TIERS) do
-	local n = HATCH_TOTAL / t.weight
-	-- whole numbers print clean ("1 in 5", not "1 in 5.0"); only a genuinely fractional ratio keeps a decimal,
-	-- which in practice is just Common ("1 in 1.4").
-	local whole = math.floor(n + 0.5)
-	HATCH_ODDS_TEXT[t.tier] = (math.abs(n - whole) < 0.05) and ("1 in " .. whole) or string.format("1 in %.1f", n)
-end
--- Roll a starting tier. Returns startingLevel, tierName.
-local function rollHatchTier()
-	local r = math.random(1, HATCH_TOTAL)
-	local acc = 0
-	for _, t in ipairs(HATCH_TIERS) do
-		acc = acc + t.weight
-		if r <= acc then return t.level, t.tier end
+-- effectiveOdds (not the raw odds table) on purpose: it accounts for empty-band redistribution, so if a band
+-- ever ends up with no stock the number here stays truthful instead of quietly over-promising.
+local PET_CRATE_ODDS_TEXT = {}
+do
+	local ok, odds = pcall(SkinCrates.effectiveOdds, "Pets")
+	if ok and type(odds) == "table" then
+		for band, pct in pairs(odds) do
+			if type(pct) == "number" and pct > 0 then
+				local n = 100 / pct
+				-- whole numbers print clean ("1 in 25", not "1 in 25.0"); only a genuinely fractional ratio
+				-- keeps its decimal, which in practice is just Common ("1 in 1.7").
+				local whole = math.floor(n + 0.5)
+				PET_CRATE_ODDS_TEXT[band] = (math.abs(n - whole) < 0.05)
+					and ("1 in " .. whole) or string.format("1 in %.1f", n)
+			end
+		end
+	else
+		warn("[Pet] could not read Pet Crate odds from SkinCrates -- the rarity ladder will show no odds")
 	end
-	return 1, "Baby" -- unreachable (weights sum to HATCH_TOTAL); a safe floor rather than a nil level
 end
 -- Normalize an owned entry to a {level,xp,height,time} table (legacy saves stored `true`; xp is ADDITIVE --
 -- missing pets/fields default to level 1, 0 XP so existing saves are never broken).
@@ -1121,6 +1175,11 @@ local function getPetData(player, petId)
 	if type(v) ~= "table" then v = {}; op[petId] = v end
 	v.level = v.level or 1; v.xp = v.xp or 0; v.height = v.height or 0; v.time = v.time or 0
 	v.count = math.max(1, math.floor(tonumber(v.count) or 1)) -- how many of THIS variant the player has stacked (legacy saves -> 1)
+	-- RARITY IS DERIVED FROM THE KEY, NOT TRUSTED FROM THE SAVE. The key is what decides which stack a pet
+	-- lives in, so if a stored `rarity` field ever disagreed with the key the two would fight -- and fusion,
+	-- which counts copies per band, would count the wrong pile. The key wins, always.
+	v.rarity = rarityOfKey(petId)
+	if v.rare then v.rarity = PetRarity.TOP end -- legacy rare flag outranks a bare key (old saves)
 	if v.level > PET_MAX_LEVEL then v.level = PET_MAX_LEVEL; v.xp = 0 end -- clamp legacy saves to the new 25 cap
 	return v
 end
@@ -1263,9 +1322,13 @@ end
 local function sendInventory(player)
 	local equipped = _G.playerEquippedPet[player]
 	local payload = { owned = {}, quests = {}, catalog = {} }
-	-- The REAL per-hatch odds for each tier, derived from HATCH_TIERS. The Pet Hub's tier ladder prints these
-	-- verbatim, so what a player is told is exactly what rollHatchTier() does -- they can never drift apart.
-	payload.hatchOdds = HATCH_ODDS_TEXT
+	-- The REAL rarity odds, read out of the Pet Crate (see PET_CRATE_ODDS_TEXT). Keyed by rarity band
+	-- (Common..Gold) -- these used to be the Baby..Elder age-roll odds, which described a roll the game no
+	-- longer makes. `petCrateOdds` is the honest name and what new UI should read; `hatchOdds` is kept as an
+	-- alias to the same table so any older client that still reads it shows correct numbers rather than
+	-- stale ones for a deleted mechanic.
+	payload.petCrateOdds = PET_CRATE_ODDS_TEXT
+	payload.hatchOdds    = PET_CRATE_ODDS_TEXT
 	-- COLLECTION PROGRESS. totalPets is the COLLECTABLE count (10), NOT #PETS (11) -- the Pizza Dragon is the prize
 	-- for finishing, not part of what you finish. See the counting rule above.
 	payload.totalPets = collectableCount()
@@ -1308,6 +1371,14 @@ local function sendInventory(player)
 				height = math.floor(d.height), time = math.floor(d.time),
 				rare = d.rare and true or false, rareName = d.rare and RARE_NAMES[petId] or nil, -- RARE badge + variant name
 				count = d.count or 1, -- how many of this exact variant are stacked (shows as "xN")
+				-- ===== RARITY (permanent) + FUSION PROGRESS =====
+				-- Sent alongside the legacy `rare` boolean rather than replacing it: `rare` still drives the
+				-- existing rare look/pre-maxed rendering in PetFollow, and swapping it out would have meant
+				-- touching ~150 call sites across six client scripts to ship one feature.
+				rarity     = d.rarity,                          -- "Common".."Gold" -- NEVER changes with age
+				fuseCost   = PetRarity.costToFuse(d.rarity),    -- nil at Gold: nothing to fuse into
+				fuseInto   = PetRarity.nextOf(d.rarity),        -- the band this stack fuses up to
+				canFuse    = (select(1, PetRarity.canFuse(d.rarity, d.count))),
 				-- ===== VIEW MORE detail-card facts (display only) =====
 				lore = PET_LORE[petId], islandName = def.islandName,
 				totalXp = totalXpEarned(d.level, d.xp),                  -- lifetime XP, not just this level's
@@ -1387,6 +1458,24 @@ local function sendAllEquipsTo(target)
 		end
 	end
 end
+
+-- ===== CLIENT-READY RE-SYNC: fixes "my friend saw my pet, I couldn't see theirs" =====
+-- The join-time catch-up above fires the moment the SAVE loads -- often seconds before the joining
+-- client's RemotePets script has connected its OnClientEvent. Remote fires that land before a client
+-- connects a handler are simply lost, so the late joiner missed the whole catch-up burst (while their
+-- own "join" broadcast reached everyone else's already-running clients -- hence the one-way visibility).
+-- RemotePets now fires this remote UPWARD when its listener is live; the server answers with a fresh
+-- catch-up and re-announces the requester to everyone (covers the mirror case: their join broadcast
+-- fired while some OTHER client was still loading). Debounced so a spammy client costs nothing.
+local lastEquipSync = {}
+PetEquipBroadcast.OnServerEvent:Connect(function(player)
+	local t = os.clock()
+	if lastEquipSync[player] and t - lastEquipSync[player] < 3 then return end
+	lastEquipSync[player] = t
+	sendAllEquipsTo(player)
+	broadcastEquip(player, "client-ready")
+end)
+Players.PlayerRemoving:Connect(function(p) lastEquipSync[p] = nil end)
 
 -- Level a pet up by one (the XP auto-level loop and the Robux/test skip all funnel here). Re-syncs follower + GUI.
 local function levelUp(player, petId, via)
@@ -1582,6 +1671,25 @@ local function tierSkip(player, petId, via)
 	return true
 end
 
+-- \xE2\x9A\xA0 TEST COMMAND /newlevel - EXTERNAL entry point for the same one-tier jump. REMOVE BEFORE LAUNCH.
+-- DevCommands calls this to push the player's EQUIPPED pet (or a named one) into the next tier, so the tier-up
+-- sound + the new look can be checked in seconds instead of grinding five levels of XP. It goes through the
+-- SAME tierSkip the Robux/test path uses -- there is no separate dev path that could behave differently -- so
+-- the client sees an ordinary inventory push and reacts exactly as it would to a real tier-up.
+-- Returns newLevel, tierName (nil if there is no pet, it isn't owned, or it's already at the top tier).
+_G.petTierSkip = function(player, petId)
+	if not player then return nil end
+	petId = petId or _G.playerEquippedPet[player]
+	if not petId then return nil end
+	if not tierSkip(player, petId, "dev:/newlevel") then return nil end
+	local d = getPetData(player, petId)
+	if not d then return nil end
+	-- The client's ladder (PetFollow petTier): Baby 1-5, Kid 6-10, Teen 11-15, Adult 16-20, Elder 21+.
+	local tier = (d.level <= 5 and "Baby") or (d.level <= 10 and "Kid") or (d.level <= 15 and "Teen")
+		or (d.level <= 20 and "Adult") or "Elder"
+	return d.level, tier
+end
+
 -- \xE2\x9A\xA0 TEST COMMAND /allpets - grants all pets to test accounts. REMOVE BEFORE LAUNCH.
 -- Grants EVERY pet in the catalog to the player using the SAME ownership structure a normal claim writes
 -- ({level=1,height=0,time=0}), marks each quest discovered, auto-equips one if none is equipped, then
@@ -1662,16 +1770,15 @@ local function checkCollectionMilestones(player)
 				_G.grantTitle(player, ms.id)
 			elseif ms.kind == "pet" then
 				-- grant the secret pet exactly like any normal claim, so it persists, levels, and is equippable
-				-- through the ordinary pet path. Its hatch tier is rolled like any other pet -- a 10/10 player can
-				-- still get a Legendary Pizza Dragon.
+				-- through the ordinary pet path. It starts at Baby like EVERY granted pet -- age is grown from
+				-- flight and playtime, never handed over at grant time. (See the quest claim for the full why.)
 				_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
 				if not ownsSpecies(player, ms.id) then
-					local lvl, tier = rollHatchTier()
-					_G.playerOwnedPets[player][ms.id] = { level = lvl, xp = 0, height = 0, time = 0 }
+					_G.playerOwnedPets[player][ms.id] = { level = 1, xp = 0, height = 0, time = 0 }
 					_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
 					_G.playerDiscoveredQuests[player][ms.id] = true
-					print(string.format("[PetMilestone] %s COMPLETED THE COLLECTION (%d/%d) -> secret %s at %s (Lv %d)",
-						player.Name, have, target, ms.id, tier, lvl))
+					print(string.format("[PetMilestone] %s COMPLETED THE COLLECTION (%d/%d) -> secret %s at Baby (Lv 1)",
+						player.Name, have, target, ms.id))
 				end
 			end
 			awarded = true
@@ -1768,27 +1875,67 @@ _G.grantSeasonalPet = function(player, season)
 	if not petId then warn("[Pet] grantSeasonalPet: unknown season '"..season.."'"); return false end
 	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
 	if ownsSpecies(player, petId) then return true end -- already owned -> nothing to do
-	-- A seasonal harvest pet is a PULL like any other hatch, so it rolls a starting tier too (same odds table).
-	-- The garden can hand you a Legendary Frost Penguin.
-	local lvl, tier = rollHatchTier()
-	_G.playerOwnedPets[player][petId] = { level = lvl, xp = 0, height = 0, time = 0 } -- same table a normal claim writes (persists)
+	-- A seasonal harvest pet starts at Baby like every granted pet: age comes from flight time and playtime,
+	-- not from the moment of the grant. The garden gives you the SPECIES; you grow it yourself.
+	_G.playerOwnedPets[player][petId] = { level = 1, xp = 0, height = 0, time = 0 } -- same table a normal claim writes (persists)
 	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
 	_G.playerDiscoveredQuests[player][petId] = true
 	sendState(player); sendInventory(player) -- now shows OWNED + equippable immediately (no rejoin)
-	print(string.format("[Pet] seasonal %s granted to %s (%s reward) at %s (Lv %d, odds %s)",
-		petId, player.Name, key, tier, lvl, HATCH_ODDS_TEXT[tier] or "?"))
+	print(string.format("[Pet] seasonal %s granted to %s (%s reward) at Baby (Lv 1)",
+		petId, player.Name, key))
 	checkCollectionMilestones(player) -- a garden pet counts toward the collection like any other
 	return true
 end
 
 -- ===== REBIRTH PET ENTITLEMENT: granted by RebirthSystem when a rebirth milestone is reached. Same ownership
 -- path as any hatch, so it persists (ownedPets), shows OWNED in the pet HUD, and equips/trades normally. =====
+-- ===== GRANT A PET AT A SPECIFIC RARITY -- the crate's way in ================================================
+-- The ONLY entry point that can hand out a pet above Common, which is what makes "rarer pets come from crate
+-- spins" true by construction rather than by convention: every other grant path in this file writes a bare
+-- (Common) key and none of them take a band.
+--
+-- Unlike the quest/seasonal/rebirth grants, this does NOT bail when the player already owns the species. That
+-- is the entire point -- a repeat pull is a DUPLICATE, and duplicates are the fuel fusion runs on. It stacks
+-- onto the matching (species, rarity) slot and leaves any other band the player owns untouched, so a Rare
+-- Broccoli Bunny never overwrites the Uncommon one being saved up for a fuse.
+--
+-- Age is not negotiable here either: a crate pet arrives at Baby like everything else. The crate sells you
+-- RARITY, never a head start on growth.
+-- Returns ok, newCount.
+_G.grantPetAtRarity = function(player, petId, rarity)
+	if not (player and petId and PETS[petId]) then return false, 0 end
+	local band = PetRarity.normalise(rarity) -- unknown/forged band -> Common, never a junk key
+	local key  = variantKey(petId, band)
+	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
+	local op = _G.playerOwnedPets[player]
+
+	local existing = op[key]
+	local newCount
+	if type(existing) == "table" then
+		newCount = (tonumber(existing.count) or 1) + 1
+		existing.count = newCount
+	else
+		newCount = 1
+		op[key] = { level = 1, xp = 0, height = 0, time = 0, count = 1 }
+	end
+
+	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
+	_G.playerDiscoveredQuests[player][petId] = true
+	if not _G.playerEquippedPet[player] then _G.playerEquippedPet[player] = key end -- auto-equip a first pet
+
+	print(string.format("[PetCrate] %s pulled %s %s (x%d)", player.Name, band, petId, newCount))
+	sendState(player); sendInventory(player)
+	broadcastEquip(player, _G.playerEquippedPet[player] and "equip" or "unequip")
+	checkCollectionMilestones(player) -- a crate pet counts toward the collection like any other
+	return true, newCount
+end
+
 _G.grantRebirthPet = function(player, petId)
 	if not (player and petId and PETS[petId]) then return false end
 	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
 	if ownsSpecies(player, petId) then return true end -- already owned -> nothing to do
-	local lvl = rollHatchTier() -- rolls a starting tier like any hatch
-	_G.playerOwnedPets[player][petId] = { level = lvl, xp = 0, height = 0, time = 0 }
+	-- Baby, like every granted pet -- age is grown from flight and playtime, never granted.
+	_G.playerOwnedPets[player][petId] = { level = 1, xp = 0, height = 0, time = 0 }
 	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
 	_G.playerDiscoveredQuests[player][petId] = true
 	sendState(player); sendInventory(player)
@@ -1820,6 +1967,10 @@ local function findIsland(prefix)
 end
 local function hideMarker(part)
 	if part and part:IsA("BasePart") then
+		-- ANCHOR FIRST. Clearing CanCollide on an UNANCHORED part is a licence to fall forever -- it loses the
+		-- floor in the same breath. The markers in this place ship unanchored, so hiding one used to launch it
+		-- into an endless drop; anything that later re-read its position got a number from halfway to the void.
+		part.Anchored = true
 		part.Transparency = 1; part.CanCollide = false; part.CanQuery = false; part.CanTouch = false
 		return true
 	end
@@ -1892,6 +2043,40 @@ task.spawn(function()
 	-- AFTER that move or we'd record the pre-move coords (the old Y=-18 bug). PlayerStats sets
 	-- workspace:SetAttribute("StandsReady", true) once islands are positioned + stands are set up
 	-- ("STANDS SETUP COMPLETE"), so we WAIT for that flag before reading any marker.
+	-- ===== ANCHOR EVERY MARKER *BEFORE* THE WAIT (this is why a piece could fail to spawn) =====
+	-- The quest markers ship from Studio UNANCHORED with CanCollide on. PlayerStats then lifts island 2 from
+	-- Y=-18 to Y~790 at runtime; the markers ride the island up and, being unanchored, immediately start
+	-- falling. We do not read their positions until StandsReady, up to 60 SECONDS later -- so any marker that
+	-- was over a gap, an edge, or a non-collidable mesh has long since dropped away, and the coordinate we
+	-- capture is wherever it fell. The client then dutifully builds that piece thousands of studs under the
+	-- island, which on screen is simply "that broccoli never spawned" -- and it hits whichever piece happens
+	-- to sit over a hole, which is why one specific piece goes missing while its neighbours are fine.
+	--
+	-- Anchoring costs nothing and cannot move anything: Model:PivotTo carries anchored children with it, so the
+	-- island reposition still works exactly as before -- the parts just hold their place on it instead of
+	-- sliding off. Done here, before the wait, so there is no window to fall in.
+	do
+		local wanted = {} -- normalised marker name -> true, across every pet
+		for _, d in pairs(PETS) do
+			for _, n in ipairs(d.pieceMarkers or {}) do wanted[normName(n)] = true end
+			if d.eggMarker then wanted[normName(d.eggMarker)] = true end
+			for _, n in pairs(d.extraMarkers or {}) do wanted[normName(n)] = true end
+		end
+		local anchored = 0
+		for _, inst in ipairs(Workspace:GetDescendants()) do
+			if wanted[normName(inst.Name)] then
+				if inst:IsA("BasePart") then
+					if not inst.Anchored then inst.Anchored = true; anchored = anchored + 1 end
+				elseif inst:IsA("Model") then
+					for _, p in ipairs(inst:GetDescendants()) do
+						if p:IsA("BasePart") and not p.Anchored then p.Anchored = true; anchored = anchored + 1 end
+					end
+				end
+			end
+		end
+		print("[Pet] anchored "..anchored.." unanchored quest marker part(s) before the island move -- they can no longer fall away from their island")
+	end
+
 	local waited = 0
 	while not Workspace:GetAttribute("StandsReady") and waited < 60 do task.wait(0.5); waited = waited + 0.5 end
 	if Workspace:GetAttribute("StandsReady") then
@@ -1912,11 +2097,34 @@ task.spawn(function()
 		-- Resolve each marker ISLAND-FIRST (they're grouped inside the island now), Workspace as backup,
 		-- CAPTURE its post-positioning world position (the client builds from these coords), and hide it.
 		local foundN = 0
+		local fallbackN = 0 -- how many of foundN are FALLBACK guesses rather than real placed markers
 		local piecePos = {}
 		local missingPieces = {}
+		-- HOW FAR BELOW THE ISLAND A MARKER MAY SIT before we treat it as FALLEN rather than placed. Measured
+		-- from the island's bounding-box FLOOR, not its pivot -- a pivot can sit anywhere inside the model, the
+		-- floor is always the floor. 60 studs is well under any island's spacing and well over any legitimate
+		-- dip in the terrain. This catches markers that already fell in a place saved while they were dropping:
+		-- anchoring above stops NEW falls, but a coordinate that is already wrong has to be rejected here.
+		local islandFloorY
+		if island then
+			pcall(function()
+				local cf, size = island:GetBoundingBox()
+				islandFloorY = cf.Position.Y - size.Y * 0.5
+			end)
+		end
+		local function fallenAway(pos)
+			return islandFloorY ~= nil and pos.Y < (islandFloorY - 60)
+		end
+
 		for i, name in ipairs(def.pieceMarkers) do
 			local inst, how = resolveMarkerLoose(island, name)
 			local pos = captureMarkerPos(inst) -- Part OR Model (hideMarker alone silently skipped grouped markers)
+			if pos and fallenAway(pos) then
+				warn(string.format("[Pet] piece marker '%s' resolved at %s -- that is %.0f studs BELOW the island floor,"
+					.." so it fell off before we read it. Ignoring the coordinate and placing this piece on the island instead."
+					.." (Anchor '%s' in Studio to fix it permanently.)", name, posStr(pos), islandFloorY - pos.Y, name))
+				pos = nil
+			end
 			if pos then
 				foundN = foundN + 1; piecePos[i] = pos
 				if how == "fuzzy" then
@@ -1925,7 +2133,9 @@ task.spawn(function()
 				end
 			else
 				missingPieces[#missingPieces+1] = { i = i, name = name }
-				warn("[Pet] piece marker '"..name.."' MISSING (not in island OR Workspace)")
+				-- only claim it's MISSING when we genuinely couldn't find it; a marker rejected for having fallen
+				-- was found, and has already said so above in a way that names the real fix.
+				if not inst then warn("[Pet] piece marker '"..name.."' MISSING (not in island OR Workspace)") end
 			end
 		end
 		-- RETRY for late-parented/late-moved markers (something added to the island after StandsReady), then
@@ -1936,6 +2146,7 @@ task.spawn(function()
 				local m = missingPieces[idx]
 				local inst = resolveMarkerLoose(island, m.name)
 				local pos = captureMarkerPos(inst)
+				if pos and fallenAway(pos) then pos = nil end -- same rejection as above: a fallen marker is not a retry win
 				if pos then
 					piecePos[m.i] = pos; foundN = foundN + 1; table.remove(missingPieces, idx)
 					print("[Pet] piece marker '"..m.name.."' appeared on RETRY at "..posStr(pos))
@@ -1981,12 +2192,25 @@ task.spawn(function()
 		for _, m in ipairs(missingPieces) do
 			local anchor
 			for j = 1, #def.pieceMarkers do if piecePos[j] then anchor = piecePos[j]; break end end
+			-- ISLAND PIVOT AS THE FINAL ANCHOR. Preferring a resolved piece, then the egg, is right -- but when
+			-- NEITHER exists (every marker on the island renamed or missing) this gave up and the quest had no
+			-- collectibles at all. The island itself is always locatable and always the right neighbourhood, so
+			-- ring the pieces around its pivot rather than shipping an island with nothing on it.
 			anchor = anchor or eggPos
+			if not anchor and island then
+				pcall(function() anchor = island:GetPivot().Position end)
+				if anchor then
+					warn("[Pet] "..petId..": no piece or egg marker resolved -- anchoring the fallback ring on the ISLAND PIVOT "
+						..posStr(anchor)..". Place Parts named '"..table.concat(def.pieceMarkers, "', '").."' on the island to fix this properly.")
+				end
+			end
 			if anchor then
 				local a = (m.i - 1) * (2 * math.pi / math.max(1, #def.pieceMarkers)) + 0.7
 				local guess = anchor + Vector3.new(math.cos(a) * 26, 0, math.sin(a) * 26)
 				local pos = groundAt(guess) or (guess + Vector3.new(0, 2, 0))
 				piecePos[m.i] = pos
+				foundN = foundN + 1 -- it EXISTS in the world now, so the "markers found: N/3" line must count it;
+				fallbackN = fallbackN + 1 -- ...and this says how many of those N are guesses rather than placed markers
 				warn("[Pet] piece marker '"..m.name.."' NOT FOUND -- using a FALLBACK spot at "..posStr(pos)
 					.." so the quest stays completable. Add/rename a Part called '"..m.name.."' on the island to fix it.")
 			else
@@ -2050,7 +2274,8 @@ task.spawn(function()
 				..", projector/screen/eggspot found: "..(extraFound.projector and "yes" or "no")
 				.."/"..(extraFound.screen and "yes" or "no").."/"..(eggPos and "yes" or "no"))
 		else
-			print("[Pet] "..petId.." markers found: "..foundN.."/"..#def.pieceMarkers..", "
+			print("[Pet] "..petId.." markers found: "..foundN.."/"..#def.pieceMarkers
+				..(fallbackN > 0 and (" ("..fallbackN.." on FALLBACK spots -- markers missing/renamed)") or "")..", "
 				..(def.questType == "crack" and "chest" or "egg").." found: "..(eggPos and "yes" or "no"))
 		end
 		markerPositions[petId] = { pieces = piecePos, egg = eggPos, extra = extraPos, extraInst = extraInst, extraSize = extraSize } -- ready for PetGetMarkers to hand to clients
@@ -2167,17 +2392,23 @@ PetCollectEvent.OnServerEvent:Connect(function(player, petId, pieceIndex)
 	sendInventory(player) -- keep the quests panel's progress (N/total) current as pieces/coconuts are collected
 end)
 
-PetClaimEvent.OnServerEvent:Connect(function(player, petId)
-	local def = PETS[petId]; if not def then return end
-	if ownsSpecies(player, petId) then return end             -- already own this species (any variant)
-	if def.questType == "fishing" then
-		-- fishing has no pieces: the SERVER-rolled egg flag is the anti-cheat gate (client can't fake a catch)
-		if not fishEggReady[player] then print("[Pet] "..player.Name.." tried to claim "..petId.." without catching the egg"); return end
-	elseif def.questType == "dig" then
-		-- dig has no pieces: the player must have DUG the real buried-egg spot (PetDigEvent set this gate)
-		if not digEggReady[player] then print("[Pet] "..player.Name.." tried to claim "..petId.." without digging up the egg"); return end
-	else
-		if foundCount(player, petId) < #def.pieceMarkers then return end -- must have all pieces (anti-cheat gate)
+-- THE ONE COMPLETION PATH. Extracted from the PetClaimEvent handler so the dev /complete command can run
+-- EXACTLY this -- the rare roll, the hatch-tier roll, the island-task tokens, the reward moment, the save, the
+-- broadcast -- instead of a second copy that drifts out of step with it. `bypassGates` is the only difference
+-- between a player claiming and a dev forcing, and it is off for anything that arrives over the remote.
+local function completeQuest(player, petId, bypassGates)
+	local def = PETS[petId]; if not def then return false end
+	if ownsSpecies(player, petId) then return false end       -- already own this species (any variant)
+	if not bypassGates then
+		if def.questType == "fishing" then
+			-- fishing has no pieces: the SERVER-rolled egg flag is the anti-cheat gate (client can't fake a catch)
+			if not fishEggReady[player] then print("[Pet] "..player.Name.." tried to claim "..petId.." without catching the egg"); return false end
+		elseif def.questType == "dig" then
+			-- dig has no pieces: the player must have DUG the real buried-egg spot (PetDigEvent set this gate)
+			if not digEggReady[player] then print("[Pet] "..player.Name.." tried to claim "..petId.." without digging up the egg"); return false end
+		else
+			if foundCount(player, petId) < #def.pieceMarkers then return false end -- must have all pieces (anti-cheat gate)
+		end
 	end
 	-- RARE ROLL is FIRST-TIME-ONLY (permanent): the very FIRST ever completion of this quest rolls rare
 	-- (1/750, 1/10000 for the duck, server-authoritative). Every RE-completion (quest redone after trading the
@@ -2185,33 +2416,28 @@ PetClaimEvent.OnServerEvent:Connect(function(player, petId)
 	-- re-farmed (they only come from that one first roll, or from trading). everCompleted persists across sessions.
 	_G.playerEverCompletedQuests[player] = _G.playerEverCompletedQuests[player] or {}
 	local firstTime = not _G.playerEverCompletedQuests[player][petId]
-	local isRare = false
-	if firstTime then
-		local odds = rareOdds(petId)
-		local luck = (_G.rebirthLuck and _G.rebirthLuck[player]) or 1 -- REBIRTH luck: shorten the odds (higher rare chance)
-		odds = math.max(2, math.floor(odds / luck))
-		isRare = (math.random(1, odds) == 1)
-		print(string.format("[PetRare] %s hatched %s - rare roll: %s (odds 1/%d)", player.Name, petId, isRare and "hit" or "miss", odds))
-	else
-		print(string.format("[PetRare] %s re-completed %s - rare roll SKIPPED (guaranteed normal)", player.Name, petId))
-	end
 	_G.playerEverCompletedQuests[player][petId] = true -- PERMANENT: this quest has now been completed at least once
+
+	-- ===== A QUEST HATCH IS NOT A GAMBLE =====
+	-- What you get is the species the quest is FOR, at Baby, every single time. Both rolls that used to live
+	-- here are gone on purpose:
+	--
+	--   * the RARE roll (1/750, 1/10000 for the duck) -- rarer pets now come from CRATE SPINS only, so the
+	--     quest cannot hand one out. Doing an island quest is a guaranteed, known reward; the crate is where
+	--     the gambling lives. Mixing the two meant the best pet in the game came from a quest you could only
+	--     do once and could never re-roll, which is the worst possible place to put a 1-in-10,000.
+	--   * the HATCH TIER roll (Baby..Elder starting level) -- age is no longer something you WIN, it is
+	--     something you GROW. Every quest pet starts at Baby level 1 and ages to Elder purely on flight time
+	--     and playtime (see awardXP: distance/coins/gas/islands). Rolling a starting tier meant one player's
+	--     Elder was luck and another's was an hour of flying, and those two things should not look identical.
+	--
+	-- RARITY AND AGE ARE NOW SEPARATE AXES. Age (Baby->Elder) moves with play. Rarity never moves at all --
+	-- an Uncommon stays an Uncommon forever, it just gets bigger. Nothing below may write `data.rare`.
 	local data = { level = 1, xp = 0, height = 0, time = 0 }
 	local hatchTier = "Baby"
-	if isRare then
-		data.rare = true
-		data.level = PET_MAX_LEVEL -- pre-maxed: rares skip the grind, instantly at the full lvl-25 look
-		hatchTier = (petId == "ButterDuck") and "Mythical" or "Exotic"
-		print(string.format("[PetRare] %s got RARE %s!", player.Name, RARE_NAMES[petId] or petId))
-	else
-		-- SECOND, INDEPENDENT ROLL: what TIER does this egg hatch at? Unlike the rare roll (first-completion only)
-		-- this happens on EVERY hatch, so a normal pet can come out of the shell already Uncommon, Rare, Epic or
-		-- even Legendary. It sets the STARTING LEVEL to that tier's first level and the pet levels on normally from
-		-- there. A rare skips this entirely -- it is already pre-maxed, which outranks any tier the roll could give.
-		data.level, hatchTier = rollHatchTier()
-		print(string.format("[PetHatch] %s hatched %s at %s (starting level %d, odds %s)",
-			player.Name, petId, hatchTier, data.level, HATCH_ODDS_TEXT[hatchTier] or "?"))
-	end
+	local isRare = false -- quests never grant a rare; kept so the shared claim path below reads unchanged
+	print(string.format("[PetQuest] %s hatched %s at Baby (Lv 1) -- quest pets are fixed, they grow with play",
+		player.Name, petId))
 	print(string.format("[PetQuest] %s completed %s quest: firstTime=%s -> rareRoll=%s, granted %s at %s (Lv %d)",
 		player.Name, petId, firstTime and "y" or "n", firstTime and "done" or "skipped",
 		isRare and ((RARE_NAMES[petId] or petId).." (rare)") or "normal", hatchTier, data.level))
@@ -2221,12 +2447,121 @@ PetClaimEvent.OnServerEvent:Connect(function(player, petId)
 	if not _G.playerEquippedPet[player] then _G.playerEquippedPet[player] = skey end -- auto-equip your first pet
 	print("[Pet] "..player.Name.." claimed "..skey)
 	print("[Pet] "..skey.." following "..player.Name)
-	if isRare then pcall(function() PetRareEvent:FireClient(player, petId, RARE_NAMES[petId] or petId) end) end -- hatch fanfare
+	if isRare then
+		pcall(function() PetRareEvent:FireClient(player, petId, RARE_NAMES[petId] or petId) end) -- the hatcher's own fanfare
+
+		-- ===== AND THE WHOLE SERVER HEARS IT =====
+		-- Rare SKINS already do this (SkinCrateService fires GoldAnnounce:FireAllClients on a Gold pull), but
+		-- rare PETS did not -- PetRareEvent is FireClient, so the rarest event in the game happened in total
+		-- silence to everyone except the person it happened to. That is backwards: seeing SOMEBODY ELSE hit a
+		-- 1-in-750 is what makes a player believe the number is real and worth chasing. It is the single
+		-- cheapest piece of social proof this game has.
+		--
+		-- The base odds ride along deliberately. "Got a rare" is a shrug; "1 in 10,000" is a number kids
+		-- repeat to each other. rareOdds() is the UNMODIFIED headline -- the roll itself is shortened by
+		-- rebirth luck, and announcing someone's personal luck-adjusted odds would be both confusing and a
+		-- quiet way of broadcasting how many rebirths they have.
+		pcall(function()
+			PetRareAnnounce:FireAllClients({
+				userId   = player.UserId,
+				playerName = player.DisplayName or player.Name,
+				petId    = petId,
+				rareName = RARE_NAMES[petId] or petId,
+				odds     = rareOdds(petId),
+			})
+		end)
+	end
+
+	-- ===== ISLAND TASK REWARD: CRATE TOKENS, ONCE PER ISLAND, EVER =====
+	-- Gated on `firstTime`, which is the SAME flag the rare roll uses -- and it is backed by
+	-- _G.playerEverCompletedQuests, which PlayerStats persists. So "once each" already survives a rejoin, and a
+	-- player who trades the species away and redoes the quest gets the pet again but NOT the tokens again.
+	-- Re-using the existing flag rather than adding a parallel one means the two can never disagree about
+	-- whether this quest has been done.
+	--
+	-- The island number is PARSED from the quest's own islandPrefix ("Island_8_" -> 8) rather than written out
+	-- in a second table. There is exactly one source of truth for which island a pet quest lives on, and adding
+	-- a copy of it here is how the two drift apart the next time a quest moves.
+	if firstTime then
+		local island = tonumber(tostring(def.islandPrefix or ""):match("Island_(%d+)_") or "")
+		if island then
+			local tokens = 0
+			if _G.crateTokensAward then
+				local ok, granted = pcall(_G.crateTokensAward, player, "islandTask", island)
+				if ok then tokens = tonumber(granted) or 0 end
+			end
+			if tokens > 0 then
+				print(string.format("[IslandTask] %s cleared island %d (%s) -> +%d crate tokens",
+					player.Name, island, def.islandName or "?", tokens))
+				pcall(function()
+					IslandTaskRewardEvent:FireClient(player, island, def.islandName or ("Island " .. island),
+						tokens, def.displayName or petId)
+				end)
+			else
+				-- Not fatal, but worth a line: it means SkinCrateService is not up yet, or the island has no
+				-- entry in the ladder. Silence here would look exactly like "the reward is broken".
+				warn(string.format("[IslandTask] %s cleared island %d but got 0 tokens -- is SkinCrateService up, and does CrateTokens.ISLAND_TASK have an entry for island %d?",
+					player.Name, island, island))
+			end
+		end
+	end
+
 	sendState(player)     -- client hides egg/pieces and spawns the equipped follower
 	sendInventory(player) -- the new pet shows up in the inventory GUI
 	if _G.playerEquippedPet[player] == skey then broadcastEquip(player, isRare and "rare" or "equip") end -- auto-equipped first pet -> show to others
 	checkCollectionMilestones(player) -- a new species may have just completed a milestone (title / the secret pet)
-end)
+	return true
+end
+
+-- Players always go through the gates. bypassGates is never reachable from the client.
+PetClaimEvent.OnServerEvent:Connect(function(player, petId) completeQuest(player, petId, false) end)
+
+-- WHICH QUEST ISLAND IS THIS PLAYER STANDING ON. Measured against the island MODELS that findIsland() already
+-- resolves, rather than against a second table of hard-coded Y values -- PlayerStats moves every island at
+-- runtime, so any coordinate written down here would be wrong by the time anyone stood on it.
+--
+-- Returns petId, islandNumber -- or nil plus a reason string that is worth showing the player, because
+-- "nothing happened" and "you are not on a quest island" look identical from the outside.
+_G.petQuestIslandUnder = function(player)
+	local char = player and player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return nil, nil, "no character" end
+	local here = hrp.Position
+
+	local bestId, bestNum, bestDist
+	for petId, def in pairs(PETS) do
+		if def.islandPrefix then
+			local island = findIsland(def.islandPrefix)
+			if island then
+				local ok, cf, size = pcall(function()
+					local c, sz = island:GetBoundingBox(); return c, sz
+				end)
+				if ok and cf then
+					-- Vertical distance decides it. The islands are stacked hundreds of studs apart but only
+					-- a few hundred wide, so Y is the axis that actually separates them; comparing full 3D
+					-- distance would let a wide island two levels down win on a tall thin one.
+					local dy = math.abs(here.Y - cf.Position.Y)
+					local halfY = (size and size.Y or 100) * 0.5 + 220 -- generous: you may be hovering over it
+					if dy <= halfY and (not bestDist or dy < bestDist) then
+						bestDist = dy
+						bestId = petId
+						bestNum = tonumber(tostring(def.islandPrefix):match("Island_(%d+)_") or "")
+					end
+				end
+			end
+		end
+	end
+	if not bestId then return nil, nil, "not on a quest island" end
+	return bestId, bestNum, nil
+end
+
+-- FORCE-COMPLETE for the dev /complete command. Runs the real completion path with the anti-cheat gates
+-- lifted, so everything a genuine hatch does still happens exactly once -- including the island-task tokens,
+-- which stay gated on firstTime and therefore cannot be farmed by spamming the command.
+_G.petForceCompleteQuest = function(player, petId)
+	if not (player and PETS[petId]) then return false end
+	return completeQuest(player, petId, true) and true or false
+end
 
 -- ===== MYTHICAL JACKPOT GRANT (server-authoritative). CURRENTLY UNCALLED: its only caller was the Pet
 -- Wheel, which has been removed. Kept because it is a complete, working grant path -- wire it to a crate
@@ -2299,6 +2634,18 @@ PetEquipEvent.OnServerEvent:Connect(function(player, petId)
 		print("[PetInv] unequipped (none) for "..player.Name)
 	else
 		if not ownsPet(player, petId) then return end -- can only equip what you own
+		-- ...and not what is currently ASLEEP IN THE PET HUT. PetBarn publishes the napping key here; a pet
+		-- cannot be in two places at once, and without this check the Pet Hub could pull a pet back out of
+		-- its bed while the hut still shows it sleeping there to every other player in the server.
+		-- Guarded: if PetBarn isn't running, this is simply never true and equipping behaves as it always did.
+		if _G.petBarnNapKeyOf then
+			local ok, napKey = pcall(_G.petBarnNapKeyOf, player)
+			if ok and napKey == petId then
+				print("[PetInv] " .. player.Name .. " tried to equip " .. tostring(petId) .. " -- it's asleep in the Pet Hut")
+				sendInventory(player) -- re-push so the card snaps back to its SLEEPING state
+				return
+			end
+		end
 		_G.playerEquippedPet[player] = petId
 		local d = getPetData(player, petId)
 		print(string.format("[PetLvl] %s equipped %s Lvl %d (%d/%s) tier visual: %s",
@@ -2308,6 +2655,81 @@ PetEquipEvent.OnServerEvent:Connect(function(player, petId)
 	sendState(player)     -- client spawns/despawns the follower to match
 	sendInventory(player)
 	broadcastEquip(player, _G.playerEquippedPet[player] and "equip" or "unequip") -- mirror the change to every other client
+end)
+
+-- ===== FUSION: N duplicates at one band -> ONE pet of the same species, one band up ==========================
+-- The only route UP the rarity ladder that isn't a crate pull. Costs come from PetRarity.FUSE_COST (5 at the
+-- bottom, 10 at the top); the duplicates are consumed.
+--
+-- THE RESULT HATCHES AT BABY, LEVEL 1 -- deliberately, and it is the whole reason age and rarity are separate
+-- axes. Age is grown by flying; carrying it across a fuse would turn "stockpile duplicates" into a shortcut
+-- past the growth curve, which is exactly the thing removing the hatch-tier roll was meant to stop. You are
+-- buying a RARER pet, not an OLDER one. (The pets you burn keep no XP either -- nothing is transferred.)
+--
+-- FULLY SERVER-AUTHORITATIVE. The client sends a storage key and nothing else: not a count, not a rarity, not
+-- a destination band. All three are re-derived here from what the player actually owns, so a forged
+-- "fuse my 1 Common into a Gold" is arithmetically impossible rather than merely rejected.
+PetFuseEvent.OnServerEvent:Connect(function(player, storageKey)
+	if type(storageKey) ~= "string" then return end
+	if not ownsPet(player, storageKey) then return end -- you cannot fuse a stack you do not have
+
+	local d = getPetData(player, storageKey)
+	if not d then return end
+
+	local species = speciesOf(storageKey)
+	local band    = d.rarity                       -- from the KEY, never from the client
+	local ok, costOrReason = PetRarity.canFuse(band, d.count)
+	if not ok then
+		-- costOrReason is either the "highest rarity" string or how many MORE copies are needed.
+		local why = (type(costOrReason) == "number")
+			and string.format("Need %d more to fuse", costOrReason)
+			or tostring(costOrReason)
+		pcall(function() PetFuseResult:FireClient(player, false, { reason = why, key = storageKey }) end)
+		return
+	end
+
+	local cost    = costOrReason
+	local nextTierBand = PetRarity.nextOf(band)
+	local destKey = variantKey(species, nextTierBand)
+
+	-- ---- consume, then create. In that order: if the destination write failed we would rather have taken
+	-- ---- nothing than have taken the duplicates and produced nothing.
+	local op = _G.playerOwnedPets[player]
+	local left = d.count - cost
+	if left <= 0 then
+		-- The whole stack went in. Clear the slot, and un-equip if the pet standing next to the player was
+		-- the one just consumed -- otherwise the follower keeps rendering a pet its owner no longer has.
+		op[storageKey] = nil
+		if _G.playerEquippedPet[player] == storageKey then _G.playerEquippedPet[player] = nil end
+	else
+		d.count = left
+	end
+
+	local dest = op[destKey]
+	if type(dest) == "table" then
+		dest.count = (tonumber(dest.count) or 1) + 1 -- already own this band -> it stacks toward the NEXT fuse
+	else
+		op[destKey] = { level = 1, xp = 0, height = 0, time = 0, count = 1 } -- Baby: grow it yourself
+	end
+	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
+	_G.playerDiscoveredQuests[player][species] = true
+
+	print(string.format("[PetFuse] %s fused %dx %s %s -> 1x %s %s (%d left in the old stack)",
+		player.Name, cost, band, species, nextTierBand, species, math.max(0, left)))
+
+	pcall(function()
+		PetFuseResult:FireClient(player, true, {
+			petId = species, key = destKey,
+			fromRarity = band, toRarity = nextTierBand,
+			consumed = cost,
+		})
+	end)
+
+	sendState(player); sendInventory(player)
+	broadcastEquip(player, _G.playerEquippedPet[player] and "equip" or "unequip")
+	-- Fusion destroys pets. That MUST hit the datastore now, not at the next autosave -- a rejoin after a
+	-- crash that ate the duplicates but never wrote the upgrade is the one outcome players never forgive.
+	if _G.savePlayerData then pcall(_G.savePlayerData, player, "petfuse") end
 end)
 
 -- ===== FREE (achievement) upgrade -- gated on the threshold being met =====

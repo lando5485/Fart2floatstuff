@@ -25,7 +25,10 @@ local RunService        = game:GetService("RunService")
 local COIN_PER   = 0.25  -- +25% coins per rebirth
 local SPEED_PER  = 0.03  -- +3% flight speed per rebirth (kept here for docs; CoreClient reads the leaderstat)
 local LUCK_PER   = 0.15  -- rare-pet odds divided by (1 + 0.15 * rebirths)
-local REQ_ISLAND = 14    -- must have reached the last island to rebirth
+-- must have reached the SUMMIT to rebirth. This is a SLOT (climb position), not an island
+-- model number: the tower scrambles the two, so "HighestIsland >= 14" was both wrong and
+-- unreachable. The summit is the last slot in IslandOrder.
+local REQ_SLOT = 11
 
 -- realm-completion stores (the SAME keys/fields RealmPortals.server reads)
 local SPACE_STORE, SPACE_PLANETS = "SpaceRealm_PlayerState_v1", 8
@@ -33,7 +36,11 @@ local DINO_STORE                 = "DinoRealm_PlayerState_v1"
 local CANDY_STORE                = "CandyRealm_PlayerState_v1"
 local KEY_PREFIX                 = "Player_"
 
-local DEFAULT_COINS, DEFAULT_STOMACH = 25, 100
+-- MUST match the new-player defaults in FlightEconomy/StomachUpgrade ensureStats.
+-- 100 is not a real tier any more (the ladder starts at Gumdrop Belly = 110), so a
+-- rebirth used to hand back a tank no gut in the shop matches; and 25 coins cannot
+-- buy a profitable first flight in the per-stud economy.
+local DEFAULT_COINS, DEFAULT_STOMACH = 120, 110
 
 --------------------------------------------------------------------------------
 -- wiring
@@ -79,7 +86,7 @@ local function candyDone(uid)
 	return readField(candyStore, uid, function(d) return d.candyComplete == true end)
 end
 local function islandsDone(player)
-	return math.floor(player:GetAttribute("HighestIsland") or 1) >= REQ_ISLAND
+	return math.floor(player:GetAttribute("HighestSlot") or 1) >= REQ_SLOT
 end
 
 local function coinMult(n)  return 1 + COIN_PER  * n end
@@ -111,7 +118,7 @@ local function pushState(player)
 			rebirths = n,
 			coinMult = coinMult(n), speedMult = speedMult(n), luckMult = luckMult(n),
 			nextCoin = coinMult(n + 1), nextSpeed = speedMult(n + 1), nextLuck = luckMult(n + 1),
-			reqs = reqs, reqIsland = REQ_ISLAND,
+			reqs = reqs, reqIsland = REQ_SLOT,
 			canRebirth = reqs.islands and reqs.space and reqs.dino and reqs.candy,
 			petMilestones = (function()
 				local t = {}
@@ -146,6 +153,10 @@ local function resetRun(player)
 	local function setStat(name, v) local s = ls:FindFirstChild(name); if s then s.Value = v end end
 	setStat("Coins", DEFAULT_COINS); setStat("Island", 1); setStat("StomachMax", DEFAULT_STOMACH); setStat("CurrentPower", 0)
 	player:SetAttribute("HighestIsland", 1)
+	-- HighestSlot is the CLIMB position, and it is what food unlocks, gut unlocks and
+	-- the wormhole all gate on. Resetting only HighestIsland left a rebirthed player
+	-- holding slot 13 -- every food and every gut buyable from the bottom island.
+	player:SetAttribute("HighestSlot", 1)
 	pcall(function() player:LoadCharacter() end)
 end
 

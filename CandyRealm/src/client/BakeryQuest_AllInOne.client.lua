@@ -31,6 +31,16 @@
 --   (optional) any model with "npc" in its name near the Mixer becomes the
 --   quest giver; with none there, a Baker is BUILT beside the station.
 --
+-- ONLY THE MIXER IS REALLY REQUIRED. It is what decides where the bakery IS, so a world
+-- without one gets a warning and no quest. Everything else the scanner can stand in for:
+-- a missing oven and -- above all -- a missing chicken are built beside the mixing station
+-- ~40s after it goes up. No chicken means no eggs means the Bake-Off cannot be finished at
+-- all, which is far worse than an oven sitting somewhere the builder did not choose.
+--
+-- AUDIO: the SOUND_ block below. Three ids already proven elsewhere in this place are filled
+-- in; the rest are "" and silent until you paste your own owned ids in. An empty id creates
+-- no Sound whatsoever, so silence never costs anything and never spams the auth log.
+--
 -- Everything is client-side and per-player, like every other island quest.
 -- STREAMING-SAFE: island 15 is far from spawn, so the marker parts trickle
 -- in late -- the scanner below keeps looking and builds each station the
@@ -44,12 +54,54 @@ local Workspace         = game:GetService("Workspace")
 local RunService        = game:GetService("RunService")
 local TweenService      = game:GetService("TweenService")
 local Debris            = game:GetService("Debris")
+local SoundService      = game:GetService("SoundService")
 local TextChatService   = game:GetService("TextChatService")
+local PromptService     = game:GetService("ProximityPromptService")
+local UserInputService  = game:GetService("UserInputService")   -- the mixing bowl is dragged
 
 local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
 
-print("[Bakery] >>> VERSION bakeoff-v1 loaded <<<")
+-- bump this whenever the file changes: Rojo only ADDS, so a stale copy baked into the place
+-- runs alongside the synced one, and the version line is how the boot log tells you which is
+-- which. Two "[Bakery] >>> VERSION" lines with different tags = a duplicate to delete.
+print("[Bakery] >>> VERSION bakeoff-v3 (3 hens in a pen, station HUDs, big edge-reach prompts) loaded <<<")
+
+-- ============================================================================
+-- THE GAME'S OWN BOTTOM HUD, OUT OF THE WAY
+-- ============================================================================
+-- Every station panel here is a task you play with your thumbs, and the fart meter and its
+-- button sit exactly where those panels' buttons are. Same shape the rest of the realm uses
+-- (Campfire / CrateClient / MainMenuManager.setHud): remember what was Enabled, switch it off,
+-- and put it back EXACTLY as it was. Never blanket-enable on the way out -- that would light up
+-- a HUD something else had deliberately hidden.
+--
+-- REFCOUNTED BY TAG, because these panels overlap: an egg lift can run with the oven HUD still
+-- up behind it, and whichever closed first would otherwise hand the bottom HUD back underneath
+-- the other one. The state is captured on the FIRST hold and restored only when the LAST one
+-- lets go.
+local bottomHudHold
+do
+	local NAMES = { "BottomStackGui", "GasMeterGui", "FartButtonGui", "StomachGui" }
+	local held, prev = {}, nil
+	function bottomHudHold(tag, hidden)
+		held[tag] = hidden or nil
+		local any = next(held) ~= nil
+		if any and not prev then
+			prev = {}
+			for _, n in ipairs(NAMES) do
+				local sg = PlayerGui:FindFirstChild(n)
+				if sg and sg:IsA("ScreenGui") then prev[n] = sg.Enabled; sg.Enabled = false end
+			end
+		elseif not any and prev then
+			for n, was in pairs(prev) do
+				local sg = PlayerGui:FindFirstChild(n)
+				if sg and sg:IsA("ScreenGui") then sg.Enabled = was end
+			end
+			prev = nil
+		end
+	end
+end
 
 -- ============================================================================
 -- CONFIG
@@ -57,9 +109,13 @@ print("[Bakery] >>> VERSION bakeoff-v1 loaded <<<")
 local MIXER_NAME    = "mixer"        -- exact names after norm() -- see below
 local OVEN_NAME     = "oven"
 local CHICKEN_NAME  = "chickenpart"
-local ZONE_NAME     = "chickenzone"  -- optional: an invisible pen. The chicken roams
-                                     -- anywhere inside this part's footprint and
-                                     -- never leaves it. No part -> old radius wander.
+local ZONE_NAME     = "chickenzone"  -- ISLAND 15'S BASE PLATE. The name says "pen" but the
+                                     -- part is the island's 300x357 base slab, so it is the
+                                     -- floor AND the footprint for everything the quest
+                                     -- builds: stations, ingredients, the Baker, the chicken,
+                                     -- her nest and every egg all seat on its top surface and
+                                     -- are clamped inside its edges. No such part -> ground
+                                     -- raycasts and the old home-radius wander.
 local ISLAND_PREFIX = "island15"     -- Baker parents under this model if it exists,
                                      -- so the NPC guide arrows can find him
 local MARKER_RANGE  = 800            -- an Oven/ChickenPart must be this close to the
@@ -85,11 +141,44 @@ local HEAT_DECAY    = 20             -- heat lost per second
 local HEAT_STOKE    = 24             -- heat gained per STOKE press (~1 press/sec holds it)
 local BAKE_FAST     = 8.5            -- %/sec in the zone  -> ~12s bake played well
 local BAKE_SLOW     = 2.6            -- %/sec otherwise    -> a closed HUD still finishes
-local EGG_COOLDOWN  = 2.5            -- seconds between chicken taps
-local WANDER_R      = 45             -- studs the chicken strolls from its spawn block
+local EGG_COOLDOWN  = 2.5            -- seconds between chicken taps (per hen)
+local CHICKEN_COUNT = 3              -- how many hens roam the coop
+local WANDER_R      = 45             -- studs a hen strolls from the coop, when no pen part is drawn
+local HEN_SPACING   = 4.5            -- hens this close pick somewhere else to be
+
+-- THE PEN, if you draw one. Any part with one of these names becomes the hard boundary the
+-- hens cannot leave -- its footprint, in its own object space, so a rotated pen works.
+-- Without one they are held to WANDER_R of the coop instead. Either way the base plate is
+-- ALSO applied, so "inside the pen" can never mean "off the island".
+--
+-- ⚠ "chicken zone" IS NOT IN THIS LIST, and must never be. Despite the name it is island15's
+-- entire 300x357 walkable top, not a pen -- treating it as the boundary is what let the hen
+-- roam the whole island in the first place.
+local PEN_NAMES = { chickenpen = true, chickenboundaires = true, chickenboundaries = true,
+	chickenboundary = true, henpen = true }
 
 local COIN_REWARD   = 2000           -- first bake
 local BONUS_REWARD  = 1000           -- baking the second recipe afterward
+
+-- Audio: your OWN asset ids. "" = silent, and NOTHING is created for an empty id -- given how many
+-- ids in this place fail auth, silence is the safe default, and the same rule Camp S'mores follows.
+-- The three that are filled in are already proven elsewhere in this place, so they are safe to keep:
+--   the crackle is realm 1's campfire loop, the chime is IslandTaskReward's.
+local SOUND_FIRE   = "rbxassetid://158853971"      -- LOOPING oven roar, only while a bake is on
+local SOUND_DING   = "rbxassetid://4612378364"     -- the oven bell, and the hand-over
+local SOUND_EGG    = "rbxassetid://92880640988467" -- an egg lifted out of the straw
+local SOUND_PICKUP = ""                            -- an ingredient taken off the ground
+local SOUND_BAWK   = "rbxassetid://77584650945481" -- the chicken: tapped, and the odd cluck as
+                                                   -- she trots past you (see runChicken)
+local SOUND_STIR   = ""                            -- one sweep of the spoon
+local SOUND_POUR   = ""                            -- an ingredient dropping into the bowl
+local SOUND_STOKE  = ""                            -- the STOKE button -- a bellows whumph
+local SOUND_DOOR   = ""                            -- the iron oven door
+-- how the oven roar sits in the world: full volume at the mouth, gone before the next station.
+-- Both distances stated (never just Max) so retuning the range can't silently leave Min on the default.
+local FIRE_VOLUME  = 0.5
+local FIRE_FULL    = 14              -- studs of full volume
+local FIRE_RANGE   = 95              -- studs to silence -- the ovens are ~40 studs wide once scaled
 
 -- the two recipes. `need` is ingredient -> count; eggs ONLY come from the chicken.
 local RECIPES = {
@@ -176,6 +265,23 @@ local function tween(inst, t, goal, style, dir)
 	tw:Play(); return tw
 end
 
+-- one-shot 2D sound. An empty id creates nothing at all -- see the SOUND_ block above.
+local function playSound(id, vol)
+	if not id or id == "" then return end
+	local s = Instance.new("Sound"); s.SoundId = id; s.Volume = vol or 0.6
+	s.Parent = SoundService; s:Play(); Debris:AddItem(s, 6)
+end
+
+-- ...and the positional flavour of the same thing, for anything that happens at a station rather
+-- than in your hands: a chicken across the field should sound like it's across the field.
+local function playAt(id, part, vol, range)
+	if not id or id == "" or not (part and part.Parent) then return end
+	local s = Instance.new("Sound"); s.SoundId = id; s.Volume = vol or 0.6
+	s.RollOffMinDistance = 10; s.RollOffMaxDistance = range or 90
+	s.RollOffMode = Enum.RollOffMode.InverseTapered
+	s.Parent = part; s:Play(); Debris:AddItem(s, 6)
+end
+
 local function frameOf(inst)
 	if inst:IsA("BasePart") then return inst.CFrame, inst.Size end
 	return inst:GetBoundingBox()
@@ -204,11 +310,183 @@ local function hrpOf()
 	return char and char:FindFirstChild("HumanoidRootPart")
 end
 
+-- ============================================================================
+-- BIG E PROMPTS -- readable from across the bakery, reachable from the model's EDGE
+-- ============================================================================
+-- Roblox's default prompt is a small grey key badge sized for an adult on a monitor, and its
+-- MaxActivationDistance is measured from the part it hangs on -- which for a station scaled up
+-- MIXER_SCALE/OVEN_SCALE means the trigger sits at the CENTRE of a thing 37 studs wide. You had
+-- to walk into the middle of the bowl to press E on it.
+--
+-- Two fixes, and they are separate problems:
+--   * REACH comes from the model's own footprint: half its bounding diagonal (the farthest
+--     edge, not the nearest face) plus a walk-up margin. Scale the station up and the reach
+--     grows with it, automatically.
+--   * SIZE comes from Style = Custom plus the renderer below. There is no property for "make
+--     the default prompt bigger", so a custom one is the only route -- and it doubles as the
+--     place the hold-to-act ring is drawn.
+local BIG_PROMPT = "BakeryBigPrompt"
+
+-- half the bounding diagonal in XZ: the distance from the centre to the farthest EDGE.
+local function reachOf(inst, margin)
+	local size
+	if inst:IsA("Model") then
+		local ok, _, s = pcall(inst.GetBoundingBox, inst)   -- (ok, cframe, size)
+		if ok then size = s end
+	elseif inst:IsA("BasePart") then
+		size = inst.Size
+	end
+	size = size or Vector3.new(6, 6, 6)
+	return math.sqrt(size.X * size.X + size.Z * size.Z) * 0.5 + (margin or 14)
+end
+
+-- mark a prompt as ours: big custom art, and optionally reach measured off `reachFrom`
+local function bigPrompt(prompt, reachFrom, margin)
+	prompt.Style = Enum.ProximityPromptStyle.Custom
+	prompt.RequiresLineOfSight = false
+	prompt:SetAttribute(BIG_PROMPT, true)
+	if reachFrom then prompt.MaxActivationDistance = reachOf(reachFrom, margin) end
+	return prompt
+end
+
+-- ---- the renderer: one billboard per shown prompt, destroyed when it hides ----
+do
+	local live = {}   -- [prompt] = { gui=, fill=, holdTween= }
+
+	local function build(prompt)
+		local host = prompt.Parent
+		if not (host and host:IsA("BasePart")) then return end
+		local bb = Instance.new("BillboardGui")
+		bb.Name = "BakeryPrompt"; bb.Adornee = host
+		bb.Size = UDim2.fromOffset(300, 96)          -- ~3x the stock badge
+		bb.StudsOffset = Vector3.new(0, 2.4, 0)
+		bb.AlwaysOnTop = true; bb.MaxDistance = 400
+		bb.Parent = PlayerGui                         -- PlayerGui, not the part: a BillboardGui
+		                                              -- parented into bakeFolder would be swept
+		                                              -- by anchorAll's descendant walk
+
+		local pill = Instance.new("Frame")
+		pill.Size = UDim2.fromScale(1, 1); pill.BackgroundColor3 = PAL.PANEL
+		pill.BackgroundTransparency = 0.05; pill.BorderSizePixel = 0; pill.Parent = bb
+		Instance.new("UICorner", pill).CornerRadius = UDim.new(0, 22)
+		local st = Instance.new("UIStroke"); st.Color = PAL.CRUST; st.Thickness = 4; st.Parent = pill
+
+		-- the hold fill sweeps left to right UNDER the text, so a held prompt reads as loading
+		local fill = Instance.new("Frame")
+		fill.Size = UDim2.new(0, 0, 1, 0); fill.BackgroundColor3 = PAL.GLOW
+		fill.BackgroundTransparency = 0.55; fill.BorderSizePixel = 0; fill.Parent = pill
+		Instance.new("UICorner", fill).CornerRadius = UDim.new(0, 22)
+
+		-- the key badge
+		local key = Instance.new("TextLabel")
+		key.AnchorPoint = Vector2.new(0, 0.5); key.Position = UDim2.new(0, 14, 0.5, 0)
+		key.Size = UDim2.fromOffset(64, 64); key.BackgroundColor3 = PAL.CRUST
+		key.Font = Enum.Font.FredokaOne; key.TextSize = 34; key.TextColor3 = Color3.new(1, 1, 1)
+		key.Text = "E"; key.Parent = pill
+		Instance.new("UICorner", key).CornerRadius = UDim.new(0, 16)
+
+		local act = Instance.new("TextLabel")
+		act.BackgroundTransparency = 1
+		act.Position = UDim2.new(0, 88, 0, 14); act.Size = UDim2.new(1, -102, 0, 40)
+		act.Font = Enum.Font.FredokaOne; act.TextSize = 30; act.TextColor3 = PAL.TEXTC
+		act.TextXAlignment = Enum.TextXAlignment.Left; act.TextScaled = false
+		act.Text = prompt.ActionText; act.Parent = pill
+
+		local obj = Instance.new("TextLabel")
+		obj.BackgroundTransparency = 1
+		obj.Position = UDim2.new(0, 88, 0, 52); obj.Size = UDim2.new(1, -102, 0, 26)
+		obj.Font = Enum.Font.GothamBold; obj.TextSize = 16; obj.TextColor3 = PAL.HINTC
+		obj.TextXAlignment = Enum.TextXAlignment.Left
+		obj.Text = prompt.ObjectText; obj.Parent = pill
+
+		-- ActionText changes constantly ("Stir!  (3/14)"), so track it rather than snapshot it
+		local conn = prompt:GetPropertyChangedSignal("ActionText"):Connect(function()
+			act.Text = prompt.ActionText
+		end)
+
+		-- pop in
+		bb.Size = UDim2.fromOffset(240, 78)
+		tween(bb, 0.16, { Size = UDim2.fromOffset(300, 96) }, Enum.EasingStyle.Back)
+
+		live[prompt] = { gui = bb, fill = fill, conn = conn }
+	end
+
+	local function drop(prompt)
+		local e = live[prompt]
+		if not e then return end
+		live[prompt] = nil
+		if e.conn then e.conn:Disconnect() end
+		if e.gui then e.gui:Destroy() end
+	end
+
+	PromptService.PromptShown:Connect(function(prompt)
+		if prompt:GetAttribute(BIG_PROMPT) then build(prompt) end
+	end)
+	PromptService.PromptHidden:Connect(function(prompt) drop(prompt) end)
+	PromptService.PromptTriggered:Connect(function(prompt)
+		local e = live[prompt]
+		if e then e.fill.Size = UDim2.new(0, 0, 1, 0) end
+	end)
+	PromptService.PromptButtonHoldBegan:Connect(function(prompt)
+		local e = live[prompt]
+		if e and prompt.HoldDuration > 0 then
+			tween(e.fill, prompt.HoldDuration, { Size = UDim2.fromScale(1, 1) }, Enum.EasingStyle.Linear)
+		end
+	end)
+	PromptService.PromptButtonHoldEnded:Connect(function(prompt)
+		local e = live[prompt]
+		if e then
+			tween(e.fill, 0.12, { Size = UDim2.new(0, 0, 1, 0) }, Enum.EasingStyle.Linear)
+		end
+	end)
+end
+
+-- the island15 MODEL, by name prefix. Wanted early: the quest's folder hangs off it, and
+-- the Baker is parented into it so NpcGuideArrow's island-scoped scan can find him.
+local function islandModel()
+	for _, m in ipairs(Workspace:GetChildren()) do
+		if m:IsA("Model") and string.sub(norm(m.Name), 1, #ISLAND_PREFIX) == ISLAND_PREFIX then
+			return m
+		end
+	end
+	return nil
+end
+
 -- everything this quest builds lives in one folder, so the ground raycast can
 -- ignore it all in one line (a chicken standing on its own egg counts as ground
 -- otherwise, and it slowly climbs into the sky)
 local bakeFolder = Instance.new("Folder")
 bakeFolder.Name = "BakeryQuestLocal"; bakeFolder.Parent = Workspace
+
+-- ...AND THAT FOLDER BELONGS TO ISLAND 15, not to the world. Parented straight to Workspace
+-- the whole bakery is a loose pile of parts sitting next to the island rather than part of
+-- it -- the exact thing IslandStreaming's loose-part audit flags at boot. Under the island
+-- model it travels with the island, reads as island15's in the explorer, and inherits the
+-- model's Persistent streaming mode instead of relying on being local-only.
+--
+-- The island model may not have replicated yet when this script runs, so this is retried
+-- from the scanner loop rather than assumed. The pan and tray in your hands are the one
+-- thing NOT in here: those are welded into the character and must stay unanchored.
+local function homeToIsland()
+	local isle = islandModel()
+	if isle and bakeFolder.Parent ~= isle then
+		bakeFolder.Parent = isle
+		print("[Bakery] quest folder re-homed under " .. isle:GetFullName())
+	end
+end
+
+-- belt to that braces: every part mk() makes is Anchored already, so this only ever catches
+-- something added later that forgot. Cheap, and the alternative is a bakery that falls off
+-- the island the first time someone builds a prop by hand.
+local function anchorAll()
+	local n = 0
+	for _, d in ipairs(bakeFolder:GetDescendants()) do
+		if d:IsA("BasePart") and not d.Anchored then d.Anchored = true; n += 1 end
+	end
+	return n
+end
+
+homeToIsland()
 
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -227,6 +505,54 @@ local function groundAt(x, z, refY)
 end
 
 -- ============================================================================
+-- THE BASE PLATE -- island15's "chicken zone" part
+-- ============================================================================
+-- Despite the name it is not a pen: it is the island's base slab (300 x 357 studs, the
+-- whole walkable top), and it is the ONE thing every prop on this island should sit on.
+-- Two reasons it has to be handled specially rather than raycast for like normal ground:
+--
+--   1  ITS TOP Y IS THE FLOOR OF RECORD. A ray can miss a floor it is standing on --
+--      one fired from inside geometry returns nothing at all -- and a miss used to be
+--      read as "nothing to stand on here". The stored top surface answers instead.
+--      (It IS raycastable: this part is deliberately never passed to hideMarker(),
+--      which would turn off its CanQuery AND its collision. See the ZONE branch.)
+--   2  IT IS THE ISLAND'S FOOTPRINT. Anything clamped inside it is ON the island by
+--      definition -- which is what stops a scattered ingredient landing off the edge and
+--      raycasting down to an island thousands of studs below.
+local zoneCF, zoneHalf           -- the plate's frame and half-extents, once it streams in
+local zoneTopY                   -- its TOP surface: the floor everything seats on
+
+-- clamp a world position into the plate's footprint, with a margin in from the edge, in
+-- the PLATE's own object space so a rotated island still works. `inset` lets props that
+-- must not teeter on the rim (ingredients, stations) sit further in than the chicken does.
+local function clampToZone(pos, inset)
+	if not zoneCF then return pos end
+	local o = zoneCF:PointToObjectSpace(pos)
+	local m = inset or 1.5
+	local hx = math.max(1, zoneHalf.X - m)
+	local hz = math.max(1, zoneHalf.Z - m)
+	local cx, cz = math.clamp(o.X, -hx, hx), math.clamp(o.Z, -hz, hz)
+	if cx == o.X and cz == o.Z then return pos end
+	return (zoneCF * CFrame.new(cx, o.Y, cz)).Position
+end
+
+-- WHERE A PROP GOES. Real geometry wins when there is any -- a hill, a rock, the island's
+-- own decking all deserve to be stood on. The plate catches the rest: a ray that hits
+-- nothing (the plate itself no longer answers), or one that hits something absurdly far
+-- below (off the edge, or a different island entirely). Either way the XZ is pulled inside
+-- the island's footprint first, so nothing is ever seated out over the void.
+local function seatOn(x, z, refY, inset)
+	if zoneCF then
+		local p = clampToZone(Vector3.new(x, refY, z), inset or 8)
+		x, z = p.X, p.Z
+	end
+	local g = groundAt(x, z, refY)
+	if g and math.abs(g.Y - refY) <= 60 then return g end
+	if zoneTopY then return Vector3.new(x, zoneTopY, z) end
+	return g   -- nil when there is neither ground nor a plate: callers fall back themselves
+end
+
+-- ============================================================================
 -- STATE
 -- ============================================================================
 -- step: 0 talk  2 gather (incl. "bring it to the bowl")  3 mixing  4 carry pan
@@ -239,6 +565,12 @@ local bonusRound   = false      -- true while baking the second recipe
 local bonusDone    = false
 local mixerAt      = nil        -- cached CFrame of the mixing station (banner gate + scatter)
 local bakerHead    = nil
+-- SHARED EFFECTS. Every quest here is a LocalScript, so nothing one player does shows up on
+-- anybody else's screen. FX.send tells the server (BakeryFxSync.server.lua) that something
+-- happened; every OTHER player's copy of this script plays it on their own props. Declared here
+-- because the send sites are scattered up and down the file and the receiving half is built at
+-- the bottom, next to the ovens and hens it drives.
+local FX = {}
 local refreshBanner, flashBanner, showBubble, hideBubble, openChooser
 local refreshPrompts            -- re-evaluates every station prompt after a state change
 
@@ -308,7 +640,7 @@ local function baseObjectiveText()
 		return ("%s STIR the bowl!  %d/%d"):format(E_BOWL, stirs, STIRS_NEEDED)
 	elseif step == 2 then
 		if allGathered() then return E_BOWL .. " All ingredients! Take them to the MIXING BOWL!" end
-		return shoppingList() .. "   (" .. E_CHICK .. " tap the chicken for eggs!)"
+		return shoppingList() .. "   (" .. E_CHICK .. " tap a chicken for eggs!)"
 	end
 	return E_BOWL .. " Talk to the Baker to start the Bake-Off!"
 end
@@ -335,12 +667,36 @@ flashBanner = function(text, seconds)
 	task.delay(seconds or 2.5, function() if tok == flashToken then refreshBanner() end end)
 end
 
+-- ============================================================================
+-- THE BANNER IS A REMINDER, NOT A FIXTURE
+-- ============================================================================
+-- Pinned to the top of the screen for the whole bake-off it was wallpaper within a minute, and
+-- with a flash banner landing on it every time an ingredient moved, the top of the screen was a
+-- stream nobody was reading. Now: something happened (a pickup, a counter, a flash) -> straight
+-- up for 5 seconds; otherwise it reminds you what you are doing for 5 seconds once every 20; out
+-- of range it is gone and walking back shows it again at once. The text changing IS the event
+-- test -- every route with news already writes it here.
 task.spawn(function()
+	local shownUntil, nextAt, lastText = 0, 0, nil
 	while true do
+		task.wait(0.25)
+		local now = os.clock()
 		local hrp = hrpOf()
-		objFrame.Visible = (mixerAt ~= nil and hrp ~= nil
+		local near = (mixerAt ~= nil and hrp ~= nil
 			and (hrp.Position - mixerAt.Position).Magnitude <= BANNER_RANGE)
-		task.wait(0.4)
+		if not near then
+			objFrame.Visible = false
+			lastText = objLabel.Text
+			nextAt = 0
+		else
+			if objLabel.Text ~= lastText then
+				lastText = objLabel.Text
+				shownUntil = now + 5; nextAt = now + 20
+			elseif now >= nextAt then
+				shownUntil = now + 5; nextAt = now + 20
+			end
+			objFrame.Visible = now < shownUntil
+		end
 	end
 end)
 
@@ -403,6 +759,11 @@ local chPanel = Instance.new("Frame")
 chPanel.AnchorPoint = Vector2.new(0.5, 0.5); chPanel.Position = UDim2.fromScale(0.5, 0.5)
 chPanel.Size = UDim2.new(0, 640, 0, 400); chPanel.BackgroundColor3 = PAL.PANEL
 chPanel.BorderSizePixel = 0; chPanel.ZIndex = 2; chPanel.Parent = chGui
+-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
+-- The panel keeps its own size and every child keeps its own pixel coordinates;
+-- it is centred in the house shell and scaled to fit, so nothing inside moves.
+pcall(_G.housePanel, chPanel)   -- island15 recipe chooser
 Instance.new("UICorner", chPanel).CornerRadius = UDim.new(0, 18)
 do local s = Instance.new("UIStroke"); s.Color = PAL.CRUST; s.Thickness = 3; s.Parent = chPanel end
 
@@ -532,26 +893,28 @@ local function launchFireworks(fromPos)
 	end
 end
 
+-- ⚠ ANNOUNCEMENTS GO THROUGH THE ONE REALM BANNER -- NEVER A ScreenGui OF THEIR OWN.
+-- This is realm 1's rule (see its CoreClient, and NotifyCenter.luau here: push/pin is the whole
+-- API). It used to build its own card in the middle of the screen, which meant a quest win could
+-- land on top of the objective banner, an island arrival or a live event -- several cards in the
+-- same band, none of them aware of the others. NotifyCenter already ranks, queues and preempts,
+-- so a win is one more push and takes its turn like everything else.
+--
+-- EVENT priority, deliberately: finishing a quest has to outrank the objective banner that is
+-- pinned underneath it (REWARD), but must not talk over a real Robux purchase (PURCHASE).
 local function winBanner(text)
-	local g = Instance.new("ScreenGui"); g.Name = "BakeryWin"; g.ResetOnSpawn = false
-	g.DisplayOrder = 20; g.IgnoreGuiInset = true; g.Parent = PlayerGui
-	local f = Instance.new("Frame"); f.AnchorPoint = Vector2.new(0.5, 0.5)
-	f.Position = UDim2.new(0.5, 0, 0.42, 0); f.Size = UDim2.new(0, 0, 0, 90)
-	f.BackgroundColor3 = PAL.PANEL; f.Parent = g
-	Instance.new("UICorner", f).CornerRadius = UDim.new(0, 18)
-	local s = Instance.new("UIStroke"); s.Color = PAL.CRUST; s.Thickness = 4; s.Parent = f
-	local l = Instance.new("TextLabel"); l.BackgroundTransparency = 1; l.Size = UDim2.fromScale(1, 1)
-	l.Font = Enum.Font.FredokaOne; l.TextColor3 = PAL.TEXTC; l.TextScaled = true
-	l.Text = text; l.Parent = f
-	local pad = Instance.new("UIPadding")
-	pad.PaddingLeft = UDim.new(0, 24); pad.PaddingRight = UDim.new(0, 24); pad.Parent = l
-	local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 32; sz.Parent = l
-	tween(f, 0.5, { Size = UDim2.new(0, 640, 0, 90) }, Enum.EasingStyle.Back)
-	task.delay(5, function()
-		tween(f, 0.4, { BackgroundTransparency = 1 })
-		tween(l, 0.4, { TextTransparency = 1 })
-		task.delay(0.5, function() g:Destroy() end)
-	end)
+	local msg = text
+	if _G.NotifyCenter and _G.NotifyCenter.push then
+		pcall(function() _G.NotifyCenter.push({
+			top      = "â¨ QUEST COMPLETE",
+			text     = msg,
+			color    = PAL.CRUST,
+			priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT or nil,
+			duration = 5,
+		}) end)
+	else
+		print("[Bakery] " .. tostring(msg))
+	end
 end
 
 local function poofAt(pos, color)
@@ -703,6 +1066,7 @@ local function wirePickup(m, main, kind, idx)
 	prompt.ActionText = "Take"; prompt.ObjectText = ING[kind].label
 	prompt.HoldDuration = 0; prompt.MaxActivationDistance = 12
 	prompt.RequiresLineOfSight = false; prompt.Parent = main
+	bigPrompt(prompt)          -- big art, but its own reach: a pickup you walk up to
 
 	local taken = false
 	prompt.Triggered:Connect(function()
@@ -717,6 +1081,7 @@ local function wirePickup(m, main, kind, idx)
 		have[kind] = (have[kind] or 0) + 1
 		scattered[m] = nil
 		poofAt(m:GetPivot().Position, PAL.GLOW_H)
+		playSound(SOUND_PICKUP, 0.55)
 		-- the prop arcs to you and shrinks away -- "picked up", not "vanished"
 		local hrp = hrpOf()
 		prompt:Destroy()
@@ -743,75 +1108,163 @@ local function clearScattered()
 	scattered = {}
 end
 
+-- ===== EVERY INGREDIENT SITS ON THE PLATE. NOT NEAR IT, ON IT. =====
+-- The plate ("chicken zone") IS island15's walkable top, so "on the plate" and "on the
+-- island" are the same statement -- and its stored top Y is a flat, known number, where a
+-- raycast is a guess that can be wrong in two ways that both read to a player as "floating
+-- in mid-air off the island":
+--   * IT HITS SOMETHING ELSE ON THE WAY DOWN. island15 is covered in props and ~150 wedges
+--     standing tens of studs proud of the plate. A ray fired from above lands the ingredient
+--     on the FIRST thing it meets, so a bag of sugar ends up perched on a fence rail.
+--   * IT HITS NOTHING. A ray that starts inside geometry returns nil, and so does one fired
+--     past the island's edge -- and the old fallback then dropped the item wherever the
+--     second guess landed.
+-- So: the plate's top Y is the height, full stop, and the only question left is WHERE on the
+-- plate. plateClear() answers that -- it walks the spiral until it finds a patch with nothing
+-- standing on it, which is also what stops an ingredient spawning inside a fence post.
+local function plateSpot(x, z, inset)
+	local p = clampToZone(Vector3.new(x, zoneTopY, z), inset or 12)
+	return Vector3.new(p.X, zoneTopY, p.Z)
+end
+
+-- is this patch of plate bare? A short ray from just above it: hitting the plate itself (or
+-- anything else within a stud and a half of its surface) is clear; hitting something higher
+-- means a prop stands here; hitting NOTHING means there is no plate here at all.
+local function plateClear(pos)
+	refreshRayFilter()
+	local hit = Workspace:Raycast(Vector3.new(pos.X, zoneTopY + 10, pos.Z), Vector3.new(0, -12, 0), rayParams)
+	if not hit then return false end
+	return math.abs(hit.Position.Y - zoneTopY) <= 1.5
+end
+
 -- one prop per item still needed, on a golden-angle spiral around the mixer --
--- deterministic (no random: this must land the same every respawn), spread out,
--- and snapped to the ground with a raycast so nothing floats or buries
+-- deterministic (no random: this must land the same every respawn) and spread out.
 local function scatterIngredients()
 	clearScattered()
 	if not (mixerAt and recipe) then return end
-	local need, idx = needOf(), 0
+	-- nothing left to find? then nothing gets laid out. This runs deferred while the base plate
+	-- streams in, so it can land AFTER the list is already complete -- /done being the obvious
+	-- way, but a fast round is enough -- and re-littering the plate then reads as a bug.
+	if allGathered() then return end
+	local need, idx, placed = needOf(), 0, 0
+	local onPlate, bumped = 0, 0
 	for _, kind in ipairs(ING_ORDER) do
 		local n = (kind ~= "egg") and (need[kind] or 0) or 0
 		for _ = 1, n do
 			idx += 1
-			local ang = idx * 2.39996              -- golden angle: never clumps, never lines up
-			local rad = 28 + ((idx * 31) % 75)
-			local x = mixerAt.Position.X + math.cos(ang) * rad
-			local z = mixerAt.Position.Z + math.sin(ang) * rad
-			local g = groundAt(x, z, mixerAt.Position.Y)
-			-- a spot hanging off the island's edge raycasts to nothing (or to some
-			-- island far below) -- pull those in close instead of losing the item
-			if not g or math.abs(g.Y - mixerAt.Position.Y) > 60 then
-				local rad2 = 12 + (idx * 7) % 14
-				g = groundAt(mixerAt.Position.X + math.cos(ang) * rad2,
-					mixerAt.Position.Z + math.sin(ang) * rad2, mixerAt.Position.Y)
-					or (mixerAt.Position + Vector3.new(math.cos(ang) * rad2, 0, math.sin(ang) * rad2))
+			local g
+			if zoneCF and zoneTopY then
+				-- walk the spiral from this item's own index until the plate is bare there.
+				-- The cap matters: on an island paved wall to wall in props every candidate
+				-- is occupied, and a search with no end would hang the round on step 2.
+				for try = 0, 40 do
+					local j = idx + try * 7               -- +7, not +1: a blocked patch is usually
+					                                      -- a whole prop, and the next index is
+					                                      -- inches away and blocked by the same thing
+					local ang = j * 2.39996               -- golden angle: never clumps, never lines up
+					local rad = 28 + ((j * 31) % 75)
+					local cand = plateSpot(mixerAt.Position.X + math.cos(ang) * rad,
+						mixerAt.Position.Z + math.sin(ang) * rad, 12)
+					g = cand                              -- worst case we keep the last: still ON the plate
+					if plateClear(cand) then
+						if try > 0 then bumped += 1 end   -- counted per ITEM moved, not per ray fired
+						break
+					end
+				end
+				onPlate += 1
+			else
+				-- NO PLATE YET (it had not streamed in when the round started). Fall back to the
+				-- old raycast seat rather than refusing to scatter -- but say so, because this is
+				-- the branch where an ingredient can end up somewhere silly.
+				local ang = idx * 2.39996
+				local rad = 28 + ((idx * 31) % 75)
+				g = seatOn(mixerAt.Position.X + math.cos(ang) * rad,
+					mixerAt.Position.Z + math.sin(ang) * rad, mixerAt.Position.Y, 12)
+					or (mixerAt.Position + Vector3.new(math.cos(ang) * 20, 0, math.sin(ang) * 20))
 			end
 			local m, main = buildIngredientProp(kind, g)
 			wirePickup(m, main, kind, idx)
 			scattered[m] = true
+			placed += 1
 		end
 	end
-	print(("[Bakery] %d ingredient(s) scattered for the %s"):format(idx, recipe))
-end
-
--- ============================================================================
--- THE CHICKEN -- built at "ChickenPart", wanders around it, and TAP = EGG
--- ============================================================================
-local chicken, chickenOrigin
-local chickenMode = "stroll"     -- stroll | pause | flee
-local lastTap     = 0
-local zoneCF, zoneHalf           -- the "chicken zone" pen, once it streams in
-local zoneTopY                   -- the pen plate's TOP surface: the hidden marker is
-                                 -- unraycastable, so this Y is the floor of record --
-                                 -- chicken, nest and eggs all seat on it directly
-local nestModel                  -- so the nest can be re-seated when the zone arrives
-
--- clamp a world position into the pen's footprint (a margin in from the walls,
--- in the ZONE's own object space, so a rotated pen still works)
-local function clampToZone(pos)
-	if not zoneCF then return pos end
-	local o = zoneCF:PointToObjectSpace(pos)
-	local hx = math.max(1, zoneHalf.X - 1.5)
-	local hz = math.max(1, zoneHalf.Z - 1.5)
-	local cx, cz = math.clamp(o.X, -hx, hx), math.clamp(o.Z, -hz, hz)
-	if cx == o.X and cz == o.Z then return pos end
-	return (zoneCF * CFrame.new(cx, o.Y, cz)).Position
-end
-
--- a fresh stroll destination: anywhere in the pen when there is one, the old
--- home-radius ring otherwise. Clock-derived, no math.random (deterministic).
-local function pickWanderTarget(now)
-	if zoneCF then
-		local hx = math.max(2, zoneHalf.X - 3)
-		local hz = math.max(2, zoneHalf.Z - 3)
-		local ox = ((now * 7.3) % (hx * 2)) - hx
-		local oz = ((now * 11.1) % (hz * 2)) - hz
-		return (zoneCF * CFrame.new(ox, 0, oz)).Position
+	if onPlate > 0 then
+		print(("[Bakery] %d ingredient(s) scattered for the %s -- all seated on the plate at Y=%.0f%s")
+			:format(placed, recipe, zoneTopY,
+				bumped > 0 and (", %d moved off an occupied patch"):format(bumped) or ""))
+	else
+		warn(("[Bakery] %d ingredient(s) scattered for the %s BEFORE the base plate was found -- "
+			.. "seated by raycast, which can put one on top of a prop"):format(placed, recipe))
 	end
-	local a = (now * 0.7) % (math.pi * 2)
-	local r = 8 + (now * 13) % (WANDER_R - 8)
-	return chickenOrigin + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+end
+
+-- ============================================================================
+-- THE HENS -- built at "ChickenPart", roam their pen, and TAP = EGG
+-- ============================================================================
+-- CHICKEN_COUNT of them now, not one. Everything that used to be a file-level variable
+-- (mode, target, the tap clock) moved into a per-hen record, because three birds sharing
+-- one "am I pausing right now" flag is three birds moving as a single organism.
+local chickens = {}              -- { model=, home=, pos=, yaw=, mode=, target=, ... }
+local chickenOrigin              -- the ChickenPart marker: the coop, and the pen's centre
+local nestModel                  -- so the nest can be re-seated when the zone arrives
+local penCF, penHalf             -- the drawn pen, if there is one
+
+-- FIND THE PEN. Optional: a part you name (see PEN_NAMES). Searched under island15 first so
+-- a similarly-named part elsewhere in the world cannot claim it.
+local function findPen()
+	local isle = islandModel()
+	local function scan(scope)
+		if not scope then return nil end
+		for _, d in ipairs(scope:GetDescendants()) do
+			if d:IsA("BasePart") and PEN_NAMES[norm(d.Name)] then return d end
+		end
+		return nil
+	end
+	local part = scan(isle) or scan(Workspace)
+	if not part then return end
+	penCF, penHalf = part.CFrame, part.Size * 0.5
+	print(("[Bakery] chicken pen: %s (%.0f x %.0f studs) -- the hens cannot leave it")
+		:format(part:GetFullName(), part.Size.X, part.Size.Z))
+end
+
+-- THE HARD WALL. A pen part's footprint if one is drawn, otherwise a WANDER_R circle around
+-- the coop -- and the base plate on top of either, so "inside the pen" can never mean "off
+-- the island". Every position a hen takes goes through this, not just her destination: a
+-- boundary checked only when picking a target is a boundary she walks straight through on
+-- her way there.
+local function clampToPen(pos)
+	if penCF then
+		local o = penCF:PointToObjectSpace(pos)
+		local hx, hz = math.max(1, penHalf.X - 1.5), math.max(1, penHalf.Z - 1.5)
+		pos = (penCF * CFrame.new(math.clamp(o.X, -hx, hx), o.Y, math.clamp(o.Z, -hz, hz))).Position
+	elseif chickenOrigin then
+		local off = (pos - chickenOrigin) * Vector3.new(1, 0, 1)
+		if off.Magnitude > WANDER_R then pos = chickenOrigin + off.Unit * WANDER_R end
+	end
+	return clampToZone(pos, 3)
+end
+
+-- is another hen already standing here? Keeps the flock from converging into one bird.
+local function henCrowded(pos, self)
+	for _, o in ipairs(chickens) do
+		if o ~= self and o.model and o.model.Parent then
+			if ((o.pos - pos) * Vector3.new(1, 0, 1)).Magnitude < HEN_SPACING then return true end
+		end
+	end
+	return false
+end
+
+-- a fresh stroll destination inside the pen. Clock-derived, no math.random (deterministic),
+-- and offset per hen by her index so three birds do not walk the same path in lockstep.
+local function pickWanderTarget(now, rec)
+	local phase = (rec and rec.phase) or 0
+	for try = 0, 5 do
+		local a = (now * 0.7 + phase + try * 1.7) % (math.pi * 2)
+		local r = 8 + ((now * 13 + phase * 30 + try * 9) % (WANDER_R - 8))
+		local t = clampToPen(chickenOrigin + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r))
+		if not henCrowded(t, rec) then return t end
+	end
+	return clampToPen(chickenOrigin)
 end
 
 -- a feeler ray at chest height along the walk direction: solid things (the
@@ -822,7 +1275,11 @@ obsParams.FilterType = Enum.RaycastFilterType.Exclude
 obsParams.RespectCanCollide = true
 local function obstacleAhead(from, dir)
 	if dir.Magnitude < 0.01 then return false end
-	local ex = { chicken }
+	-- EVERY hen is excluded, not just the one walking: birds bumping into each other would
+	-- deadlock two of them nose to nose forever. Spacing between them is handled by
+	-- henCrowded() when they pick a destination, which resolves instead of blocking.
+	local ex = {}
+	for _, o in ipairs(chickens) do if o.model then ex[#ex + 1] = o.model end end
 	for _, pl in ipairs(Players:GetPlayers()) do
 		if pl.Character then table.insert(ex, pl.Character) end
 	end
@@ -830,8 +1287,9 @@ local function obstacleAhead(from, dir)
 	return Workspace:Raycast(from + Vector3.new(0, 1.2, 0), dir.Unit * 2.4, obsParams) ~= nil
 end
 
-local function buildChicken(originPos)
-	local m = Instance.new("Model"); m.Name = "BakeryChicken"
+local function buildChicken(originPos, index)
+	index = index or 1
+	local m = Instance.new("Model"); m.Name = "BakeryChicken" .. index
 	local at = CFrame.new(originPos + Vector3.new(0, 1.05, 0))
 	local function bit(props, cf)
 		props.Parent = m
@@ -859,23 +1317,60 @@ local function buildChicken(originPos)
 	m.WorldPivot = at
 	m.Parent = bakeFolder
 
-	-- her nest, planted at the spawn block: it explains where the eggs come from
-	-- and gives the wandering somewhere to read as "home"
-	local nest = Instance.new("Model"); nest.Name = "ChickenNest"; nest.Parent = bakeFolder
-	nestModel = nest
-	local ng = (zoneTopY and Vector3.new(originPos.X, zoneTopY, originPos.Z))
-		or groundAt(originPos.X, originPos.Z, originPos.Y + 5) or originPos
-	local ncf = CFrame.new(ng + Vector3.new(0, 0.3, 0))
-	local pad = mk({ Shape = Enum.PartType.Cylinder, Color = Color3.fromRGB(214, 178, 110),
-		Size = Vector3.new(0.6, 4.6, 4.6), Parent = nest })
-	pad.CFrame = ncf * CFrame.Angles(0, 0, math.rad(90))
-	for i = 1, 8 do
-		local a = (i / 8) * math.pi * 2
-		local straw = mk({ Color = Color3.fromRGB(190, 152, 88),
-			Size = Vector3.new(0.4, 0.5, 1.7), Parent = nest })
-		straw.CFrame = ncf * CFrame.new(math.cos(a) * 2.0, 0.35, math.sin(a) * 2.0)
-			* CFrame.Angles(0, -a, math.rad(14))
+	-- ONE nest for the flock, planted at the spawn block: it explains where the eggs come from
+	-- and gives the wandering somewhere to read as "home". Built with the first hen only --
+	-- three nests stacked on the same marker is a pile of straw, not a coop.
+	if index == 1 then
+		local nest = Instance.new("Model")
+		nest.Name = "ChickenNest"; nest.Parent = bakeFolder
+		nestModel = nest
+		local ng = (zoneTopY and Vector3.new(originPos.X, zoneTopY, originPos.Z))
+			or groundAt(originPos.X, originPos.Z, originPos.Y + 5) or originPos
+		local ncf = CFrame.new(ng + Vector3.new(0, 0.3, 0))
+		local pad = mk({ Shape = Enum.PartType.Cylinder, Color = Color3.fromRGB(214, 178, 110),
+			Size = Vector3.new(0.6, 4.6, 4.6), Parent = nest })
+		pad.CFrame = ncf * CFrame.Angles(0, 0, math.rad(90))
+		for i = 1, 8 do
+			local a = (i / 8) * math.pi * 2
+			local straw = mk({ Color = Color3.fromRGB(190, 152, 88),
+				Size = Vector3.new(0.4, 0.5, 1.7), Parent = nest })
+			straw.CFrame = ncf * CFrame.new(math.cos(a) * 2.0, 0.35, math.sin(a) * 2.0)
+				* CFrame.Angles(0, -a, math.rad(14))
+		end
 	end
+
+	-- SHE HAS TO BE FINDABLE. Every scattered ingredient carries a gold outline; the one
+	-- item that is NOT scattered -- and the only hard blocker in the whole quest -- carried
+	-- nothing, so a player who missed the Baker's line had a chicken indistinguishable from
+	-- island wildlife. Outline plus a floating hint, and BOTH go off the moment the eggs are
+	-- in: a permanent marker on something you are done with is just clutter.
+	local hl = Instance.new("Highlight")
+	hl.FillTransparency = 1; hl.OutlineColor = PAL.GLOW_H; hl.OutlineTransparency = 0.15
+	hl.DepthMode = Enum.HighlightDepthMode.Occluded; hl.Enabled = false
+	hl.Adornee = m; hl.Parent = m
+
+	local tag = Instance.new("BillboardGui")
+	tag.Name = "EggHint"; tag.Adornee = head; tag.Size = UDim2.new(0, 210, 0, 48)
+	tag.StudsOffset = Vector3.new(0, 3.4, 0); tag.AlwaysOnTop = true
+	tag.MaxDistance = 300; tag.Enabled = false; tag.Parent = m
+	do
+		local f = Instance.new("Frame"); f.Size = UDim2.fromScale(1, 1)
+		f.BackgroundColor3 = PAL.PANEL; f.BackgroundTransparency = 0.1
+		f.BorderSizePixel = 0; f.Parent = tag
+		Instance.new("UICorner", f).CornerRadius = UDim.new(0, 14)
+		local st = Instance.new("UIStroke"); st.Color = PAL.CRUST; st.Thickness = 2; st.Parent = f
+		local l = Instance.new("TextLabel"); l.Size = UDim2.fromScale(1, 1)
+		l.BackgroundTransparency = 1; l.Font = Enum.Font.FredokaOne; l.TextScaled = true
+		l.TextColor3 = PAL.TEXTC; l.Text = ING.egg.emoji .. " TAP FOR EGGS"; l.Parent = f
+		local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 20; sz.Parent = l
+	end
+	task.spawn(function()
+		while m.Parent do
+			local want = (step == 2 and stillNeeds("egg"))
+			if hl.Enabled ~= want then hl.Enabled = want; tag.Enabled = want end
+			task.wait(0.4)
+		end
+	end)
 
 	-- both input paths on the body AND head: prompt for controller/mobile
 	-- radial, ClickDetector for a straight mouse tap
@@ -884,6 +1379,7 @@ local function buildChicken(originPos)
 		prompt.ActionText = "Tap"; prompt.ObjectText = "Chicken"; prompt.HoldDuration = 0
 		prompt.MaxActivationDistance = 10; prompt.RequiresLineOfSight = false
 		prompt.Parent = part
+		bigPrompt(prompt)      -- big art; the 10-stud reach stays, you have to go to her
 		prompt.Triggered:Connect(function() m:SetAttribute("Tapped", os.clock()) end)
 		local click = Instance.new("ClickDetector")
 		click.MaxActivationDistance = 24; click.Parent = part
@@ -909,6 +1405,7 @@ local eggLiftOpen = false
 local function openEggLift(eggPart, onDone)
 	if eggLiftOpen then return end
 	eggLiftOpen = true
+	bottomHudHold("BakeryEgg", true)   -- the HOLD button lands on top of the fart button otherwise
 
 	local baseSize = eggPart and eggPart.Size
 
@@ -924,6 +1421,9 @@ local function openEggLift(eggPart, onDone)
 	panel.Size = UDim2.fromOffset(400, 260); panel.Position = UDim2.fromScale(0.5, 0.5)
 	panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.BackgroundColor3 = Color3.fromRGB(25, 90, 185); panel.BorderSizePixel = 0; panel.Parent = gui
+	-- HOUSE PANEL: the Pet Hub's 700x520 card in the Pet Hub's spot, and the bottom buttons hide
+	-- while it is up. See HousePanel.client.luau.
+	pcall(_G.housePanel, panel)   -- island15 bake-off minigame
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 14)
 	local ps = Instance.new("UIStroke", panel); ps.Color = Color3.new(1, 1, 1); ps.Thickness = 3
 
@@ -968,6 +1468,7 @@ local function openEggLift(eggPart, onDone)
 	local function shut(success)
 		if finished then return end
 		finished = true; eggLiftOpen = false
+		bottomHudHold("BakeryEgg", false)
 		if conn then conn:Disconnect() end
 		if eggPart and eggPart.Parent and baseSize then eggPart.Size = baseSize end
 		gui:Destroy()
@@ -995,8 +1496,8 @@ end
 
 local function layEgg(fromCF)
 	-- the egg pops out the BACK, arcs to the ground, and sits there with a prompt.
-	-- With a pen plate, the egg seats ON the plate (clamped inside it) -- the
-	-- hidden marker can't be raycast, so its stored top Y is the floor.
+	-- With the base plate known, the egg seats on its stored top Y (clamped inside
+	-- the footprint) rather than trusting a ray fired from inside the hen.
 	local behind = fromCF * CFrame.new(0, 0.2, 2.0)
 	local g
 	if zoneCF and zoneTopY then
@@ -1016,6 +1517,7 @@ local function layEgg(fromCF)
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.ActionText = "Lift Carefully"; prompt.ObjectText = "Egg"; prompt.HoldDuration = 0.4
 	prompt.MaxActivationDistance = 12; prompt.RequiresLineOfSight = false; prompt.Parent = egg
+	bigPrompt(prompt)
 	local taken = false
 	-- the reward half, unchanged -- it just runs after the lift now instead of on the tap
 	local function takeEgg()
@@ -1025,6 +1527,7 @@ local function layEgg(fromCF)
 			taken = true
 			have.egg = (have.egg or 0) + 1
 			poofAt(egg.Position, PAL.GLOW_H)
+			playSound(SOUND_EGG, 0.5)
 			tween(egg, 0.3, { Size = egg.Size * 0.1, Transparency = 1 })
 			Debris:AddItem(egg, 0.4)
 			refreshBanner()
@@ -1065,86 +1568,127 @@ end
 -- one brain, driven by Heartbeat waits: stroll to a point near home, pause and
 -- peck, repeat -- and on a tap, squawk + hop + egg + flee. All PivotTo on an
 -- anchored model, so nothing here can be shoved off the island.
-local function runChicken()
+local function runChicken(rec)
 	task.spawn(function()
-		local t, yaw = 0, 0
-		local pos = chickenOrigin
-		local target = pos
-		local pauseUntil, fleeUntil = 0, 0
-		local lastLay = 0
-		while chicken and chicken.Parent do
+		local m = rec.model
+		while m and m.Parent do
 			local dt = task.wait(0.05)
-			t += dt
+			rec.t += dt
 			local now = os.clock()
 
-			-- a tap? (attribute set by prompt/click handlers on the parts)
-			local tapped = chicken:GetAttribute("Tapped")
-			if tapped and tapped > lastTap and now - lastLay >= EGG_COOLDOWN then
-				lastTap = tapped; lastLay = now
-				local cf = chicken:GetPivot()
-				showBubble(chicken.PrimaryPart, "BAWK!!", false)
+			-- a tap? (attribute set by prompt/click handlers on THIS hen's parts)
+			local tapped = m:GetAttribute("Tapped")
+			if tapped and tapped > rec.lastTap and now - rec.lastLay >= EGG_COOLDOWN then
+				rec.lastTap = tapped; rec.lastLay = now
+				local cf = m:GetPivot()
+				showBubble(m.PrimaryPart, "BAWK!!", false)
+				playAt(SOUND_BAWK, m.PrimaryPart, 0.7, 130)
+				if FX.send then FX.send("egg", cf.Position) end   -- everyone hears that hen
 				poofAt(cf.Position + Vector3.new(0, 0.6, 0), PAL.FEATHER)   -- feathers fly
 				-- hop first, THEN the egg -- the hop sells the effort
-				task.spawn(function() task.wait(0.25); layEgg(chicken:GetPivot()) end)
-				fleeUntil = now + 1.6
+				task.spawn(function() task.wait(0.25); layEgg(m:GetPivot()) end)
+				rec.fleeUntil = now + 1.6
 				-- flee AWAY from the player -- but never out of the pen
 				local hrp = hrpOf()
 				local away = hrp and (cf.Position - hrp.Position) * Vector3.new(1, 0, 1) or Vector3.new(1, 0, 0)
 				away = away.Magnitude > 0.5 and away.Unit or Vector3.new(1, 0, 0)
-				target = clampToZone(chickenOrigin
-					+ ((cf.Position + away * 18) - chickenOrigin) * Vector3.new(1, 0, 1))
-				chickenMode = "flee"
+				rec.target = clampToPen(cf.Position + away * 18)
+				rec.mode = "flee"
 			end
 
-			if chickenMode == "flee" and now >= fleeUntil then chickenMode = "stroll" end
-			if chickenMode == "pause" and now >= pauseUntil then
-				chickenMode = "stroll"
-				target = pickWanderTarget(now)
+			if rec.mode == "flee" and now >= rec.fleeUntil then rec.mode = "stroll" end
+			if rec.mode == "pause" and now >= rec.pauseUntil then
+				rec.mode = "stroll"
+				rec.target = pickWanderTarget(now, rec)
 			end
 
-			local flat = (target - pos) * Vector3.new(1, 0, 1)
+			local flat = (rec.target - rec.pos) * Vector3.new(1, 0, 1)
 			local dist = flat.Magnitude
-			if chickenMode ~= "pause" then
+			if rec.mode ~= "pause" then
 				if dist < 1.5 then
-					chickenMode = "pause"
-					pauseUntil = now + 1.2 + (now % 2)
+					rec.mode = "pause"
+					rec.pauseUntil = now + 1.2 + ((now + rec.phase) % 2)
 				else
-					local speed = (chickenMode == "flee") and 16 or 6
+					local speed = (rec.mode == "flee") and 16 or 6
 					local stepv = flat.Unit * math.min(dist, speed * dt)
-					if obstacleAhead(pos, stepv) then
+					if obstacleAhead(rec.pos, stepv) then
 						-- something solid in the way: stop short and pick a new
 						-- destination on the next tick rather than walking into it
-						chickenMode = "pause"
-						pauseUntil = now + 0.4
+						rec.mode = "pause"
+						rec.pauseUntil = now + 0.4
 					else
-						pos = clampToZone(pos + stepv)   -- the pen is a hard wall
-						yaw = math.atan2(-stepv.X, -stepv.Z)
+						-- ⚠ clampToPen ON EVERY STEP, not only on the destination. A boundary
+						-- applied to targets alone is one the hen walks straight through on her
+						-- way to a target that happens to be inside it -- and the flee dash, at
+						-- 16 studs/sec, is exactly when she would leave.
+						rec.pos = clampToPen(rec.pos + stepv)
+						rec.yaw = math.atan2(-stepv.X, -stepv.Z)
 					end
 				end
 			end
 
 			local y
 			if zoneCF and zoneTopY then
-				y = zoneTopY + 1.55            -- the pen plate IS the floor
+				y = zoneTopY + 1.55            -- the base plate IS the floor
 			else
-				local g = groundAt(pos.X, pos.Z, chickenOrigin.Y + 10)
+				local g = groundAt(rec.pos.X, rec.pos.Z, chickenOrigin.Y + 10)
 				y = g and (g.Y + 1.55) or (chickenOrigin.Y + 1.55)
 			end
-			local wob = (chickenMode == "pause") and 0 or 1
+			local t = rec.t
+			local wob = (rec.mode == "pause") and 0 or 1
 			local hopY = 0
-			if now - lastLay < 0.35 then hopY = math.sin((now - lastLay) / 0.35 * math.pi) * 1.6 end
-			local peck = (chickenMode == "pause") and math.max(0, math.sin(t * 3)) * 18 or 0
-			chicken:PivotTo(CFrame.new(pos.X, y + math.abs(math.sin(t * 9)) * 0.16 * wob + hopY, pos.Z)
-				* CFrame.Angles(0, yaw, 0)
+			if now - rec.lastLay < 0.35 then hopY = math.sin((now - rec.lastLay) / 0.35 * math.pi) * 1.6 end
+			local peck = (rec.mode == "pause") and math.max(0, math.sin(t * 3)) * 18 or 0
+			m:PivotTo(CFrame.new(rec.pos.X, y + math.abs(math.sin(t * 9)) * 0.16 * wob + hopY, rec.pos.Z)
+				* CFrame.Angles(0, rec.yaw, 0)
 				* CFrame.Angles(math.rad(peck * 0.4), 0, math.sin(t * 9) * 0.06 * wob))
+
+			-- ===== THE ODD CLUCK AS SHE TROTS PAST =====
+			-- Same voice as the tap, quieter and shorter-ranged. Three gates, all needed: she has
+			-- to be MOVING (a hen standing still pecking is not passing anybody), she has to be
+			-- NEAR you, and each hen keeps her own cooldown. Without the cooldown three hens in a
+			-- small pen on a 20-per-second tick is not a farmyard, it is a headache.
+			local nearHrp = hrpOf()
+			if nearHrp and rec.mode ~= "pause" and now - (rec.lastCluck or 0) >= 6 then
+				local d = ((rec.pos - nearHrp.Position) * Vector3.new(1, 0, 1)).Magnitude
+				if d < 26 and math.random() < 0.008 then
+					rec.lastCluck = now
+					playAt(SOUND_BAWK, m.PrimaryPart, 0.35, 70)
+				end
+			end
 		end
 	end)
+end
+
+-- build the whole flock around the coop and set them walking
+local function spawnFlock()
+	findPen()
+	for i = 1, CHICKEN_COUNT do
+		-- fanned out around the coop so they do not all appear inside each other on frame one
+		local a = (i - 1) * (math.pi * 2 / CHICKEN_COUNT)
+		local start = clampToPen(chickenOrigin + Vector3.new(math.cos(a) * 5, 0, math.sin(a) * 5))
+		local rec = {
+			model = buildChicken(start, i),
+			phase = (i - 1) * 2.1,      -- staggers every clock-derived decision she makes
+			pos = start, yaw = a, t = i * 0.7,
+			mode = "stroll", target = start,
+			pauseUntil = 0, fleeUntil = 0, lastLay = 0, lastTap = 0,
+		}
+		chickens[#chickens + 1] = rec
+		runChicken(rec)
+	end
+	print(("[Bakery] %d hen(s) roaming %s"):format(#chickens,
+		penCF and "the drawn pen" or ("a " .. WANDER_R .. "-stud circle around the coop")))
 end
 
 -- ============================================================================
 -- THE MIXING STATION -- built on your "Mixer" part
 -- ============================================================================
 local mixPrompt, batterDisc, spoonModel, spoonHome, bowlTopCF
+local mixerModel                                   -- the whole station, for prompt reach
+-- forward: the mixing HUD is built below doStir (it needs to call it), but startMixing and
+-- doStir both sit above and drive it.
+local openMixHUD, closeMixHUD, updateMixHUD
 
 local function buildMixer(part)
 	local at = baseFrameOf(part)
@@ -1237,8 +1781,9 @@ local function buildMixer(part)
 		CFrame = at * CFrame.new(0, 5, -(3.0 * MIXER_SCALE + 3)), Parent = bakeFolder })
 	mixPrompt = Instance.new("ProximityPrompt")
 	mixPrompt.ActionText = "Mix"; mixPrompt.ObjectText = "Mixing Bowl"
-	mixPrompt.HoldDuration = 0.3; mixPrompt.MaxActivationDistance = 18
+	mixPrompt.HoldDuration = 0.3
 	mixPrompt.RequiresLineOfSight = false; mixPrompt.Enabled = false; mixPrompt.Parent = hit
+	mixerModel = f
 
 	-- GROW THE WHOLE STATION. Scaled about a pivot on the ground line, so the legs
 	-- stay planted and everything above them gets bigger -- then every frame the
@@ -1258,8 +1803,15 @@ local function buildMixer(part)
 	bowlTopCF  = at * CFrame.new(0, 6.4 * S, 0)
 	spoonHome  = at * CFrame.new(1.2 * S, 6.6 * S, 0) * CFrame.Angles(0, 0, math.rad(-16))
 	spoonModel.WorldPivot = at * CFrame.new(0, 6.0 * S, 0)
-	print(("[Bakery] mixing station built on '%s' (x%.1f, seated on the marker's base)")
-		:format(part:GetFullName(), S))
+
+	-- ⚠ REACH IS MEASURED AFTER ScaleTo, NOT BEFORE. The station is five times bigger by this
+	-- line, and a bounding box read one line earlier would size the trigger to the model as it
+	-- was DRAWN rather than as it stands. Half the grown model's diagonal plus a walk-up margin
+	-- means E answers from the far edge of the counter -- and it re-derives itself if
+	-- MIXER_SCALE ever changes, instead of needing the old hand-tuned 18 re-tuned.
+	bigPrompt(mixPrompt, f, 16)
+	print(("[Bakery] mixing station built on '%s' (x%.1f, seated on the marker's base, "
+		.. "E reaches %.0f studs)"):format(part:GetFullName(), S, mixPrompt.MaxActivationDistance))
 end
 
 -- ingredients arc into the bowl one at a time, then the stirring begins
@@ -1294,6 +1846,7 @@ local function startMixing()
 						Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 					drop.Completed:Connect(function()
 						poofAt(bowlTopCF.Position, blob.Color)
+						playAt(SOUND_POUR, batterDisc, 0.45, 90)
 						blob:Destroy()
 						-- the batter creeps up as things go in
 						batterDisc.Transparency = math.max(0, 1 - (n / 8) * 1.2)
@@ -1308,7 +1861,11 @@ local function startMixing()
 			batterDisc.Color = R.batter:Lerp(Color3.new(1, 1, 1), 0.25)  -- pale until stirred
 			mixPrompt.ActionText = "Stir!"; mixPrompt.HoldDuration = 0
 			mixPrompt.Enabled = true
-			flashBanner(E_BOWL .. " Now STIR!  Press the prompt again and again!", 3)
+			-- THE HUD IS THE JOB NOW. You stand anywhere near the station and stir in the
+			-- panel; the E prompt still works and does exactly the same thing, so nothing
+			-- is lost for a player who never looks at the screen.
+			if openMixHUD then openMixHUD(R.title) end
+			flashBanner(E_BOWL .. " Now STIR!  Use the panel -- or press E!", 3)
 		end)
 	end)
 end
@@ -1316,6 +1873,7 @@ end
 local function doStir()
 	stirs += 1
 	refreshBanner()
+	playSound(SOUND_STIR, 0.5)
 	local R = RECIPES[recipe]
 	-- the spoon takes a lap round the bowl; the batter darkens toward done
 	local from = (stirs - 1) / STIRS_NEEDED
@@ -1332,20 +1890,29 @@ local function doStir()
 	end
 	poofAt(bowlTopCF.Position + Vector3.new(math.cos(stirs * 2.2) * 1.6, -0.4, math.sin(stirs * 2.2) * 1.6)
 		* math.max(1, MIXER_SCALE * 0.55), R.batter)
+	if FX.send then FX.send("stir", bowlTopCF.Position) end   -- the bowl splashes for everyone
 	mixPrompt.ActionText = ("Stir!  (%d/%d)"):format(stirs, STIRS_NEEDED)
+	if updateMixHUD then updateMixHUD() end
 
 	-- the cooldown IS the enforcement: dead prompt between stirs, so mashing buys nothing.
 	-- Re-armed behind the SAME guard the rest of the file uses, or a finished bowl re-arms.
+	-- ⚠ THE HUD BUTTON READS mixPrompt.Enabled, so it goes dead on the same beat -- otherwise
+	-- the panel would be a way to mash straight past the cadence the prompt exists to impose.
 	if stirs < STIRS_NEEDED then
 		mixPrompt.Enabled = false
+		if updateMixHUD then updateMixHUD() end
 		task.delay(STIR_CD, function()
-			if step == 3 and stirs < STIRS_NEEDED then mixPrompt.Enabled = true end
+			if step == 3 and stirs < STIRS_NEEDED then
+				mixPrompt.Enabled = true
+				if updateMixHUD then updateMixHUD() end
+			end
 		end)
 	end
 
 	if stirs >= STIRS_NEEDED then
 		mixPrompt.Enabled = false
 		mixPrompt.ActionText = "Mix"
+		if closeMixHUD then closeMixHUD() end
 		flashBanner(E_SPARK .. " Perfect batter! Into the pan it goes...", 3)
 		-- the batter drains into a pan that lands in your hands
 		tween(batterDisc, 0.8, { Transparency = 1 })
@@ -1356,6 +1923,271 @@ local function doStir()
 			if bakerHead then showBubble(bakerHead, "Beautiful! Now bake it -- either oven!", false) end
 		end)
 	end
+end
+
+-- ============================================================================
+-- THE MIXING HUD -- FOLD THE BATTER ON THE BEAT
+-- ============================================================================
+-- ⚠ THE OLD TASK WAS A COOLDOWN WITH A BUTTON ON IT. Tap, wait a second, tap, fourteen times.
+-- Nothing was ever asked of the player but patience, and the panel could not possibly be better
+-- than the E prompt because it WAS the E prompt with a bigger hitbox.
+--
+-- THE TASK NOW: YOU ACTUALLY STIR IT. There is a bowl in the panel and a spoon in the bowl.
+-- Hold the pointer down on it and drag round in circles -- mouse, finger, either -- and the spoon
+-- follows your hand. Every full lap of the bowl is one fold of the batter.
+--   * it is a real motion, not a button: the thing your hand does is the thing the spoon does,
+--   * laps only count out near the rim, so scribbling in the middle earns nothing,
+--   * going back the other way UNWINDS the lap you were on, exactly like stirring would,
+--   * and a lap cannot be flicked through faster than 0.35s, which is as fast as a spoon goes.
+--
+-- The batter darkens and the swirl speeds up as it comes together, so the bowl itself tells you
+-- how far along you are. The E prompt out in the world still does one plain fold per cooldown --
+-- nothing is lost for a player who never opens the panel, and the STIR button on the panel is
+-- that same cadence tap for anyone who would rather not drag.
+local MH = { angle = 0, lastAngle = nil, turn = 0, spin = 0, drag = false, lockUntil = 0,
+	streak = 0, lastStirs = 0 }
+do
+	local g = Instance.new("ScreenGui")
+	g.Name = "BakeryMixHUD"; g.ResetOnSpawn = false; g.DisplayOrder = 12
+	g.Enabled = false; g.Parent = PlayerGui
+	MH.gui = g
+
+	local panel = Instance.new("Frame")
+	panel.AnchorPoint = Vector2.new(0.5, 1); panel.Position = UDim2.new(0.5, 0, 1, -24)
+	panel.Size = UDim2.new(0, 560, 0, 420); panel.BackgroundColor3 = PAL.PANEL
+	panel.BorderSizePixel = 0; panel.Parent = g
+	-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+	-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
+	-- The panel keeps its own size and every child keeps its own pixel coordinates;
+	-- it is centred in the house shell and scaled to fit, so nothing inside moves.
+	pcall(_G.housePanel, panel)   -- island15 mixing bowl
+	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 18)
+	do local s = Instance.new("UIStroke"); s.Color = PAL.CRUST; s.Thickness = 3; s.Parent = panel end
+
+	local title = Instance.new("TextLabel")
+	title.BackgroundTransparency = 1; title.Position = UDim2.new(0, 20, 0, 12)
+	title.Size = UDim2.new(1, -90, 0, 32); title.Font = Enum.Font.FredokaOne
+	title.TextSize = 24; title.TextColor3 = PAL.TEXTC
+	title.TextXAlignment = Enum.TextXAlignment.Left; title.Parent = panel
+	MH.title = title
+
+	-- X only. A stray tap on the backdrop must never shut a panel in this realm.
+	local close = Instance.new("TextButton")
+	close.AnchorPoint = Vector2.new(1, 0); close.Position = UDim2.new(1, -14, 0, 12)
+	close.Size = UDim2.fromOffset(38, 38); close.BackgroundColor3 = PAL.CRUST
+	close.Text = "X"; close.Font = Enum.Font.FredokaOne; close.TextSize = 20
+	close.TextColor3 = Color3.new(1, 1, 1); close.BorderSizePixel = 0; close.Parent = panel
+	Instance.new("UICorner", close).CornerRadius = UDim.new(0, 12)
+	close.Activated:Connect(function() if closeMixHUD then closeMixHUD() end end)
+
+	local pLab = Instance.new("TextLabel")
+	pLab.BackgroundTransparency = 1; pLab.Position = UDim2.new(0, 20, 0, 50)
+	pLab.Size = UDim2.new(1, -40, 0, 18); pLab.Font = Enum.Font.GothamBold
+	pLab.TextSize = 14; pLab.TextColor3 = PAL.HINTC
+	pLab.TextXAlignment = Enum.TextXAlignment.Left; pLab.Text = "FOLDED  0/0"; pLab.Parent = panel
+	MH.plabel = pLab
+	local pTrack = Instance.new("Frame")
+	pTrack.Position = UDim2.new(0, 20, 0, 72); pTrack.Size = UDim2.new(1, -40, 0, 24)
+	pTrack.BackgroundColor3 = Color3.fromRGB(240, 224, 206); pTrack.BorderSizePixel = 0
+	pTrack.Parent = panel
+	Instance.new("UICorner", pTrack).CornerRadius = UDim.new(1, 0)
+	local pFill = Instance.new("Frame")
+	pFill.Size = UDim2.new(0, 0, 1, 0); pFill.BackgroundColor3 = PAL.CHOC_HI
+	pFill.BorderSizePixel = 0; pFill.Parent = pTrack
+	Instance.new("UICorner", pFill).CornerRadius = UDim.new(1, 0)
+	MH.fill = pFill
+
+	-- ===== THE BOWL =====
+	-- Seen from above, and it is a real target: you press on it and drag round it. Everything in
+	-- here is a circle made with a full-radius UICorner -- no images, nothing to load.
+	local bowl = Instance.new("Frame")
+	bowl.Name = "Bowl"
+	bowl.AnchorPoint = Vector2.new(0.5, 0); bowl.Position = UDim2.new(0.5, 0, 0, 104)
+	bowl.Size = UDim2.fromOffset(200, 200); bowl.BackgroundColor3 = Color3.fromRGB(228, 214, 196)
+	bowl.BorderSizePixel = 0; bowl.Active = true; bowl.Parent = panel
+	Instance.new("UICorner", bowl).CornerRadius = UDim.new(1, 0)
+	do local s = Instance.new("UIStroke"); s.Color = PAL.CRUST; s.Thickness = 5; s.Parent = bowl end
+	MH.bowl = bowl
+
+	local batter = Instance.new("Frame")
+	batter.AnchorPoint = Vector2.new(0.5, 0.5); batter.Position = UDim2.fromScale(0.5, 0.5)
+	batter.Size = UDim2.fromOffset(164, 164); batter.BackgroundColor3 = PAL.DOUGHY
+	batter.BorderSizePixel = 0; batter.Parent = bowl
+	Instance.new("UICorner", batter).CornerRadius = UDim.new(1, 0)
+	MH.batter = batter
+
+	-- three blobs riding the swirl. Rotating ONE ring of blobs is what makes the batter look
+	-- turned rather than tinted -- a flat disc changing colour reads as a progress bar.
+	local swirl = {}
+	for i = 1, 3 do
+		local b = Instance.new("Frame")
+		b.AnchorPoint = Vector2.new(0.5, 0.5); b.Size = UDim2.fromOffset(38 - i * 6, 38 - i * 6)
+		b.BackgroundColor3 = PAL.CHOC_HI; b.BackgroundTransparency = 0.25
+		b.BorderSizePixel = 0; b.ZIndex = 2; b.Parent = batter
+		Instance.new("UICorner", b).CornerRadius = UDim.new(1, 0)
+		swirl[i] = b
+	end
+
+	local spoon = Instance.new("Frame")
+	spoon.Name = "Spoon"
+	spoon.AnchorPoint = Vector2.new(0.5, 0.5); spoon.Size = UDim2.fromOffset(20, 62)
+	spoon.BackgroundColor3 = PAL.WOOD; spoon.BorderSizePixel = 0; spoon.ZIndex = 4
+	spoon.Parent = bowl
+	Instance.new("UICorner", spoon).CornerRadius = UDim.new(0, 9)
+	do local s = Instance.new("UIStroke"); s.Color = PAL.WOOD_D; s.Thickness = 2; s.Parent = spoon end
+	MH.spoon = spoon
+
+	local hint = Instance.new("TextLabel")
+	hint.BackgroundTransparency = 1; hint.Position = UDim2.new(0, 20, 0, 312)
+	hint.Size = UDim2.new(1, -40, 0, 22); hint.Font = Enum.Font.GothamBold
+	hint.TextSize = 15; hint.TextColor3 = PAL.HINTC; hint.Text = ""; hint.Parent = panel
+	MH.hint = hint
+
+	-- The button is the OLD way, kept: one fold per press on the same cooldown the E prompt uses,
+	-- for anyone who would rather not drag (and for a controller, which has no drag).
+	local stir = Instance.new("TextButton")
+	stir.AnchorPoint = Vector2.new(0.5, 1); stir.Position = UDim2.new(0.5, 0, 1, -16)
+	stir.Size = UDim2.new(0, 300, 0, 56); stir.BackgroundColor3 = PAL.CHOC_HI
+	stir.Font = Enum.Font.FredokaOne; stir.TextSize = 22
+	stir.TextColor3 = Color3.new(1, 1, 1); stir.BorderSizePixel = 0
+	stir.AutoButtonColor = false
+	stir.Text = E_BOWL .. " STIR"; stir.Parent = panel
+	Instance.new("UICorner", stir).CornerRadius = UDim.new(0, 16)
+	MH.stir = stir
+
+	-- the panel's own task is live whenever there is batter to fold; the BUTTON additionally
+	-- waits on the prompt's cooldown, because tapping it is the prompt with a bigger hitbox
+	local function armed() return step == 3 and stirs < STIRS_NEEDED end
+	MH.armed = armed
+
+	local function fold()
+		if not armed() then return end
+		if os.clock() < (MH.lockUntil or 0) then return end
+		MH.lockUntil = os.clock() + 0.35            -- a spoon does not go round faster than this
+		MH.streak += 1
+		doStir()
+	end
+
+	stir.Activated:Connect(function()
+		if not (armed() and mixPrompt and mixPrompt.Enabled) then return end
+		stir.Size = UDim2.new(0, 288, 0, 52)
+		tween(stir, 0.18, { Size = UDim2.new(0, 300, 0, 56) }, Enum.EasingStyle.Back)
+		MH.turn = 0                                  -- a tapped fold restarts the lap you were on
+		fold()
+	end)
+
+	-- ===== DRAGGING ROUND THE BOWL =====
+	-- (!) THE POINTER IS TRACKED GLOBALLY, not on the bowl. Circling drags the pointer off the
+	-- bowl and back constantly, and a GUI object only reports input while the pointer is over it
+	-- -- tracked that way the stir dies the first time your hand goes wide.
+	--
+	-- (!) AND THE INSET IS SUBTRACTED. InputObject.Position is raw screen space (it counts the
+	-- 36px topbar); AbsolutePosition on a normal ScreenGui does not. Skip this and the bowl's
+	-- centre is 36px off, which tilts every angle and makes laps near the top of the bowl count
+	-- twice or not at all.
+	local function pointerAngle(inputPos)
+		local inset = game:GetService("GuiService"):GetGuiInset()
+		local px, py = inputPos.X - inset.X, inputPos.Y - inset.Y
+		local c = bowl.AbsolutePosition + bowl.AbsoluteSize * 0.5
+		local dx, dy = px - c.X, py - c.Y
+		local r = math.sqrt(dx * dx + dy * dy) / math.max(1, bowl.AbsoluteSize.X * 0.5)
+		return math.atan2(dy, dx), r
+	end
+
+	bowl.InputBegan:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1
+			and input.UserInputType ~= Enum.UserInputType.Touch then return end
+		MH.drag = true
+		MH.lastAngle = (pointerAngle(input.Position))
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			MH.drag = false; MH.lastAngle = nil
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if not (g.Enabled and MH.drag) then return end
+		if input.UserInputType ~= Enum.UserInputType.MouseMovement
+			and input.UserInputType ~= Enum.UserInputType.Touch then return end
+		local a, r = pointerAngle(input.Position)
+		MH.angle = a
+		-- OUT NEAR THE RIM ONLY. Scribbling in the middle of the bowl covers a full circle in a
+		-- few pixels; a spoon has to travel to fold anything.
+		if r < 0.35 or r > 1.9 then MH.lastAngle = a; return end
+		if MH.lastAngle then
+			local d = a - MH.lastAngle
+			while d > math.pi do d -= math.pi * 2 end       -- unwrap: -pi..pi is one hand movement
+			while d < -math.pi do d += math.pi * 2 end
+			if math.abs(d) < 1.2 then                       -- a bigger jump is a teleporting cursor
+				MH.turn += d
+				MH.spin += d
+				if math.abs(MH.turn) >= math.pi * 2 then
+					MH.turn -= (MH.turn > 0 and 1 or -1) * math.pi * 2
+					fold()
+				end
+			end
+		end
+		MH.lastAngle = a
+	end)
+
+	-- ONE HEARTBEAT PAINTS THE BOWL, and it early-returns the moment the panel is shut, so a
+	-- closed HUD costs one comparison a frame and nothing else.
+	RunService.Heartbeat:Connect(function(dt)
+		if not g.Enabled then return end
+		-- a fold from ANY route (a lap, the button, E out in the world) resets the lap you are on,
+		-- so the two never drift apart
+		if stirs ~= MH.lastStirs then
+			MH.lastStirs = stirs
+			MH.turn = 0
+		end
+		-- the batter keeps turning for a moment after you stop, then settles
+		if not MH.drag then MH.spin += dt * 1.2 * (0.3 + stirs / STIRS_NEEDED) end
+		local done = stirs / STIRS_NEEDED
+		local R = RECIPES[recipe]
+		if R then
+			batter.BackgroundColor3 = R.batter:Lerp(Color3.new(1, 1, 1), 0.3 * (1 - done))
+		end
+		-- the spoon sits where your hand is while you drag, and idles round the rim when you stop
+		local a = MH.drag and MH.angle or (MH.spin * 0.6)
+		local rad = bowl.AbsoluteSize.X * 0.29
+		spoon.Position = UDim2.new(0.5, math.cos(a) * rad, 0.5, math.sin(a) * rad)
+		spoon.Rotation = math.deg(a) + 90
+		for i, b in ipairs(swirl) do
+			local ba = MH.spin * (1 + i * 0.22) + i * 2.1
+			local br = bowl.AbsoluteSize.X * (0.09 + i * 0.055)
+			b.Position = UDim2.new(0.5, math.cos(ba) * br, 0.5, math.sin(ba) * br)
+			b.BackgroundTransparency = 0.15 + 0.25 * (1 - done)
+		end
+		-- the lap you are on, drawn as the progress bar filling ahead of itself
+		local lap = math.abs(MH.turn) / (math.pi * 2)
+		MH.fill.Size = UDim2.new(math.min(1, (stirs + lap) / STIRS_NEEDED), 0, 1, 0)
+	end)
+end
+
+openMixHUD = function(what)
+	MH.title.Text = ("Mixing: %s"):format(what or "batter")
+	MH.streak, MH.turn, MH.spin, MH.lockUntil, MH.lastStirs = 0, 0, 0, 0, stirs
+	MH.drag, MH.lastAngle, MH.angle = false, nil, 0
+	MH.gui.Enabled = true
+	bottomHudHold("BakeryMix", true)
+	updateMixHUD()
+end
+closeMixHUD = function()
+	MH.gui.Enabled = false
+	bottomHudHold("BakeryMix", false)
+end
+updateMixHUD = function()
+	if not MH.gui.Enabled then return end
+	MH.plabel.Text = ("FOLDED  %d/%d"):format(stirs, STIRS_NEEDED)
+	-- (the bar itself is painted by the Heartbeat, which draws the lap you are part-way through)
+	local live = MH.armed()
+	local tappable = live and mixPrompt and mixPrompt.Enabled
+	MH.stir.BackgroundColor3 = tappable and PAL.CHOC_HI or Color3.fromRGB(206, 194, 182)
+	MH.stir.Text = tappable and (E_BOWL .. " STIR") or (E_BOWL .. " ...")
+	MH.hint.Text = live and "Hold on the bowl and stir round and round!"
+		or "That's the batter -- into the pan!"
+	MH.hint.TextColor3 = PAL.HINTC
 end
 
 -- ============================================================================
@@ -1376,6 +2208,11 @@ do
 	panel.AnchorPoint = Vector2.new(0.5, 1); panel.Position = UDim2.new(0.5, 0, 1, -30)
 	panel.Size = UDim2.new(0, 560, 0, 290); panel.BackgroundColor3 = PAL.PANEL
 	panel.BorderSizePixel = 0; panel.Parent = g
+	-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+	-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
+	-- The panel keeps its own size and every child keeps its own pixel coordinates;
+	-- it is centred in the house shell and scaled to fit, so nothing inside moves.
+	pcall(_G.housePanel, panel)   -- island15 oven
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 18)
 	do local s = Instance.new("UIStroke"); s.Color = PAL.CRUST; s.Thickness = 3; s.Parent = panel end
 
@@ -1392,17 +2229,27 @@ do
 	close.Text = "X"; close.Font = Enum.Font.FredokaOne; close.TextSize = 20
 	close.TextColor3 = Color3.new(1, 1, 1); close.BorderSizePixel = 0; close.Parent = panel
 	Instance.new("UICorner", close).CornerRadius = UDim.new(0, 12)
-	close.MouseButton1Click:Connect(function() g.Enabled = false end)
+	close.Activated:Connect(function() if BH.close then BH.close() end end)
 
-	-- the bake bar: how done it is
+	-- ===== THE BAKE BAR -- how done it is =====
+	-- The percentage moved OUT of the little grey caption and onto its own big number at the
+	-- right of the row. "How far along am I" is the question this panel exists to answer, and it
+	-- was being answered in 14px grey behind the word BAKED.
 	local pLab = Instance.new("TextLabel")
 	pLab.BackgroundTransparency = 1; pLab.Position = UDim2.new(0, 20, 0, 50)
-	pLab.Size = UDim2.new(1, -40, 0, 18); pLab.Font = Enum.Font.GothamBold
+	pLab.Size = UDim2.new(1, -140, 0, 18); pLab.Font = Enum.Font.GothamBold
 	pLab.TextSize = 14; pLab.TextColor3 = PAL.HINTC
-	pLab.TextXAlignment = Enum.TextXAlignment.Left; pLab.Text = "BAKED  0%"; pLab.Parent = panel
-	BH.plabel = pLab
+	pLab.TextXAlignment = Enum.TextXAlignment.Left; pLab.Text = "BAKED"; pLab.Parent = panel
+
+	local pct = Instance.new("TextLabel")
+	pct.BackgroundTransparency = 1; pct.AnchorPoint = Vector2.new(1, 0)
+	pct.Position = UDim2.new(1, -20, 0, 42); pct.Size = UDim2.fromOffset(110, 30)
+	pct.Font = Enum.Font.FredokaOne; pct.TextSize = 26; pct.TextColor3 = PAL.TEXTC
+	pct.TextXAlignment = Enum.TextXAlignment.Right; pct.Text = "0%"; pct.Parent = panel
+	BH.plabel = pct
+
 	local pTrack = Instance.new("Frame")
-	pTrack.Position = UDim2.new(0, 20, 0, 72); pTrack.Size = UDim2.new(1, -40, 0, 24)
+	pTrack.Position = UDim2.new(0, 20, 0, 74); pTrack.Size = UDim2.new(1, -40, 0, 24)
 	pTrack.BackgroundColor3 = Color3.fromRGB(240, 224, 206); pTrack.BorderSizePixel = 0
 	pTrack.Parent = panel
 	Instance.new("UICorner", pTrack).CornerRadius = UDim.new(1, 0)
@@ -1412,29 +2259,54 @@ do
 	Instance.new("UICorner", pFill).CornerRadius = UDim.new(1, 0)
 	BH.fill = pFill
 
-	-- the heat bar: a needle you keep inside the orange sweet-zone band
+	-- ===== THE HEAT BAR =====
+	-- The track is painted cold-to-hot underneath, so where the sweet zone SITS is information
+	-- too: you can see at a glance that it is the warm middle and not an arbitrary orange stripe.
 	local hLab = pLab:Clone()
-	hLab.Position = UDim2.new(0, 20, 0, 106); hLab.Text = "OVEN HEAT"; hLab.Parent = panel
+	hLab.Position = UDim2.new(0, 20, 0, 112); hLab.Text = "OVEN HEAT"; hLab.Parent = panel
 	local hTrack = Instance.new("Frame")
-	hTrack.Position = UDim2.new(0, 20, 0, 128); hTrack.Size = UDim2.new(1, -40, 0, 30)
-	hTrack.BackgroundColor3 = Color3.fromRGB(240, 224, 206); hTrack.BorderSizePixel = 0
-	hTrack.Parent = panel
-	Instance.new("UICorner", hTrack).CornerRadius = UDim.new(0, 8)
+	hTrack.Position = UDim2.new(0, 20, 0, 134); hTrack.Size = UDim2.new(1, -40, 0, 34)
+	hTrack.BackgroundColor3 = Color3.new(1, 1, 1); hTrack.BorderSizePixel = 0
+	hTrack.ClipsDescendants = true; hTrack.Parent = panel
+	Instance.new("UICorner", hTrack).CornerRadius = UDim.new(0, 10)
+	do
+		local grad = Instance.new("UIGradient")
+		grad.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0.00, Color3.fromRGB(126, 172, 226)),   -- stone cold
+			ColorSequenceKeypoint.new(0.45, Color3.fromRGB(252, 214, 140)),   -- warming
+			ColorSequenceKeypoint.new(0.75, Color3.fromRGB(255, 158,  70)),   -- baking
+			ColorSequenceKeypoint.new(1.00, Color3.fromRGB(214,  66,  50)),   -- scorching
+		})
+		grad.Parent = hTrack
+	end
+
+	-- the sweet zone, called out by name -- "keep it in the green" needs no tutorial
 	local zone = Instance.new("Frame")
 	zone.Position = UDim2.new(ZONE_LO / 100, 0, 0, 0)
 	zone.Size = UDim2.new((ZONE_HI - ZONE_LO) / 100, 0, 1, 0)
-	zone.BackgroundColor3 = PAL.GLOW; zone.BackgroundTransparency = 0.45
+	zone.BackgroundColor3 = Color3.fromRGB(255, 255, 255); zone.BackgroundTransparency = 0.55
 	zone.BorderSizePixel = 0; zone.Parent = hTrack
 	Instance.new("UICorner", zone).CornerRadius = UDim.new(0, 8)
+	do
+		local zs = Instance.new("UIStroke"); zs.Color = Color3.fromRGB(72, 150, 60)
+		zs.Thickness = 2.5; zs.Parent = zone
+		local zt = Instance.new("TextLabel")
+		zt.BackgroundTransparency = 1; zt.Size = UDim2.fromScale(1, 1)
+		zt.Font = Enum.Font.GothamBold; zt.TextSize = 12
+		zt.TextColor3 = Color3.fromRGB(48, 104, 40); zt.Text = "JUST RIGHT"; zt.Parent = zone
+	end
+
 	local needle = Instance.new("Frame")
 	needle.AnchorPoint = Vector2.new(0.5, 0.5); needle.Position = UDim2.new(0.65, 0, 0.5, 0)
-	needle.Size = UDim2.new(0, 7, 1, 8); needle.BackgroundColor3 = PAL.TEXTC
-	needle.BorderSizePixel = 0; needle.ZIndex = 2; needle.Parent = hTrack
+	needle.Size = UDim2.new(0, 8, 1, 10); needle.BackgroundColor3 = PAL.TEXTC
+	needle.BorderSizePixel = 0; needle.ZIndex = 3; needle.Parent = hTrack
 	Instance.new("UICorner", needle).CornerRadius = UDim.new(1, 0)
+	do local ns = Instance.new("UIStroke"); ns.Color = Color3.new(1, 1, 1); ns.Thickness = 2
+		ns.Parent = needle end
 	BH.needle = needle
 
 	local hint = Instance.new("TextLabel")
-	hint.BackgroundTransparency = 1; hint.Position = UDim2.new(0, 20, 0, 162)
+	hint.BackgroundTransparency = 1; hint.Position = UDim2.new(0, 20, 0, 176)
 	hint.Size = UDim2.new(1, -40, 0, 20); hint.Font = Enum.Font.GothamBold
 	hint.TextSize = 15; hint.TextColor3 = PAL.HINTC; hint.Text = ""; hint.Parent = panel
 	BH.hint = hint
@@ -1444,11 +2316,16 @@ do
 	stoke.Size = UDim2.new(0, 300, 0, 76); stoke.BackgroundColor3 = PAL.GLOW
 	stoke.Font = Enum.Font.FredokaOne; stoke.TextSize = 26
 	stoke.TextColor3 = Color3.new(1, 1, 1); stoke.BorderSizePixel = 0
+	stoke.AutoButtonColor = false
 	stoke.Text = E_FIRE .. " STOKE THE FIRE"; stoke.Parent = panel
 	Instance.new("UICorner", stoke).CornerRadius = UDim.new(0, 16)
+	do local ss = Instance.new("UIStroke"); ss.Color = PAL.CRUST; ss.Thickness = 3
+		ss.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; ss.Parent = stoke end
+	BH.stoke = stoke
 	-- Activated, not MouseButton1Click: it fires for touch and controller too
 	stoke.Activated:Connect(function()
 		BH.stokes += 1
+		playSound(SOUND_STOKE, 0.5)
 		stoke.Size = UDim2.new(0, 288, 0, 70)   -- squash that pops back: the press reads
 		tween(stoke, 0.18, { Size = UDim2.new(0, 300, 0, 76) }, Enum.EasingStyle.Back)
 	end)
@@ -1456,17 +2333,35 @@ end
 
 local function openBakeHUD(what)
 	BH.stokes = 0
-	BH.title.Text = ("Baking: %s"):format(what)
+	BH.title.Text = ("%s Baking: %s"):format(E_FIRE, what)
 	BH.gui.Enabled = true
+	bottomHudHold("BakeryOven", true)
 end
-local function closeBakeHUD() BH.gui.Enabled = false end
+local function closeBakeHUD()
+	BH.gui.Enabled = false
+	bottomHudHold("BakeryOven", false)
+end
+BH.close = closeBakeHUD          -- the X inside the panel, built above this line, calls it
 local function updateBakeHUD(heat, progress, inZone)
 	BH.needle.Position = UDim2.new(heat / 100, 0, 0.5, 0)
+	BH.needle.BackgroundColor3 = inZone and Color3.fromRGB(72, 150, 60) or PAL.TEXTC
 	BH.fill.Size = UDim2.new(progress / 100, 0, 1, 0)
-	BH.plabel.Text = ("BAKED  %d%%"):format(progress)
+	BH.fill.BackgroundColor3 = inZone and PAL.GLOW or PAL.CRUST
+	BH.plabel.Text = ("%d%%"):format(progress)
 	BH.hint.Text = inZone and (E_FIRE .. " Perfect heat -- hold it there!")
 		or (heat < ZONE_LO and "Too cold! STOKE the fire!" or "Too hot! Let it settle a moment...")
 	BH.hint.TextColor3 = inZone and Color3.fromRGB(72, 150, 60) or PAL.CRUST
+	-- THE BUTTON SAYS WHAT THE OVEN NEEDS. Cold, it goes red and shouts; too hot, it goes quiet
+	-- and says so -- pressing anyway is still allowed, because a player who wants to overshoot
+	-- should be able to, and the bar will tell them what it cost.
+	if BH.stoke then
+		BH.stoke.BackgroundColor3 = (heat < ZONE_LO and Color3.fromRGB(226, 88, 62))
+			or (heat > ZONE_HI and Color3.fromRGB(196, 170, 150))
+			or PAL.GLOW
+		BH.stoke.Text = (heat < ZONE_LO and (E_FIRE .. " STOKE -- IT'S GOING OUT!"))
+			or (heat > ZONE_HI and (E_FIRE .. " EASY -- IT'S HOT"))
+			or (E_FIRE .. " STOKE THE FIRE")
+	end
 end
 
 -- ============================================================================
@@ -1577,7 +2472,7 @@ local function buildOven(part)
 		CFrame = at * CFrame.new(0, 5, -3.3 * OVEN_SCALE), Parent = bakeFolder })
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.ActionText = "Bake"; prompt.ObjectText = "Brick Oven"; prompt.HoldDuration = 0.3
-	prompt.MaxActivationDistance = 18; prompt.RequiresLineOfSight = false
+	prompt.RequiresLineOfSight = false
 	prompt.Enabled = false; prompt.Parent = hit
 
 	-- GROW THE WHOLE OVEN about its base, then recompute every frame the bake
@@ -1614,10 +2509,19 @@ local function buildOven(part)
 	table.insert(ovens, oven)
 	prompt.Triggered:Connect(function()
 		if step == 4 and not bakingNow then bakeIn(oven)
-		elseif step == 5 and oven == currentOven then BH.gui.Enabled = true end   -- "Watch"
+		-- "Watch" reopens the bake panel mid-bake: it goes through the same open as the first
+		-- time so the bottom HUD ducks out of the way again (openBakeHUD would also zero the
+		-- stokes queued this instant, which is why the flag is set directly and the hold with it)
+		elseif step == 5 and oven == currentOven then
+			BH.gui.Enabled = true
+			bottomHudHold("BakeryOven", true)
+		end
 	end)
-	print(("[Bakery] oven %d built on '%s' (x%d, seated on the marker's base)")
-		:format(#ovens, part:GetFullName(), S))
+	-- reach measured off the GROWN oven (see the mixer's note): E answers from the far edge
+	-- of the brickwork, so you never have to walk into the mouth to open the panel.
+	bigPrompt(prompt, f, 16)
+	print(("[Bakery] oven %d built on '%s' (x%d, seated on the marker's base, E reaches %.0f studs)")
+		:format(#ovens, part:GetFullName(), S, prompt.MaxActivationDistance))
 end
 
 -- the bake itself: pan in, door down, glow up, smoke on, count down, DING
@@ -1646,13 +2550,34 @@ bakeIn = function(oven)
 		-- door shuts, fire lights
 		tween(oven.door, 0.4, { CFrame = oven.doorCF }, Enum.EasingStyle.Bounce)
 		tween(oven.glow, 0.5, { Transparency = 0.3 })
+		playAt(SOUND_DOOR, oven.door, 0.6, 110)
 		pan:Destroy(); fill:Destroy()
+
+		-- THE ROAR. Created when the fire lights and destroyed when the bake ends -- an oven
+		-- still roaring after the DING is worse than one that never roared (the same rule the
+		-- camp fire follows). Its volume rides the heat, so the bake is audible from outside
+		-- the HUD: let the fire die and you HEAR it going out before the needle tells you.
+		local roar
+		if SOUND_FIRE ~= "" then
+			roar = Instance.new("Sound")
+			roar.SoundId = SOUND_FIRE; roar.Looped = true; roar.Volume = 0
+			roar.RollOffMinDistance = FIRE_FULL; roar.RollOffMaxDistance = FIRE_RANGE
+			roar.RollOffMode = Enum.RollOffMode.InverseTapered
+			roar.Parent = oven.glow
+			pcall(function() roar:Play() end)
+		end
+		local function hushRoar()
+			if not roar then return end
+			local r = roar; roar = nil
+			tween(r, 0.6, { Volume = 0 }); Debris:AddItem(r, 0.8)
+		end
 
 		-- THE BAKE IS PLAYED, NOT WAITED OUT. The oven HUD opens: heat bleeds
 		-- away, STOKE puts it back, and progress runs fast only while the needle
 		-- holds the sweet zone. Glow, light and chimney smoke all answer the heat,
 		-- so the oven itself shows how the bake is going from across the island.
 		openBakeHUD(R.title)
+		if FX.send then FX.send("ovenOn", oven.glow.Position) end   -- that oven lights up for all
 		task.spawn(function()
 			local heat, progress, last = 65, 0, os.clock()
 			while progress < 100 and step == 5 do
@@ -1668,9 +2593,11 @@ bakeIn = function(oven)
 				oven.light.Brightness = 0.6 + 2.6 * (heat / 100)
 				oven.smoke.Rate = 3 + math.floor(heat / 8)
 				oven.embers.Rate = math.floor(heat / 12)
+				if roar then roar.Volume = FIRE_VOLUME * (0.25 + 0.75 * (heat / 100)) end
 				objLabel.Text = ("%s Baking the %s...  %d%%"):format(E_FIRE, R.title, progress)
 			end
 			closeBakeHUD()
+			hushRoar()
 			if step ~= 5 then    -- /complete (or a reset) cut this bake short: stand down
 				bakingNow = false; currentOven = nil
 				oven.smoke.Rate = 3; oven.embers.Rate = 0
@@ -1684,6 +2611,9 @@ bakeIn = function(oven)
 			oven.light.Brightness = 0
 			tween(oven.door, 0.5, { CFrame = oven.doorUpCF })
 			flashBanner(E_BELL .. " DING! It's ready -- grab the tray!", 4)
+			if FX.send then FX.send("ovenDone", oven.glow.Position) end   -- everyone hears the bell
+			playAt(SOUND_DING, oven.glow, 0.7, 160)
+			playAt(SOUND_DOOR, oven.door, 0.5, 110)
 			poofAt(oven.mouthCF.Position, PAL.GLOW_H)
 
 			-- the finished tray slides from the mouth to the side rack, at oven scale
@@ -1729,6 +2659,13 @@ bakeIn = function(oven)
 			tprompt.ActionText = "Take Tray"; tprompt.ObjectText = R.title
 			tprompt.HoldDuration = 0; tprompt.MaxActivationDistance = 16
 			tprompt.RequiresLineOfSight = false; tprompt.Parent = takeBox
+			bigPrompt(tprompt)
+			-- ⚠ ONE E AT A TIME. Roblox fires only the NEAREST prompt bound to a key, and the
+			-- oven's "Watch" now reaches from the far edge of the grown brickwork -- easily far
+			-- enough to cover the rack. With both live, standing at the rack could re-open the
+			-- bake panel instead of handing you the tray. The bake is over, so Watch goes off.
+			-- (The HUD itself is already closed by the bake loop exiting, a few lines above.)
+			oven.prompt.Enabled = false
 			tprompt.Triggered:Connect(function()
 				if step ~= 5 then return end
 				step = 6
@@ -1763,20 +2700,11 @@ local function findExistingNpc(nearPos)
 	return best
 end
 
-local function islandModel()
-	for _, m in ipairs(Workspace:GetChildren()) do
-		if m:IsA("Model") and string.sub(norm(m.Name), 1, #ISLAND_PREFIX) == ISLAND_PREFIX then
-			return m
-		end
-	end
-	return nil
-end
-
 local function buildBaker(at)
 	-- stands beside the mixing station, facing where players walk up. The station
 	-- is MIXER_SCALE times wider than built, so stand clear of the grown counter.
 	local spot = at * CFrame.new(4.2 * MIXER_SCALE + 3, 0, -1.5) * CFrame.Angles(0, math.rad(140), 0)
-	local g = groundAt(spot.Position.X, spot.Position.Z, at.Position.Y)
+	local g = seatOn(spot.Position.X, spot.Position.Z, at.Position.Y, 10)
 	local base = CFrame.new(g and (g + Vector3.new(0, 0, 0)) or spot.Position) * (spot - spot.Position)
 
 	local m = Instance.new("Model"); m.Name = "Baker Npc"   -- "npc" in the name: the island
@@ -1865,13 +2793,13 @@ local function questPages()
 		if allGathered() then return { "You've got everything! To the mixing bowl!" } end
 		local pages = { "Still shopping? Here's what's left:", shoppingList() }
 		if stillNeeds("egg") then
-			pages[#pages + 1] = E_CHICK .. " Eggs? TAP my chicken. Gently! She'll lay one for you."
+			pages[#pages + 1] = E_CHICK .. " Eggs? TAP any of my chickens. Gently! She'll lay one for you."
 		end
 		return pages
 	end
 	return {
 		"Welcome to my bakery! Well... it WILL be a bakery.",
-		"Two ovens, a giant bowl, my prize chicken -- and no baker's assistant!",
+		"Two ovens, a giant bowl, my prize chickens -- and no baker's assistant!",
 		"That's where YOU come in. Pick a recipe and we'll bake it together.",
 		"Fetch the ingredients, mix them in my bowl, bake the pan golden...",
 		("...and there's %d coins in it for you. Deal? Pick your bake!"):format(COIN_REWARD),
@@ -1888,8 +2816,14 @@ local function completeBake()
 	if bonusRound then bonusDone = true end
 	step = 7
 	_G.bakeryQuestComplete = true
+	-- CINEMATIC PAYOFF. RevealCommand resolves island15's subject itself and plays the shot, so this
+	-- is one line and re-aiming it later is an edit to TARGETS there, not here. Delayed so the
+	-- completion banner and the world change land FIRST -- the camera is going there to show you
+	-- the result, and cutting away before it happens shows you the before.
+	task.delay(1.2, function() pcall(_G.revealIsland, 15) end)
 	_G.bakeryQuestStep = nil
 	refreshBanner(); refreshPrompts()
+	playSound(SOUND_DING, 0.7)
 	if bakerHead then
 		launchFireworks(bakerHead.Position + Vector3.new(0, 4, 0))
 		showBubble(bakerHead, "Mmmmf-- mm! Divine. DIVINE!", false)
@@ -1909,9 +2843,23 @@ local function startRound(key, isBonus)
 	have = {}
 	stirs = 0
 	step = 2
-	scatterIngredients()
+	-- WAIT FOR THE PLATE BEFORE SCATTERING. The player can accept the recipe within seconds of
+	-- landing, and the plate is found by the same streaming scan as everything else -- so the
+	-- one moment the ingredients get placed is exactly the moment the floor of record might
+	-- still be a few hundred milliseconds away. Placing first and correcting later is worse
+	-- than waiting: the pickups' bob loop captures its home pivot on the frame it starts, so a
+	-- re-seat afterwards fights the animation. Bounded, so an island with no plate still plays.
+	if zoneCF then
+		scatterIngredients()
+	else
+		task.spawn(function()
+			local t0 = os.clock()
+			while not zoneCF and os.clock() - t0 < 8 do task.wait(0.2) end
+			scatterIngredients()
+		end)
+	end
 	refreshBanner(); refreshPrompts()
-	flashBanner(("%s %s time! Find the ingredients -- and tap that chicken!")
+	flashBanner(("%s %s time! Find the ingredients -- and tap those chickens!")
 		:format(RECIPES[key].title == "BROWNIE" and ING.cocoa.emoji or ING.dough.emoji, RECIPES[key].title), 3.5)
 end
 
@@ -1919,6 +2867,7 @@ local function wireBaker(head)
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.ActionText = "Talk"; prompt.ObjectText = "The Baker"; prompt.HoldDuration = 0
 	prompt.MaxActivationDistance = TALK_DIST; prompt.RequiresLineOfSight = false; prompt.Parent = head
+	bigPrompt(prompt)
 
 	local pages, index = nil, 0
 	local watching = false
@@ -1992,14 +2941,57 @@ end
 -- GO -- the streaming-safe scanner. Island 15 is a long flight from spawn, so
 -- its marker parts appear late (and only when the player is near). Scan every
 -- few seconds; each station is built exactly once, the moment its marker shows.
+--
+-- THREE THINGS IT DOES BEYOND "KEEP LOOKING":
+--   * IT SCANS THE ISLAND, NOT THE WHOLE WORLD, once island15 has streamed in. A full
+--     Workspace:GetDescendants() every three seconds forever is a real cost on a place
+--     this size, and every marker it wants is inside that one model anyway.
+--   * IT SAYS SO WHEN A MARKER NEVER COMES. Silence was the only symptom of a brick
+--     that was never placed -- and a missing brick looks exactly like a broken script.
+--   * IT BUILDS THE MISSING STATIONS ANYWAY. No chicken means no eggs means the
+--     Bake-Off CANNOT BE FINISHED; nowhere to bake means the same. Those get built
+--     beside the mixing station rather than leaving the quest dead -- the same way a
+--     missing Baker has always been built. The Mixer is the one exception: it is what
+--     decides where the bakery IS, so there is nothing to guess from. That one warns.
 -- ============================================================================
+local SCAN_FAST      = 3     -- seconds between scans while the island is still arriving
+local SCAN_SLOW      = 10    -- ...and once it clearly is not coming right now
+local SCAN_SETTLE    = 60    -- how long the fast cadence lasts
+local ZONE_GRACE     = 90    -- give the base plate this long to stream in before the scan is
+                             -- allowed to stop without it (see the break condition below)
+local FALLBACK_AFTER = 40    -- seconds after the mixer is up before missing stations get built anyway.
+                             -- Long enough that the rest of the island has certainly finished
+                             -- streaming: a REAL brick arriving after this is one the fallback has
+                             -- already stood in for, and the scan has stopped by then.
+
+-- a stand-in marker for a brick nobody placed: invisible, unqueryable, seated so its BASE is
+-- on the ground -- which is the line baseFrameOf() builds up from, so buildOven/buildChicken
+-- take it exactly as they take a real one. It lives in bakeFolder, which the scanner skips
+-- and the ground raycast ignores, so it can never be re-detected or stood on.
+local function fakeMarker(at, size)
+	local g = seatOn(at.Position.X, at.Position.Z, at.Position.Y, size.X)
+	local p = g or at.Position
+	local y = p.Y + size.Y * 0.5
+	return mk({ Size = size, Transparency = 1, CanQuery = false, Parent = bakeFolder,
+		CFrame = CFrame.new(p.X, y, p.Z) * (at - at.Position) })
+end
+
 task.spawn(function()
 	local builtMixer, builtChicken = false, false
 	local builtOvens = {}     -- [instance] = true
 	local mixerPos = nil
+	local t0, mixerAtClock = os.clock(), nil
+	local warned45, warned300, fellBack = false, false, false
 
 	while true do
-		for _, d in ipairs(Workspace:GetDescendants()) do
+		-- island15 is the only place these bricks can be, so once its model exists the scan
+		-- narrows to it. Before then (and if it never streams) the world is the only scope
+		-- there is. The same tick re-homes the quest folder under the island and re-anchors
+		-- anything that somehow arrived loose.
+		homeToIsland()
+		anchorAll()
+		local scope = islandModel() or Workspace
+		for _, d in ipairs(scope:GetDescendants()) do
 			if (d:IsA("BasePart") or d:IsA("Model")) and not d:IsDescendantOf(bakeFolder) then
 				local key = norm(d.Name)
 				if key == MIXER_NAME and not builtMixer then
@@ -2009,10 +3001,18 @@ task.spawn(function()
 					if part then
 						builtMixer = true
 						mixerPos = part.Position
+						mixerAtClock = os.clock()
 						buildMixer(part)
 						mixPrompt.Triggered:Connect(function()
 							if step == 2 and allGathered() then startMixing()
-							elseif step == 3 and stirs < STIRS_NEEDED then doStir() end
+							elseif step == 3 and stirs < STIRS_NEEDED then
+								-- E re-opens a closed panel as well as stirring, exactly the way
+								-- the oven's "Watch" does. A closed HUD can never strand you.
+								if not MH.gui.Enabled then
+									openMixHUD(RECIPES[recipe] and RECIPES[recipe].title)
+								end
+								doStir()
+							end
 						end)
 						-- the Baker: an existing NPC if one is close, else built
 						task.spawn(function()
@@ -2034,22 +3034,30 @@ task.spawn(function()
 						builtChicken = true
 						hideMarker(d)
 						chickenOrigin = part.Position
-						chicken = buildChicken(chickenOrigin)
-						runChicken()
+						spawnFlock()
 						print("[Bakery] chicken loose at '" .. part:GetFullName() .. "'")
 					end
 				elseif key == ZONE_NAME and not zoneCF and mixerPos then
 					local part = d:IsA("BasePart") and d or d:FindFirstChildWhichIsA("BasePart", true)
 					if part and (part.Position - mixerPos).Magnitude <= MARKER_RANGE then
-						-- the pen: remember its frame AND its top surface -- once hidden
-						-- the plate can't be raycast, so this Y becomes the floor of
-						-- record for the chicken, her nest and every egg
+						-- the pen: remember its frame AND its top surface. NOT HIDDEN --
+						-- despite being adopted like a marker, this part is island15's
+						-- entire 300x357 base slab. hideMarker() here made the island's
+						-- FLOOR invisible + non-collidable the moment the quest adopted
+						-- it: every prop on it looked like it floated in mid-air and
+						-- players fell straight through. The quest only needs the frame
+						-- and top Y below, which work fine with the plate untouched.
 						zoneCF, zoneHalf = part.CFrame, part.Size * 0.5
 						zoneTopY = part.Position.Y + part.Size.Y * 0.5
-						hideMarker(d)
-						-- everything already built re-seats onto the plate: the chicken
-						-- herself follows on her next tick, the nest is moved here
+						-- everything already built re-seats onto the plate: the hens follow
+						-- on their next tick, the nest is moved here. Their pen is re-applied
+						-- too -- until the plate existed, clampToPen had no plate to clamp to,
+						-- so a hen could be standing wherever she had got to.
 						if chickenOrigin then chickenOrigin = clampToZone(chickenOrigin) end
+						for _, rec in ipairs(chickens) do
+							rec.pos = clampToPen(rec.pos)
+							rec.target = clampToPen(rec.target)
+						end
 						if nestModel and nestModel.Parent then
 							local p = clampToZone(nestModel:GetPivot().Position)
 							nestModel:PivotTo(CFrame.new(p.X, zoneTopY + 0.3, p.Z))
@@ -2060,17 +3068,187 @@ task.spawn(function()
 				end
 			end
 		end
-		if builtMixer and builtChicken and #ovens >= 2 then break end
-		task.wait(3)
+		local elapsed = os.clock() - t0
+
+		-- everything the world was going to give: stop scanning entirely.
+		--
+		-- THE PLATE COUNTS AS A STATION. It is not one visually, but every prop this
+		-- quest seats is placed against its top Y and clamped inside its footprint, so
+		-- breaking out before it is found leaves the quest permanently without a floor
+		-- of record: ingredients scatter onto whatever a raycast happens to hit and can
+		-- ride the void down to an island thousands of studs below. Its branch needs
+		-- mixerPos, so on a boot where the stations all latch in the pass BEFORE the
+		-- plate is reached in descendant order, the old condition broke one pass early.
+		-- The grace window means a world with no plate at all still stops scanning.
+		if builtMixer and builtChicken and #ovens >= 2
+			and (zoneCF or elapsed > ZONE_GRACE) then
+			if not zoneCF then
+				warn(("[Bakery] no part named '%s' within %d studs of the mixer -- props will be "
+					.. "seated by raycast alone, with no island footprint to clamp them into")
+					:format(ZONE_NAME, MARKER_RANGE))
+			end
+			break
+		end
+
+		-- NO MIXER = NO BAKERY. Say it out loud rather than sitting silent forever; the
+		-- name is the thing to check, since norm() strips case, spaces and underscores.
+		if not builtMixer then
+			if not warned45 and elapsed > 45 then
+				warned45 = true
+				warn(("[Bakery] no part named '%s' found yet%s -- the Bake-Off cannot build until "
+					.. "one exists on island15 (case/spaces/underscores are ignored)")
+					:format(MIXER_NAME, islandModel() and " on island15" or " (island15 has not streamed in)"))
+			elseif not warned300 and elapsed > 300 then
+				warned300 = true
+				warn("[Bakery] still no 'Mixer' brick after 5 minutes -- island 15's quest is INACTIVE. "
+					.. "Place a block named Mixer (plus 2x Oven and a ChickenPart) and rejoin.")
+			end
+		end
+
+		-- The mixer is up but a station never came. Build it beside the station rather than
+		-- leaving a quest that cannot be completed -- an oven to bake in, and above all the
+		-- chicken, which is the ONLY source of eggs and so the only hard blocker.
+		if builtMixer and not fellBack and mixerAtClock
+			and os.clock() - mixerAtClock > FALLBACK_AFTER then
+			fellBack = true
+			-- clear of the grown station (its counter is ~37 studs wide at MIXER_SCALE 5) and
+			-- clear of the Baker, who stands at +X. Same heading as the mixer, so the oven
+			-- mouths face the way players walk up.
+			local placed = #ovens
+			for i = placed + 1, 2 do
+				local side = (i == 1) and -1 or 1
+				buildOven(fakeMarker(mixerAt * CFrame.new(side * 58, 0, 6), Vector3.new(8, 1, 7)))
+			end
+			if placed < 2 then
+				warn(("[Bakery] found %d 'Oven' brick(s), wanted 2 -- built %d beside the station so "
+					.. "the pan has somewhere to go"):format(placed, 2 - placed))
+			end
+			if not builtChicken then
+				builtChicken = true
+				local marker = fakeMarker(mixerAt * CFrame.new(0, 0, 62), Vector3.new(6, 1, 6))
+				chickenOrigin = marker.Position - Vector3.new(0, marker.Size.Y * 0.5, 0)
+				spawnFlock()
+				warn("[Bakery] no 'ChickenPart' brick found -- put the chicken behind the mixing "
+					.. "station instead (eggs are unobtainable without her)")
+			end
+		end
+
+		task.wait(elapsed > SCAN_SETTLE and SCAN_SLOW or SCAN_FAST)
 	end
-	print(("[Bakery] all stations up: mixer, %d oven(s), 1 chicken"):format(#ovens))
+	-- once more after the last station: the loop stops here, so this is the final chance to
+	-- catch anything built on the very last tick (and the Baker, who lands a beat later).
+	homeToIsland()
+	local loose = anchorAll()
+	print(("[Bakery] all stations up: mixer, %d oven(s), %d hen(s) -- folder under %s%s")
+		:format(#ovens, #chickens, bakeFolder.Parent and bakeFolder.Parent:GetFullName() or "?",
+			loose > 0 and (", " .. loose .. " loose part(s) anchored") or ", all anchored"))
+	-- RETAINER SIGNAL: the quest reached the end of its build with its world objects up. QuestRetainer
+	-- watches this flag; anything still false once its island has streamed in gets force-streamed and
+	-- re-run. It is set HERE, at the ready print, not at the top of the file -- a quest that bailed
+	-- early on a missing marker must NOT look built. See QuestRetainer.client.luau.
+	_G.questBuilt_bakery = true
 end)
 
 refreshBanner()
 
 -- ============================================================================
+-- THE SHARED HALF -- what SOMEBODY ELSE'S bake-off looks like from where you stand
+-- ============================================================================
+-- Everything above is one player's private copy of island 15. This is the part that makes the
+-- island feel occupied: when another player lights an oven, YOUR copy of that oven lights; when
+-- their hen lays, your hen bawks and puffs feathers; when they stir, your bowl splashes.
+--
+-- It is all cosmetic and none of it can touch your quest. The two guards that matter:
+--   * messages from YOURSELF are dropped -- you already played the effect locally,
+--   * an oven YOUR bake is using is never repainted by somebody else's news, or their bake
+--     finishing would put your fire out halfway through yours.
+-- The position in each message only ever picks WHICH nearby prop to animate, and props sit on
+-- the same marker blocks for everybody, so the effect lands on the right one.
+-- (in a task, not inline: WaitForChild would otherwise hold up the rest of this file's boot for
+-- up to 20 seconds on a server where the relay script has not replicated yet)
+task.spawn(function()
+	local ev = ReplicatedStorage:FindFirstChild("BakeryFxEvent")
+		or ReplicatedStorage:WaitForChild("BakeryFxEvent", 20)
+	if ev then
+		FX.send = function(kind, pos)
+			pcall(function() ev:FireServer(kind, pos) end)
+		end
+
+		local function nearest(list, pos, reach, get)
+			local best, bd
+			for _, it in ipairs(list) do
+				local p = get(it)
+				if p then
+					local d = (p - pos).Magnitude
+					if not bd or d < bd then best, bd = it, d end
+				end
+			end
+			if best and bd <= reach then return best end
+			return nil
+		end
+
+		ev.OnClientEvent:Connect(function(who, kind, pos)
+			if who == player then return end
+			if typeof(pos) ~= "Vector3" then return end
+
+			if kind == "ovenOn" or kind == "ovenDone" then
+				local o = nearest(ovens, pos, 60, function(x)
+					return x.glow and x.glow.Parent and x.glow.Position or nil end)
+				if not o then return end
+				if bakingNow and o == currentOven then return end   -- our own bake owns that oven
+				if kind == "ovenOn" then
+					tween(o.door, 0.5, { CFrame = o.doorCF })
+					tween(o.glow, 0.6, { Transparency = 0.15 })
+					o.light.Brightness = 2.6
+					o.smoke.Rate = 12
+					o.embers.Rate = 6
+					playAt(SOUND_DOOR, o.door, 0.4, 110)
+				else
+					tween(o.door, 0.5, { CFrame = o.doorUpCF })
+					tween(o.glow, 0.6, { Transparency = 1 })
+					o.light.Brightness = 0
+					o.smoke.Rate = 3
+					o.embers.Rate = 0
+					playAt(SOUND_DING, o.glow, 0.6, 160)
+					poofAt(o.mouthCF.Position, PAL.GLOW_H)
+				end
+
+			elseif kind == "egg" then
+				local rec = nearest(chickens, pos, 90, function(x)
+					local m = x.model
+					return m and m.PrimaryPart and m.PrimaryPart.Position or nil end)
+				if rec and rec.model and rec.model.PrimaryPart then
+					local head = rec.model.PrimaryPart
+					playAt(SOUND_BAWK, head, 0.5, 110)
+					poofAt(head.Position + Vector3.new(0, 0.6, 0), PAL.FEATHER)
+					-- a cosmetic egg, theirs to pick up and not yours: it sits a moment and fades,
+					-- with no prompt on it, so nobody can walk over and take somebody's else's egg
+					local e = mk({ Shape = Enum.PartType.Ball, Color = PAL.EGGSH,
+						Size = Vector3.new(0.75, 0.95, 0.75), CanQuery = false })
+					e.CFrame = CFrame.new(pos) * CFrame.new(0, 0.5, -1.6)
+					e.Parent = bakeFolder
+					tween(e, 5, { Transparency = 1 })
+					Debris:AddItem(e, 5.5)
+				end
+
+			elseif kind == "stir" then
+				local R = RECIPES[recipe]
+				poofAt(pos + Vector3.new(0, 1.2, 0), (R and R.batter) or PAL.DOUGHY)
+				playSound(SOUND_STIR, 0.25)
+			end
+		end)
+		print("[Bakery] shared effects live -- other players' ovens, hens and mixing show up here")
+	else
+		warn("[Bakery] no BakeryFxEvent in ReplicatedStorage -- other players' baking will be "
+			.. "invisible. Is BakeryFxSync.server.lua synced into ServerScriptService?")
+	end
+end)
+
+-- ============================================================================
 -- /start    -- jump straight to the recipe cards, no Baker chat needed
 -- /complete -- instantly finishes the CURRENT bake
+-- (/done is island-wide and lives in DoneCommand.client.luau -- it calls the hook published at
+--  the bottom of this file, which grants the shopping list. See the note down there.)
 -- Both only fire standing at the bakery, so they can't trigger from elsewhere.
 -- ============================================================================
 local function onCommand(msg)
@@ -2106,3 +3284,28 @@ pcall(function()
 	end)
 end)
 pcall(function() player.Chatted:Connect(onCommand) end)
+
+-- ============================================================================
+-- /done ON ISLAND 15 -- SKIP THE SHOPPING, KEEP THE COOKING
+-- ============================================================================
+-- DoneCommand.client.luau owns /done for the whole realm and calls this hook if a quest publishes
+-- one. Here it grants the entire shopping list (chicken eggs included) and clears the props off
+-- the plate, so the MIXING BOWL and the OVEN HUDs can be tested without walking the island five
+-- times first. It deliberately stops there -- it does not mix, bake or deliver, which are the
+-- things it exists to let you try.
+--
+-- RETURNING true MEANS "HANDLED -- DO NOT FLAG THE QUEST COMPLETE". Marking the Bake-Off finished
+-- the moment you asked for the ingredients would tick the journal and pay the island token for a
+-- bake that never happened. Past the shopping it returns nothing instead, so a second /done falls
+-- through to the normal force-complete and the quest finishes as it always did.
+_G.bakeryForceComplete = function()
+	if step > 2 then return end               -- already mixing/baking: let /done complete it
+	if step == 0 or not recipe then startRound("brownie", false) end
+	for k, n in pairs(needOf() or {}) do have[k] = n end
+	clearScattered()
+	refreshBanner(); if refreshPrompts then refreshPrompts() end
+	flashBanner(E_BOWL .. " Every ingredient granted -- to the MIXING BOWL!", 3)
+	if bakerHead then showBubble(bakerHead, "That's the lot! Get mixing!", false) end
+	print("[Bakery][TEST] /done -- shopping list granted, plate cleared, oven HUD next")
+	return true
+end

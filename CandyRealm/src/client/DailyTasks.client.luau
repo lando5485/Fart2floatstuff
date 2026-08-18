@@ -163,6 +163,15 @@ close.TextSize         = 22
 close.ZIndex           = 5
 close.Parent           = head
 Instance.new("UICorner", close).CornerRadius = UDim.new(0, 10)
+-- BACK, left of the X -- realm 1's header pattern via the shared kit (BackButtonKit.client.luau).
+-- Deferred: the kit is a sibling LocalScript and load order between them is not guaranteed.
+task.defer(function()
+	for _ = 1, 40 do
+		if _G.addBackButton then _G.addBackButton(close); return end
+		task.wait(0.1)
+	end
+end)
+
 
 -- ===== progress bar =====
 local barBG = Instance.new("Frame")

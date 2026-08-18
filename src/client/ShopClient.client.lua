@@ -8,10 +8,14 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local SocialService = game:GetService("SocialService")
 local PlayerGui = player.PlayerGui
 local MPS = MarketplaceService
+-- The three NEWER passes (Lucky / VIP / Coin Magnet) read their ids, names and prices from the shared module
+-- instead of a fourth hand-copied table. The two legacy ids below are left as-is deliberately -- rewriting the
+-- working 2x/Glitter buttons was not worth the risk in the same change that adds three new ones.
+local Gamepasses = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Gamepasses"))
 local GAMEPASS_IDS = {TwoXForever=1862015450, GlitterTrail=1859714979}
 local PRODUCT_IDS = {TwoXOneHour=3600302990, MidAirRecharge=3600303163, SkipIsland=3600303265, BirdNuke=3600303082}
 -- Shared coin icon IMAGE: the SAME verified asset used by the coin counter and daily-rewards
--- icons (emoji glyphs like 🪙 don't render in Roblox text). Literal here so it's correct
+-- icons (emoji glyphs like 💰 don't render in Roblox text). Literal here so it's correct
 -- regardless of script load order. Shop prices show this image instead of the missing emoji.
 local COIN_IMAGE = "rbxassetid://106760789458573"
 
@@ -44,6 +48,29 @@ local function isUnlocked(island)
 	local n = tonumber(island)
 	if not n then return true end          -- unknown island -> never hide it; the server is still authoritative
 	return unlockedIslands[n] == true
+end
+
+-- THE FLOOR: you cannot buy food from an island BELOW the one you are standing on. The early foods are
+-- the best coins-per-power in the game, so without this the optimal play on island 13 is still to buy
+-- BEANS -- every island's own food is a trap and the price ladder is decorative.
+--
+-- CurrentIsland is an attribute the server sets from its physical landing detection on every check, so
+-- it follows the player back DOWN the stack too, not just up. Absent (still loading, or mid-flight) ->
+-- no floor, matching the server, which also lets an unknown position through rather than refusing a
+-- purchase because a raycast missed.
+local function isTooLow(island)
+	local n = tonumber(island)
+	if not n then return false end
+	local here = tonumber(player:GetAttribute("CurrentIsland"))
+	if not here then return false end
+	return n < here
+end
+
+-- The one question every buy path should ask. Two separate gates (ceiling: not reached yet; floor:
+-- below your feet) but a single answer, so a new gate cannot be added to one call site and missed at
+-- the other three.
+local function canBuy(island)
+	return isUnlocked(island) and not isTooLow(island)
 end
 
 local function mkCorner(p,r) local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,r); c.Parent=p; return c end
@@ -102,7 +129,7 @@ local foodEmojiImg=Instance.new("ImageLabel"); foodEmojiImg.Name="FoodEmojiImg"
 foodEmojiImg.AnchorPoint=Vector2.new(0.5,0.5); foodEmojiImg.Position=UDim2.new(0.5,0,0,70); foodEmojiImg.Size=UDim2.new(0,120,0,120) -- centered in the 120px icon box; updateFoodShop applies the per-food scale
 foodEmojiImg.BackgroundTransparency=1; foodEmojiImg.ScaleType=Enum.ScaleType.Fit; foodEmojiImg.Visible=false; foodEmojiImg.Parent=foodLeftPanel
 local foodName=mkLabel(foodLeftPanel,{Text="Beans",Font=Enum.Font.GothamBold,TextSize=26,TextColor3=Color3.fromRGB(255,255,255),Size=UDim2.new(1,-10,0,35),Position=UDim2.new(0,5,0,135),TextXAlignment=Enum.TextXAlignment.Center})
--- Price row: a centered [coin IMAGE][price text] pair (replaces the non-rendering 🪙 emoji
+-- Price row: a centered [coin IMAGE][price text] pair (replaces the non-rendering 💰 emoji
 -- prefix). foodPrice stays the price TextLabel so the live update below works unchanged.
 local foodPriceRow=mkFrame(foodLeftPanel,{Name="PriceRow",Size=UDim2.new(1,-10,0,28),Position=UDim2.new(0,5,0,174),BackgroundTransparency=1})
 local fprLayout=Instance.new("UIListLayout"); fprLayout.FillDirection=Enum.FillDirection.Horizontal
@@ -117,6 +144,16 @@ local foodPower=mkLabel(foodLeftPanel,{Text="+3 power",Font=Enum.Font.GothamBold
 -- buy buttons remain pinned to the bottom -- nothing else needs to shift, the rows were the lowest stats.)
 local foodBuyBtn=mkButton(foodLeftPanel,{Size=UDim2.new(0.44,0,0,50),Position=UDim2.new(0.04,0,1,-58),BackgroundColor3=Color3.fromRGB(50,200,50),Text="BUY FOOD",Font=Enum.Font.GothamBold,TextSize=17,TextColor3=Color3.new(1,1,1)}); mkCorner(foodBuyBtn,12)
 local foodBuyMaxBtn=mkButton(foodLeftPanel,{Size=UDim2.new(0.44,0,0,50),Position=UDim2.new(0.52,0,1,-58),BackgroundColor3=Color3.fromRGB(255,140,0),Text="BUY MAX",Font=Enum.Font.GothamBold,TextSize=15,TextColor3=Color3.new(1,1,1)}); mkCorner(foodBuyMaxBtn,12)
+-- WHY YOU CAN'T BUY THIS, said in words, directly above the buy buttons.
+-- Greying a button out tells you it is dead; it does not tell you WHY, and "TOO LOW" on its own reads as a
+-- stat complaint ("this food is weak") rather than a place rule ("this stand does not sell it"). This banner
+-- names the rule. Anchored to the BOTTOM of the panel (1,-96) rather than measured down from the stats,
+-- because the panel is a fraction of screen height -- on a short screen a top-anchored banner would land on
+-- top of the buy buttons instead of above them.
+local NOT_HERE = Color3.fromRGB(226, 74, 48)   -- the same hot orange-red the stand refusal banner uses
+local foodWhyBanner=mkFrame(foodLeftPanel,{Name="WhyBanner",Size=UDim2.new(0.92,0,0,32),Position=UDim2.new(0.04,0,1,-96),BackgroundColor3=NOT_HERE,Visible=false}); mkCorner(foodWhyBanner,8)
+local foodWhyLabel=mkLabel(foodWhyBanner,{Name="WhyLabel",Text="",Font=Enum.Font.GothamBold,TextSize=13,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,-12,1,-6),Position=UDim2.new(0,6,0,3),TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Center})
+
 local foodLockedFrame=mkFrame(foodLeftPanel,{Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.fromRGB(240,240,240),Visible=false}); mkCorner(foodLockedFrame,12)
 mkLabel(foodLockedFrame,{Text="\xF0\x9F\x94\x92",Font=Enum.Font.Gotham,TextSize=64,Size=UDim2.new(0,100,0,100),Position=UDim2.new(0.5,-50,0,40),RichText=true})
 mkLabel(foodLockedFrame,{Text="Fly here to unlock!",Font=Enum.Font.GothamBold,TextSize=20,TextColor3=Color3.fromRGB(200,0,0),Size=UDim2.new(1,-20,0,60),Position=UDim2.new(0,10,0,155),TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Center})
@@ -145,7 +182,7 @@ for _,f in ipairs(_G.foods) do
 	iconImg.Image=foodImages[f.name] or ""; iconImg.Visible=(foodImages[f.name]~=nil); iconImg.Parent=emojiFrame
 	if foodImages[f.name] then emojiLabel.Visible=false end
 	mkLabel(cell,{Name="NameLabel",Text=f.name,Font=Enum.Font.GothamBold,TextSize=13,TextColor3=Color3.fromRGB(30,30,30),Size=UDim2.new(1,-62,0,30),Position=UDim2.new(0,60,0,5),TextXAlignment=Enum.TextXAlignment.Left})
-	-- Coin IMAGE for the cell's price row (replaces the 🪙 emoji prefix). Toggled with the
+	-- Coin IMAGE for the cell's price row (replaces the 💰 emoji prefix). Toggled with the
 	-- price text in updateFoodShop (hidden for locked cells, shown for unlocked/priced cells).
 	local priceIcon=Instance.new("ImageLabel"); priceIcon.Name="PriceIcon"
 	priceIcon.Size=UDim2.new(0,14,0,14); priceIcon.Position=UDim2.new(0,60,0,41); priceIcon.BackgroundTransparency=1
@@ -270,8 +307,65 @@ cardIcon(card3,"\xe2\x8f\xb0"); cardTitles(card3,"2x Power","1 HOUR",Color3.from
 local twoXShopTimer=mkLabel(cH(card3),{Text="",Font=Enum.Font.GothamBold,TextSize=11,TextColor3=Color3.fromRGB(100,220,100),Size=UDim2.new(1,-8,0,14),LayoutOrder=6,TextXAlignment=Enum.TextXAlignment.Center,Visible=false})
 cardBuyBtn(card3,Color3.fromRGB(50,150,255),"BUY NOW",function() pcall(function() MPS:PromptProductPurchase(player,PRODUCT_IDS.TwoXOneHour) end) end)
 
-sectionHeader("\xF0\x9F\x8E\xAF ONE-TIME ITEMS",3)
-local productRow=mkSectionRow(4)
+-- ===== SECOND GAMEPASS ROW: Lucky / VIP / Coin Magnet ========================================================
+-- A SECOND row rather than six cards in the first one: the row is a horizontal UIListLayout with no wrapping,
+-- and six 208-wide cards plus padding is 1,368px inside a ~762px scroll -- three of them would simply be cut off
+-- the right-hand edge with no way to reach them.
+--
+-- ⚠ EACH CARD IS INERT UNTIL ITS PASS EXISTS. These three ids are still 0 (see the 0 = UNSET rule in
+-- Shared.Gamepasses): the card renders as COMING SOON with a dead grey button, and clicking does nothing.
+-- Gamepasses.prompt refuses a 0 id too, so there are two independent guards -- a player can never be shown a
+-- broken Robux prompt, which is exactly the failure the placeholder pet-skip products still have.
+-- The moment a real id is pasted into Shared.Gamepasses, the card turns into a live BUY GAMEPASS button here
+-- with no other edit anywhere.
+local gamepassRow2=mkSectionRow(3)
+
+-- One card for an attribute-driven forever pass. Handles all three states: not-created-yet, buyable, owned.
+local function passCard(row,order,key,icon,main,sub,desc,btnColor)
+	local card=mkShopCard(row,order)
+	local live=Gamepasses.isConfigured(key)
+	cardIcon(card,icon)
+	cardTitles(card,main,live and sub or "COMING SOON",live and Color3.fromRGB(100,220,100) or Color3.fromRGB(190,190,190))
+	cardPrice(card,live and ((Gamepasses.PRICE[key] or 0).." R$") or "--")
+	cardDesc(card,desc)
+
+	local btn=cardBuyBtn(card,live and btnColor or Color3.fromRGB(90,95,110),live and "BUY GAMEPASS" or "COMING SOON",function()
+		if not live then return end                          -- unset id: no prompt, ever
+		if Gamepasses.owns(player,key) then return end        -- already owned: do nothing (same rule as the 2x card)
+		Gamepasses.prompt(player,key)                         -- guarded + pcall'd inside the shared module
+	end)
+	-- The polish pass at the bottom of this file repaints EVERY TextButton in a card into the same green "buy"
+	-- pill with a hover bounce. A COMING SOON button must not get that treatment or it would look buyable and
+	-- bounce under the cursor while doing nothing. This attribute is how that pass knows to leave it grey.
+	if not live then btn:SetAttribute("ShopDisabled", true) end
+
+	-- OWNED state. Ownership is the replicated attribute, so this also flips the moment the purchase lands
+	-- mid-session -- no menu reopen, no rejoin.
+	local function refresh()
+		if live and Gamepasses.owns(player,key) then
+			btn.Text="OWNED"; btn.BackgroundColor3=Color3.fromRGB(70,150,70)
+		end
+	end
+	refresh()
+	if live then player:GetAttributeChangedSignal(Gamepasses.ATTR[key]):Connect(refresh) end
+	return card
+end
+
+local luckyCard  = passCard(gamepassRow2,1,"LuckyPass","\xF0\x9F\x8D\x80","Lucky Pass","FOREVER",
+	"2x rare odds on every crate!",Color3.fromRGB(60,190,90))
+local vipCard    = passCard(gamepassRow2,2,"VIP","\xE2\xAD\x90","VIP","FOREVER",
+	"+25% coins, 500 coins a day, VIP tag!",Color3.fromRGB(255,180,0))
+local magnetCard = passCard(gamepassRow2,3,"CoinMagnet","\xF0\x9F\xA7\xB2","Coin Magnet","FOREVER",
+	"Gas bubbles and rings fly to you!",Color3.fromRGB(90,140,255))
+
+-- Every later styling/layout pass in this file works off an explicit card list. Keeping the three new cards in
+-- ONE named list means adding a fourth pass later is one more mention of `newPassCards`, not three more card
+-- variables threaded through four different loops -- which is exactly how these cards ended up unstyled the
+-- first time: they were built correctly and then simply missing from all of those lists.
+local newPassCards = {luckyCard, vipCard, magnetCard}
+
+sectionHeader("\xF0\x9F\x8E\xAF ONE-TIME ITEMS",4)
+local productRow=mkSectionRow(5)
 
 -- Card 4: Mid-Air Recharge
 local card4=mkShopCard(productRow,1)
@@ -327,7 +421,13 @@ local function updateFoodShop(islandNum)
 	-- it). Stats are ALWAYS shown, even when the featured food is LOCKED -- in that case it's greyed and
 	-- the BUY buttons read "LOCKED" so the player sees what they'd get without being able to buy it.
 	local f=featuredFood; if not f then return end
-	local fLocked = not isUnlocked(f.island)
+	local fLocked = not canBuy(f.island)
+	-- TWO REASONS a food can't be bought, and they are NOT the same problem:
+	--   TOO LOW  -> you own this island, you just flew past it. The food is real and you have bought it
+	--               before; the only thing stopping you is where you are standing. Fixable by going down.
+	--   LOCKED   -> you have never reached that island. Nothing to do but keep climbing.
+	-- They used to render identically (grey buttons reading "LOCKED"), which is why too-low read as a bug.
+	local fTooLow = fLocked and isUnlocked(f.island)
 	foodLockedFrame.Visible=false  -- locked is now shown inline (greyed stats + LOCKED buttons), not the full cover
 	foodEmoji.Visible=true; foodName.Visible=true; foodPriceRow.Visible=true; foodPower.Visible=true
 	foodBuyBtn.Visible=true; foodBuyMaxBtn.Visible=true
@@ -338,7 +438,8 @@ local function updateFoodShop(islandNum)
 	foodEmojiImg.Image = fImg or ""; foodEmojiImg.Visible = (fImg ~= nil); foodEmojiImg.ImageTransparency = fLocked and 0.5 or 0
 	foodEmoji.Visible = (fImg == nil)
 	foodEmoji.Text=foodEmojis[f.name] or "?"; foodEmoji.TextTransparency = fLocked and 0.5 or 0
-	foodName.Text = fLocked and (f.name.."  \xF0\x9F\x94\x92 LOCKED") or f.name
+	foodName.Text = fTooLow and (f.name.."  \xE2\xAC\x87\xEF\xB8\x8F TOO LOW")
+		or (fLocked and (f.name.."  \xF0\x9F\x94\x92 LOCKED") or f.name)
 	foodName.TextColor3 = fLocked and Color3.fromRGB(150,150,150) or Color3.fromRGB(255,255,255) -- WHITE name (was black)
 	foodPrice.Text=f.price.." coins"  -- coin shown by the CoinIcon ImageLabel in the row, not text
 	foodPrice.TextColor3 = fLocked and Color3.fromRGB(150,150,150) or Color3.fromRGB(200,140,0)
@@ -356,11 +457,23 @@ local function updateFoodShop(islandNum)
 	local fittable    = math.floor((stomMax - curPower) / f.power)
 	local affordable  = math.floor(coins / f.price)
 	local fitAndAfford = math.min(fittable, affordable)
-	if fLocked then
-		-- LOCKED featured food: stats shown (greyed) above, but buying is disabled.
+	if fTooLow then
+		-- TOO LOW: RED buttons, not grey. Grey is what "Not Enough Coins" and "Stomach Full" already use, so a
+		-- grey button here said "come back when you have more", which is the opposite of true -- no amount of
+		-- coins or stomach room will ever buy this food while you are standing on a higher island.
+		foodBuyBtn.BackgroundColor3=NOT_HERE; foodBuyBtn.Text="NOT SOLD HERE"; foodBuyBtn.TextSize=14
+		foodBuyMaxBtn.BackgroundColor3=NOT_HERE; foodBuyMaxBtn.Text="NOT SOLD HERE"; foodBuyMaxBtn.TextSize=14
+		foodWhyBanner.Visible=true; foodWhyBanner.BackgroundColor3=NOT_HERE
+		foodWhyLabel.Text=("\xE2\xAC\x87\xEF\xB8\x8F This stand only sells Island %d food. %s is Island %d \xE2\x80\x94 fly back down to buy it."):format(islandNum, f.name, f.island)
+	elseif fLocked then
+		-- NEVER REACHED: stats shown (greyed) above, but buying is disabled. Grey is right here -- this one
+		-- really is "come back later", and the banner says how.
 		foodBuyBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyBtn.Text="LOCKED"; foodBuyBtn.TextSize=16
 		foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyMaxBtn.Text="LOCKED"; foodBuyMaxBtn.TextSize=16
+		foodWhyBanner.Visible=true; foodWhyBanner.BackgroundColor3=Color3.fromRGB(120,124,136)
+		foodWhyLabel.Text=("\xF0\x9F\x94\x92 Reach Island %d to unlock %s."):format(f.island, f.name)
 	else
+		foodWhyBanner.Visible=false
 		-- Single BUY: COINS checked FIRST (the common blocker) -> "Not Enough Coins"; then stomach
 		-- capacity -> "Stomach Full"; only when both pass is it buyable.
 		if coins < f.price then
@@ -390,15 +503,34 @@ local function updateFoodShop(islandNum)
 			local ef=cell:FindFirstChild("EmojiFrame")
 			local icon=ef and ef:FindFirstChild("FoodEmoji")
 			local iconImg=ef and ef:FindFirstChild("FoodIconImg")
-			if not isUnlocked(fd.island) then
-				-- LOCKED: keep it a mystery until the player reaches this food's island. 🔒 icon, "???"
-				-- name, no price. Cell stays the same size/position, just greyed and not buyable.
-				cell.BackgroundColor3=Color3.fromRGB(208,213,221); if st then st.Color=Color3.fromRGB(140,140,140) end -- LOCKED cell: a lighter cool-grey so it doesn't blend with the grey lock icon
-				if iconImg then iconImg.Visible=false end -- locked -> show the 🔒 emoji, hide any image icon
-				if icon then icon.Visible=true; icon.Text="\xF0\x9F\x94\x92" end
-				if ef then ef.Position=UDim2.new(0.5,0,0.5,0); ef.AnchorPoint=Vector2.new(0.5,0.5) end -- center the 🔒 in the box
-				if nm then nm.Text="" end -- no "???" label
-				if pl then pl.Text="" end
+			if not canBuy(fd.island) then
+				-- TWO different refusals, shown differently on purpose:
+				--   NOT REACHED (ceiling) -> a mystery: 🔒, no name, no price. Nothing spoiled.
+				--   TOO LOW (floor)       -> you have BOUGHT this before, so hiding it would just read as
+				--                            a bug. Name stays, price is replaced by "TOO LOW" and a ⬇,
+				--                            which says the food is real and the reason is where you stand.
+				local tooLow = isUnlocked(fd.island) -- reached it, so the refusal must be the floor
+				-- The two refusals now look different at a glance, which they did not before: a too-low cell is
+				-- WARM grey with a red edge, a never-reached one stays COOL grey. Same information, but you can
+				-- tell which half of the grid is "behind you" and which is "ahead of you" without reading a word.
+				cell.BackgroundColor3 = tooLow and Color3.fromRGB(222,201,196) or Color3.fromRGB(208,213,221)
+				if st then st.Color = tooLow and Color3.fromRGB(198,84,60) or Color3.fromRGB(140,140,140) end
+				if iconImg then iconImg.Visible=false end -- locked -> show the emoji, hide any image icon
+				if icon then icon.Visible=true; icon.Text = tooLow and "\xE2\xAC\x87\xEF\xB8\x8F" or "\xF0\x9F\x94\x92" end
+				if ef then ef.Position=UDim2.new(0.5,0,0.5,0); ef.AnchorPoint=Vector2.new(0.5,0.5) end -- center the icon in the box
+				-- STRIKETHROUGH on the name. It is the one mark everybody already reads as "this is off the
+				-- menu", it needs no legend, and it survives being glanced at from across the grid in a way a
+				-- grey label does not. RichText is turned on only for this state and off again below.
+				if nm then
+					nm.RichText = tooLow
+					nm.Text = tooLow and ("<s>"..fd.name.."</s>") or ""
+					nm.TextColor3 = Color3.fromRGB(96,72,68)
+				end
+				if pl then
+					pl.Text = tooLow and "TOO LOW" or ""
+					pl.Font = Enum.Font.GothamBold
+					pl.TextColor3 = Color3.fromRGB(186,52,32)
+				end
 				local pic=cell:FindFirstChild("PriceIcon"); if pic then pic.Visible=false end  -- no price -> hide coin
 					if st then if featuredFood and fd.name==featuredFood.name then st.Color=Color3.fromRGB(255,215,0); st.Thickness=4 else st.Thickness=2 end end -- gold border = the FEATURED cell (locked food still highlightable)
 			else
@@ -408,13 +540,15 @@ local function updateFoodShop(islandNum)
 				if ef then ef.Position=UDim2.new(0,2,0.5,0); ef.AnchorPoint=Vector2.new(0,0.5) end -- restore the icon to the LEFT
 				if iconImg then iconImg.Image=cImg or ""; iconImg.Visible=(cImg~=nil) end
 				if icon then icon.Visible=(cImg==nil); icon.Text=foodEmojis[fd.name] or "\xF0\x9F\x8D\xBD\xEF\xB8\x8F" end
-				if nm then nm.Text=fd.name end
+				-- Undo every part of the locked look. Cells are REUSED, so anything the branch above changes has
+				-- to be changed back here or a food that unlocks keeps its strikethrough forever.
+				if nm then nm.RichText=false; nm.Text=fd.name; nm.TextColor3=Color3.fromRGB(30,30,30) end
 				if (stomMax - curPower) >= fd.power and coins2>=fd.price then  -- buyable: fits at least one of this food AND affordable
 					cell.BackgroundColor3=Color3.fromRGB(50,200,50); if st then st.Color=Color3.fromRGB(30,150,30) end
 				else
 					cell.BackgroundColor3=Color3.fromRGB(180,50,50); if st then st.Color=Color3.fromRGB(120,30,30) end  -- RED: owned/maxed (stomach can't fit one) OR can't afford
 				end
-				if pl then pl.Text=tostring(fd.price) end  -- coin shown by the PriceIcon ImageLabel, not text
+				if pl then pl.Text=tostring(fd.price); pl.Font=Enum.Font.Gotham; pl.TextColor3=Color3.fromRGB(120,80,0) end  -- coin shown by the PriceIcon ImageLabel, not text
 				local pic=cell:FindFirstChild("PriceIcon"); if pic then pic.Visible=true end  -- priced -> show coin
 					if st then if featuredFood and fd.name==featuredFood.name then st.Color=Color3.fromRGB(255,215,0); st.Thickness=4 else st.Thickness=2 end end -- gold border = the FEATURED cell
 			end
@@ -485,7 +619,8 @@ end
 	premTitleLbl.TextColor3 = GOLD
 
 	-- cards: lighter indigo + thick outline + bevel
-	for _, card in ipairs({card1, card2, card3, card4, card5, card6}) do
+	for _, card in ipairs({card1, card2, card3, card4, card5, card6,
+	                       newPassCards[1], newPassCards[2], newPassCards[3]}) do
 		card.BackgroundColor3 = PANEL2; setStroke(card, dark(PANEL, 0.35), 2.5); juice(card)
 	end
 
@@ -518,9 +653,16 @@ end)()
 	-- re-parented onto the FIXED premPanel, so only the headers -- still in the scroll -- moved, sliding over the pinned
 	-- cards.) Just resize the rows to the card heights, then size + order the cards inside them.
 	gamepassRow.Size = UDim2.new(1,-16,0,190)
+	-- The SECOND gamepass row is 220 like the product row, not 190 like the first. The three new passes each
+	-- carry a description line ("2x rare odds on every crate!"), and 190 is the height for a card WITHOUT one --
+	-- at 190 the desc and the buy button fight for the same 30px and the button clips off the bottom.
+	gamepassRow2.Size = UDim2.new(1,-16,0,220)
 	productRow.Size  = UDim2.new(1,-16,0,220)
 	for i, c in ipairs({card1, card2, card3}) do
 		c.Parent = gamepassRow; c.LayoutOrder = i; c.Size = UDim2.new(0.31,0,0,190)
+	end
+	for i, c in ipairs(newPassCards) do
+		c.Parent = gamepassRow2; c.LayoutOrder = i; c.Size = UDim2.new(0.31,0,0,220)
 	end
 	for i, c in ipairs({card4, card5, card6}) do
 		c.Parent = productRow; c.LayoutOrder = i; c.Size = UDim2.new(0.31,0,0,220)
@@ -623,6 +765,14 @@ end)()
 	layoutCard(card4, true)
 	layoutCard(card5, true)
 	layoutCard(card6, true)
+	-- ⚠ layoutCard IS DEAD CODE -- for these six too, not just the new cards, so nothing is being skipped here.
+	-- It collects `card:GetChildren()` looking for the icon / labels / buy button, but mkShopCard puts all of
+	-- those inside a child Frame named "Content" (every card* helper parents through cH()). So the loop finds
+	-- one Frame, matches none of its branches, and the function just adds an empty "_Content" frame to the card.
+	-- The layout you actually see comes from mkShopCard's own UIListLayout plus the polish pass at the bottom of
+	-- this file, which walks GetDescendants() and therefore does reach inside "Content".
+	-- The new cards are deliberately NOT passed through it: adding a dead call to match dead calls is not parity.
+	-- (The row/size loop ABOVE is live and does matter -- that is why the new cards are in that one.)
 end)()
 
 -- Explicitly style the shop close button
@@ -700,10 +850,17 @@ end
 -- bean mascot, drifting sparkles, and a slide-in-from-bottom. Runs deferred so the card layout is final first.
 task.defer(function()
 	local TS = game:GetService("TweenService")
-	local cards = {card1, card2, card3, card4, card5, card6}
-	local CARD_COLS = { -- 6 unique gradients, no repeats: blue, purple, pink, green, cyan, orange
+	-- The three new passes are APPENDED, not interleaved in visual order, on purpose: CARD_COLS is indexed by
+	-- position in this list, so slotting them in the middle would silently re-colour every existing card.
+	local cards = {card1, card2, card3, card4, card5, card6,
+	               newPassCards[1], newPassCards[2], newPassCards[3]}
+	local CARD_COLS = { -- 9 unique gradients, no repeats: blue, purple, pink, green, cyan, orange, lime, gold, indigo
 		Color3.fromRGB(64,120,245), Color3.fromRGB(150,96,240), Color3.fromRGB(240,96,180),
 		Color3.fromRGB(72,200,120), Color3.fromRGB(64,200,224), Color3.fromRGB(248,150,56),
+		-- 7-9 = Lucky (lime, matches the clover), VIP (gold, matches the tag), Coin Magnet (indigo).
+		-- These MUST exist: the loop below does CARD_COLS[i]:Lerp(...), so a nil here is a hard error that
+		-- takes the whole polish pass down and leaves every card unstyled -- not just the new ones.
+		Color3.fromRGB(140,214,72), Color3.fromRGB(246,196,60), Color3.fromRGB(96,116,236),
 	}
 	local function light(c) return c:Lerp(Color3.new(1,1,1), 0.24) end
 	local function dark(c, f) return c:Lerp(Color3.new(0,0,0), f or 0.45) end
@@ -730,7 +887,7 @@ task.defer(function()
 					d.BackgroundColor3 = Color3.fromRGB(255,206,92); d.BackgroundTransparency = 0; d.TextColor3 = Color3.fromRGB(92,58,8)
 					d.Size = UDim2.fromOffset(128,24); d.LayoutOrder = 9 -- gold price capsule (same width as the coin cards), centered above the button
 					local pg = d:FindFirstChildOfClass("UIGradient") or Instance.new("UIGradient"); pg.Color = ColorSequence.new(Color3.fromRGB(255,238,176), Color3.fromRGB(240,190,60)); pg.Rotation = 90; pg.Parent = d -- glossy
-					if not d.Text:find("\xF0\x9F\xAA\x99") then d.Text = "\xF0\x9F\xAA\x99 " .. d.Text end
+					if not d.Text:find("\xF0\x9F\x92\xB0") then d.Text = "\xF0\x9F\x92\xB0 " .. d.Text end
 					local pc = d:FindFirstChildOfClass("UICorner") or Instance.new("UICorner"); pc.CornerRadius = UDim.new(1,0); pc.Parent = d
 					local ps = d:FindFirstChildOfClass("UIStroke"); if ps then ps.Color = Color3.fromRGB(180,122,20); ps.Thickness = 2 end
 					break
@@ -739,9 +896,21 @@ task.defer(function()
 
 			for _, d in ipairs(card:GetDescendants()) do
 				if d:IsA("TextButton") then -- ONE short, centered green pill purchase button at the bottom
+					-- A COMING SOON button (a pass whose Robux id has not been created yet) gets the same SHAPE
+					-- and position as every other button -- so the row still reads as one tidy set of cards --
+					-- but stays grey and does NOT get the hover/click bounce. Something that springs under the
+					-- cursor is promising a purchase it cannot deliver.
+					local disabled = d:GetAttribute("ShopDisabled") == true
 					d.Size = UDim2.new(0.8,0,0,36); d.LayoutOrder = 20
-					d.BackgroundColor3 = Color3.fromRGB(96,210,128)
 					local bc = d:FindFirstChildOfClass("UICorner") or Instance.new("UICorner"); bc.CornerRadius = UDim.new(0,18); bc.Parent = d
+					if disabled then
+						d.BackgroundColor3 = Color3.fromRGB(96,100,116)
+						d.TextTransparency = 0.25
+						local dg = d:FindFirstChildOfClass("UIGradient"); if dg then dg:Destroy() end -- flat, obviously inert
+						local ds = d:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke"); ds.Color = Color3.fromRGB(58,62,74); ds.Thickness = 1.5; ds.Parent = d
+						break
+					end
+					d.BackgroundColor3 = Color3.fromRGB(96,210,128)
 					local bg2 = d:FindFirstChildOfClass("UIGradient") or Instance.new("UIGradient"); bg2.Color = ColorSequence.new(Color3.fromRGB(142,226,160), Color3.fromRGB(86,184,112)); bg2.Rotation = 90; bg2.Parent = d
 					local bsr = d:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke"); bsr.Color = Color3.fromRGB(46,120,68); bsr.Thickness = 1.5; bsr.Parent = d
 					local bScl = Instance.new("UIScale"); bScl.Parent = d -- hover glow + click bounce (interaction only)
@@ -835,12 +1004,12 @@ task.defer(function()
 	-- Currency Shop overlay (built hidden; opened by the banner)
 	----------------------------------------------------------------
 	local BEAN_PACKS = {
-		{ name="Small Coin Pack",    beans="1,000",   bonus=nil,    price="49 R$",   productId=0, col=Color3.fromRGB(64,120,245) },
-		{ name="Medium Coin Pack",   beans="5,500",   bonus="+10%", price="99 R$",   productId=0, col=Color3.fromRGB(72,200,120), tag="\xF0\x9F\x94\xA5 MOST POPULAR" },
-		{ name="Large Coin Pack",    beans="12,000",  bonus="+20%", price="199 R$",  productId=0, col=Color3.fromRGB(150,96,240) },
-		{ name="Giant Coin Pack",    beans="30,000",  bonus="+30%", price="399 R$",  productId=0, col=Color3.fromRGB(64,200,224) },
-		{ name="Mega Coin Pack",     beans="70,000",  bonus="+40%", price="799 R$",  productId=0, col=Color3.fromRGB(240,96,180) },
-		{ name="Ultimate Coin Pack", beans="180,000", bonus="+50%", price="1499 R$", productId=0, col=Color3.fromRGB(248,150,56), tag="\xE2\xAD\x90 BEST VALUE" },
+		{ name="Small Coin Pack",    beans="1,000",   bonus=nil,    price="49 R$",   productId=3699050724, col=Color3.fromRGB(64,120,245) },
+		{ name="Medium Coin Pack",   beans="5,500",   bonus="+10%", price="99 R$",   productId=3699055852, col=Color3.fromRGB(72,200,120), tag="\xF0\x9F\x94\xA5 MOST POPULAR" },
+		{ name="Large Coin Pack",    beans="12,000",  bonus="+20%", price="199 R$",  productId=3699059563, col=Color3.fromRGB(150,96,240) },
+		{ name="Giant Coin Pack",    beans="30,000",  bonus="+30%", price="399 R$",  productId=3699065394, col=Color3.fromRGB(64,200,224) },
+		{ name="Mega Coin Pack",     beans="70,000",  bonus="+40%", price="799 R$",  productId=3699081248, col=Color3.fromRGB(240,96,180) },
+		{ name="Ultimate Coin Pack", beans="180,000", bonus="+50%", price="1499 R$", productId=3699076690, col=Color3.fromRGB(248,150,56), tag="\xE2\xAD\x90 BEST VALUE" },
 	}
 
 	local overlay=Instance.new("Frame"); overlay.Name="CurrencyOverlay"; overlay.AnchorPoint=Vector2.new(0.5,0.5); overlay.Position=UDim2.fromScale(0.5,0.5); overlay.Size=UDim2.fromScale(1,1)
@@ -886,11 +1055,11 @@ task.defer(function()
 			end
 		end
 		local nm=Instance.new("TextLabel"); nm.BackgroundTransparency=1; nm.Position=UDim2.fromOffset(4,66); nm.Size=UDim2.new(1,-8,0,22); nm.Font=Enum.Font.FredokaOne; nm.TextScaled=true; nm.TextColor3=Color3.new(1,1,1); nm.Text=pk.name; nm.ZIndex=53; nm.Parent=card; stroke(nm,Color3.new(0,0,0),1.5); maxsize(nm,16)
-		local amt=Instance.new("TextLabel"); amt.BackgroundTransparency=1; amt.Position=UDim2.fromOffset(4,88); amt.Size=UDim2.new(1,-8,0,20); amt.Font=Enum.Font.GothamBold; amt.TextScaled=true; amt.TextColor3=GOLD; amt.Text="\xF0\x9F\xAA\x99 "..pk.beans.." Coins"; amt.ZIndex=53; amt.Parent=card; stroke(amt,Color3.new(0,0,0),1.5); maxsize(amt,15)
+		local amt=Instance.new("TextLabel"); amt.BackgroundTransparency=1; amt.Position=UDim2.fromOffset(4,88); amt.Size=UDim2.new(1,-8,0,20); amt.Font=Enum.Font.GothamBold; amt.TextScaled=true; amt.TextColor3=GOLD; amt.Text="\xF0\x9F\x92\xB0 "..pk.beans.." Coins"; amt.ZIndex=53; amt.Parent=card; stroke(amt,Color3.new(0,0,0),1.5); maxsize(amt,15)
 		if pk.bonus then
 			local bb=Instance.new("TextLabel"); bb.AnchorPoint=Vector2.new(0.5,0); bb.Position=UDim2.new(0.5,0,0,112); bb.Size=UDim2.fromOffset(106,17); bb.BackgroundColor3=GREEN; bb.Font=Enum.Font.FredokaOne; bb.TextScaled=true; bb.TextColor3=Color3.new(1,1,1); bb.Text="\xF0\x9F\x8E\x81 BONUS "..pk.bonus; bb.ZIndex=53; bb.Parent=card; corner(bb,9); stroke(bb,Color3.fromRGB(28,84,44),1.5); maxsize(bb,11)
 		end
-		local price=Instance.new("TextLabel"); price.AnchorPoint=Vector2.new(0.5,0); price.Position=UDim2.new(0.5,0,0,135); price.Size=UDim2.fromOffset(128,24); price.BackgroundColor3=GOLD; price.Font=Enum.Font.FredokaOne; price.TextScaled=true; price.TextColor3=Color3.fromRGB(92,58,8); price.Text="\xF0\x9F\xAA\x99 "..pk.price; price.ZIndex=53; price.Parent=card; corner(price,13); stroke(price,Color3.fromRGB(180,122,20),2); vgrad(price,Color3.fromRGB(255,238,176),Color3.fromRGB(240,190,60),90); maxsize(price,16)
+		local price=Instance.new("TextLabel"); price.AnchorPoint=Vector2.new(0.5,0); price.Position=UDim2.new(0.5,0,0,135); price.Size=UDim2.fromOffset(128,24); price.BackgroundColor3=GOLD; price.Font=Enum.Font.FredokaOne; price.TextScaled=true; price.TextColor3=Color3.fromRGB(92,58,8); price.Text="\xF0\x9F\x92\xB0 "..pk.price; price.ZIndex=53; price.Parent=card; corner(price,13); stroke(price,Color3.fromRGB(180,122,20),2); vgrad(price,Color3.fromRGB(255,238,176),Color3.fromRGB(240,190,60),90); maxsize(price,16)
 		local buy=Instance.new("TextButton"); buy.AnchorPoint=Vector2.new(0.5,1); buy.Position=UDim2.new(0.5,0,1,-8); buy.Size=UDim2.new(1,-24,0,36); buy.BackgroundColor3=GREEN; buy.Font=Enum.Font.FredokaOne; buy.TextScaled=true; buy.TextColor3=Color3.new(1,1,1); buy.Text="\xF0\x9F\x9B\x92 Purchase"; buy.ZIndex=53; buy.Parent=card; corner(buy,18); stroke(buy,Color3.fromRGB(46,120,68),1.5); vgrad(buy,Color3.fromRGB(142,226,160),Color3.fromRGB(86,184,112),90); pad(buy,6); maxsize(buy,16)
 		local buyS=Instance.new("UIScale"); buyS.Parent=buy
 		buy.MouseEnter:Connect(function() TS:Create(buyS,TweenInfo.new(0.1),{Scale=1.05}):Play() end)
@@ -1254,7 +1423,7 @@ end)
 
 foodBuyBtn.MouseButton1Click:Connect(function()
 	local f=featuredFood; if not f then return end          -- buy the CURRENTLY FEATURED food
-	if not isUnlocked(f.island) then return end              -- locked featured food: not buyable
+	if not canBuy(f.island) then return end                  -- locked, or below the island you're on
 	-- (no playEatSound() here -- the crunch is driven by CurrentPower rising, so a refused buy stays silent)
 	local coins=0
 	pcall(function() if _G.leaderstats then local c=_G.leaderstats:FindFirstChild("Coins"); if c then coins=c.Value end end end)
@@ -1274,7 +1443,7 @@ foodBuyMaxBtn.MouseButton1Click:Connect(function()
 	-- (no playEatSound() here either -- BUY MAX often buys NOTHING, because the stomach is full or the coins
 	-- don't stretch to a single item. It used to crunch anyway, before it had even worked out the quantity.)
 	local feat=featuredFood; if not feat then return end     -- BUY MAX targets the FEATURED food
-	if not isUnlocked(feat.island) then return end           -- locked featured food: BUY MAX disabled
+	if not canBuy(feat.island) then return end               -- locked, or below the island you're on
 	local coins, curPower, stomMax = 0, 0, 46
 	pcall(function() if _G.leaderstats then
 		local c=_G.leaderstats:FindFirstChild("Coins"); if c then coins=c.Value end
@@ -1290,7 +1459,7 @@ foodBuyMaxBtn.MouseButton1Click:Connect(function()
 	local totalPower = 0
 	for i = feat.island, 1, -1 do  -- fill from the FEATURED food downward (its max), biggest power first
 		local f = _G.foods[i]
-		if f and isUnlocked(f.island) then
+		if f and canBuy(f.island) then -- floor included: BUY MAX must not top up with beans on island 13
 			local qty = math.min(math.floor(remaining / f.power), math.floor(coinsLeft / f.price))
 			if qty > 0 then
 				for _=1,qty do pcall(function() _G.BuyFoodEvent:FireServer(f.name) end) end

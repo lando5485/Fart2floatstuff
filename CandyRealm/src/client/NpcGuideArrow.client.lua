@@ -66,12 +66,25 @@ local function islandUnder(pos)
         if m:IsA("Model") and norm(m.Name):sub(1, #ISLAND_PREFIX) == ISLAND_PREFIX then
             local b = boxOf(m)
             if b then
-                -- how far OUTSIDE the footprint you are: zero while you are over it, at any
-                -- height. Ties break toward the SMALLER island, so a big one cannot swallow a
-                -- small one that sits inside its box.
+                -- how far OUTSIDE the footprint you are: zero while you are over it. Ties break toward
+                -- the SMALLER island, so a big one cannot swallow a small one that sits inside its box.
                 local dx = math.max(0, math.abs(pos.X - b.c.X) - b.h.X)
                 local dz = math.max(0, math.abs(pos.Z - b.c.Z) - b.h.Z)
-                local score = math.sqrt(dx * dx + dz * dz) * 1000 + (b.h.X + b.h.Z)
+
+                -- ⚠ VERTICAL DISTANCE COUNTS, AND IT DOMINATES.
+                -- This used to be horizontal-only ("zero while you are over it, AT ANY HEIGHT"), which is
+                -- wrong for a TOWER. The islands sit above each other -- island1 at Y150, island9 at Y3525,
+                -- island15 at Y59388 -- and they overlap in X/Z by design (the zig-zag is only +/-320 studs
+                -- wide). So standing on island 9, island 1 scored an identical horizontal 0 and won on the
+                -- tie-break, and the guide announced "now on island1 -> guiding to island1's Candy Npc
+                -- (3364 studs)" while the player was three thousand studs above it. That both re-nagged
+                -- about an NPC on another island AND meant island 9's own NPC was never pointed at.
+                --
+                -- Weighted far above the horizontal term: on this map two islands are never within a few
+                -- hundred studs vertically, so height alone identifies the island you are standing on.
+                local dy = math.max(0, math.abs(pos.Y - b.c.Y) - b.h.Y)
+
+                local score = dy * 1e6 + math.sqrt(dx * dx + dz * dz) * 1000 + (b.h.X + b.h.Z)
                 if not bestScore or score < bestScore then best, bestScore = m, score end
             end
         end

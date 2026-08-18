@@ -54,7 +54,11 @@ do
 end
 
 local function freshState()
-	local s = { lastCrateClaim = 0, owned = {}, equipped = {}, dirty = false, loaded = false }
+	-- lastStayReward: os.time() of the last retention "stay" crate (0 = never). Lives HERE rather than in a
+	-- store of its own because it is the same shape and lifetime as lastCrateClaim, and because the whole
+	-- point of persisting it is that leaving and rejoining must NOT reset it -- so it has to ride the save
+	-- that already survives a rejoin.
+	local s = { lastCrateClaim = 0, lastStayReward = 0, owned = {}, equipped = {}, dirty = false, loaded = false }
 	-- Default-owned starters: auto-owned + equipped, one Common per type.
 	for _, id in ipairs(CosmeticConfig.DEFAULT_OWNED) do
 		local item = CosmeticConfig.BY_ID[id]
@@ -100,6 +104,9 @@ local function loadPlayer(player)
 		local ok, data = pcall(function() return store:GetAsync(key) end)
 		if ok and type(data) == "table" then
 			s.lastCrateClaim = tonumber(data.lastCrateClaim) or 0
+			-- absent in saves written before the retention feature existed -> 0 = never given, so an
+			-- existing player is eligible the first time they go to leave. That is the intended migration.
+			s.lastStayReward = tonumber(data.lastStayReward) or 0
 			if type(data.owned) == "table" then
 				for _, id in ipairs(data.owned) do
 					if CosmeticConfig.BY_ID[id] then s.owned[id] = true end
@@ -129,7 +136,8 @@ local function savePlayer(player, trigger)
 	if not store then return end
 	local ownedList = {}
 	for id in pairs(s.owned) do table.insert(ownedList, id) end
-	local data = { lastCrateClaim = s.lastCrateClaim or 0, owned = ownedList, equipped = s.equipped }
+	local data = { lastCrateClaim = s.lastCrateClaim or 0, lastStayReward = s.lastStayReward or 0,
+		owned = ownedList, equipped = s.equipped }
 	local ok, err = pcall(function() store:SetAsync(tostring(player.UserId), data) end)
 	if ok then
 		s.dirty = false
@@ -155,6 +163,28 @@ function PlayerState.setLastCrateClaim(player, t)
 	s.lastCrateClaim = t
 	s.dirty = true
 	PlayerState.pushSnapshot(player)
+end
+
+-- ===== RETENTION STAY REWARD =====
+-- Read/stamped by RetentionService. os.time() (absolute), NOT os.clock(), so the rolling 24h is comparable
+-- across sessions -- an os.clock() value would reset to ~0 every server start and hand out a crate per join.
+function PlayerState.getLastStayReward(player)
+	local s = states[player]
+	return s and s.lastStayReward or 0
+end
+
+function PlayerState.setLastStayReward(player, t)
+	local s = states[player]
+	if not s then return end
+	s.lastStayReward = t
+	s.dirty = true
+end
+
+-- Force an immediate write. RetentionService calls this the moment it grants on a LEAVE attempt: the player
+-- is on their way out, and the PlayerRemoving save would usually catch it -- but "usually" is not good enough
+-- when the failure mode is rejoining to dodge the 24h cooldown.
+function PlayerState.save(player, trigger)
+	savePlayer(player, trigger or "forced")
 end
 
 function PlayerState.ownsCosmetic(player, id)

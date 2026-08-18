@@ -122,8 +122,68 @@ end)
 local lidState = nil
 local OPEN_ANGLE = math.rad(-74) -- negative -> the front (latch/-X) rises
 
-local function closeLid()
+-- ---- LID SOUNDS ----------------------------------------------------------------------------------------
+-- One cue for the lid coming up, one for it dropping shut. POSITIONAL: the Sound lives on the chest body, so
+-- it comes from the chest rather than from inside your head, and fades with distance like the object it
+-- belongs to. The lid animation is per-client already (anchored parts moved locally), so this is heard by
+-- the player who opened it, which is exactly right -- nobody else sees the lid move.
+local LID_OPEN_SOUND   = "rbxassetid://119461042040425"
+local LID_CLOSE_SOUND  = "rbxassetid://5022088140"
+local LID_VOLUME       = 0.975 -- 50% up from 0.65: the lid was too quiet against the garden ambience
+local LID_ROLLOFF_MIN  = 12   -- studs of full volume: about arm's reach of the chest
+local LID_ROLLOFF_MAX  = 90   -- inaudible past this; it's a chest lid, not an event
+
+-- Get-or-create the Sound on the chest itself and play it. Reused rather than re-instanced per open/close so
+-- repeated use doesn't churn instances, and so the rolloff shape is set once.
+--
+-- :Play() on an already-playing lid cue deliberately RESTARTS it. That is the opposite of the rule the long
+-- travel cues follow, and correct here for the same reason: these are sub-second one-shots tied to a visible
+-- movement, so open-close-open must click three times, not swallow the third.
+local function lidSound(chestModel, name, id)
+	local body = chestModel and (chestModel:FindFirstChild("ChestBody")
+		or chestModel:FindFirstChildWhichIsA("BasePart", true))
+	if not body then return end
+	local snd = body:FindFirstChild(name)
+	if not snd then
+		snd = Instance.new("Sound")
+		snd.Name = name
+		snd.RollOffMode = Enum.RollOffMode.InverseTapered
+		snd.RollOffMinDistance = LID_ROLLOFF_MIN
+		snd.RollOffMaxDistance = LID_ROLLOFF_MAX
+		snd.Parent = body
+	end
+	snd.SoundId = id
+	snd.Volume  = LID_VOLUME
+	pcall(function() snd:Play() end)
+end
+
+-- SAY AT BOOT WHETHER THESE IDS ARE REAL.
+-- Six sound ids already in this place fail to load -- four are the wrong asset type and one is not approved
+-- for the requester -- and every one of them was discovered by a player hearing nothing rather than by the
+-- game saying so. A chest lid is a quiet cue at the bottom of a garden; a broken id there could go unnoticed
+-- for a long time. This resolves both up front and prints a verdict, so a bad id is a line in the output.
+task.spawn(function()
+	local ContentProvider = game:GetService("ContentProvider")
+	for label, id in pairs({ open = LID_OPEN_SOUND, close = LID_CLOSE_SOUND }) do
+		local probe = Instance.new("Sound")
+		probe.SoundId = id; probe.Volume = 0; probe.Parent = Workspace
+		local ok = pcall(function() ContentProvider:PreloadAsync({ probe }) end)
+		if ok and probe.IsLoaded then
+			print(("[GardenDonate] chest %s sound %s loaded OK (length %.2fs)"):format(label, id, probe.TimeLength))
+		else
+			warn(("[GardenDonate] chest %s sound %s FAILED to load -- wrong asset type, or not owned/approved "
+				.. "by this experience. The lid will animate silently until the id is fixed."):format(label, id))
+		end
+		probe:Destroy()
+	end
+end)
+
+-- `silent` is passed only by openLid, which calls this first purely to reset any half-open state. Without it
+-- re-opening an already-open chest would fire the CLOSE cue and the OPEN cue back to back, so the one case
+-- that is not really a close stays quiet. A genuine close (panel dismissed, walked away) always sounds.
+local function closeLid(silent)
 	if not lidState then return end
+	if not silent then lidSound(lidState.model, "LidCloseSound", LID_CLOSE_SOUND) end
 	for part, orig in pairs(lidState.parts) do
 		if part and part.Parent then
 			pcall(function() TweenService:Create(part, TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { CFrame = orig }):Play() end)
@@ -133,13 +193,15 @@ local function closeLid()
 end
 
 local function openLid(chestModel)
-	closeLid()
+	closeLid(true) -- reset only; not a close the player performed, so no cue
 	local lid = chestModel and chestModel:FindFirstChild("Lid")
 	local body = chestModel and chestModel:FindFirstChild("ChestBody")
 	local hinge = body and body:FindFirstChild("LidHinge")
 	if not (lid and hinge) then return end
+	lidSound(chestModel, "LidOpenSound", LID_OPEN_SOUND)
 	local pivot = hinge.WorldCFrame
-	lidState = { parts = {} }
+	-- the model is kept so closeLid knows which chest to play its cue on
+	lidState = { parts = {}, model = chestModel }
 	for _, part in ipairs(lid:GetChildren()) do
 		if part:IsA("BasePart") then
 			lidState.parts[part] = part.CFrame
@@ -213,16 +275,10 @@ end
 
 -- soft navy drop shadow behind a panel: two rounded twins, never black (black on blue reads as grime)
 local function dropShadow(frame, radius)
-	local parent = frame.Parent
-	for i, sp in ipairs({ 54, 30 }) do
-		local sh = mkFrame(parent, {
-			AnchorPoint = frame.AnchorPoint, Position = UDim2.new(frame.Position.X.Scale, frame.Position.X.Offset, frame.Position.Y.Scale, frame.Position.Y.Offset + 6),
-			Size = UDim2.new(0, frame.Size.X.Offset + sp, 0, frame.Size.Y.Offset + sp),
-			BackgroundColor3 = Color3.fromRGB(6, 26, 80), BackgroundTransparency = ({ 0.8, 0.62 })[i],
-			BorderSizePixel = 0, ZIndex = 0,
-		})
-		mkCorner(sh, radius + sp)
-	end
+	-- INTENTIONALLY EMPTY. This used to build two navy frames behind the panel; at their original spreads
+	-- they washed most of the screen blue, and even trimmed they were still a coloured layer under the
+	-- panel. The call sites stay so the signature survives, but the rule now is: only the panel renders --
+	-- no tint, no dim, no shadow chrome over the world.
 end
 
 -- The four tiers get four DIFFERENT identities instead of four identical green boxes -- a kid can tell them
@@ -240,7 +296,7 @@ function buildHUD()
 	gui.Name = "GardenDonationGui"; gui.ResetOnSpawn = false; gui.DisplayOrder = 100; gui.Enabled = false; gui.Parent = PlayerGui
 
 	-- dim click-catcher backdrop: it swallows clicks that land off the panel, but does NOT close it
-	local backdrop = mkButton(gui, { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.fromRGB(6, 26, 80), BackgroundTransparency = 0.45, Text = "", AutoButtonColor = false, Active = true })
+	local backdrop = mkButton(gui, { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "", AutoButtonColor = false, Active = true }) -- no tint: panels draw with no dim over the world
 	-- NOTE: there is deliberately NO click-outside-to-close handler (matching the Pet Hub). The backdrop spans
 	-- the whole screen, so a click anywhere off the panel used to slam it shut, which made menus feel like they
 	-- closed at random. This panel now closes ONLY on an explicit action: its X button, its own toggle, or

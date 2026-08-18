@@ -33,6 +33,12 @@ local SoundService      = game:GetService("SoundService")
 local UserInputService  = game:GetService("UserInputService")
 local TextChatService   = game:GetService("TextChatService")
 
+-- DECLARED FALSE AT BOOT, not left nil. Every reader today uses `not _G.smoresQuestComplete`,
+-- and nil is falsy, so this changes no behaviour -- but a later `== false` test would
+-- silently never match on a flag that was never declared, and this states up front that
+-- island14 Camp S'mores owns it.
+_G.smoresQuestComplete = false
+
 local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
 
@@ -83,11 +89,26 @@ local COIN_REWARD   = 1500
 -- Audio: your OWN asset ids. "" = silent, and nothing is created for an empty id --
 -- given how many ids in this place fail auth, silence is the safe default.
 local SOUND_CHOP  = ""
-local SOUND_SAW   = ""
+-- THE MILL'S SAW -- the same id the tractor's cutting bar and the hay baler use, and driven the
+-- same way: a LOOPED sound on the blade whose volume is faded up for exactly as long as a log is
+-- going through it. It was a one-shot fired once per log, which is a noise at the start of a job
+-- rather than the sound of the job. Empty string still means silent, as everywhere else here.
+local SOUND_SAW   = "rbxassetid://136646841190295"
 local SOUND_POP   = ""
-local SOUND_FIRE  = ""       -- LOOPING campfire ambience
-local FIRE_VOLUME = 0.45
-local FIRE_RANGE  = 110
+-- LOOPING campfire crackle -- the same asset realm 1's Campfire.server.lua uses (its CRACKLE_SOUND_ID).
+-- Only created once the fire is actually LIT, and destroyed with the Fire folder, so a camp that has not
+-- been built yet is silent. Realm 1's note applies here too: a fire that still crackles after it has been
+-- put out is worse than one that never crackled.
+local SOUND_FIRE  = "rbxassetid://158853971"
+-- Realm 1's tuning, carried over: volume 0.55, full out to 10 studs, silent by 45. Its FADE_DIST was cut
+-- from 90 to 45 because four garden fires sit ~95 studs apart and at 90 every fire was still audible almost
+-- all the way to its neighbour -- stand in the middle and you were inside two or three overlapping crackles,
+-- one flat wash of fire noise. Island 14 has ONE campfire, so that particular collision cannot happen here,
+-- but the short fade is also what makes it read as "sat at the fire" rather than "somewhere on this island",
+-- which is the half worth keeping. 110 studs was audible from most of the camp.
+local FIRE_VOLUME = 0.55
+local FIRE_RANGE  = 45       -- studs to silence
+local FIRE_FULL   = 10       -- studs of FULL volume -- roughly the log-seat ring
 
 -- Palette in ONE table: Luau caps a function at 200 local registers and a file like this
 -- sits close to it. Forty colours as forty locals cost forty registers; as a table, one.
@@ -295,8 +316,13 @@ local function biggestPart(inst)
 	return best
 end
 
+-- (!) THE AXE EXISTS ON YOUR SCREEN ONLY -- this is a LocalScript and the copy is made here, so
+-- to everyone else on the island you are miming a chop bare-handed. _G.CarrySay tells CarryView
+-- to put a simple axe in your hand on their screens; see CarryView.client.luau. Called through
+-- _G so this file needs no extra local, and pcall'd so a missing CarryView is silent, not fatal.
 local function takeAxe()
 	if axeHeld then axeHeld:Destroy(); axeHeld = nil; axeHold = nil; print("[Smores] axe taken back") end
+	pcall(_G.CarrySay, nil)
 end
 
 local function giveAxe()
@@ -334,7 +360,8 @@ local function giveAxe()
 	axeHold.C0 = CFrame.new(0, -0.35, 0) * CFrame.Angles(math.rad(AXE_PITCH), 0, math.rad(AXE_ROLL))
 	axeHold.Parent = root
 	axeHeld = c
-	print("[Smores] axe handed over -- welded into the hand by the handle")
+	pcall(_G.CarrySay, "axe")
+	print("[Smores] axe handed over -- welded into the hand by the handle (shared to other players)")
 end
 
 -- the swing is an animation of the weld, so the arm and the axe move together
@@ -710,6 +737,7 @@ end)
 local millBlade, millBladeCF, millAng, millCradle, millOut
 local millCarriage, millCarryCF, millLever, millLeverCF, millDust
 local millDrive, millDriveCF
+local millSnd                      -- the looped saw; built with the station, faded while cutting
 
 -- Blade and flywheel sit on the SAME SHAFT, so one call turns both. They're Models rather than
 -- bare parts because the teeth and spokes have to travel with them -- a smooth disc spinning
@@ -899,6 +927,24 @@ local function buildMill(part)
 	-- the drop-off prompt
 	local hit = mk({ Transparency = 1, CanQuery = true, Size = Vector3.new(11, 11, 9),
 	                 CFrame = at * CFrame.new(0, 4.5, 0), Parent = f })
+
+	-- ===== THE SAW, LOOPED AND SILENT UNTIL A LOG GOES IN =====
+	-- On the station's own hit box, so it is positional -- the noise is at the mill, and it stops
+	-- being audible as you walk back to the fire. Rolloff min 40 for the reason the tractor's
+	-- cutter documents: positional audio is measured from the CAMERA, and a third-person camera
+	-- sits far enough back that a small min-distance eats the level before you ever hear it.
+	if SOUND_SAW ~= "" then
+		millSnd = Instance.new("Sound")
+		millSnd.Name = "MillSaw"
+		millSnd.SoundId = SOUND_SAW
+		millSnd.Looped = true
+		millSnd.Volume = 0                    -- the cutting loop owns this; never snapped on
+		millSnd.RollOffMinDistance = 40
+		millSnd.RollOffMaxDistance = 200
+		millSnd.RollOffMode = Enum.RollOffMode.InverseTapered
+		millSnd.Parent = hit
+		pcall(function() millSnd:Play() end)
+	end
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "MillPrompt"; prompt.ActionText = "Load the Mill"
 	prompt.ObjectText = "Lumber Mill"; prompt.HoldDuration = 0.4
@@ -1014,6 +1060,11 @@ mgPanel.Size = UDim2.new(0, 540, 0, 152)
 mgPanel.Position = UDim2.new(0.5, -270, 0.74, 0)
 mgPanel.BackgroundColor3 = PAL.PANEL; mgPanel.BackgroundTransparency = 0.12
 mgPanel.BorderSizePixel = 0; mgPanel.ZIndex = 2; mgPanel.Parent = mgGui
+-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
+-- The panel keeps its own size and every child keeps its own pixel coordinates;
+-- it is centred in the house shell and scaled to fit, so nothing inside moves.
+pcall(_G.housePanel, mgPanel)   -- island14 mill minigame
 Instance.new("UICorner", mgPanel).CornerRadius = UDim.new(0, 16)
 local mgStroke = Instance.new("UIStroke")
 mgStroke.Color = PAL.FLAME; mgStroke.Thickness = 3; mgStroke.Transparency = 0.15
@@ -1065,8 +1116,19 @@ local mgBusy = false
 
 local function mgFlash(good)
 	mgStroke.Color = good and Color3.fromRGB(120, 220, 120) or Color3.fromRGB(224, 76, 60)
-	mgPanel.Size = UDim2.new(0, 552, 0, 156)
-	tween(mgPanel, 0.16, { Size = UDim2.new(0, 540, 0, 152) })
+	-- THE POP IS A SCALE, NOT A RESIZE. It used to punch Size to 552x156 and tween back to
+	-- 540x152 -- fine when the panel owned its own size, but _G.housePanel now sets every task
+	-- HUD to the house 700x520, and this was the one place that wrote Size AFTER adoption. The
+	-- first correct answer in the mini-game would have shrunk the card to a 540x152 strip and
+	-- left it there, permanently out of step with every other HUD.
+	--
+	-- Scaling gets the identical punch without touching the geometry the house card depends on.
+	-- housePanel sets this UIScale once at adopt and never writes it again, so it is ours to move.
+	local us = mgPanel:FindFirstChildOfClass("UIScale")
+	if us then
+		us.Scale = 1.022
+		tween(us, 0.16, { Scale = 1 })
+	end
 	task.delay(0.18, function() mgStroke.Color = PAL.FLAME end)
 end
 
@@ -1438,6 +1500,10 @@ local function igniteFire()
 	if SOUND_FIRE ~= "" then
 		local s = Instance.new("Sound")
 		s.SoundId = SOUND_FIRE; s.Looped = true; s.Volume = 0
+		-- BOTH distances set. Only Max was being set before, leaving Min on the engine default -- fine by
+		-- luck at 10, but silently wrong the moment FIRE_RANGE is retuned. Stating both keeps the "full
+		-- volume at the seats, gone by 45 studs" shape explicit.
+		s.RollOffMinDistance = FIRE_FULL
 		s.RollOffMaxDistance = FIRE_RANGE; s.RollOffMode = Enum.RollOffMode.InverseTapered
 		s.Parent = sh
 		pcall(function() s:Play() end)
@@ -1457,7 +1523,11 @@ local function igniteFire()
 		tween(fireGlow, 1.6, { Transparency = 0.86 })
 		task.wait(0.7)
 
-		playSound(SOUND_FIRE ~= "" and SOUND_FIRE or SOUND_POP, 0.5)
+		-- THE CATCH. This used to fall back to SOUND_FIRE when SOUND_POP was empty, which made sense while
+		-- SOUND_FIRE was unset. It does not now: SOUND_FIRE is a LOOPING CRACKLE that is already fading in
+		-- on the fire itself, so reusing it here played a second, flat 2D copy of the same clip over the top
+		-- of the positional one. A one-shot "whumph" belongs here or nothing does.
+		playSound(SOUND_POP, 0.5)
 		em:Emit(70)                                    -- the catch
 		sm.Rate = 14
 		em.Rate = 14
@@ -2072,7 +2142,38 @@ task.spawn(function()
 		print(("[Smores] axe found ('%s') -- original hidden, copy kept for the player")
 			:format(axeSource.Name))
 	else
-		warn("[Smores] no 'axe' found -- chopping still works, you just will not hold one")
+		-- ⚠ NO HAND-PLACED AXE ON ISLAND14 -- BUILD ONE. This used to warn and carry on empty-handed
+		-- ("chopping still works, you just will not hold one"), which is the one outcome nobody
+		-- wants from a quest whose first instruction is "take the axe": you walk up to a tree,
+		-- swing, and the wood comes off with nothing in your hands.
+		--
+		-- Every other prop on this island already has a fallback if the world does not provide one;
+		-- the axe was the only required tool that did not. Same shape CarryView draws for OTHER
+		-- players (see buildAxe there), so what you hold and what they see match.
+		axeTemplate = Instance.new("Model")
+		axeTemplate.Name = "Axe"
+		local function ap(nm, size, cf, colour, material)
+			local p = Instance.new("Part")
+			p.Name = nm; p.Size = size; p.CFrame = cf; p.Color = colour
+			p.Anchored = true; p.CanCollide = false; p.CanQuery = false; p.CastShadow = false
+			p.Material = material or Enum.Material.SmoothPlastic
+			p.TopSurface = Enum.SurfaceType.Smooth; p.BottomSurface = Enum.SurfaceType.Smooth
+			p.Parent = axeTemplate
+			return p
+		end
+		-- the shaft is the LONGEST axis and the head sits at one end: gripFor() reads exactly that
+		-- to work out which end is the handle, so this has to stay a long thin shaft plus a heavy
+		-- head or the axe ends up held by the blade.
+		local shaft = ap("Shaft", Vector3.new(0.24, 3.2, 0.24), CFrame.new(0, 0, 0),
+			Color3.fromRGB(146, 102, 58), Enum.Material.Wood)
+		ap("Head",  Vector3.new(0.34, 0.95, 1.15), CFrame.new(0, 1.45, 0.35),
+			Color3.fromRGB(84, 80, 84), Enum.Material.Metal)
+		ap("Blade", Vector3.new(0.17, 1.0, 0.5), CFrame.new(0, 1.45, 1.0),
+			Color3.fromRGB(196, 198, 204), Enum.Material.Metal)
+		ap("Butt",  Vector3.new(0.3, 0.24, 0.3), CFrame.new(0, -1.55, 0), Color3.fromRGB(58, 55, 60))
+		axeTemplate.PrimaryPart = shaft
+		print("[Smores] no 'axe' in the world -- built one, so the quest still hands you a tool. "
+			.. "Name a model 'axe' on island14 to use your own instead.")
 	end
 
 	-- ---- the giant marshmallows: hidden until their stick is loaded
@@ -2147,7 +2248,6 @@ task.spawn(function()
 			task.spawn(function()
 				-- millBlade is a MODEL now, so it has no .CFrame -- use the stored shaft frame
 				local em, host = sawChips(millBladeCF or CFrame.new())
-				playSound(SOUND_SAW, 0.7)
 				if millLever then                          -- throw the lever to start it
 					millLever:PivotTo(millLeverCF * CFrame.Angles(0, 0, math.rad(-52)))
 				end
@@ -2163,7 +2263,22 @@ task.spawn(function()
 						local ride = millCradle:Lerp(millOut, math.clamp(shown, 0, 1))
 						lg:PivotTo(ride * CFrame.Angles(0, math.rad(90), 0))
 						if millCarriage then millCarriage:PivotTo(ride) end
+						-- the saw rises with the blade rather than firing once at the top of the
+						-- job: this loop already runs every frame the log is in the machine, so it
+						-- is the honest place to own the volume
+						if millSnd then
+							millSnd.Volume += (0.96 - millSnd.Volume) * 0.12
+						end
 						task.wait()
+					end
+					-- ...and spins down after the last stroke instead of stopping dead
+					if millSnd then
+						for _ = 1, 30 do
+							if millSnd.Volume <= 0.01 then break end
+							millSnd.Volume = math.max(0, millSnd.Volume - 0.05)
+							task.wait(0.03)
+						end
+						millSnd.Volume = 0
 					end
 				end)
 
@@ -2360,6 +2475,11 @@ task.spawn(function()
 
 	refreshBanner()
 	print("[Smores] ready -- chop -> mill -> gather -> deliver -> ignite")
+	-- RETAINER SIGNAL: the quest reached the end of its build with its world objects up. QuestRetainer
+	-- watches this flag; anything still false once its island has streamed in gets force-streamed and
+	-- re-run. It is set HERE, at the ready print, not at the top of the file -- a quest that bailed
+	-- early on a missing marker must NOT look built. See QuestRetainer.client.luau.
+	_G.questBuilt_smores = true
 end)
 
 -- ============================================================================

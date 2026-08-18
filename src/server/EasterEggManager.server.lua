@@ -313,6 +313,64 @@ local function avoidHallOfFame(point, baseY)
 	local s = keep / dist
 	return Vector3.new(c.X + dx * s, baseY, c.Z + dz * s)
 end
+--======================================================================
+-- OBSTACLE AVOIDANCE (the same scheme the pig uses in SquirrelEasterEgg).
+--======================================================================
+-- The cow picked a random point inside its wander radius and walked STRAIGHT to it. Nothing checked what
+-- was in between, and the cow is anchored + CFrame-driven, so "walked into" and "walked through" are the
+-- same thing to it -- it slid through fences, planters, gnomes and the garden wall without ever stopping.
+-- (avoidHallOfFame below is not this: it pushes the TARGET out of one named zone, and does nothing about
+-- anything standing between here and there.)
+--
+-- Three parallel rays -- centre plus both shoulders -- so the cow's WIDTH is tested, not a hairline down
+-- its middle. A single centre ray is what lets an animal clip a fence post with its flank while its nose
+-- passes cleanly by. Cast at body height, so the ground itself is never a hit.
+local COW_AVOID_HALFWIDTH = 2.6  -- ~half the cow's body width; its shoulders have to clear too
+local COW_AVOID_RAYHEIGHT = 1.2  -- chest height: sees fences/props/walls, ignores the floor
+local COW_AVOID_TRIES     = 18   -- random targets tested for a clear path before giving up this leg
+local COW_NOSE_BUFFER     = 3.5  -- the path must stay clear this far PAST the target, so the head stops short
+
+local function cowRayParams(rig)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.IgnoreWater = true
+	local list = { rig.model }
+	for _, pl in ipairs(Players:GetPlayers()) do
+		if pl.Character then list[#list + 1] = pl.Character end -- players are dodged by walking, not pathing
+	end
+	params.FilterDescendantsInstances = list
+	return params
+end
+
+local function cowPathClear(fromPos, toPos, params)
+	local dir = Vector3.new(toPos.X - fromPos.X, 0, toPos.Z - fromPos.Z)
+	if dir.Magnitude < 0.05 then return true end
+	local origin = Vector3.new(fromPos.X, fromPos.Y + COW_AVOID_RAYHEIGHT, fromPos.Z)
+	local right = Vector3.new(-dir.Unit.Z, 0, dir.Unit.X)
+	for _, off in ipairs({ -COW_AVOID_HALFWIDTH, 0, COW_AVOID_HALFWIDTH }) do
+		if Workspace:Raycast(origin + right * off, dir, params) then return false end
+	end
+	return true
+end
+
+-- A wander target the cow can actually REACH. Two passes: normal legs first, then short shuffles, so a cow
+-- hemmed in against the wall can still find the gap instead of standing there. nil means genuinely boxed
+-- in -- the caller grazes instead, which is a better answer than walking through the thing in the way.
+local function pickClearCowTarget(rig, center, radius, baseY, stop)
+	local params = cowRayParams(rig)
+	local fromPos = rig.poseCF.Position
+	for _, scale in ipairs({ 1, 0.35 }) do
+		for _ = 1, COW_AVOID_TRIES do
+			if stop and stop() then return nil end
+			local cand = avoidHallOfFame(randomPoint(center, radius * scale, baseY), baseY)
+			local dir = Vector3.new(cand.X - fromPos.X, 0, cand.Z - fromPos.Z)
+			local checkTo = (dir.Magnitude > 0.05) and (cand + dir.Unit * COW_NOSE_BUFFER) or cand
+			if cowPathClear(fromPos, checkTo, params) then return cand end
+		end
+	end
+	return nil
+end
+
 local function walkTo(rig, baseY, target, stop)
 	if not rig.model.Parent then return end
 	local fromPos = rig.poseCF.Position
@@ -376,6 +434,25 @@ local function resolveMarker(island, name)
 	if not p then p = Workspace:FindFirstChild(name, true) end
 	return p
 end
+
+-- ===== HIDE THE COW RETURN SPOT MARKER =====
+-- 'CowReturnSpot' is a hand-placed marker Part in the world, and like the other marker blocks it should
+-- never be visible to players -- it is a coordinate, not scenery. Hidden SERVER-side so it is invisible for
+-- everyone; matched case-insensitively so a rename to 'cowreturnspot' or 'CowReturnspot' in Studio cannot
+-- quietly bring the block back. Collision is left untouched, same as every other hidden marker here.
+task.spawn(function()
+	task.wait(8) -- after the island move; the marker may sit under an island model that gets repositioned
+	local hidden = 0
+	for _, d in ipairs(Workspace:GetDescendants()) do
+		if d:IsA("BasePart") and d.Name:lower() == "cowreturnspot" then
+			d.Transparency = 1
+			hidden += 1
+		end
+	end
+	if hidden > 0 then
+		print(("[EasterEgg] hid %d 'CowReturnSpot' marker(s) (collision left untouched)"):format(hidden))
+	end
+end)
 
 --======================================================================
 -- OVERHEAD CHAT BUBBLE (server-built BillboardGui -- works for an NPC regardless of chat settings, unlike the
@@ -501,7 +578,15 @@ local function runEgg(cfg)
 			if math.random() < 0.3 then
 				graze(rig, baseY, stop)
 			else
-				walkTo(rig, baseY, avoidHallOfFame(randomPoint(spotPos, cfg.wanderRadius, baseY), baseY), stop)
+				-- Only walk somewhere the body can actually get to. If every direction is blocked (backed
+				-- into a corner of the garden wall), graze instead of forcing a leg -- a cow that pauses to
+				-- eat looks like a cow; a cow that slides through a fence does not.
+				local target = pickClearCowTarget(rig, spotPos, cfg.wanderRadius, baseY, stop)
+				if target then
+					walkTo(rig, baseY, target, stop)
+				else
+					graze(rig, baseY, stop)
+				end
 			end
 		end
 		forceAbduct[cfg.name] = false

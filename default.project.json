@@ -34,6 +34,9 @@
       "PetSystem": {
         "$path": "src/server/PetSystem.server.lua"
       },
+      "PetBarn": {
+        "$path": "src/server/PetBarn.server.lua"
+      },
       "IslandNPCs": {
         "$path": "src/server/IslandNPCs.server.lua"
       },
@@ -48,6 +51,12 @@
       },
       "RocketLogic": {
         "$path": "src/server/RocketLogic.lua"
+      },
+      "RocketRide": {
+        "$path": "src/server/RocketRide.lua"
+      },
+      "TradeRequests": {
+        "$path": "src/server/TradeRequests.server.luau"
       },
       "RocketEffects": {
         "$path": "src/server/RocketEffects.lua"
@@ -157,7 +166,7 @@
       "SecurityGuard": {
         "$path": "src/server/SecurityGuard.server.lua"
       },
-      "RealmPortals": {
+      "RealmPortalsHub": {
         "$path": "src/server/RealmPortals.server.lua"
       },
       "Campfire": {
@@ -178,8 +187,23 @@
       "SkinCrateService": {
         "$path": "src/server/SkinCrateService.server.lua"
       },
+      "SocialStats": {
+        "$path": "src/server/SocialStats.server.luau"
+      },
+      "BadgeAwards": {
+        "$path": "src/server/BadgeAwards.server.luau"
+      },
+      "Gifting": {
+        "$path": "src/server/Gifting.server.luau"
+      },
       "RealmReturnReceiver": {
         "$path": "src/server/RealmReturnReceiver.server.lua"
+      },
+      "DevArrival": {
+        "$path": "src/server/DevArrival.server.luau"
+      },
+      "VipService": {
+        "$path": "src/server/VipService.server.lua"
       }
     },
     "ReplicatedStorage": {
@@ -207,17 +231,26 @@
         "PetTraits": {
           "$path": "src/shared/PetTraits.luau"
         },
+        "PetRarity": {
+          "$path": "src/shared/PetRarity.luau"
+        },
         "SkinCrates": {
           "$path": "src/shared/SkinCrates.luau"
         },
         "CrateTokens": {
           "$path": "src/shared/CrateTokens.luau"
         },
+        "Sfx": {
+          "$path": "src/shared/Sfx.luau"
+        },
         "PetCollection": {
           "$path": "src/shared/PetCollection.luau"
         },
         "RealmTransfer": {
           "$path": "src/shared/RealmTransfer.luau"
+        },
+        "Gamepasses": {
+          "$path": "src/shared/Gamepasses.luau"
         }
       },
       "PhoneHUD": {
@@ -429,6 +462,36 @@
         "RemotePets": {
           "$path": "src/client/RemotePets.client.lua"
         },
+        "PetBarn": {
+          "$path": "src/client/PetBarn.client.lua"
+        },
+        "FirstBuy": {
+          "$path": "src/client/FirstBuy.client.lua"
+        },
+        "CoinPulse": {
+          "$path": "src/client/CoinPulse.client.lua"
+        },
+        "IslandTaskReward": {
+          "$path": "src/client/IslandTaskReward.client.lua"
+        },
+        "RareAnnounce": {
+          "$path": "src/client/RareAnnounce.client.lua"
+        },
+        "Gifting": {
+          "$path": "src/client/Gifting.client.lua"
+        },
+        "RivalCallout": {
+          "$path": "src/client/RivalCallout.client.lua"
+        },
+        "SfxWiring": {
+          "$path": "src/client/SfxWiring.client.lua"
+        },
+        "Achievements": {
+          "$path": "src/client/Achievements.client.lua"
+        },
+        "IslandNameTag": {
+          "$path": "src/client/IslandNameTag.client.lua"
+        },
         "GardenerChat": {
           "$path": "src/client/GardenerChat.client.lua"
         },
@@ -477,13 +540,16 @@
         "AmbientWildlife": {
           "$path": "src/client/AmbientWildlife.client.luau"
         },
+        "BlimpRide": {
+          "$path": "src/client/BlimpRide.client.luau"
+        },
         "AmbientSmoke": {
           "$path": "src/client/AmbientSmoke.client.luau"
         },
         "LandingImpact": {
           "$path": "src/client/LandingImpact.client.luau"
         },
-        "RealmPortals": {
+        "RealmPortalsHub": {
           "$path": "src/client/RealmPortals.client.luau"
         },
         "Campfire": {
@@ -491,6 +557,15 @@
         },
         "SocialRewards": {
           "$path": "src/client/SocialRewards.client.luau"
+        },
+        "GroupBannerClient": {
+          "$path": "src/client/GroupBannerClient.client.luau"
+        },
+        "DevArrivalBanner": {
+          "$path": "src/client/DevArrivalBanner.client.luau"
+        },
+        "DevAuraFX": {
+          "$path": "src/client/DevAuraFX.client.luau"
         },
         "SeasonPass": {
           "$path": "src/client/SeasonPass.client.luau"
@@ -507,6 +582,15 @@
         "PetSkinLook": {
           "$path": "src/client/PetSkinLook.client.lua"
         },
+        "PetRenderGuard": {
+          "$path": "src/client/PetRenderGuard.client.luau"
+        },
+        "RocketRideClient": {
+          "$path": "src/client/RocketRideClient.client.luau"
+        },
+        "TradeRequests": {
+          "$path": "src/client/TradeRequests.client.luau"
+        },
         "SkinCrateClient": {
           "$path": "src/client/SkinCrateClient.client.lua"
         },
@@ -515,6 +599,18 @@
         },
         "FoodRealmHud": {
           "$path": "src/client/FoodRealmHud.client.luau"
+        },
+        "FirstPersonMenuMouse": {
+          "$path": "src/client/FirstPersonMenuMouse.client.luau"
+        },
+        "MobileTextFit": {
+          "$path": "src/client/MobileTextFit.client.luau"
+        },
+        "VipClient": {
+          "$path": "src/client/VipClient.client.luau"
+        },
+        "CoinMagnet": {
+          "$path": "src/client/CoinMagnet.client.luau"
         }
       }
     }

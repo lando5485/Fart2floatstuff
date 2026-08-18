@@ -17,6 +17,33 @@ local RunService  = game:GetService("RunService")
 local Workspace   = game:GetService("Workspace")
 local SoundService    = game:GetService("SoundService")
 local ContentProvider = game:GetService("ContentProvider")
+
+-- ===== PET CRATE ODDS, for the rarity ladder =================================================================
+-- Read out of SkinCrates via effectiveOdds() -- the SAME accessor the crate's own odds panel prints and the
+-- same numbers the roll uses, so the ladder and the dice can never disagree. Never hard-code odds here:
+-- retune the Pet Crate and these follow.
+--
+-- LAZY + CACHED. Required on first use rather than at the top of the file so this script never blocks its own
+-- startup on Shared replicating; the result never changes at runtime, so it is computed once.
+--
+-- effectiveOdds (not the raw odds table) accounts for empty-band redistribution -- if a band ever loses its
+-- stock, the number shown stays truthful instead of over-promising.
+local _crateOdds = nil
+local function petCrateOddsText()
+	if _crateOdds then return _crateOdds end
+	local out = {}
+	pcall(function()
+		local SkinCrates = require(RS:WaitForChild("Shared", 10):WaitForChild("SkinCrates", 10))
+		for band, pct in pairs(SkinCrates.effectiveOdds("Pets") or {}) do
+			if type(pct) == "number" and pct > 0 then
+				local n, whole = 100 / pct, math.floor(100 / pct + 0.5)
+				out[band] = (math.abs(n - whole) < 0.05) and ("1 in " .. whole) or string.format("1 in %.1f", n)
+			end
+		end
+	end)
+	_crateOdds = out
+	return out
+end
 local player      = Players.LocalPlayer
 
 -- ===== HATCH SOUNDS (shared by ALL pets' hatch flow) =====
@@ -4275,23 +4302,33 @@ _G.PetHub.showDetail = function(key, p)
 	--   1) a rare-variant roll (1 in 750, or 1 in 10,000 for the Butter Duck) -> Exotic/Mythical, pre-maxed; and
 	--   2) if that misses, a TIER roll -> the egg can hatch straight into Uncommon / Rare / Epic / Legendary,
 	--      starting the pet at that tier's first level (6 / 11 / 16 / 21) instead of Level 1.
-	-- The "1 in N" strings come from the SERVER (payload.hatchOdds), derived from the same weight table the roll
-	-- itself uses -- so what a player is promised here is literally what the dice do. Never hard-code odds in this
-	-- file: retune the weights in PetSystem's HATCH_TIERS and these numbers follow automatically.
+	-- THE ODDS BELOW ARE THE PET CRATE'S, not a hatch roll's. Hatching no longer rolls anything: a pet's AGE
+	-- (Baby..Elder) is grown from flight time and playtime, and its RARITY is fixed when it is obtained. The
+	-- only place rarity is rolled is the Pet Crate, so that is what this ladder now advertises.
+	--
+	-- Server value first, local computation as the fallback: `petCrateOdds` is what the server publishes, but
+	-- nothing in this realm sends it today, so petCrateOddsText() reads the same crate table directly rather
+	-- than leaving the column blank. `hatchOdds` is still accepted in the middle -- older servers alias it to
+	-- the same numbers -- so this works whichever end has been updated.
 	local isDuck = (petId == "ButterDuck")
 	local odds   = p.rareOdds or (isDuck and 10000 or 750) -- fallback only; the real number comes from the server
-	local ho     = latestInv.hatchOdds or {}
+	local ho     = latestInv.petCrateOdds or latestInv.hatchOdds or petCrateOddsText()
 	-- ORDER = COMMONEST FIRST, RAREST LAST -- the ladder reads bottom-to-top as "how far you've got to go", so the
 	-- row order must match the actual odds. That puts EXOTIC (1 in 750) ABOVE Epic but BELOW Legendary (1 in 1000),
 	-- because a Legendary is genuinely rarer than an Exotic. Mythical (1 in 10,000) is the top of the game.
 	-- (The card sort rank in rebuildInventory uses the same ordering -- keep the two in sync if you retune odds.)
 	-- { tierName, levelBand/kind, colour, oddsText }. Odds are bare ("1 in 125") -- the section header already says
 	-- these are hatch odds, so repeating "on hatch" on every row was just noise in a narrow column.
+	-- SECOND COLUMN IS THE SOURCE, NOT A LEVEL BAND. It used to read "Lv 1-5", "Lv 6-10" and so on, which was
+	-- true when the tier roll set a pet's STARTING LEVEL -- it does not any more. A Common can be an Elder and
+	-- a Gold can be a Baby, so pinning a level range to a rarity would now be actively wrong.
+	-- Fallback strings are the Pet Crate's real odds, so a failed lookup degrades to the truth, not to the
+	-- old age-roll numbers.
 	local ladder = {
-		{ "Common",   "Lv 1-5",   Color3.fromRGB(175,180,190), ho.Common   or "1 in 1.2" },
-		{ "Uncommon", "Lv 6-10",  Color3.fromRGB(90,210,90),   ho.Uncommon or "1 in 8"   },
-		{ "Rare",     "Lv 11-15", Color3.fromRGB(70,140,255),  ho.Rare     or "1 in 25"  },
-		{ "Epic",     "Lv 16-20", Color3.fromRGB(180,90,235),  ho.Epic     or "1 in 125" },
+		{ "Common",   "Pet Crate", Color3.fromRGB(175,180,190), ho.Common   or "1 in 1.7" },
+		{ "Uncommon", "Pet Crate", Color3.fromRGB(90,210,90),   ho.Uncommon or "1 in 4"   },
+		{ "Rare",     "Pet Crate", Color3.fromRGB(70,140,255),  ho.Rare     or "1 in 10"  },
+		{ "Epic",     "Pet Crate", Color3.fromRGB(180,90,235),  ho.Epic     or "1 in 25"  },
 	}
 	-- EXOTIC slots in HERE -- between Epic and Legendary -- not on top of the list, because at 1 in 750 it is rarer
 	-- than an Epic but MORE COMMON than a Legendary (1 in 1000). A pet has exactly one variant tier: the Butter
@@ -4843,10 +4880,19 @@ end) end
 local reqPopup = Instance.new("Frame"); reqPopup.Name = "TradeRequestPopup"; reqPopup.AnchorPoint = Vector2.new(0.5,0.5); reqPopup.Position = UDim2.new(0.5,0,0.4,0); reqPopup.Size = UDim2.new(0,320,0,130)
 reqPopup.BackgroundColor3 = Color3.fromRGB(25,90,185); reqPopup.Visible = false; reqPopup.ZIndex = 50; reqPopup.Parent = invGui; uicorner(reqPopup, 12); uistroke(reqPopup, Color3.fromRGB(255,215,0), 3)
 local reqLbl = Instance.new("TextLabel"); reqLbl.Size = UDim2.new(1,-20,0,60); reqLbl.Position = UDim2.new(0,10,0,10); reqLbl.BackgroundTransparency = 1; reqLbl.ZIndex = 51; reqLbl.Font = Enum.Font.GothamBold; reqLbl.TextSize = 16; reqLbl.TextColor3 = Color3.new(1,1,1); reqLbl.TextWrapped = true; reqLbl.Text = ""; reqLbl.Parent = reqPopup
-local reqAccept = Instance.new("TextButton"); reqAccept.Size = UDim2.new(0,140,0,38); reqAccept.Position = UDim2.new(0,12,1,-46); reqAccept.BackgroundColor3 = Color3.fromRGB(50,200,50); reqAccept.ZIndex = 51; reqAccept.Font = Enum.Font.GothamBold; reqAccept.TextSize = 15; reqAccept.TextColor3 = Color3.new(1,1,1); reqAccept.Text = "ACCEPT"; reqAccept.Parent = reqPopup; uicorner(reqAccept,8)
-local reqDecline = Instance.new("TextButton"); reqDecline.Size = UDim2.new(0,140,0,38); reqDecline.Position = UDim2.new(1,-152,1,-46); reqDecline.BackgroundColor3 = Color3.fromRGB(220,60,60); reqDecline.ZIndex = 51; reqDecline.Font = Enum.Font.GothamBold; reqDecline.TextSize = 15; reqDecline.TextColor3 = Color3.new(1,1,1); reqDecline.Text = "DECLINE"; reqDecline.Parent = reqPopup; uicorner(reqDecline,8)
-reqAccept.MouseButton1Click:Connect(function() reqPopup.Visible = false; pcall(function() PetTradeRespond:FireServer(true) end) end)
-reqDecline.MouseButton1Click:Connect(function() reqPopup.Visible = false; pcall(function() PetTradeRespond:FireServer(false) end) end)
+-- ⚠ THESE TWO BUTTONS LIVE IN THEIR OWN do...end BLOCK, AND THAT IS LOAD-BEARING.
+-- This file is at Luau's 200-local ceiling for a main chunk. Going over it is not a warning
+-- and not a runtime error -- it is a COMPILE failure, which means the whole script silently
+-- never runs: no pets, no pet hub, and no fishing quest, with nothing in the output to say
+-- why. Locals declared inside a do...end block are scoped to it and cost the main chunk
+-- nothing, so anything used only in one place belongs in one of these. Nothing outside these
+-- four lines refers to the buttons.
+do
+	local reqAccept = Instance.new("TextButton"); reqAccept.Size = UDim2.new(0,140,0,38); reqAccept.Position = UDim2.new(0,12,1,-46); reqAccept.BackgroundColor3 = Color3.fromRGB(50,200,50); reqAccept.ZIndex = 51; reqAccept.Font = Enum.Font.GothamBold; reqAccept.TextSize = 15; reqAccept.TextColor3 = Color3.new(1,1,1); reqAccept.Text = "ACCEPT"; reqAccept.Parent = reqPopup; uicorner(reqAccept,8)
+	local reqDecline = Instance.new("TextButton"); reqDecline.Size = UDim2.new(0,140,0,38); reqDecline.Position = UDim2.new(1,-152,1,-46); reqDecline.BackgroundColor3 = Color3.fromRGB(220,60,60); reqDecline.ZIndex = 51; reqDecline.Font = Enum.Font.GothamBold; reqDecline.TextSize = 15; reqDecline.TextColor3 = Color3.new(1,1,1); reqDecline.Text = "DECLINE"; reqDecline.Parent = reqPopup; uicorner(reqDecline,8)
+	reqAccept.MouseButton1Click:Connect(function() reqPopup.Visible = false; pcall(function() PetTradeRespond:FireServer(true) end) end)
+	reqDecline.MouseButton1Click:Connect(function() reqPopup.Visible = false; pcall(function() PetTradeRespond:FireServer(false) end) end)
+end
 if PetTradePrompt then PetTradePrompt.OnClientEvent:Connect(function(fromUserId, fromName)
 	reqLbl.Text = "\xF0\x9F\x94\x81 " .. tostring(fromName) .. " wants to trade pets with you!"
 	reqPopup.Visible = true

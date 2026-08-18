@@ -140,7 +140,31 @@ local darkOverlay=mkFrame(stormSg,{Size=UDim2.new(1,0,1,0),Position=UDim2.new(0,
 local lightningFlash=mkFrame(stormSg,{Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,ZIndex=6,BorderSizePixel=0})
 
 -- ===== SOUNDS =====
-local thunderSound=Instance.new("Sound"); thunderSound.Name="ThunderSound"; thunderSound.SoundId="rbxassetid://1369158752"; thunderSound.Volume=0.8; thunderSound.Parent=workspace
+-- THE LIGHTNING CRACK. This id is BROKEN, and it is broken in the Food realm too (same line, same id,
+-- EventClient:239 over there) -- every boot logs "Failed to load sound rbxassetid://1369158752: Asset type
+-- does not match requested type", which is what Roblox says when an id points at a MODEL or an IMAGE rather
+-- than an audio asset. It has therefore never made a sound in either realm: the storm ambient plays, the
+-- lightning flashes, and the crack that is supposed to land with it is silent.
+--
+-- Left in place rather than deleted, because the intent is right and the fix is one id. Behind it is the
+-- same fallback Sfx.luau uses -- an asset this realm's own boot log confirms loads (AssetFetchStatus.Success)
+-- -- so lightning makes a noise today instead of waiting on a replacement. Swap THUNDER_ID for a real
+-- thunder-clap id and the fallback stops being used; nothing else has to change.
+local THUNDER_ID    = "rbxassetid://1369158752"
+local THUNDER_FALLBACK = "rbxassetid://4612378364"
+local thunderSound=Instance.new("Sound"); thunderSound.Name="ThunderSound"; thunderSound.SoundId=THUNDER_ID; thunderSound.Volume=0.8; thunderSound.Parent=workspace
+task.spawn(function()
+	-- PreloadAsync yields until the asset resolves either way, so this is the only honest way to know.
+	local ok = pcall(function() game:GetService("ContentProvider"):PreloadAsync({ thunderSound }) end)
+	if not ok or thunderSound.TimeLength <= 0 then
+		thunderSound.SoundId = THUNDER_FALLBACK
+		thunderSound.PlaybackSpeed = 0.55   -- pitched down: the fallback is a short blip, this makes it a rumble
+		thunderSound.Volume = 0.9
+		warn(("[EventClient] thunder id %s did not load (it is not an audio asset) -- using the known-good "
+			.. "fallback %s pitched down. Put a real thunder-clap id in THUNDER_ID.")
+			:format(THUNDER_ID, THUNDER_FALLBACK))
+	end
+end)
 local screechSound=Instance.new("Sound"); screechSound.Name="ScreechSound"; screechSound.SoundId="rbxassetid://3240498563"; screechSound.Volume=1; screechSound.Parent=workspace
 
 -- ===== BIRD SYSTEM =====
@@ -498,9 +522,22 @@ end)
 -- rainbow knockdown (_G.applyBeamHit) -> knocked back to the most-recent island, every hit, no grace.
 -- Planes/bullets exist ONLY while the player is inside the plane band; cleared otherwise.
 local PLANE_BANDS = { {lo=3580, hi=4820} }   -- ONLY between islands 5 and 6 (Y 3580 -> 4820)
-local function planeBandFor(y)
+-- ⚠ HYSTERESIS, AND IT IS NOT A NICETY. The band test used to be a bare "is Y between lo and hi",
+-- checked every frame, with the driver clearing every plane the moment it answered no and building
+-- four new ones the moment it answered yes again. Hover on the boundary -- or lose your character
+-- for a frame mid-teleport, which does the same thing -- and it alternates: the log filled with
+-- "[Planes] spawned 4 planes in gap zone" fifteen times a second, four models built and destroyed
+-- each time, for as long as the player stayed there.
+--
+-- Once you are IN the band you stay in it until you are BAND_EXIT_MARGIN studs clear of the edge.
+-- Entering still takes the exact boundary, so the band is where it always was; only leaving is
+-- sticky, and a wobble of a few studs cannot toggle it.
+local BAND_EXIT_MARGIN = 120
+local function planeBandFor(y, current)
 	for _,b in ipairs(PLANE_BANDS) do
-		if y >= b.lo and y <= b.hi then return b end
+		local lo, hi = b.lo, b.hi
+		if current == b then lo, hi = lo - BAND_EXIT_MARGIN, hi + BAND_EXIT_MARGIN end
+		if y >= lo and y <= hi then return b end
 	end
 	return nil
 end
@@ -578,6 +615,26 @@ local function randomGapPoint(band)
 	return Vector3.new(math.cos(a) * r, y, math.sin(a) * r)
 end
 
+-- ===== ENGINE FLY-BY (ported from the Food realm's EventClient) =====
+-- The one event sound Candy was missing. A 3D Sound welded to each plane's fuselage, fired as a ONE-SHOT
+-- when the plane comes close enough to count as a pass -- not looped, so a short whoosh clip cannot
+-- machine-gun, and a per-plane cooldown stops a circling plane re-triggering every second.
+--
+-- ONE TABLE rather than six top-level locals, same reason as everywhere else in this codebase.
+--
+-- ⚠ THE INVARIANT: ROLLOFF_MIN MUST STAY >= TRIGGER_DIST. A sound triggered at 85 studs with a 30-stud
+-- full-volume radius is already attenuated to a fifth the instant it starts -- that is the original
+-- "the pass was inaudible" bug in the realm this came from. Lower them together or not at all.
+local FlyBy = {
+	ID           = "rbxassetid://126002361266903",
+	VOLUME       = 2.2,   -- at the source; rolls off with distance
+	TRIGGER_DIST = 85,    -- studs: this close to the player counts as a pass. Fires BEFORE the closest
+	                      -- point, so the engine is audible as the plane comes AT you, not after it has gone
+	COOLDOWN     = 4.0,   -- seconds before the SAME plane may trigger again
+	ROLLOFF_MIN  = 85,    -- full volume out to here (see the invariant above)
+	ROLLOFF_MAX  = 260,   -- inaudible past here
+}
+
 local function spawnPlanes(band)
 	clearPlanes(); activeBand = band
 	for i=1,PLANE_COUNT do
@@ -585,9 +642,27 @@ local function spawnPlanes(band)
 		model.Parent = workspace
 		local pos = randomGapPoint(band)
 		model:PivotTo(CFrame.new(pos))
+
+		-- Parented to a BasePart so it is positional: it arrives from the plane's direction and fades
+		-- with distance on its own. Nothing to drive per-frame except the trigger test.
+		local host = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true)
+		local snd
+		if host and FlyBy.ID ~= "" then
+			snd = Instance.new("Sound")
+			snd.Name = "PlaneFlyBy"
+			snd.SoundId = FlyBy.ID
+			snd.Volume = FlyBy.VOLUME
+			snd.Looped = false
+			snd.RollOffMinDistance = FlyBy.ROLLOFF_MIN
+			snd.RollOffMaxDistance = FlyBy.ROLLOFF_MAX
+			snd.Parent = host
+		end
+
 		planes[i] = {
 			model = model, blade = blade, spin = 0,
 			pos = pos,
+			flyby = snd,            -- may be nil if the model had no BasePart; every use is guarded
+			flybyCooldown = 0,      -- seconds until this plane may play its fly-by again
 			vel = Vector3.new((math.random()-0.5), 0, (math.random()-0.5) + 0.01).Unit * PLANE_SPEED,
 			target = randomGapPoint(band),
 			retargetTimer = WANDER_RETARGET_MIN + math.random() * (WANDER_RETARGET_MAX - WANDER_RETARGET_MIN),
@@ -669,16 +744,30 @@ local function startShoot(pl, idx)
 	end)
 end
 
+local lastPlaneSpawn = 0        -- os.clock() of the last spawn; see the cooldown below
+
 RunService.Heartbeat:Connect(function(dt)
 	local char=player.Character
 	local hrp=char and char:FindFirstChild("HumanoidRootPart")
-	local band = hrp and planeBandFor(hrp.Position.Y) or nil
+	-- (!) NO CHARACTER IS NOT "OUT OF THE BAND". Respawning, teleporting and the wormhole all take
+	-- the character away for a few frames; treating that as "left the zone" is what tore the
+	-- planes down and rebuilt them mid-flight. With no body to measure we simply do nothing this
+	-- frame and keep whatever is already flying.
+	if not hrp then return end
+	local band = planeBandFor(hrp.Position.Y, activeBand)
 	if not band then
 		if #planes>0 then clearPlanes(); clearBullets() end
 		lastAirborne = nil
 		return
 	end
-	if band ~= activeBand then spawnPlanes(band) end
+	-- ...and a hard floor on how often a spawn can happen at all. The hysteresis above fixes the
+	-- cause; this makes the symptom impossible whatever else goes wrong later, because four models
+	-- a frame is the kind of bug that comes back wearing a different hat.
+	if band ~= activeBand and os.clock() - lastPlaneSpawn > 3 then
+		lastPlaneSpawn = os.clock()
+		spawnPlanes(band)
+	end
+	if band ~= activeBand then return end   -- waiting out the cooldown: nothing to drive yet
 
 	-- LANDED-vs-FLYING GATE: planes only target/shoot while the player is AIRBORNE (FloorMaterial Air).
 	-- Landed (standing on an island) = they just roam, no targeting/projectiles at the player.
@@ -755,6 +844,17 @@ RunService.Heartbeat:Connect(function(dt)
 		pl.model:PivotTo(fullCF)
 		pl.spin = pl.spin + dt*22
 		pl.blade.CFrame = fullCF * CFrame.new(0,0,-9.2*PLANE_SCALE) * CFrame.Angles(0,0,pl.spin)
+
+		-- ---- ENGINE FLY-BY: one shot per pass, per plane ----
+		-- Deliberately NOT gated on `airborne` like the shooting below. A plane roaring past while you are
+		-- stood on an island is exactly the moment the sound is for; only the distance and the cooldown
+		-- decide it.
+		pl.flybyCooldown = math.max(0, pl.flybyCooldown - dt)
+		if hrp and pl.flyby and pl.flyby.Parent and pl.flybyCooldown <= 0
+			and (hrp.Position - pl.pos).Magnitude <= FlyBy.TRIGGER_DIST then
+			pl.flybyCooldown = FlyBy.COOLDOWN
+			pcall(function() pl.flyby:Play() end)
+		end
 
 		-- ---- SHOOT (only while airborne; respect per-plane cooldown + the global 2-shooter cap) ----
 		pl.shootCooldown = pl.shootCooldown - dt
@@ -884,7 +984,31 @@ end
 local activeEventSgs={}
 local function addEventSg(sg2) table.insert(activeEventSgs,sg2) end
 
--- ===== THUNDERSTORM SKY + WEATHER (rebuilt) -- DARK storm-cloud look while FLYING, island visible when LANDED.
+-- ===== SOUR STORM PALETTE =====
+-- THE MECHANICS ARE THE FOOD REALM'S THUNDERSTORM, UNCHANGED. The fog wall, the fly-vs-land Lighting
+-- swap, the wind vector, the lightning spikes, the rain batches, the countdown pill -- all of it is
+-- the same code doing the same thing. Only the COLOURS and the WORDS are candy.
+--
+-- The internal event name stays THUNDERSTORM and must: ServerEventNotify's handler branches on that
+-- exact string (see the note at the top of ServerEvents.server.lua), and renaming it turns the storm
+-- into a generic banner with no weather attached. Display name is the only text safe to change, and
+-- SOUR STORM is what BigEvents already announces it as.
+--
+-- Greens read off SourRain, deliberately: a realm should have ONE sour, and a player who has stood in
+-- the acid rain should recognise the sky the moment this rolls in.
+local SOUR_STORM = {
+	KEY   = Color3.fromRGB(58, 92, 40),      -- banner / pill / glow: the storm's identity colour
+	FOG_F = Color3.fromRGB(46, 72, 34),      -- FLYING: engulfed in sour cloud
+	AMB_F = Color3.fromRGB(40, 58, 32),
+	FOG_L = Color3.fromRGB(140, 178, 120),   -- LANDED: hazy sour daylight, island still readable
+	AMB_L = Color3.fromRGB(140, 178, 120),
+	CLOUD_A = Color3.fromRGB(84, 122, 62),   -- cloud mist, light and dark
+	CLOUD_B = Color3.fromRGB(58, 88, 44),
+	RAIN  = Color3.fromRGB(150, 226, 74),    -- SourRain's own green, exactly
+	RAIN2D = Color3.fromRGB(168, 236, 96),
+}
+
+-- ===== SOUR STORM SKY + WEATHER (rebuilt) -- DARK storm-cloud look while FLYING, island visible when LANDED.
 -- All world/Lighting + 3D particles (no GUI overlay, so the HUD stays bright). Base Lighting is snapshotted and
 -- fully restored on storm end. Lightning = a 3D Lighting spike. Wind = _G.thunderWindVec (CoreClient applies it). =====
 local stormCC = nil
@@ -909,14 +1033,14 @@ local STORM_WIND_FORCE = 90         -- STRONG storm wind -- buffets the player h
 -- otherwise make legacy Fog do nothing), so these values are what actually renders while flying.
 local STORM_FLY = {
 	ClockTime = 14, Brightness = 0.6, ExposureCompensation = -0.6,
-	FogColor = Color3.fromRGB(60,60,70), FogStart = 0, FogEnd = 60,  -- ~60 studs: islands fully invisible
-	OutdoorAmbient = Color3.fromRGB(45,47,55), Ambient = Color3.fromRGB(48,50,58),
+	FogColor = SOUR_STORM.FOG_F, FogStart = 0, FogEnd = 60,  -- ~60 studs: islands fully invisible
+	OutdoorAmbient = SOUR_STORM.AMB_F, Ambient = SOUR_STORM.AMB_F,
 }
 -- LANDED = on an island: cloud eases WAY back so the island is clearly visible (stormy but visible).
 local STORM_LAND = {
 	ClockTime = 14, Brightness = 1.6, ExposureCompensation = -0.1,
-	FogColor = Color3.fromRGB(150,156,166), FogStart = 50, FogEnd = 650,
-	OutdoorAmbient = Color3.fromRGB(150,156,166), Ambient = Color3.fromRGB(150,156,166),
+	FogColor = SOUR_STORM.FOG_L, FogStart = 50, FogEnd = 650,
+	OutdoorAmbient = SOUR_STORM.AMB_L, Ambient = SOUR_STORM.AMB_L,
 }
 -- HARD-CULL APPROACH. An Atmosphere maxes out at Density 1.0 / Haze 10 and even then only WASHES OUT
 -- distant objects (light scattering) -- it never fully occludes, so islands stayed faintly visible.
@@ -935,14 +1059,14 @@ local function startStormParticles()
 	mist.Rate=44; mist.Lifetime=NumberRange.new(2.5,4.5); mist.Speed=NumberRange.new(3,9); mist.SpreadAngle=Vector2.new(180,180)
 	mist.Rotation=NumberRange.new(0,360); mist.RotSpeed=NumberRange.new(-28,28)
 	mist.Size=NumberSequence.new({NumberSequenceKeypoint.new(0,22),NumberSequenceKeypoint.new(1,44)})
-	mist.Color=ColorSequence.new(Color3.fromRGB(92,96,104),Color3.fromRGB(70,74,82)) -- DARK storm gray cloud
+	mist.Color=ColorSequence.new(SOUR_STORM.CLOUD_A,SOUR_STORM.CLOUD_B) -- DARK sour-green storm cloud
 	mist.LightEmission=0.1; mist.LightInfluence=0.8
 	mist.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(0.18,0.3),NumberSequenceKeypoint.new(0.8,0.34),NumberSequenceKeypoint.new(1,1)})
 	mist.Enabled=false; mist.Parent=anchor; stormMist=mist
 	local rain=Instance.new("ParticleEmitter"); rain.Name="StormRain"; rain.Texture="rbxasset://textures/particles/smoke_main.dds"
 	rain.Rate=340; rain.Lifetime=NumberRange.new(0.45,0.75); rain.Speed=NumberRange.new(0,0); rain.Acceleration=Vector3.new(0,-230,0)
 	rain.EmissionDirection=Enum.NormalId.Top; rain.SpreadAngle=Vector2.new(10,10)
-	rain.Size=NumberSequence.new(0.5); rain.Color=ColorSequence.new(Color3.fromRGB(150,170,205))
+	rain.Size=NumberSequence.new(0.5); rain.Color=ColorSequence.new(SOUR_STORM.RAIN)
 	rain.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0.25),NumberSequenceKeypoint.new(1,0.5)})
 	rain.LightEmission=0.2; rain.LightInfluence=0.5; rain.Parent=anchor; stormRain=rain
 	stormFXConn=RunService.RenderStepped:Connect(function()
@@ -1182,7 +1306,7 @@ local function spawnRain2D()
 		task.spawn(function()
 			local drop=Instance.new("Frame"); drop.Name="RainDrop2D"
 			drop.Size=UDim2.new(0,2,0,14); drop.Position=UDim2.new(math.random(0,98)/100,0,-0.02,0)
-			drop.BackgroundColor3=Color3.fromRGB(150,180,255); drop.BackgroundTransparency=0.3
+			drop.BackgroundColor3=SOUR_STORM.RAIN2D; drop.BackgroundTransparency=0.3
 			drop.BorderSizePixel=0; drop.ZIndex=5; drop.Parent=stormSg
 			TweenService:Create(drop,TweenInfo.new(0.5,Enum.EasingStyle.Linear),{Position=UDim2.new(drop.Position.X.Scale,0,1.05,0)}):Play()
 			task.delay(0.55,function() pcall(function() drop:Destroy() end) end)
@@ -1194,7 +1318,7 @@ local function spawnRainBatch()
 	local char=player.Character; local hrpNow=char and char:FindFirstChild("HumanoidRootPart"); if not hrpNow then return end
 	for _=1,30 do
 		task.spawn(function()
-			local drop=Instance.new("Part"); drop.Name="RainDrop"; drop.Size=Vector3.new(0.05,2,0.05); drop.Color=Color3.fromRGB(200,220,255)
+			local drop=Instance.new("Part"); drop.Name="RainDrop"; drop.Size=Vector3.new(0.05,2,0.05); drop.Color=SOUR_STORM.RAIN
 			drop.Material=Enum.Material.Neon; drop.Transparency=0.5; drop.CanCollide=false; drop.CastShadow=false; drop.Anchored=false
 			drop.Position=hrpNow.Position+Vector3.new(math.random(-30,30),math.random(5,20),math.random(-30,30)); drop.Parent=workspace
 			local bv=Instance.new("BodyVelocity"); bv.MaxForce=Vector3.new(0,1e6,0); bv.Velocity=Vector3.new(0,-60,0); bv.Parent=drop
@@ -1270,9 +1394,9 @@ local function startThunderstorm(dur)
 	stormBlur.Enabled=false -- NO screen blur: the storm look is real 3D fog + cloud particles (HUD stays bright)
 	startStormSky()           -- dark thundercloud while flying / island visible when landed + cloud/rain particles
 	_G.thunderWindVec=Vector3.new(0,0,0) -- STRONG storm wind ON (the loop evolves it; CoreClient adds it to flight)
-	startGlowPulse(Color3.fromRGB(50,50,80))
-	showEventBanner("\xe2\x9b\x88 THUNDERSTORM","\xe2\x9b\x88\xef\xb8\x8f Hold on tight!",Color3.fromRGB(50,50,80))
-	countPill.BackgroundColor3=Color3.fromRGB(50,50,80); showCountPillAfterBanner(function() return _G.thunderstormActive end)
+	startGlowPulse(SOUR_STORM.KEY)
+	showEventBanner("\xe2\x9b\x88 SOUR STORM","\xe2\x98\xa0 The sky has gone sour -- hold on tight!",SOUR_STORM.KEY)
+	countPill.BackgroundColor3=SOUR_STORM.KEY; showCountPillAfterBanner(function() return _G.thunderstormActive end)
 	local endT=tick()+(dur or 25)
 	task.spawn(function()
 		local lightTimer=math.random(40,100)*0.1
@@ -1305,7 +1429,7 @@ local function startThunderstorm(dur)
 			local nowFly=isPlayerFlying()
 			if nowFly~=stormState then stormState=nowFly; applyStormState(nowFly, 1.0) end
 			local rem=math.max(0,math.ceil(endT-tick()))
-			countLabel.Text="\xe2\x9b\x88 THUNDERSTORM: "..rem.."s"
+			countLabel.Text="\xe2\x9b\x88 SOUR STORM: "..rem.."s"
 			if rem<=0 then break end
 		end
 		_G.thunderstormActive=false; glowPulseActive=false
@@ -1356,8 +1480,18 @@ local function startWindstorm()
 end
 
 -- ===== SERVER EVENT HANDLER =====
-local ServerEventNotify=_G.ServerEventNotify
+-- ⚠ THIS BLOCK NEVER RAN IN CANDY REALM. It read _G.ServerEventNotify, which is published by the Food realm's
+-- CoreClient -- a script that does not exist here. The global was always nil, so `if ServerEventNotify then`
+-- was always false and every branch below (the banner, the countdown pill, the glow pulse, SUGAR RUSH, COIN
+-- RUSH, HIGH GRAVITY, POWER SURGE, RING FEVER, the storm and the meteor) was dead code in this realm.
+--
+-- It now resolves the remote ITSELF: the global first, so the Food realm's copy of this file is unaffected,
+-- then ReplicatedStorage directly. ServerEvents.server.lua creates that remote on boot -- before this, it did
+-- not exist in Candy at all, which is why MusicDucking's WaitForChild for it always timed out too.
+local ServerEventNotify = _G.ServerEventNotify
+	or game:GetService("ReplicatedStorage"):WaitForChild("ServerEventNotify", 30)
 if ServerEventNotify then
+	_G.ServerEventNotify = ServerEventNotify -- publish for anything else in this realm that expects the global
 	ServerEventNotify.OnClientEvent:Connect(function(eventName,dispName,duration,msg,color)
 		pcall(function()
 			if eventName=="THUNDERSTORM" then pcall(startThunderstorm, tonumber(duration) or 25); return end
@@ -1567,5 +1701,55 @@ task.spawn(function()
 		end)
 	end)
 end)
+
+
+-- ============================================================================================================
+-- /thunderstorm  --  fire the storm on demand
+-- ============================================================================================================
+-- BigEvents puts SOUR STORM on a rotation that starts 420s into a server and repeats every 600s. That is the
+-- right pacing for players and the wrong pacing for looking at it: tuning the fog, the wind or the lightning
+-- meant sitting through seven minutes per attempt, per change.
+--
+-- It lives HERE rather than in a command script of its own because startThunderstorm and startWindstorm are
+-- locals in this file. Reaching them from outside would mean publishing two more globals for a test command,
+-- and a global is a permanent public surface bought for a temporary convenience.
+--
+-- ⚠ CLIENT-SIDE ONLY, ON PURPOSE. This runs the storm on YOUR screen; it does not broadcast, so it cannot be
+-- used to force weather on a live server. The real event still comes from BigEvents on the server. Same shape
+-- as SummitBellQuest's /blizzard and DoneCommand's /done -- a local rehearsal of a server-owned thing.
+--
+--     /thunderstorm [seconds]   -- default 30, matching BigEvents' SOUR STORM
+--     /windstorm                -- the other half of the weather pair
+--     /stormend                 -- stop either one early
+-- ============================================================================================================
+do
+	local TextChatService = game:GetService("TextChatService")
+	local plr = game:GetService("Players").LocalPlayer
+
+	local function onStormCommand(msg)
+		local m = tostring(msg or ""):lower():gsub("^%s+", "")
+		if m:sub(1, 13) == "/thunderstorm" then
+			local secs = tonumber(m:match("(%d+)")) or 30
+			print(("[EventClient] /thunderstorm -- running SOUR STORM locally for %ds"):format(secs))
+			pcall(startThunderstorm, secs)
+		elseif m:sub(1, 10) == "/windstorm" then
+			print("[EventClient] /windstorm -- running SUGAR GALE locally")
+			pcall(startWindstorm)
+		elseif m:sub(1, 9) == "/stormend" then
+			print("[EventClient] /stormend -- storm stopped")
+			pcall(endEvent)
+		end
+	end
+
+	-- Both chat routes, like every other command in this realm (/done, /island<N>, /reveal, /npc).
+	pcall(function()
+		TextChatService.MessageReceived:Connect(function(m)
+			if m.TextSource and m.TextSource.UserId == plr.UserId then onStormCommand(m.Text) end
+		end)
+	end)
+	pcall(function() plr.Chatted:Connect(onStormCommand) end)
+	print("[EventClient] /thunderstorm [secs], /windstorm and /stormend ready (local rehearsal -- the real "
+		.. "one is BigEvents' SOUR STORM on the server rotation)")
+end
 
 print("CHUNK 2 DONE")

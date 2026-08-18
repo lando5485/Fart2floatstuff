@@ -50,7 +50,9 @@ local CONFIG = {
 	gamepassIds = {
 		TwoXForever  = 1862015450,          -- 249 R$  permanent 2x power  (power x1.4, tank x1.4)
 		GlitterTrail = 1859714979,          --  49 R$  permanent pink neon sparkle trail
-		InfiniteGut  = 1860686821,          -- (sold from the GUT menu, not this panel -- kept for reference)
+		InfiniteGut  = 1860686821,          -- 499 R$  the 9,999-power Sugar Rush Gut. UNUSED HERE -- the card
+		                                    -- below prompts through Shared.Gamepasses like Lucky/VIP do. Kept
+		                                    -- only so this CONFIG still lists every pass the realm sells.
 	},
 	productIds = {
 		TwoXOneHour    = 3600302990,        -- 59 R$  2x power for 1 hour
@@ -82,22 +84,42 @@ local CONFIG = {
 		twoXHour    = { icon="\xe2\x8f\xb0",                 title="2x Power",    sub="1 HOUR",     subCol=Color3.fromRGB(255,200,100), price="59 R$",  btnCol=Color3.fromRGB(50,150,255) },
 		midAir      = { icon="\xF0\x9F\x94\x8B",             title="Mid-Air",     sub="RECHARGE",   subCol=Color3.fromRGB(100,220,100), price="39 R$",  btnCol=Color3.fromRGB(50,200,50),  desc="Refills gas to 100%!" },
 		skipIsland  = { icon="\xF0\x9F\x8F\x9D\xEF\xB8\x8F", title="Skip Island", sub="ONE USE",    subCol=Color3.fromRGB(255,200,100), price="69 R$",  btnCol=Color3.fromRGB(255,140,0),  desc="Jump to next island!" },
-		birdNuke    = { icon="\xF0\x9F\x92\xA5",             title="Bird Nuke",   sub="CHAOS MODE", subCol=Color3.fromRGB(255,100,100), price="79 R$",  btnCol=Color3.fromRGB(220,50,50),  desc="Unleash 30 birds on everyone!" },
+		-- SOUR RAIN (the old "Bird Nuke", same product id 3600303082). The birds never existed in
+		-- this realm: their remote was a Food-realm leftover that no Candy server script created,
+		-- so the 79 R$ bought an event that could not fire. It now buys the disaster in
+		-- SourRain.server.luau -- 18s of acid rain over every island, everyone caught outdoors
+		-- melts, and the buyer is immune.
+		birdNuke    = { icon="\xE2\x98\xA0\xEF\xB8\x8F",     title="Sour Rain",   sub="DISASTER",   subCol=Color3.fromRGB(150,240,90),  price="79 R$",  btnCol=Color3.fromRGB(110,190,50), desc="Acid rain on the whole realm -- everyone outside melts. You don't." },
+		-- ROW 2 GAMEPASSES. Prices come from Shared.Gamepasses.PRICE so the card and the pass agree.
+		-- NOTE there is no Coin Magnet card here, unlike the Food realm. That pass has nothing to act on in
+		-- Candy: WorldClient spawns gas pockets and rings, but nothing in this realm ever collects them, so
+		-- dragging them toward the player would pay out nothing. See the note in Shared/Gamepasses.luau.
+		luckyPass   = { icon="\xF0\x9F\x8D\x80",             title="Lucky Pass",  sub="FOREVER",    subCol=Color3.fromRGB(100,220,100), btnCol=Color3.fromRGB(60,190,90),  desc="2x rare odds on every crate!" },
+		vip         = { icon="\xE2\xAD\x90",                 title="VIP",         sub="FOREVER",    subCol=Color3.fromRGB(100,220,100), btnCol=Color3.fromRGB(255,180,0),  desc="+25% coins, 500 coins a day, VIP tag!" },
+		-- Infinite Gut is ALSO sold from the gut menu (StomachShop's Sugar Rush Gut row). Same pass, same id,
+		-- same attribute -- so buying it in either place flips both cards to OWNED with no extra wiring.
+		infiniteGut = { icon="\xE2\x9A\xA1",                 title="Infinite Gut", sub="FOREVER",   subCol=Color3.fromRGB(100,220,100), btnCol=Color3.fromRGB(230,60,140), desc="The 9,999 power Sugar Rush Gut, instantly!" },
 	},
 
 	-- COIN SHOP packs. productId = 0 -> the button shows a "needs ids" banner instead of prompting.
-	-- Add a server ProcessReceipt branch per id to actually grant the coins.
+	-- LIVE ids, shared with the Food realm: developer products belong to the UNIVERSE, not the place.
+	-- The grant happens server-side on a confirmed receipt -- an id here with no receipt branch behind
+	-- it is not an inert placeholder, it is a charge with no delivery.
 	coinPacks = {
-		{ name="Small Coin Pack",    beans="1,000",   bonus=nil,    price="49 R$",   productId=0, col=Color3.fromRGB(64,120,245) },
-		{ name="Medium Coin Pack",   beans="5,500",   bonus="+10%", price="99 R$",   productId=0, col=Color3.fromRGB(72,200,120), tag="\xF0\x9F\x94\xA5 MOST POPULAR" },
-		{ name="Large Coin Pack",    beans="12,000",  bonus="+20%", price="199 R$",  productId=0, col=Color3.fromRGB(150,96,240) },
-		{ name="Giant Coin Pack",    beans="30,000",  bonus="+30%", price="399 R$",  productId=0, col=Color3.fromRGB(64,200,224) },
-		{ name="Mega Coin Pack",     beans="70,000",  bonus="+40%", price="799 R$",  productId=0, col=Color3.fromRGB(240,96,180) },
-		{ name="Ultimate Coin Pack", beans="180,000", bonus="+50%", price="1499 R$", productId=0, col=Color3.fromRGB(248,150,56), tag="\xE2\xAD\x90 BEST VALUE" },
+		{ name="Small Coin Pack",    beans="1,000",   bonus=nil,    price="49 R$",   productId=3699050724, col=Color3.fromRGB(64,120,245) },
+		{ name="Medium Coin Pack",   beans="5,500",   bonus="+10%", price="99 R$",   productId=3699055852, col=Color3.fromRGB(72,200,120), tag="\xF0\x9F\x94\xA5 MOST POPULAR" },
+		{ name="Large Coin Pack",    beans="12,000",  bonus="+20%", price="199 R$",  productId=3699059563, col=Color3.fromRGB(150,96,240) },
+		{ name="Giant Coin Pack",    beans="30,000",  bonus="+30%", price="399 R$",  productId=3699065394, col=Color3.fromRGB(64,200,224) },
+		{ name="Mega Coin Pack",     beans="70,000",  bonus="+40%", price="799 R$",  productId=3699081248, col=Color3.fromRGB(240,96,180) },
+		{ name="Ultimate Coin Pack", beans="180,000", bonus="+50%", price="1499 R$", productId=3699076690, col=Color3.fromRGB(248,150,56), tag="\xE2\xAD\x90 BEST VALUE" },
 	},
 }
 local GAMEPASS_IDS = CONFIG.gamepassIds
 local PRODUCT_IDS  = CONFIG.productIds
+-- The two newer passes (Lucky / VIP) read their ids, names and prices from the shared module rather than
+-- CONFIG.gamepassIds, so all three realms describe them in exactly one place. The legacy 2x/Glitter buttons
+-- above are left on CONFIG untouched -- rewriting working buy buttons was not worth the risk here.
+local Gamepasses = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Gamepasses"))
 local BEAN_IMG     = CONFIG.beanImage
 
 local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
@@ -300,8 +322,54 @@ cardIcon(card3,I.twoXHour.icon); cardTitles(card3,I.twoXHour.title,I.twoXHour.su
 local twoXShopTimer=mkLabel(cH(card3),{Text="",Font=Enum.Font.GothamBold,TextSize=11,TextColor3=Color3.fromRGB(100,220,100),Size=UDim2.new(1,-8,0,14),LayoutOrder=6,TextXAlignment=Enum.TextXAlignment.Center,Visible=false})
 cardBuyBtn(card3,I.twoXHour.btnCol,"BUY NOW",function() pcall(function() MPS:PromptProductPurchase(player,PRODUCT_IDS.TwoXOneHour) end) end)
 
-sectionHeader("\xF0\x9F\x8E\xAF ONE-TIME ITEMS",3)
-local productRow=mkSectionRow(4)
+-- ===== SECOND GAMEPASS ROW: Lucky Pass + VIP + Infinite Gut ==================================================
+-- A SECOND row rather than five cards in the first one: the row is a horizontal UIListLayout with no wrapping,
+-- so cards past the third are simply cut off the right edge with no way to reach them.
+-- 220 tall (not 190 like row 1) because these two carry a description line, and at 190 the desc and the buy
+-- button fight for the same 30px and the button clips off the bottom.
+local gamepassRow2=mkSectionRow(3)
+
+-- One card for an attribute-driven forever pass. Handles all three states: not-created-yet, buyable, owned.
+local function passCard(row,order,key,cfg)
+	local card=mkShopCard(row,order)
+	local live=Gamepasses.isConfigured(key)
+	cardIcon(card,cfg.icon)
+	cardTitles(card,cfg.title,live and cfg.sub or "COMING SOON",live and cfg.subCol or Color3.fromRGB(190,190,190))
+	cardPrice(card,live and ((Gamepasses.PRICE[key] or 0).." R$") or "--")
+	cardDesc(card,cfg.desc)
+
+	local btn=cardBuyBtn(card,live and cfg.btnCol or Color3.fromRGB(90,95,110),live and "BUY GAMEPASS" or "COMING SOON",function()
+		if not live then return end                    -- unset id: no prompt, ever
+		if Gamepasses.owns(player,key) then return end  -- already owned: do nothing (same rule as the 2x card)
+		Gamepasses.prompt(player,key)                   -- guarded + pcall'd inside the shared module
+	end)
+	-- The polish pass at the bottom of this file repaints EVERY card button into the same green pill with a
+	-- hover bounce. A COMING SOON button must not get that or it would look buyable and spring under the
+	-- cursor while doing nothing.
+	if not live then btn:SetAttribute("ShopDisabled", true) end
+
+	-- OWNED flips live off the replicated attribute, so a mid-session purchase updates with no menu reopen.
+	local function refresh()
+		if live and Gamepasses.owns(player,key) then
+			btn.Text="OWNED"; btn.BackgroundColor3=Color3.fromRGB(70,150,70)
+		end
+	end
+	refresh()
+	if live then player:GetAttributeChangedSignal(Gamepasses.ATTR[key]):Connect(refresh) end
+	return card
+end
+
+local luckyCard = passCard(gamepassRow2,1,"LuckyPass",I.luckyPass)
+local vipCard   = passCard(gamepassRow2,2,"VIP",I.vip)
+-- Third and last card this row takes -- mkSectionRow is a horizontal UIListLayout with no wrapping, and row 1
+-- already proves 3 cards fit. A fourth pass needs a row 3, not a fourth card here.
+local gutCard   = passCard(gamepassRow2,3,"InfiniteGut",I.infiniteGut)
+-- Every later styling/layout pass works off an explicit card list; keeping these in ONE named list means a
+-- future pass is one more mention of newPassCards, not two more variables threaded through three loops.
+local newPassCards = {luckyCard, vipCard, gutCard}
+
+sectionHeader("\xF0\x9F\x8E\xAF ONE-TIME ITEMS",4)
+local productRow=mkSectionRow(5)
 
 -- Card 4: Mid-Air Recharge
 local card4=mkShopCard(productRow,1)
@@ -313,7 +381,7 @@ local card5=mkShopCard(productRow,2)
 cardIcon(card5,I.skipIsland.icon); cardTitles(card5,I.skipIsland.title,I.skipIsland.sub,I.skipIsland.subCol); cardPrice(card5,I.skipIsland.price); cardDesc(card5,I.skipIsland.desc)
 cardBuyBtn(card5,I.skipIsland.btnCol,"BUY NOW",function() pcall(function() MPS:PromptProductPurchase(player,PRODUCT_IDS.SkipIsland) end) end)
 
--- Card 6: Bird Nuke
+-- Card 6: Sour Rain (was Bird Nuke -- same product id)
 local card6=mkShopCard(productRow,3)
 cardIcon(card6,I.birdNuke.icon); cardTitles(card6,I.birdNuke.title,I.birdNuke.sub,I.birdNuke.subCol); cardPrice(card6,I.birdNuke.price); cardDesc(card6,I.birdNuke.desc)
 cardBuyBtn(card6,I.birdNuke.btnCol,"BUY NOW",function() pcall(function() MPS:PromptProductPurchase(player,PRODUCT_IDS.BirdNuke) end) end)
@@ -402,7 +470,7 @@ end
 	premTitleLbl.TextColor3 = GOLD
 
 	-- cards: lighter indigo + thick outline + bevel
-	for _, card in ipairs({card1, card2, card3, card4, card5, card6}) do
+	for _, card in ipairs({card1, card2, card3, card4, card5, card6, newPassCards[1], newPassCards[2], newPassCards[3]}) do
 		card.BackgroundColor3 = PANEL2; setStroke(card, dark(PANEL, 0.35), 2.5); juice(card)
 	end
 
@@ -437,7 +505,11 @@ end)()
 
 	-- Cards stay in their section rows INSIDE premScroll, so headers AND cards scroll TOGETHER.
 	gamepassRow.Size = UDim2.new(1,-16,0,190)
+	gamepassRow2.Size = UDim2.new(1,-16,0,220) -- 220: these all carry a desc line, 190 clips the buy button
 	productRow.Size  = UDim2.new(1,-16,0,220)
+	for i, c in ipairs(newPassCards) do
+		c.Parent = gamepassRow2; c.LayoutOrder = i; c.Size = UDim2.new(0.31,0,0,220)
+	end
 	for i, c in ipairs({card1, card2, card3}) do
 		c.Parent = gamepassRow; c.LayoutOrder = i; c.Size = UDim2.new(0.31,0,0,190)
 	end
@@ -572,10 +644,17 @@ local COIN_PILES = {
 -- Deferred so the card layout above is final first.
 --======================================================================
 task.defer(function()
-	local cards = {card1, card2, card3, card4, card5, card6}
-	local CARD_COLS = { -- 6 unique gradients, no repeats: blue, purple, pink, green, cyan, orange
+	-- The new passes are APPENDED, not interleaved in visual order: CARD_COLS is indexed by position in this
+	-- list, so slotting them mid-list would silently re-colour every existing card.
+	local cards = {card1, card2, card3, card4, card5, card6, newPassCards[1], newPassCards[2], newPassCards[3]}
+	local CARD_COLS = { -- 9 unique gradients, no repeats: blue, purple, pink, green, cyan, orange, lime, gold, raspberry
 		Color3.fromRGB(64,120,245), Color3.fromRGB(150,96,240), Color3.fromRGB(240,96,180),
 		Color3.fromRGB(72,200,120), Color3.fromRGB(64,200,224), Color3.fromRGB(248,150,56),
+		-- 7-9 = Lucky (lime, matches the clover), VIP (gold, matches the tag) and Infinite Gut (raspberry, the
+		-- same pink the gut menu's Robux row uses). These MUST exist: the loop below does CARD_COLS[i]:Lerp(...),
+		-- so a nil here is a hard error that takes the whole polish pass down and leaves EVERY card unstyled --
+		-- not just the new ones. ONE COLOUR PER CARD in `cards`, always.
+		Color3.fromRGB(140,214,72), Color3.fromRGB(246,196,60), Color3.fromRGB(230,60,140),
 	}
 	local function light(c) return c:Lerp(Color3.new(1,1,1), 0.24) end
 	local function dark(c, f) return c:Lerp(Color3.new(0,0,0), f or 0.45) end
@@ -611,9 +690,20 @@ task.defer(function()
 
 			for _, d in ipairs(card:GetDescendants()) do
 				if d:IsA("TextButton") then -- ONE short, centered green pill purchase button at the bottom
+					-- A COMING SOON button (a pass whose id is not set yet) keeps the same SHAPE and position so
+					-- the row still reads as one tidy set, but stays grey with no hover/click bounce. Something
+					-- that springs under the cursor is promising a purchase it cannot deliver.
+					local disabled = d:GetAttribute("ShopDisabled") == true
 					d.Size = UDim2.new(0.8,0,0,36); d.LayoutOrder = 20
-					d.BackgroundColor3 = Color3.fromRGB(96,210,128)
 					local bc = d:FindFirstChildOfClass("UICorner") or Instance.new("UICorner"); bc.CornerRadius = UDim.new(0,18); bc.Parent = d
+					if disabled then
+						d.BackgroundColor3 = Color3.fromRGB(96,100,116)
+						d.TextTransparency = 0.25
+						local dg = d:FindFirstChildOfClass("UIGradient"); if dg then dg:Destroy() end
+						local ds = d:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke"); ds.Color = Color3.fromRGB(58,62,74); ds.Thickness = 1.5; ds.Parent = d
+						break
+					end
+					d.BackgroundColor3 = Color3.fromRGB(96,210,128)
 					local bg2 = d:FindFirstChildOfClass("UIGradient") or Instance.new("UIGradient"); bg2.Color = ColorSequence.new(Color3.fromRGB(142,226,160), Color3.fromRGB(86,184,112)); bg2.Rotation = 90; bg2.Parent = d
 					local bsr = d:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke"); bsr.Color = Color3.fromRGB(46,120,68); bsr.Thickness = 1.5; bsr.Parent = d
 					local bScl = Instance.new("UIScale"); bScl.Parent = d -- hover glow + click bounce
@@ -721,6 +811,16 @@ task.defer(function()
 	local wSub=Instance.new("TextLabel"); wSub.BackgroundTransparency=1; wSub.Position=UDim2.fromOffset(20,40); wSub.Size=UDim2.new(1,-80,0,16); wSub.Font=Enum.Font.Gotham; wSub.TextScaled=true; wSub.TextColor3=Color3.new(1,1,1); wSub.TextXAlignment=Enum.TextXAlignment.Left; wSub.Text="Get more Coins instantly!"; wSub.ZIndex=52; wSub.Parent=win; maxsize(wSub,15)
 	local xBtn=Instance.new("TextButton"); xBtn.AnchorPoint=Vector2.new(1,0); xBtn.Position=UDim2.new(1,-10,0,10); xBtn.Size=UDim2.fromOffset(44,40); xBtn.BackgroundColor3=Color3.fromRGB(232,96,90); xBtn.Font=Enum.Font.FredokaOne; xBtn.TextScaled=true; xBtn.TextColor3=Color3.new(1,1,1); xBtn.Text="X"; xBtn.ZIndex=52; xBtn.Parent=win; corner(xBtn,10); stroke(xBtn,Color3.fromRGB(150,40,32),2.5); juice(xBtn); pad(xBtn,8)
 
+	-- BACK -- realm 1's header pattern (SkinCrateClient: 70x30, corner 8, white stroke 1.5, FredokaOne 14),
+	-- sat directly left of the X. BACK and X are deliberately DIFFERENT here, exactly as they are in realm 1:
+	-- BACK returns to the shop page you opened this from, X shuts the shop. Before this the overlay had only
+	-- an X and it quietly did the BACK job (un-hiding the shop underneath), so there was no way to close the
+	-- shop from this page at all and the X did not do what an X says it does.
+	local backBtn=Instance.new("TextButton"); backBtn.AnchorPoint=Vector2.new(1,0); backBtn.Position=UDim2.new(1,-62,0,15); backBtn.Size=UDim2.fromOffset(70,30)
+	backBtn.BackgroundColor3=Color3.fromRGB(70,86,140); backBtn.Font=Enum.Font.FredokaOne; backBtn.TextScaled=true; backBtn.TextColor3=Color3.new(1,1,1)
+	backBtn.Text="\xE2\x9D\xAE BACK"; backBtn.ZIndex=52; backBtn.Parent=win; corner(backBtn,8); stroke(backBtn,Color3.new(1,1,1),1.5)
+	do local c=Instance.new("UITextSizeConstraint"); c.MaxTextSize=14; c.Parent=backBtn end
+
 	local grid=Instance.new("ScrollingFrame"); grid.BackgroundTransparency=1; grid.BorderSizePixel=0; grid.Position=UDim2.fromOffset(24,64); grid.Size=UDim2.new(1,-48,1,-142); grid.ScrollBarThickness=5; grid.ScrollBarImageColor3=GOLD; grid.CanvasSize=UDim2.new(); grid.AutomaticCanvasSize=Enum.AutomaticSize.Y; grid.ScrollingDirection=Enum.ScrollingDirection.Y; grid.ZIndex=52; grid.Parent=win
 	local gl=Instance.new("UIGridLayout"); gl.CellSize=UDim2.fromOffset(202,214); gl.CellPadding=UDim2.fromOffset(34,30); gl.HorizontalAlignment=Enum.HorizontalAlignment.Center; gl.SortOrder=Enum.SortOrder.LayoutOrder; gl.Parent=grid
 	do local p=Instance.new("UIPadding",grid); p.PaddingTop=UDim.new(0,6); p.PaddingBottom=UDim.new(0,10) end
@@ -801,7 +901,17 @@ task.defer(function()
 			table.clear(hiddenEls)
 		end
 	end)
-	xBtn.MouseButton1Click:Connect(closeCurrency)
+	backBtn.MouseButton1Click:Connect(closeCurrency)   -- BACK -> the shop page (the old X behaviour)
+	-- X now does what an X means: shut the shop. closeCurrency first so the overlay is reset and the
+	-- shop reopens on its main page next time, not stranded on the coin grid.
+	xBtn.MouseButton1Click:Connect(function()
+		closeCurrency()
+		if _G.playUIClick then pcall(_G.playUIClick) end
+		PremiumShopGui.Enabled = false
+		if _G.MainMenuManager and _G.MainMenuManager.notifyClosed then
+			pcall(_G.MainMenuManager.notifyClosed, "Premium")
+		end
+	end)
 
 	----------------------------------------------------------------
 	-- the featured BANNER (below the header, above the gamepasses)
@@ -974,4 +1084,4 @@ end
 applyShopScaling()
 task.delay(3, applyShopScaling)
 
-print("[ShopKit] SHOP button + PremiumShopGui built (770x572 panel, 6 cards, coin shop)")
+print("[ShopKit] SHOP button + PremiumShopGui built (700x520 house panel, 6 cards, coin shop)") -- pass 2 resizes it; the old 770x572 in this line was stale

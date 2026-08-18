@@ -31,6 +31,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService      = game:GetService("TweenService")
 local Lighting          = game:GetService("Lighting")
 local Workspace         = game:GetService("Workspace")
+local SoundService      = game:GetService("SoundService")
 
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -180,7 +181,7 @@ local function buildLever(marker)
 	-- parts, and an unanchored prop on a cliff edge is a prop that eventually falls off the island.
 	leverArm = part(m, "LeverArm", Vector3.new(0.5, 4.2, 0.5),
 		base * CFrame.new(0, 2.8, 0) * CFrame.Angles(math.rad(-28), 0, 0),
-		Color3.fromRGB(120, 78, 42), Enum.Material.Wood)
+		Color3.fromRGB(120, 78, 42), Enum.Material.SmoothPlastic)
 	leverArm.CanCollide = false
 
 	-- a bright knob on top -- the bit the eye actually lands on from a distance
@@ -235,12 +236,70 @@ local function buildLever(marker)
 	return m, knob
 end
 
+--======================================================================
+-- THE LEVER'S SOUND
+--======================================================================
+-- POSITIONAL, not 2D -- the opposite choice to the cave entry sound above, and for the reason stated there:
+-- that one is the player's own transition so it plays flat from SoundService, while this is a THING HAPPENING
+-- AT A SPOT on Coconut Cove. Parented to the lever base, it arrives from the lever, falls off with distance,
+-- and pans as you turn -- so somebody else on the island hears it come from over there rather than from
+-- inside their own head.
+--
+-- ROLLOFF is set wide enough to carry across the clearing (the door is 28 studs away and the player is
+-- usually looking at it, not at the lever) but not so wide it follows you off the island.
+--
+-- A FRESH Sound PER PULL, cleaned up by Debris. Re-playing one shared instance cuts itself off if the lever
+-- is thrown twice in quick succession, and this clip has to survive being retriggered.
+local LEVER_SOUND_ID = "rbxassetid://92886118642232"
+local LEVER_VOLUME   = 1.0
+local LEVER_ROLLOFF_MIN, LEVER_ROLLOFF_MAX = 12, 140
+
+-- Preloaded so the FIRST pull is not silent. Without this the asset only starts fetching at the moment the
+-- lever is thrown, and the one pull that matters -- the discovery -- is the one that plays nothing. Logged
+-- either way, in the same shape as the entry sound, so a bad id names itself in the boot log.
+task.spawn(function()
+	pcall(function()
+		local probe = Instance.new("Sound")
+		probe.SoundId = LEVER_SOUND_ID
+		probe.Parent = SoundService
+		game:GetService("ContentProvider"):PreloadAsync({ probe }, function(_, status)
+			if status == Enum.AssetFetchStatus.Success then
+				print(string.format("[SecretCave] lever sound %s loaded OK (length %.2fs)",
+					LEVER_SOUND_ID, probe.TimeLength))
+			else
+				warn(string.format("[SecretCave] lever sound %s FAILED to load (%s) -- not an audio asset, or "
+					.. "not approved for this experience's creator. The lever will pull in silence.",
+					LEVER_SOUND_ID, tostring(status)))
+			end
+			probe:Destroy()
+		end)
+	end)
+end)
+
 -- Swing the arm down when it is pulled. The knob rides with it, which is why it is re-CFramed too.
 -- THE THROW: hard swing with overshoot, a burst of sparks off the knob, and the glow flips red -> green --
 -- light included, so the pool of light on the ground changes colour too. The sparks read as an old contact
 -- arcing: the moment feels ELECTRICAL, like something distant just switched on. Which it did.
 local function pullLever(knob)
 	if not leverArm then return end
+
+	-- Fired FIRST, before the tweens: the clunk should land on the frame the arm starts moving, not after
+	-- the 0.45s swing has finished. Sound leads the animation or the lever feels unresponsive.
+	pcall(function()
+		local host = leverArm.Parent and leverArm.Parent:FindFirstChild("LeverBase") or leverArm
+		local s = Instance.new("Sound")
+		s.Name = "SecretLeverPull"
+		s.SoundId = LEVER_SOUND_ID
+		s.Volume = LEVER_VOLUME
+		s.RollOffMinDistance = LEVER_ROLLOFF_MIN
+		s.RollOffMaxDistance = LEVER_ROLLOFF_MAX
+		s.Parent = host
+		s:Play()
+		-- Debris rather than Sound.Ended: an asset that fails to load never fires Ended, and the instance
+		-- would sit on the lever forever. 10s is well past any plausible clip length for a switch throw.
+		game:GetService("Debris"):AddItem(s, 10)
+	end)
+
 	local down = leverArm.CFrame * CFrame.Angles(math.rad(56), 0, 0)
 	TweenService:Create(leverArm, TweenInfo.new(0.45, Enum.EasingStyle.Back), { CFrame = down }):Play()
 	if knob then
@@ -544,6 +603,47 @@ local fade = Instance.new("Frame")
 fade.Size = UDim2.fromScale(1, 1); fade.BackgroundColor3 = Color3.new(0, 0, 0)
 fade.BackgroundTransparency = 1; fade.Parent = fadeGui
 
+-- ENTRY SOUND. A 2D one-shot fired as the wipe starts, so it plays UNDER the black and lands as you arrive
+-- in the room -- the audio equivalent of the fade. 2D (SoundService) rather than positional: this is the
+-- player's own transition, not something happening at a spot in the world.
+local CAVE_ENTER_SOUND_ID = "rbxassetid://138890398994853"
+local CAVE_ENTER_VOLUME   = 0.8
+local CAVE_SOUND_FADE     = 0.8 -- seconds to fade out when you leave
+local caveEnterSound = Instance.new("Sound")
+caveEnterSound.Name = "SecretCaveEnter"
+caveEnterSound.SoundId = CAVE_ENTER_SOUND_ID
+caveEnterSound.Volume = CAVE_ENTER_VOLUME
+caveEnterSound.Parent = SoundService
+-- Stop it on the way out. This clip runs 3m20s -- longer than most visits -- so left alone it follows the
+-- player up to the surface and plays over the garden. Faded, not cut: killing a long track dead is more
+-- noticeable than the track was. Volume is restored afterwards so the next entry starts at full.
+local function stopCaveSound()
+	pcall(function()
+		if not caveEnterSound.IsPlaying then return end
+		TweenService:Create(caveEnterSound, TweenInfo.new(CAVE_SOUND_FADE), { Volume = 0 }):Play()
+		task.delay(CAVE_SOUND_FADE, function()
+			pcall(function()
+				caveEnterSound:Stop()
+				caveEnterSound.Volume = CAVE_ENTER_VOLUME
+			end)
+		end)
+	end)
+end
+
+task.spawn(function()
+	pcall(function()
+		game:GetService("ContentProvider"):PreloadAsync({ caveEnterSound }, function(_, status)
+			if status == Enum.AssetFetchStatus.Success then
+				print(string.format("[SecretCave] entry sound %s loaded OK (length %.2fs)",
+					CAVE_ENTER_SOUND_ID, caveEnterSound.TimeLength))
+			else
+				warn(string.format("[SecretCave] entry sound %s FAILED to load (%s) -- not an audio asset, or "
+					.. "not approved for this experience's creator.", CAVE_ENTER_SOUND_ID, tostring(status)))
+			end
+		end)
+	end)
+end)
+
 local function withFade(midpoint)
 	fadeGui.Enabled = true
 	TweenService:Create(fade, TweenInfo.new(FADE_TIME), { BackgroundTransparency = 0 }):Play()
@@ -803,11 +903,11 @@ local function buildCave()
 			local crate = part(m, "Crate", Vector3.new(cs, cs * 0.85, cs),
 				CFrame.new(origin + Vector3.new(px + rnd(1.6) - 0.8, 1.5 + s * cs * 0.9, pz + rnd(1.6) - 0.8))
 					* CFrame.Angles(0, rnd(6.2), 0),
-				crateCols[(i + s) % 3 + 1], Enum.Material.WoodPlanks)
+				crateCols[(i + s) % 3 + 1], Enum.Material.SmoothPlastic)
 			crate.CanCollide = false
 			-- slat detail, so a crate is not a plain cube
 			local slat = part(m, "CrateSlat", Vector3.new(cs * 1.02, cs * 0.12, cs * 1.02),
-				crate.CFrame * CFrame.new(0, cs * 0.2, 0), Color3.fromRGB(58, 38, 22), Enum.Material.Wood)
+				crate.CFrame * CFrame.new(0, cs * 0.2, 0), Color3.fromRGB(58, 38, 22), Enum.Material.SmoothPlastic)
 			slat.CanCollide = false
 		end
 		-- every fourth stack gets a tarp thrown over it
@@ -825,7 +925,7 @@ local function buildCave()
 		local r = CAVE_W * 0.3 - rnd(9)
 		local at = origin + Vector3.new(math.cos(a) * r, 3, math.sin(a) * r)
 		local barrel = part(m, "Barrel", Vector3.new(4.4, 3, 3), CFrame.new(at) * CFrame.Angles(0, rnd(6.2), 0),
-			Color3.fromRGB(72, 48, 28), Enum.Material.Wood)
+			Color3.fromRGB(72, 48, 28), Enum.Material.SmoothPlastic)
 		barrel.Shape = Enum.PartType.Cylinder
 		barrel.CFrame = CFrame.new(at) * CFrame.Angles(0, rnd(6.2), math.rad(90))
 		barrel.CanCollide = false
@@ -978,11 +1078,11 @@ local function buildCave()
 	-- 6g-5. PRIED-OPEN CRATE with its lid on the floor and a crowbar left in it. Evidence of a hurry.
 	local pryAt = origin + Vector3.new(20, 2.4, 20)
 	local opened = part(m, "PriedCrate", Vector3.new(4.6, 4, 4.6), CFrame.new(pryAt) * CFrame.Angles(0, 0.5, 0),
-		Color3.fromRGB(96, 64, 34), Enum.Material.WoodPlanks)
+		Color3.fromRGB(96, 64, 34), Enum.Material.SmoothPlastic)
 	opened.CanCollide = false
 	part(m, "CrateLid", Vector3.new(4.8, 0.35, 4.8),
 		CFrame.new(pryAt + Vector3.new(4.4, -2, 1.6)) * CFrame.Angles(math.rad(8), 0.9, math.rad(72)),
-		Color3.fromRGB(82, 54, 28), Enum.Material.WoodPlanks).CanCollide = false
+		Color3.fromRGB(82, 54, 28), Enum.Material.SmoothPlastic).CanCollide = false
 	part(m, "Crowbar", Vector3.new(0.28, 4.4, 0.28),
 		CFrame.new(pryAt + Vector3.new(-2.6, -1.2, 1)) * CFrame.Angles(math.rad(64), 0.4, 0),
 		Color3.fromRGB(126, 40, 34), Enum.Material.Metal).CanCollide = false
@@ -1076,11 +1176,11 @@ local function buildCave()
 		local cfB = CFrame.lookAt(at, Vector3.new(origin.X, at.Y, origin.Z))
 		for _, side in ipairs({ -2.6, 2.6 }) do
 			local post = part(m, "MinePost", Vector3.new(1, CAVE_H - 5, 1),
-				cfB * CFrame.new(side, (CAVE_H - 5) / 2 + 1, 0), Color3.fromRGB(112, 78, 44), Enum.Material.Wood)
+				cfB * CFrame.new(side, (CAVE_H - 5) / 2 + 1, 0), Color3.fromRGB(112, 78, 44), Enum.Material.SmoothPlastic)
 			post.CanCollide = false
 		end
 		local lintel = part(m, "MineLintel", Vector3.new(6.6, 1, 1),
-			cfB * CFrame.new(0, CAVE_H - 4, 0), Color3.fromRGB(96, 64, 34), Enum.Material.Wood)
+			cfB * CFrame.new(0, CAVE_H - 4, 0), Color3.fromRGB(96, 64, 34), Enum.Material.SmoothPlastic)
 		lintel.CanCollide = false
 	end
 
@@ -1143,7 +1243,7 @@ local function buildCave()
 					shelfCF * CFrame.new((b - 1.5) * 2.6 + rnd(1) - 0.5, 2.5 + lvl * 2.6, 0)
 						* CFrame.Angles(0, rnd(0.6) - 0.3, 0),
 					(s + lvl + b) % 2 == 0 and Color3.fromRGB(104, 70, 38) or Color3.fromRGB(88, 92, 86),
-					Enum.Material.WoodPlanks)
+					Enum.Material.SmoothPlastic)
 				box.CanCollide = false
 			end
 		end
@@ -1160,10 +1260,10 @@ local function buildCave()
 	--     used" half of "actively used but secretive".
 	local wbCF = CFrame.new(origin + Vector3.new(13, 0, -16)) * CFrame.Angles(0, -0.4, 0)
 	part(m, "BenchTop", Vector3.new(7, 0.5, 3), wbCF * CFrame.new(0, 3.4, 0),
-		Color3.fromRGB(122, 86, 48), Enum.Material.WoodPlanks).CanCollide = false
+		Color3.fromRGB(122, 86, 48), Enum.Material.SmoothPlastic).CanCollide = false
 	for _, o in ipairs({ { -3, -1.2 }, { 3, -1.2 }, { -3, 1.2 }, { 3, 1.2 } }) do
 		part(m, "BenchLeg", Vector3.new(0.5, 3.2, 0.5), wbCF * CFrame.new(o[1], 1.6, o[2]),
-			Color3.fromRGB(84, 58, 32), Enum.Material.Wood).CanCollide = false
+			Color3.fromRGB(84, 58, 32), Enum.Material.SmoothPlastic).CanCollide = false
 	end
 	part(m, "Toolbox", Vector3.new(2.2, 1, 1.1), wbCF * CFrame.new(-1.6, 4.2, 0) * CFrame.Angles(0, 0.3, 0),
 		Color3.fromRGB(178, 52, 44), Enum.Material.Metal).CanCollide = false
@@ -1266,7 +1366,7 @@ local function buildCave()
 	local ceilBlades = {}
 	for i = 0, 1 do
 		ceilBlades[i + 1] = part(m, "CeilFanBlade", Vector3.new(9, 0.22, 0.9),
-			ceilHubCF * CFrame.Angles(0, i * math.pi / 2, 0), Color3.fromRGB(88, 74, 54), Enum.Material.Wood)
+			ceilHubCF * CFrame.Angles(0, i * math.pi / 2, 0), Color3.fromRGB(88, 74, 54), Enum.Material.SmoothPlastic)
 		ceilBlades[i + 1].CanCollide = false
 	end
 	task.spawn(function()
@@ -1453,7 +1553,7 @@ local function buildCave()
 	end
 	for i = 0, 8 do
 		part(m, "RailTie", Vector3.new(2.8, 0.2, 0.7), CFrame.new(origin + Vector3.new(-16, 1.08, -42 + i * 4.4)),
-			Color3.fromRGB(78, 56, 32), Enum.Material.Wood).CanCollide = false
+			Color3.fromRGB(78, 56, 32), Enum.Material.SmoothPlastic).CanCollide = false
 	end
 	local cartCF = CFrame.new(origin + Vector3.new(-16, 2.4, -9)) * CFrame.Angles(0, 0.3, math.rad(14))
 	part(m, "MineCart", Vector3.new(4, 2.6, 5.6), cartCF, Color3.fromRGB(94, 74, 58), Enum.Material.CorrodedMetal)
@@ -1467,7 +1567,7 @@ local function buildCave()
 	end
 	for i = 1, 2 do
 		part(m, "CartCrate", Vector3.new(2.2, 2, 2.2), cartCF * CFrame.new((i - 1.5) * 2, 1.6, 0)
-			* CFrame.Angles(0, rnd(6.2), 0), Color3.fromRGB(104, 70, 38), Enum.Material.WoodPlanks)
+			* CFrame.Angles(0, rnd(6.2), 0), Color3.fromRGB(104, 70, 38), Enum.Material.SmoothPlastic)
 			.CanCollide = false
 	end
 
@@ -1475,20 +1575,20 @@ local function buildCave()
 	--     storage stacked UP, which breaks the room's single flat eye-line and makes it read bigger.
 	for _, plat in ipairs({ Vector3.new(36, 7, -36), Vector3.new(18, 7, -36) }) do
 		local pCF = CFrame.new(origin + plat)
-		part(m, "PlatformTop", Vector3.new(11, 0.6, 11), pCF, Color3.fromRGB(112, 78, 44), Enum.Material.WoodPlanks)
+		part(m, "PlatformTop", Vector3.new(11, 0.6, 11), pCF, Color3.fromRGB(112, 78, 44), Enum.Material.SmoothPlastic)
 		for _, o in ipairs({ { -4.6, -4.6 }, { 4.6, -4.6 }, { -4.6, 4.6 }, { 4.6, 4.6 } }) do
 			part(m, "PlatformPost", Vector3.new(0.8, plat.Y - 1, 0.8),
 				CFrame.new(origin + Vector3.new(plat.X + o[1], (plat.Y - 1) / 2 + 1, plat.Z + o[2])),
-				Color3.fromRGB(96, 64, 34), Enum.Material.Wood).CanCollide = false
+				Color3.fromRGB(96, 64, 34), Enum.Material.SmoothPlastic).CanCollide = false
 		end
 		for c = 1, 2 do
 			part(m, "PlatformCrate", Vector3.new(2.6, 2.4, 2.6),
 				pCF * CFrame.new(c * 2.6 - 4, 1.6, rnd(4) - 2) * CFrame.Angles(0, rnd(6.2), 0),
-				Color3.fromRGB(88, 58, 32), Enum.Material.WoodPlanks).CanCollide = false
+				Color3.fromRGB(88, 58, 32), Enum.Material.SmoothPlastic).CanCollide = false
 		end
 	end
 	part(m, "PlankBridge", Vector3.new(8, 0.4, 3.4), CFrame.new(origin + Vector3.new(27, 7, -36)),
-		Color3.fromRGB(122, 86, 48), Enum.Material.WoodPlanks)
+		Color3.fromRGB(122, 86, 48), Enum.Material.SmoothPlastic)
 
 	-- 7s. MAKESHIFT REPAIRS -- planks nailed over wall cracks, a scrap plate bolted on. A place held
 	--     together on purpose, by someone who is not going to file a maintenance ticket.
@@ -1499,7 +1599,7 @@ local function buildCave()
 		for _, tilt in ipairs({ 0.5, -0.6 }) do
 			part(m, "RepairPlank", Vector3.new(0.9, 5 + rnd(2), 0.3),
 				patchCF * CFrame.new(rnd(1) - 0.5, 0, -0.2) * CFrame.Angles(0, 0, tilt),
-				Color3.fromRGB(122, 86, 48), Enum.Material.WoodPlanks).CanCollide = false
+				Color3.fromRGB(122, 86, 48), Enum.Material.SmoothPlastic).CanCollide = false
 		end
 		if i % 2 == 0 then
 			part(m, "ScrapPlate", Vector3.new(2.6, 2.2, 0.2), patchCF * CFrame.new(0, 0, -0.35),
@@ -1586,7 +1686,7 @@ local function buildCave()
 	-- you change about them later instead of drifting into his own art style.
 	-- (stallCF is declared up with the room build -- the market props needed it before this point)
 	local stall = part(m, "Stall", Vector3.new(12, 4, 3), stallCF * CFrame.new(0, 2, 0),
-		Color3.fromRGB(96, 62, 34), Enum.Material.WoodPlanks)
+		Color3.fromRGB(96, 62, 34), Enum.Material.SmoothPlastic)
 
 	--==================================================================
 	-- SHADY SAL'S WORKSTATION  (the focal point)
@@ -1602,7 +1702,7 @@ local function buildCave()
 		Color3.fromRGB(116, 118, 124), Enum.Material.DiamondPlate)
 	for _, px in ipairs({ -6.1, 6.1 }) do
 		part(m, "DeskPost", Vector3.new(0.9, 4.6, 0.9), stallCF * CFrame.new(px, 2.3, 0),
-			Color3.fromRGB(84, 58, 32), Enum.Material.Wood)
+			Color3.fromRGB(84, 58, 32), Enum.Material.SmoothPlastic)
 	end
 	part(m, "DeskPlate", Vector3.new(5, 2.4, 0.25),
 		stallCF * CFrame.new(2.4, 2.2, 1.65) * CFrame.Angles(0, 0, math.rad(-4)),
@@ -1696,10 +1796,10 @@ local function buildCave()
 
 	local boardCF = stallCF * CFrame.new(-9.5, 0, -3) * CFrame.Angles(0, math.rad(35), 0)
 	part(m, "BulletinBoard", Vector3.new(6, 4.2, 0.3), boardCF * CFrame.new(0, 6, 0),
-		Color3.fromRGB(104, 78, 48), Enum.Material.WoodPlanks)
+		Color3.fromRGB(104, 78, 48), Enum.Material.SmoothPlastic)
 	for _, px in ipairs({ -2.5, 2.5 }) do
 		part(m, "BoardLeg", Vector3.new(0.5, 8, 0.5), boardCF * CFrame.new(px, 4, 0),
-			Color3.fromRGB(84, 58, 32), Enum.Material.Wood)
+			Color3.fromRGB(84, 58, 32), Enum.Material.SmoothPlastic)
 	end
 	for i = 1, 4 do  -- pinned notes at drunk angles
 		local note = part(m, "BoardNote", Vector3.new(1 + rnd(0.5), 1.2 + rnd(0.5), 0.06),
@@ -1716,7 +1816,7 @@ local function buildCave()
 	local barrCF = stallCF * CFrame.new(9, 0, 3) * CFrame.Angles(0, math.rad(-25), 0)
 	for _, tilt in ipairs({ 18, -18 }) do
 		part(m, "Barricade", Vector3.new(0.5, 3.4, 0.5), barrCF * CFrame.new(0, 1.6, 0)
-			* CFrame.Angles(math.rad(tilt), 0, 0), Color3.fromRGB(112, 78, 44), Enum.Material.Wood)
+			* CFrame.Angles(math.rad(tilt), 0, 0), Color3.fromRGB(112, 78, 44), Enum.Material.SmoothPlastic)
 	end
 	part(m, "Barricade", Vector3.new(4.4, 0.5, 0.4), barrCF * CFrame.new(0, 2.6, 0),
 		Color3.fromRGB(245, 205, 48), Enum.Material.SmoothPlastic)
@@ -1854,10 +1954,21 @@ local function buildCave()
 	local pl = Instance.new("PointLight")
 	pl.Brightness = 3; pl.Range = 46; pl.Color = Color3.fromRGB(255, 200, 130); pl.Parent = lamp
 
+	-- ===== SAL'S PROMPT IS BUILT, THEN DISABLED =====
+	-- His shop now opens by WALKING UP, exactly like the island food stands do (ShopClient's stand proximity
+	-- loop) -- no E to press. Two reasons it works better here: the cave is dark and a prompt is one more thing
+	-- to spot in it, and every OTHER shop in the game already opens on approach, so pressing a button for this
+	-- one was the odd interaction out.
+	--
+	-- The prompt object still EXISTS because other code navigates through it -- builtRefs.shop.Parent is how
+	-- the proximity loop finds Sal's body part. Disabling rather than deleting also means re-enabling this one
+	-- boolean puts the old E-to-trade behaviour back, since its Triggered wiring is left connected below.
 	local shopPrompt = Instance.new("ProximityPrompt")
 	shopPrompt.ActionText = "Trade"; shopPrompt.ObjectText = "Shady Sal"
 	shopPrompt.HoldDuration = 0; shopPrompt.MaxActivationDistance = 14
-	shopPrompt.RequiresLineOfSight = false; shopPrompt.Parent = body
+	shopPrompt.RequiresLineOfSight = false
+	shopPrompt.Enabled = false        -- walk-up opening replaces it; see the proximity loop in the SHOP UI section
+	shopPrompt.Parent = body
 
 	-- EXIT. Its own alcove on the far side, so leaving is a deliberate walk rather than something you trip on
 	-- the moment you arrive facing the entrance.
@@ -1990,12 +2101,12 @@ local function buildCave()
 				-- corner battens: THE low-poly crate signature
 				for _, c in ipairs({ { -1, -1 }, { 1, -1 }, { -1, 1 }, { 1, 1 } }) do
 					accent(d, "CrateBatten", Vector3.new(s.X * 0.14, s.Y * 1.04, s.Z * 0.14),
-						CFrame.new(c[1] * s.X * 0.43, 0, c[2] * s.Z * 0.43), woodDark, Enum.Material.Wood)
+						CFrame.new(c[1] * s.X * 0.43, 0, c[2] * s.Z * 0.43), woodDark, Enum.Material.SmoothPlastic)
 				end
 				detailed += 1
 			elseif n == "ShelfBox" then   -- small boxes get a single lid strip, not the full treatment
 				accent(d, "BoxLid", Vector3.new(s.X * 1.04, s.Y * 0.16, s.Z * 1.04),
-					CFrame.new(0, s.Y * 0.46, 0), woodDark, Enum.Material.Wood)
+					CFrame.new(0, s.Y * 0.46, 0), woodDark, Enum.Material.SmoothPlastic)
 				detailed += 1
 			elseif n == "Barrel" or n == "PenBarrel" then
 				for _, xo in ipairs({ -0.32, 0.32 }) do
@@ -2003,7 +2114,7 @@ local function buildCave()
 						CFrame.new(s.X * xo, 0, 0), ironDark).Shape = Enum.PartType.Cylinder
 				end
 				accent(d, "BarrelBung", Vector3.new(0.18, 0.5, 0.5),
-					CFrame.new(s.X * 0.51, 0, 0), woodDark, Enum.Material.Wood).Shape = Enum.PartType.Cylinder
+					CFrame.new(s.X * 0.51, 0, 0), woodDark, Enum.Material.SmoothPlastic).Shape = Enum.PartType.Cylinder
 				detailed += 1
 			elseif n == "FuelTank" then
 				for _, xo in ipairs({ -0.3, 0.3 }) do
@@ -2176,8 +2287,25 @@ end
 local buyRemote  = ReplicatedStorage:WaitForChild("SecretTraderBuy", 30)
 local resultRmt  = ReplicatedStorage:WaitForChild("SecretTraderResult", 30)
 local stockValue = ReplicatedStorage:WaitForChild("SecretTraderStock", 30)
+-- ===== THE RESTOCK VALUES (see SecretTrader.server.lua) =====
+-- Three separate values on purpose, because they change at three different RATES:
+--   SecretTraderStock      -- the shelf. Changes once per 20-minute window -> full row rebuild.
+--   SecretTraderCounts     -- live remaining units. Changes on every sale anywhere on the server -> label-only
+--                             update, so a sale never tears down the list under someone who is mid-scroll.
+--   SecretTraderRestockAt  -- the window deadline on the SERVER clock -> drives the countdown, no rebuild ever.
+local countsValue  = ReplicatedStorage:WaitForChild("SecretTraderCounts", 30)
+local restockAtVal = ReplicatedStorage:WaitForChild("SecretTraderRestockAt", 30)
+local restockEvent = ReplicatedStorage:WaitForChild("SecretTraderRestockEvent", 30)
 
-local shopGui, shopStatus
+-- Hoisted out of buildShop: the panel is built ONCE, but its rows are rebuilt on every restock, so the list
+-- and the row registry have to outlive the builder.
+local shopGui, shopStatus, shopList, countdownLbl
+local shopRows = {}          -- [id] = { buy, unitsLbl, priceText, max }
+local playerClosedShop = false  -- X was pressed: don't let proximity immediately reopen it in their face
+-- Forward-declared so buildShop can call it while its body still lives further down the file. Declaring it
+-- with a bare `function renderRows()` instead would quietly make it a GLOBAL, which is how two scripts end up
+-- fighting over one name in a place this size.
+local renderRows
 -- ===== THE PANEL IS DARK, AND THAT IS A DELIBERATE EXCEPTION =====
 -- Every other panel in this game is house-blue and bright (and should stay that way). This one is charcoal
 -- and amber ON PURPOSE: it opens inside a pitch-black cave, lit by pendant lamps, sold by a man called Shady
@@ -2223,12 +2351,23 @@ local function buildShop()
 	-- the NO REFUNDS stamp: rotated, red, slightly transparent -- rubber-stamped over the corner like the
 	-- paperwork it replaces
 	local stamp = Instance.new("TextLabel")
-	stamp.Size = UDim2.fromOffset(150, 34); stamp.Position = UDim2.new(1, -210, 0, 22)
+	stamp.Size = UDim2.fromOffset(150, 30); stamp.Position = UDim2.new(1, -210, 0, 8)
 	stamp.BackgroundTransparency = 1; stamp.Font = Enum.Font.FredokaOne; stamp.TextScaled = true
 	stamp.TextColor3 = Color3.fromRGB(210, 60, 50); stamp.TextTransparency = 0.15
 	stamp.Rotation = -8; stamp.Text = "NO REFUNDS"; stamp.Parent = head
 	local ss = Instance.new("UIStroke", stamp); ss.Thickness = 2
 	ss.Color = Color3.fromRGB(210, 60, 50); ss.Transparency = 0.5
+
+	-- ===== THE RESTOCK COUNTDOWN =====
+	-- Sits under the stamp, in the header, always visible while the panel is open. This is the single most
+	-- important label in the shop: without it the rotation is invisible and the whole restock reads as random
+	-- stock changes. With it, every visit ends with the player knowing exactly when to come back.
+	countdownLbl = Instance.new("TextLabel")
+	countdownLbl.Size = UDim2.fromOffset(150, 20); countdownLbl.Position = UDim2.new(1, -210, 0, 46)
+	countdownLbl.BackgroundTransparency = 1; countdownLbl.Font = Enum.Font.GothamBold
+	countdownLbl.TextSize = 14; countdownLbl.TextXAlignment = Enum.TextXAlignment.Right
+	countdownLbl.TextColor3 = AMBER; countdownLbl.Text = "restock in --:--"
+	countdownLbl.Parent = head
 
 	-- X ONLY. A stray tap anywhere else must never close this -- and closing must never eject you from the
 	-- cave, which is why this button does nothing but hide the panel.
@@ -2239,7 +2378,13 @@ local function buildShop()
 	close.TextColor3 = CREAM; close.Parent = panel
 	Instance.new("UICorner", close).CornerRadius = UDim.new(0, 10)
 	close:SetAttribute("BTS_Skip", true)
-	close.MouseButton1Click:Connect(function() shopGui.Enabled = false end)
+	-- The flag is what stops the proximity watcher re-opening the panel on its very next tick. It is cleared
+	-- when the player genuinely walks away (see the proximity loop), so "close, stay put, walk off, come
+	-- back" opens again -- but "close" alone stays closed.
+	close.MouseButton1Click:Connect(function()
+		playerClosedShop = true
+		shopGui.Enabled = false
+	end)
 
 	shopStatus = Instance.new("TextLabel")
 	shopStatus.Size = UDim2.new(1, -24, 0, 30); shopStatus.Position = UDim2.new(0, 12, 1, -38)
@@ -2247,36 +2392,102 @@ local function buildShop()
 	shopStatus.TextSize = 17; shopStatus.TextColor3 = AMBER
 	shopStatus.Text = "He nods at the crates. Nothing here has papers."; shopStatus.Parent = panel
 
-	local list = Instance.new("ScrollingFrame")
-	list.Size = UDim2.new(1, -24, 1, -126); list.Position = UDim2.fromOffset(12, 82)
-	list.BackgroundTransparency = 1; list.BorderSizePixel = 0
-	list.ScrollBarThickness = 6; list.ScrollBarImageColor3 = AMBER; list.Parent = panel
-	local layout = Instance.new("UIListLayout", list)
+	shopList = Instance.new("ScrollingFrame")
+	shopList.Size = UDim2.new(1, -24, 1, -126); shopList.Position = UDim2.fromOffset(12, 82)
+	shopList.BackgroundTransparency = 1; shopList.BorderSizePixel = 0
+	shopList.ScrollBarThickness = 6; shopList.ScrollBarImageColor3 = AMBER; shopList.Parent = panel
+	local layout = Instance.new("UIListLayout", shopList)
 	layout.Padding = UDim.new(0, 8)
 
-	-- one emoji per item id so rows are told apart at a glance; anything unrecognised gets Sal's candle
-	local ICONS = {
-		hotcoins = "\u{1F4B0}", boost2x = "\u{26A1}", boostspeed = "\u{1F680}",
-		basiccrate = "\u{1F4E6}", mystery = "\u{2753}",
-	}
+	renderRows()
+	return shopGui
+end
 
-	-- Stock is drawn from the SERVER's table (published as a StringValue), never from a copy kept here. A
-	-- second price list in this file would drift out of step the first time a price changed, and the player
-	-- would see one number and be charged another. Field order: id, name, price, street, desc.
+-- one emoji per item id so rows are told apart at a glance; anything unrecognised gets Sal's candle
+local ICONS = {
+	hotcoins = "\u{1F4B0}", boost2x = "\u{26A1}", boostspeed = "\u{1F680}",
+	basiccrate = "\u{1F4E6}", mystery = "\u{2753}",
+	-- the rotating pool
+	boost2xlong = "\u{1F4B8}", jetfuel = "\u{1F6E9}", fatsack = "\u{1F45D}",
+	doubledip = "\u{1F31F}", tokenpouch = "\u{1F3AB}",
+}
+
+local CREAM = Color3.fromRGB(255, 244, 224)
+local AMBER = Color3.fromRGB(255, 176, 92)
+local GOLD  = Color3.fromRGB(216, 164, 60)
+local MUTED = Color3.fromRGB(150, 146, 138)
+
+-- ===== LIVE UNIT COUNTS =====
+-- Applied to rows that ALREADY EXIST, never by rebuilding them. A sale anywhere on the server fires this, and
+-- rebuilding the list on every sale would yank the scroll position out from under whoever is reading it.
+--
+-- Unlimited rows (max -1: Sal's permanent staples) get no badge at all -- a "999 LEFT" on an item that never
+-- runs out is noise, and the badge's whole job is to mark the things that CAN run out.
+local function applyCounts()
+	local live = {}
+	for _, entry in ipairs(string.split(countsValue and countsValue.Value or "", "\31")) do
+		local f = string.split(entry, "\30")
+		if #f >= 2 then live[f[1]] = tonumber(f[2]) end
+	end
+	for id, row in pairs(shopRows) do
+		if row.max and row.max > 0 then
+			local n = live[id]
+			if n == nil then n = row.max end
+			if n <= 0 then
+				row.unitsLbl.Text = "SOLD OUT"
+				row.unitsLbl.TextColor3 = Color3.fromRGB(226, 88, 76)
+				row.buy.Text = "SOLD OUT"
+				row.buy.BackgroundColor3 = Color3.fromRGB(74, 68, 62)  -- greyed: still tappable, but it reads as gone
+				row.buy.TextColor3 = Color3.fromRGB(150, 144, 136)
+			else
+				row.unitsLbl.Text = n .. " LEFT"
+				-- Two or fewer turns the badge red. That is the moment the item stops being "available" and
+				-- starts being "about to be gone", which is the whole reason unit counts are on screen.
+				row.unitsLbl.TextColor3 = (n <= 2) and Color3.fromRGB(255, 120, 96) or AMBER
+				row.buy.Text = row.priceText
+				row.buy.BackgroundColor3 = GOLD
+				row.buy.TextColor3 = Color3.fromRGB(46, 32, 12)
+			end
+		end
+	end
+end
+
+-- ===== BUILD THE SHELF =====
+-- Called on first open AND on every restock. Stock is drawn from the SERVER's table (published as a
+-- StringValue), never from a copy kept here. A second price list in this file would drift out of step the
+-- first time a price changed, and the player would see one number and be charged another.
+-- Field order: id, name, price, street, desc, currency, maxUnits (-1 = unlimited).
+function renderRows()
+	if not shopList then return end
+	shopList:ClearAllChildren()
+	local layout = Instance.new("UIListLayout", shopList)
+	layout.Padding = UDim.new(0, 8)
+	shopRows = {}
+
 	local rows = 0
 	for _, entry in ipairs(string.split(stockValue and stockValue.Value or "", "\31")) do
 		local f = string.split(entry, "\30")
 		if #f >= 5 then
 			local id, name, price, street, desc = f[1], f[2], tonumber(f[3]) or 0, tonumber(f[4]) or 0, f[5]
+			-- 6th field = the wallet the SERVER will charge. Defaulting to coins keeps this working against an
+			-- older server that publishes five fields, rather than showing a blank or the wrong icon.
+			local currency = f[6] or "coins"
+			-- 7th field = max units this window. An older server that omits it means "unlimited", which is
+			-- exactly the pre-restock behaviour, so an out-of-date server degrades to the old shop instead of
+			-- showing every row as sold out.
+			local maxUnits = tonumber(f[7]) or -1
+			local priceIcon = (currency == "tokens") and "\u{1F3AB}" or "\u{1FA99}" -- 🎫 tokens / 🪙 coins
+			local priceText = "SAL: " .. price .. " " .. priceIcon
+
 			local row = Instance.new("Frame")
-			row.Size = UDim2.new(1, -12, 0, 92); row.BackgroundColor3 = Color3.fromRGB(42, 38, 46)
-			row.BorderSizePixel = 0; row.Parent = list
+			row.Size = UDim2.new(1, -12, 0, 104); row.BackgroundColor3 = Color3.fromRGB(42, 38, 46)
+			row.BorderSizePixel = 0; row.Parent = shopList
 			Instance.new("UICorner", row).CornerRadius = UDim.new(0, 10)
 			local rs = Instance.new("UIStroke", row); rs.Thickness = 1
 			rs.Color = AMBER; rs.Transparency = 0.7
 
 			local icon = Instance.new("TextLabel")
-			icon.Size = UDim2.fromOffset(56, 56); icon.Position = UDim2.fromOffset(12, 18)
+			icon.Size = UDim2.fromOffset(56, 56); icon.Position = UDim2.fromOffset(12, 24)
 			icon.BackgroundColor3 = Color3.fromRGB(28, 26, 32); icon.Font = Enum.Font.FredokaOne
 			icon.TextSize = 32; icon.TextColor3 = CREAM
 			icon.Text = ICONS[id] or "\xF0\x9F\x95\xAF"; icon.Parent = row
@@ -2288,7 +2499,7 @@ local function buildShop()
 			n.TextSize = 23; n.TextColor3 = CREAM; n.Text = name; n.Parent = row
 
 			local d = Instance.new("TextLabel")
-			d.Size = UDim2.new(1, -320, 0, 44); d.Position = UDim2.fromOffset(80, 40)
+			d.Size = UDim2.new(1, -320, 0, 48); d.Position = UDim2.fromOffset(80, 42)
 			d.BackgroundTransparency = 1; d.Font = Enum.Font.Gotham; d.TextXAlignment = Enum.TextXAlignment.Left
 			d.TextYAlignment = Enum.TextYAlignment.Top
 			d.TextSize = 14; d.TextWrapped = true; d.TextColor3 = MUTED
@@ -2299,7 +2510,7 @@ local function buildShop()
 			-- legal price, and the number Sal actually wants under it. RichText <s> does the strikethrough;
 			-- a street price of 0 means nobody knows what it is worth up top, which gets '???'.
 			local streetLbl = Instance.new("TextLabel")
-			streetLbl.Size = UDim2.fromOffset(150, 22); streetLbl.Position = UDim2.new(1, -164, 0, 12)
+			streetLbl.Size = UDim2.fromOffset(150, 22); streetLbl.Position = UDim2.new(1, -164, 0, 10)
 			streetLbl.BackgroundTransparency = 1; streetLbl.Font = Enum.Font.Gotham
 			streetLbl.TextSize = 14; streetLbl.RichText = true
 			streetLbl.TextXAlignment = Enum.TextXAlignment.Right
@@ -2310,23 +2521,34 @@ local function buildShop()
 			streetLbl.Parent = row
 
 			local buy = Instance.new("TextButton")
-			buy.Size = UDim2.fromOffset(150, 44); buy.Position = UDim2.new(1, -164, 0, 38)
+			buy.Size = UDim2.fromOffset(150, 44); buy.Position = UDim2.new(1, -164, 0, 34)
 			buy.BackgroundColor3 = GOLD; buy.Font = Enum.Font.FredokaOne
 			buy.TextScaled = true; buy.TextColor3 = Color3.fromRGB(46, 32, 12)
-			buy.Text = "SAL: " .. price .. " \u{1FA99}"; buy.Parent = row
+			buy.Text = priceText; buy.Parent = row
 			Instance.new("UICorner", buy).CornerRadius = UDim.new(0, 8)
 			buy:SetAttribute("BTS_Skip", true)   -- this button paints itself; the global label pass must not repaint it
 			buy.MouseButton1Click:Connect(function()
 				if buyRemote then buyRemote:FireServer(id) end
 			end)
+
+			-- The units badge. Built for every row but only ever filled in for limited ones (see applyCounts),
+			-- so the layout is identical whether an item is scarce or not.
+			local unitsLbl = Instance.new("TextLabel")
+			unitsLbl.Size = UDim2.fromOffset(150, 18); unitsLbl.Position = UDim2.new(1, -164, 0, 80)
+			unitsLbl.BackgroundTransparency = 1; unitsLbl.Font = Enum.Font.GothamBold
+			unitsLbl.TextSize = 13; unitsLbl.TextXAlignment = Enum.TextXAlignment.Right
+			unitsLbl.TextColor3 = AMBER; unitsLbl.Text = ""
+			unitsLbl.Parent = row
+
+			shopRows[id] = { buy = buy, unitsLbl = unitsLbl, priceText = priceText, max = maxUnits }
 			rows += 1
 		end
 	end
-	list.CanvasSize = UDim2.fromOffset(0, rows * 100)
-	if rows == 0 then
+	shopList.CanvasSize = UDim2.fromOffset(0, rows * 112)
+	if rows == 0 and shopStatus then
 		shopStatus.Text = "His stall is empty -- SecretTrader.server.lua did not publish any stock."
 	end
-	return shopGui
+	applyCounts()
 end
 
 if resultRmt then
@@ -2338,6 +2560,109 @@ if resultRmt then
 		toast(msg or "", ok and Color3.fromRGB(120, 240, 140) or Color3.fromRGB(255, 170, 140))
 	end)
 end
+
+--======================================================================
+-- RESTOCK: rebuild, recount, count down, and shout about it
+--======================================================================
+-- Rows are rebuilt only when the SHELF changes; counts update labels in place. Both are guarded on shopList
+-- existing, so a restock that lands before the player has ever opened the panel costs nothing -- the first
+-- open reads whatever the values hold by then.
+if stockValue  then stockValue.Changed:Connect(function() if shopList then renderRows() end end) end
+if countsValue then countsValue.Changed:Connect(function() if shopList then applyCounts() end end) end
+
+-- The countdown ticks whether or not the panel is open, but only paints while it is -- the label is inside
+-- the panel, so there is nothing to update when it's hidden.
+task.spawn(function()
+	while true do
+		task.wait(1)
+		if countdownLbl and shopGui and shopGui.Enabled and restockAtVal then
+			-- GetServerTimeNow on both ends: the server published this deadline on the same clock, so the
+			-- countdown is immune to a player's device clock being wrong.
+			local left = math.max(0, math.floor(restockAtVal.Value - workspace:GetServerTimeNow()))
+			countdownLbl.Text = ("restock in %d:%02d"):format(math.floor(left / 60), left % 60)
+			-- Under a minute the shelf is about to change -- say it in the colour that means "now".
+			countdownLbl.TextColor3 = (left <= 60) and Color3.fromRGB(255, 120, 96) or AMBER
+		end
+	end
+end)
+
+-- ===== THE SERVER-WIDE RESTOCK BANNER =====
+-- Fires for EVERYONE, above ground or below, in the cave or not. That is the entire point: the banner's job
+-- is to send people to the cave, so it is worthless to anyone already standing in it. EVENT priority puts it
+-- in the same lane as a server event starting, which is what a restock effectively is -- it must not be
+-- swallowed by a daily-reward nudge, and it must not shove an island landing off the screen.
+if restockEvent then
+	restockEvent.OnClientEvent:Connect(function(headline)
+		local text = "\u{1F56F} SHADY SAL RESTOCKED!"
+		if type(headline) == "string" and headline ~= "" then
+			text = text .. "  " .. headline
+		end
+		if _G.NotifyCenter and _G.NotifyCenter.push then
+			pcall(_G.NotifyCenter.push, {
+				text     = text,
+				color    = Color3.fromRGB(255, 176, 92),   -- Sal's amber, so the banner is recognisably his
+				priority = (_G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT) or 80,
+				duration = 6,
+			})
+		end
+		-- If the panel happens to be open, the rows are already being rebuilt by the stock listener above --
+		-- but the status line should say why the shelf just changed under them.
+		if shopStatus and shopGui and shopGui.Enabled then
+			shopStatus.Text = "Sal just restocked. New stuff on the shelf."
+			shopStatus.TextColor3 = Color3.fromRGB(150, 245, 160)
+		end
+	end)
+end
+
+--======================================================================
+-- WALK UP TO SAL AND THE SHOP OPENS  (the island-stand pattern)
+--======================================================================
+-- Copied in shape from ShopClient's stand proximity loop: a 0.1s poll, an OPEN radius, a "the player closed
+-- it themselves" flag, and that flag clearing once they have genuinely walked off. Same cadence and same
+-- radius as the food stands, so approaching Sal feels like approaching any other shop in the game.
+--
+-- ===== WHY OPEN AND CLOSE ARE DIFFERENT DISTANCES =====
+-- A single radius makes the panel strobe: stand exactly on the line and the smallest idle sway flickers it
+-- open and shut. Two radii (hysteresis) fix that -- you open it by getting properly close, and you keep it
+-- until you have properly left. The CLOSE distance is 3x the open one, which also means small movements
+-- around the stall -- stepping back to read the shelf, drifting while the panel is up -- never dismiss it.
+--
+-- The walk-away close is the one sanctioned exception to this game's "panels only close on X" rule: it is not
+-- a stray-tap close, it is the shopkeeper rule -- you left the counter, the deal is off.
+local SAL_OPEN_RADIUS  = 12                     -- matches ShopClient's STAND_TRIGGER_RADIUS
+local SAL_CLOSE_RADIUS = SAL_OPEN_RADIUS * 3    -- 3x: the panel survives anything short of actually leaving
+
+task.spawn(function()
+	while true do
+		task.wait(0.1)
+		pcall(function()
+			local salPrompt = builtRefs and builtRefs.shop
+			local salPart   = salPrompt and salPrompt.Parent
+			if not (salPart and salPart:IsA("BasePart")) then return end
+
+			local char = player.Character
+			local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+			if not hrp then return end
+
+			local dist = (hrp.Position - salPart.Position).Magnitude
+
+			if dist <= SAL_OPEN_RADIUS then
+				-- Deliberately NOT gated on being grounded (the way the island stands are). Those stands sit
+				-- under an open sky where a player flies past them constantly; Sal is in a sealed cave with a
+				-- no-fly flag set, so there is no fly-by to guard against.
+				if not playerClosedShop then
+					local g = buildShop()
+					if not g.Enabled then g.Enabled = true end
+				end
+			elseif dist > SAL_CLOSE_RADIUS then
+				if shopGui and shopGui.Enabled then shopGui.Enabled = false end
+				-- They have properly left the counter, so an earlier X is forgotten: walking back in opens the
+				-- shop again. Without this, closing it once would keep it shut for the rest of the visit.
+				playerClosedShop = false
+			end
+		end)
+	end
+end)
 
 --======================================================================
 -- TELEPORTS
@@ -2365,12 +2690,23 @@ local function enterCave()
 	end
 	caveRefs = refsOrErr
 
+	-- Fired BEFORE withFade rather than inside it: withFade yields for the whole wipe, so starting the sound
+	-- here puts it under the black instead of after it, and it lands as the room appears.
+	-- Never restarted: if it is still running from a previous entry, leave it be -- :Play() on a playing
+	-- Sound rewinds it, which truncates the cue rather than replaying it.
+	pcall(function()
+		if not caveEnterSound.IsPlaying then caveEnterSound:Play() end
+	end)
+
 	withFade(function()
 		-- Lighting is GLOBAL and shared with the surface. Save it before stamping the cave look, or the
 		-- player climbs out into permanent underground gloom and nothing ever puts it back.
+		-- FogStart is saved too because the cave now sets it -- without that the surface would keep the
+		-- cave's near fog forever after the first visit.
 		savedLighting = {
 			Ambient = Lighting.Ambient, Outdoor = Lighting.OutdoorAmbient,
 			Bright = Lighting.Brightness, Fog = Lighting.FogEnd, FogColor = Lighting.FogColor,
+			FogStart = Lighting.FogStart,
 		}
 		-- DARK on purpose, and darker than the first pass shipped. The room's whole lighting design is "dim
 		-- everywhere except Sal's pendants" -- the lower this ambient goes, the harder that contrast works,
@@ -2379,10 +2715,17 @@ local function enterCave()
 		-- pendants, neon, crystals, machine glow -- and everything they do not reach is genuine darkness.
 		-- The Neon materials do not need light to be visible, so the glowing props still read even here;
 		-- what disappears is everything else, which is the point.
-		Lighting.Ambient = Color3.fromRGB(2, 2, 3)
-		Lighting.OutdoorAmbient = Color3.fromRGB(2, 2, 3)
-		Lighting.Brightness = 0.04
-		Lighting.FogEnd = 48; Lighting.FogColor = Color3.fromRGB(3, 3, 5)
+		-- DARKER AGAIN. Ambient and Brightness are now at the floor -- there is no light in this room that
+		-- does not come from a lamp in it. Ambient (2,2,3) still lifted every rock face by a hair; at 0 the
+		-- walls are lit only where a pendant or a crystal actually reaches.
+		Lighting.Ambient = Color3.fromRGB(0, 0, 0)
+		Lighting.OutdoorAmbient = Color3.fromRGB(0, 0, 0)
+		Lighting.Brightness = 0
+		-- With ambient already at zero, FOG is the only lever left that still changes anything, and it is the
+		-- one that reads as "darker" rather than just "dimmer": pulling the far plane in from 48 to 30 and
+		-- starting the haze at 6 means the far side of a 90-stud room is genuinely gone, not merely dim.
+		Lighting.FogStart = 6
+		Lighting.FogEnd = 30; Lighting.FogColor = Color3.fromRGB(1, 1, 2)
 
 		_G.caveNoFly = true       -- see the altitude note at the top: no flying inside
 		inside = true
@@ -2400,6 +2743,7 @@ local function restoreLighting()
 	Lighting.Brightness = savedLighting.Bright
 	Lighting.FogEnd = savedLighting.Fog
 	Lighting.FogColor = savedLighting.FogColor
+	Lighting.FogStart = savedLighting.FogStart
 	savedLighting = nil
 end
 
@@ -2409,6 +2753,11 @@ local function leaveCave()
 	if not char then return end
 	busy = true
 	if shopGui then shopGui.Enabled = false end
+	-- The cue is 3m20s long -- far longer than a visit -- so without this it follows you back out to the
+	-- surface and keeps playing over the garden. Faded rather than cut: a 200-second track stopping dead
+	-- the instant you step out is more noticeable than the track was.
+	stopCaveSound()
+
 	withFade(function()
 		inside = false
 		_G.caveNoFly = false
@@ -2424,6 +2773,7 @@ player.CharacterAdded:Connect(function()
 	if inside or savedLighting or _G.caveNoFly then
 		inside = false
 		_G.caveNoFly = false
+		stopCaveSound() -- dying underground is also "leaving the cave" as far as the audio is concerned
 		restoreLighting()
 		if shopGui then shopGui.Enabled = false end
 	end
@@ -2471,19 +2821,10 @@ task.spawn(function()
 				leaveBtn.Position = UDim2.fromOffset(p.X, p.Y + sz2.Y + 4)
 				leaveBtn.Size = UDim2.fromOffset(sz2.X, sz2.Y)
 			end
-			-- ===== WALK-AWAY SHOP CLOSE =====
-			-- The one exception to "panels only close on X": walking more than 12 studs from Sal closes his
-			-- panel. This is not a stray-tap close (the rule the X-only convention exists to prevent) -- it
-			-- is the shopkeeper rule: you left the counter, the deal is off. 12 matches the Trade prompt's
-			-- own activation range, so the panel exists exactly where the prompt does.
 			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-			if hrp and shopGui and shopGui.Enabled then
-				local salPart = builtRefs and builtRefs.shop and builtRefs.shop.Parent
-				if salPart and salPart:IsA("BasePart")
-					and (hrp.Position - salPart.Position).Magnitude > 12 then
-					shopGui.Enabled = false
-				end
-			end
+			-- (Walk-up open / walk-away close now live in their own 0.1s proximity loop below -- this loop
+			-- ticks at 0.25s, which is fine for gluing a button to another button but reads as sluggish when
+			-- it is deciding whether a shop is open.)
 			-- ===== YANK WATCHDOG =====
 			-- RETURN TO ISLAND sits directly above this button and still works while underground: it warps
 			-- straight to the island stand, leaving the cave's black lighting stamp and the no-fly flag
@@ -2569,6 +2910,29 @@ local function openDoor()
 end
 
 task.spawn(function()
+	-- ===== WAIT FOR THE ISLANDS TO BE PUT WHERE THEY LIVE =====
+	-- PlayerStats moves every island into place a second or two after the server starts, and Coconut Cove is
+	-- island 5 -- it travels from roughly Y=0 up to Y~3600. The 'secretcave' and 'switch' Parts ride up with
+	-- it, because they are your Studio parts and children of the island model.
+	--
+	-- The lever and the doorway, though, are GENERATED and ANCHORED at whatever position those parts held at
+	-- the moment they were read. Read them too early and both get built at sea level, thousands of studs
+	-- below the island -- so on Coconut Cove there is simply no lever, and the one hint the cave exists is
+	-- missing. This is a RACE, which is why it looked intermittent; two runs of the same unchanged build:
+	--     lever built ON the 'switch' block at (-250.9, 3596.1, 185.2)   <- islands moved first: correct
+	--     lever built ON the 'switch' block at (1171.5,   -1.6, -430.5)  <- read first: 3600 studs low
+	--
+	-- workspace's StandsReady attribute is set by PlayerStats once every island is seated, and attributes
+	-- replicate, so the client can simply wait for it -- the same gate PetSystem, PetBarn, IslandNPCs and
+	-- the Leaderboard already use on the server. Bounded, then continue anyway: a missing flag must not cost
+	-- the cave entirely, and an un-moved island still builds a lever in the right place relative to itself.
+	if not workspace:GetAttribute("StandsReady") then
+		local t0 = os.clock()
+		while not workspace:GetAttribute("StandsReady") and os.clock() - t0 < 30 do task.wait(0.2) end
+		print(("[SecretCave] islands settled after %.1fs (StandsReady=%s) -- safe to read marker positions")
+			:format(os.clock() - t0, tostring(workspace:GetAttribute("StandsReady"))))
+	end
+
 	doorPart = pollFor("secretcave", 60)
 	if not doorPart then
 		warn("[SecretCave] no Part named 'secretcave' found in Workspace after 60s -- the door cannot exist. " ..

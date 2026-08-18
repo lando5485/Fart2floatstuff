@@ -12,6 +12,11 @@
 -- /resetcrate  -> [TEST USERS ONLY] resets the player's crate timer to ready immediately
 --                 (lastCrateClaim = 0) so they can claim again right away. Pushes a fresh snapshot
 --                 so the More-menu row / "!" dot flip to READY at once.
+-- /rocket      -> [TEST USERS ONLY] starts the Big Rocket event NOW instead of waiting for the
+--                 BigEventScheduler to pick it. Runs the real sequence for EVERY player in the
+--                 server -- build, boarding hatch, countdown, launch, explosion -- so what you are
+--                 testing is the shipped event and not a special path. Refuses while one is already
+--                 running rather than stacking a second rocket on the first.
 
 local Players = game:GetService("Players")
 local ServerScriptService = game:GetService("ServerScriptService")
@@ -91,6 +96,64 @@ local function onChatted(player, message)
 			_G.devGrantInfiniteGut(player)
 			print("[DevCommands] /infinitegut for " .. player.Name)
 		end
+	-- /newlevel : push the EQUIPPED pet into the NEXT TIER (Baby->Kid->Teen->Adult->Elder), i.e. straight to
+	--             levels 6 / 11 / 16 / 21. This is the ONE step that fires the tier-up sound, so it tests that
+	--             sound (and the new look) in a second instead of grinding five levels of XP. It runs the same
+	--             server-side tierSkip the Robux product uses, and can never jump more than one tier per call.
+	--             Optional argument: /newlevel <petId> to bump a pet other than the equipped one.
+	elseif string.match(cmd, "^/newlevel") or string.match(cmd, "^/nextlevel") then
+		if not isTestUser(player) then return end
+		if not _G.petTierSkip then
+			warn("[DevCommands] /newlevel: PetSystem hasn't published _G.petTierSkip yet")
+			return
+		end
+		-- raw message, not the lower-cased copy: pet ids are case-sensitive ("BroccoliPet")
+		local petId = string.match(message, "^/%a+level%s+(%S+)") -- covers /newlevel and the /nextlevel alias
+		local lvl, tier = _G.petTierSkip(player, petId)
+		if lvl then
+			print(string.format("[DevCommands] /newlevel: %s -> Lv %d (%s tier) for %s",
+				tostring(petId or "equipped pet"), lvl, tostring(tier), player.Name))
+		else
+			print("[DevCommands] /newlevel: nothing to skip for " .. player.Name
+				.. " (no equipped pet, not owned, or already at the top tier)")
+		end
+	-- /complete : finish the pet quest on the island you are STANDING ON, exactly as if you had collected every
+	--             piece and hatched the egg -- the pet, the rare roll, the hatch tier, the island-task crate
+	--             tokens and the on-screen reward moment all fire through the real path.
+	--
+	--             It calls PetSystem's completeQuest with the anti-cheat gates lifted rather than reimplementing
+	--             the hatch here; a second copy of that logic would drift the first time the rewards change.
+	--
+	--             The tokens are still gated on firstTime, so spamming /complete cannot farm them: the second
+	--             run on the same island pays nothing, which is also exactly what it does for a real player.
+	--             Optional argument: /complete <petId> to force a specific quest from anywhere.
+	elseif string.match(cmd, "^/complete") then
+		if not isTestUser(player) then return end
+		if not (_G.petForceCompleteQuest and _G.petQuestIslandUnder) then
+			warn("[DevCommands] /complete: PetSystem hasn't published its quest hooks yet -- try again in a second")
+			return
+		end
+		-- raw message, not the lower-cased copy: pet ids are case-sensitive ("BroccoliPet")
+		local petId = string.match(message, "^/complete%s+(%S+)")
+		local island
+		if not petId then
+			local why
+			petId, island, why = _G.petQuestIslandUnder(player)
+			if not petId then
+				print(("[DevCommands] /complete: %s -- %s. Stand on island 2, 5, 8, 10 or 13, or type /complete <petId>.")
+					:format(player.Name, tostring(why)))
+				return
+			end
+		end
+		if _G.petForceCompleteQuest(player, petId) then
+			print(("[DevCommands] /complete: %s finished %s%s"):format(
+				player.Name, petId, island and (" on island " .. island) or ""))
+		else
+			-- Almost always "you already own this species" -- completeQuest refuses that for dev and player
+			-- alike, because granting a duplicate would put a second copy in the inventory.
+			print(("[DevCommands] /complete: nothing done for %s on %s (already own it, or unknown pet id)")
+				:format(player.Name, petId))
+		end
 	-- /unlockall : grant every skin on every pet + one of each trait. ~230 inventory entries, so the panel takes
 	--              a beat to build the first time you open INVENTORY after running it.
 	elseif cmd == "/unlockall" or cmd == "/unlockallskins" then
@@ -113,6 +176,25 @@ local function onChatted(player, message)
 			print("[DevCommands] /goldtest: no Gold in 5000 opens")
 		end)
 	-- END SKIN CRATE TEST COMMANDS ------------------------------------------------------------------------
+	-- /rocket : fire the Big Rocket event on demand.
+	elseif cmd == "/rocket" then
+		if not isTestUser(player) then return end
+		-- RocketEventManager publishes { start, isRunning } here; it does not exist until that script has
+		-- run, and it is the SAME entry point the scheduler uses -- so this cannot drift into being a
+		-- second, subtly-different launch path.
+		local r = _G.BigEvents and _G.BigEvents.rocket
+		if not (r and type(r.start) == "function") then
+			warn("[DevCommands] /rocket: the rocket event is not registered yet (RocketEventManager still loading?)")
+			return
+		end
+		if type(r.isRunning) == "function" and r.isRunning() then
+			-- The event builds ONE rocket model at ONE site; a second start would have the two sequences
+			-- fighting over it. startEvent() guards this too -- this is just so the tester gets told.
+			warn("[DevCommands] /rocket ignored: a rocket event is already running")
+			return
+		end
+		print("[DevCommands] /rocket: starting the Big Rocket event for " .. player.Name)
+		r.start()
 	end
 end
 
@@ -153,7 +235,9 @@ do
 		register("DevGiveTokensCommand", "/givetokens", "/opencrate")
 		register("DevGoldTestCommand",   "/goldtest",   "/unlockall")
 		register("DevInfiniteGutCommand", "/infinitegut", "/infgut")
+		register("DevNewLevelCommand",   "/newlevel",    "/nextlevel") -- pet TIER skip (fires the tier-up sound)
+		register("DevCompleteCommand",   "/complete",    "/finishquest") -- finish the quest on the island you are on
 	end)
-	if ok then print("[DevCommands] slash commands registered with TextChatService (/crate /resetcrate /givetokens /opencrate /goldtest /unlockall /infinitegut)")
+	if ok then print("[DevCommands] slash commands registered with TextChatService (/crate /resetcrate /givetokens /opencrate /goldtest /unlockall /infinitegut /newlevel /complete)")
 	else warn("[DevCommands] TextChatService command registration failed: " .. tostring(err)) end
 end

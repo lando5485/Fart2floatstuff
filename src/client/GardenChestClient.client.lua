@@ -50,16 +50,10 @@ local function hudScale(frame)
 end
 
 local function dropShadow(frame, radius)
-	for i, sp in ipairs({ 54, 30 }) do
-		local sh = mkFrame(frame.Parent, {
-			AnchorPoint = frame.AnchorPoint,
-			Position = UDim2.new(frame.Position.X.Scale, frame.Position.X.Offset, frame.Position.Y.Scale, frame.Position.Y.Offset + 6),
-			Size = UDim2.new(0, frame.Size.X.Offset + sp, 0, frame.Size.Y.Offset + sp),
-			BackgroundColor3 = Color3.fromRGB(6, 26, 80), BackgroundTransparency = ({ 0.8, 0.62 })[i],
-			BorderSizePixel = 0, ZIndex = 0,
-		})
-		mkCorner(sh, radius + sp)
-	end
+	-- INTENTIONALLY EMPTY. This used to build two navy frames behind the panel; at their original spreads
+	-- they washed most of the screen blue, and even trimmed they were still a coloured layer under the
+	-- panel. The call sites stay so the signature survives, but the rule now is: only the panel renders --
+	-- no tint, no dim, no shadow chrome over the world.
 end
 
 local petGlow, collectScale -- animated bits renderState/openHUD drive
@@ -68,8 +62,9 @@ local function buildHUD()
 	gui = Instance.new("ScreenGui")
 	gui.Name = "GardenRewardGui"; gui.ResetOnSpawn = false; gui.DisplayOrder = 100; gui.Enabled = false; gui.Parent = PlayerGui
 
-	-- dim click-catcher backdrop: it swallows clicks that land off the panel, but does NOT close it
-	local backdrop = mkButton(gui, { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.fromRGB(6, 26, 80), BackgroundTransparency = 0.45, Text = "", AutoButtonColor = false, Active = true })
+	-- click-catcher: swallows clicks that land off the panel, but does NOT close it. Fully transparent on
+	-- purpose -- panels render with no tint or dim over the world behind them.
+	local backdrop = mkButton(gui, { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "", AutoButtonColor = false, Active = true })
 	-- NOTE: there is deliberately NO click-outside-to-close handler (matching the Pet Hub). The backdrop spans
 	-- the whole screen, so a click anywhere off the panel used to slam it shut, which made menus feel like they
 	-- closed at random. This panel now closes ONLY on its X button.

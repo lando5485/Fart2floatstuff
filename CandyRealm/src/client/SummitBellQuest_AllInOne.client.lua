@@ -814,31 +814,39 @@ local function confetti(at)
 	end
 end
 
+-- ⚠ ANNOUNCEMENTS GO THROUGH THE ONE REALM BANNER -- NEVER A ScreenGui OF THEIR OWN.
+-- This is realm 1's rule (see its CoreClient, and NotifyCenter.luau here: push/pin is the whole
+-- API). It used to build its own card in the middle of the screen, which meant a quest win could
+-- land on top of the objective banner, an island arrival or a live event -- several cards in the
+-- same band, none of them aware of the others. NotifyCenter already ranks, queues and preempts,
+-- so a win is one more push and takes its turn like everything else.
+--
+-- EVENT priority, deliberately: finishing a quest has to outrank the objective banner that is
+-- pinned underneath it (REWARD), but must not talk over a real Robux purchase (PURCHASE).
 local function winBanner()
-	local g = Instance.new("ScreenGui"); g.Name = "SummitWin"; g.ResetOnSpawn = false
-	g.DisplayOrder = 20; g.IgnoreGuiInset = true; g.Parent = PlayerGui
-	local f = Instance.new("Frame"); f.AnchorPoint = Vector2.new(0.5, 0.5); f.Position = UDim2.new(0.5, 0, 0.42, 0)
-	f.Size = UDim2.new(0, 0, 0, 92); f.BackgroundColor3 = PANEL; f.Parent = g
-	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 18); c.Parent = f
-	local s = Instance.new("UIStroke"); s.Color = GOLD; s.Thickness = 4; s.Parent = f
-	local l = Instance.new("TextLabel"); l.BackgroundTransparency = 1; l.Size = UDim2.fromScale(1, 1)
-	l.Font = Enum.Font.FredokaOne; l.TextColor3 = GOLD; l.TextScaled = true
-	l.Text = "\xF0\x9F\x94\x94 YOU RANG THE SUMMIT BELL! \xF0\x9F\x8F\x86"; l.Parent = f
-	local pad = Instance.new("UIPadding"); pad.PaddingLeft = UDim.new(0, 24); pad.PaddingRight = UDim.new(0, 24); pad.Parent = l
-	local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 32; sz.Parent = l
-	TweenService:Create(f, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-		{ Size = UDim2.new(0, 660, 0, 92) }):Play()
-	task.delay(5, function()
-		TweenService:Create(f, TweenInfo.new(0.4), { BackgroundTransparency = 1 }):Play()
-		TweenService:Create(l, TweenInfo.new(0.4), { TextTransparency = 1 }):Play()
-		task.delay(0.5, function() g:Destroy() end)
-	end)
+	local msg = "\xF0\x9F\x94\x94 YOU RANG THE SUMMIT BELL! \xF0\x9F\x8F\x86"
+	if _G.NotifyCenter and _G.NotifyCenter.push then
+		pcall(function() _G.NotifyCenter.push({
+			top      = "â¨ QUEST COMPLETE",
+			text     = msg,
+			color    = GOLD,
+			priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT or nil,
+			duration = 5,
+		}) end)
+	else
+		print("[Summit] " .. tostring(msg))
+	end
 end
 
 local function ringBell()
 	if rung then return end
 	rung = true
 	_G.summitQuestComplete = true
+	-- CINEMATIC PAYOFF. RevealCommand resolves island4's subject itself and plays the shot, so this
+	-- is one line and re-aiming it later is an edit to TARGETS there, not here. Delayed so the
+	-- completion banner and the world change land FIRST -- the camera is going there to show you
+	-- the result, and cutting away before it happens shows you the before.
+	task.delay(1.0, function() pcall(_G.revealIsland, 4) end)
 	refreshBanner()
 	playSound(SOUND_BELL, 0.9)
 
@@ -1069,6 +1077,11 @@ task.spawn(function()
 	refreshBanner()
 	print(("[Summit] ready -- bell at Y=%.0f, base Y=%.0f, %d flight(s), %d wind zone(s), %d roll spot(s)"):format(
 		topY, baseY, #flights, #windZones, #rollSpots))
+	-- RETAINER SIGNAL: the quest reached the end of its build with its world objects up. QuestRetainer
+	-- watches this flag; anything still false once its island has streamed in gets force-streamed and
+	-- re-run. It is set HERE, at the ready print, not at the top of the file -- a quest that bailed
+	-- early on a missing marker must NOT look built. See QuestRetainer.client.luau.
+	_G.questBuilt_summit = true
 end)
 
 -- ============================================================================

@@ -101,7 +101,7 @@ _G.openCodesGui = function() setCodesOpen(true) end
 
 -- =========================== 3) GROUP WINDOW ================================
 local groupGui = new("ScreenGui", { Name = "GroupPerkGui", ResetOnSpawn = false, DisplayOrder = 130, Enabled = false }, playerGui) -- starts CLOSED; never enabled for group members (see setGroupOpen)
-local groupCatch = new("TextButton", { Size = UDim2.fromScale(1,1), BackgroundColor3 = Color3.new(0,0,0), BackgroundTransparency = 0.5, Text = "", Visible = false, ZIndex = 1, AutoButtonColor = false }, groupGui)
+local groupCatch = new("TextButton", { Size = UDim2.fromScale(1,1), BackgroundTransparency = 1, Text = "", Visible = false, ZIndex = 1, AutoButtonColor = false }, groupGui) -- click-catcher only; no dark scrim
 local groupPanel = new("Frame", { Size = UDim2.fromOffset(700, 520), Position = UDim2.fromScale(0.5,0.5), AnchorPoint = Vector2.new(0.5,0.5), BackgroundColor3 = Color3.fromRGB(40, 40, 55), Visible = false, ZIndex = 2 }, groupGui)
 corner(groupPanel, 16); stroke(groupPanel, CREAM, 3)
 -- MOBILE FIT: same rule as the minigame cards -- a fixed 700x520 panel must scale itself down on phones or
@@ -235,8 +235,10 @@ local function isSafeToShowBanner()
 	if _G.gardenGuideStep ~= nil then return false end
 	local reveal = playerGui:FindFirstChild("MeteorCrateReveal")  -- daily-crate reveal open
 	if reveal then
+		-- The Dim is a click-catcher with NO tint now, so "reveal open" is signalled by Visible alone --
+		-- its transparency is permanently 1 and can no longer carry that information.
 		local dim = reveal:FindFirstChild("Dim")
-		if dim and dim.Visible and dim.BackgroundTransparency < 1 then return false end
+		if dim and dim.Visible then return false end
 	end
 	-- a MENU is open: food/premium/stomach(+Skins)/pets/codes route through the shared manager; the group window doesn't
 	if _G.MainMenuManager and _G.MainMenuManager.current ~= nil then return false end

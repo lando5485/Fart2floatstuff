@@ -129,6 +129,21 @@ local ENTRIES = {
 		end
 	  end },
 
+	-- GIFT is a fourth card, which is also what finally makes this grid a real 2x2 instead of three cards and
+	-- a hole. It lives here rather than on the rail because the rail is locked to four buttons -- and because
+	-- gifting is a "sometimes" action in exactly the way Wormhole is, not a thing you reach for every flight.
+	{ key = "gift", label = "Send a Gift", desc = "Give another player some of your Crate Tokens.",
+	  tint = Color3.fromRGB(80, 200, 120), emoji = "🤝", gui = "GiftGui",
+	  action = function()
+		-- OPEN, not toggle -- same reasoning as the Rewards card above: a card in this menu always means
+		-- "show me this", and a toggle would read as a dead button if the panel were already enabled.
+		if _G.openGiftPanel then
+			_G.openGiftPanel()
+		elseif _G.toggleGiftPanel then
+			_G.toggleGiftPanel()
+		end
+	  end },
+
 	-- SKIN CRATES is NOT here: crates are the CRATES page of the pet hub (the PETS rail button),
 	-- one combined interface -- pets and crates go hand in hand. The token pill under the coin
 	-- counter is the on-screen "you have tokens" signal.
@@ -249,11 +264,15 @@ end
 -- Everything is idempotent: RG_PetsClick marks a converted tile.
 local function claimPetsTile(frame)
 	-- LOOK re-asserted on EVERY sweep, not just the first: the stale CoreClient's restyle
-	-- passes repaint this tile wormhole-purple after we have claimed it, so green + the
-	-- dark-green stroke are re-stamped each pass (1s heartbeat). Wiring below is once-only.
-	frame.BackgroundColor3 = Color3.fromRGB(80, 170, 70)
+	-- passes repaint this tile after we have claimed it, so the colour is re-stamped each
+	-- pass (1s heartbeat). Wiring below is once-only.
+	-- PURPLE, NOT GREEN. This tile sits between SHOP and Stomach, both green -- three green
+	-- buttons in a column with nothing to tell them apart. THIS is the write that actually
+	-- decides the button's colour: it runs every second and overwrites whatever CoreClient
+	-- painted, so changing CoreClient alone had no visible effect at all.
+	frame.BackgroundColor3 = Color3.fromRGB(140, 70, 210)
 	local st = frame:FindFirstChildOfClass("UIStroke")
-	if st then st.Color = Color3.fromRGB(40, 110, 40) end
+	if st then st.Color = Color3.fromRGB(88, 36, 148) end
 	if frame:FindFirstChild("RG_PetsClick") then return end
 	for _, ch in ipairs(frame:GetChildren()) do
 		if ch:IsA("TextButton") then ch.Visible = false end          -- the old wormhole-open handler
@@ -263,7 +282,7 @@ local function claimPetsTile(frame)
 			else ch.Text = "\xF0\x9F\x90\xBE" end                    -- the icon glyph slot
 		end
 	end
-	frame.BackgroundColor3 = Color3.fromRGB(80, 170, 70)             -- the pets green the paw button used
+	frame.BackgroundColor3 = Color3.fromRGB(140, 70, 210)            -- PETS purple (see the note above)
 	local b = Instance.new("TextButton")
 	b.Name = "RG_PetsClick"
 	b.Size = UDim2.new(1, 0, 1, 0)

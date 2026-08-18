@@ -34,10 +34,9 @@ end
 local function corner(o, r) new("UICorner", { CornerRadius = UDim.new(0, r or 10) }, o) end
 local function stroke(o, c, t) new("UIStroke", { Color = c or Color3.new(1,1,1), Thickness = t or 2 }, o) end
 local function swatchColor(skin) return (skin and skin.color) or SKINTONE end
--- the in-game STOMACH/GUT silhouette icon (same asset the HUD GutIcon / Stomach side button use).
--- Hardcoded (not via _G.GUT_IMAGE) so it can't resolve to anything else (e.g. an avatar/empty) at load time.
-local GUT_ICON = "rbxassetid://108585083746103"
--- red -> orange -> yellow -> green -> blue -> purple (used for the Rainbow preview gradient + bg)
+-- (The stomach-silhouette icon and its per-skin tint helper were dropped with the old grid cards: a row shows a
+-- plain circular colour SWATCH now, so there is no image to tint and no image-failed fallback to guard against.)
+-- red -> orange -> yellow -> green -> blue -> purple (the Rainbow skin's swatch gradient)
 local RAINBOW_SEQ = ColorSequence.new({
 	ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 60, 60)),
 	ColorSequenceKeypoint.new(0.20, Color3.fromRGB(255, 150, 40)),
@@ -47,12 +46,6 @@ local RAINBOW_SEQ = ColorSequence.new({
 	ColorSequenceKeypoint.new(1.00, Color3.fromRGB(190, 80, 235)),
 })
 local function darken(c, amt) return c:Lerp(Color3.new(0, 0, 0), amt) end
--- the stomach-icon ImageColor3 tint for a skin (brighter for Lava so it reads as glowing neon)
-local function previewTint(skin)
-	if not skin.color then return SKINTONE end
-	if skin.id == "Lava" then return Color3.fromRGB(255, 120, 45) end
-	return skin.color
-end
 
 -- ============================ RAINBOW ANIMATION =============================
 local function findGutFolder()
@@ -87,51 +80,40 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 end)
 
--- PREVIEW: a recoloured STOMACH icon over a skin-coloured background. Rainbow -> animated UIGradient (white icon).
--- If the stomach image ever fails to load, we swap to a tinted belly SHAPE so Roblox's grey image-failed
--- placeholder (the person/avatar silhouette) can NEVER show.
-local ContentProvider = game:GetService("ContentProvider")
-local function buildSkinPreview(card, skin, isOwned)
+-- SWATCH: the circular colour chip at the left of a skin row. It is filled with THAT SKIN'S OWN colour taken
+-- straight from GutSkins -- no new palette is invented here:
+--   * Default has no colour (it matches the avatar's own skin tone), so it shows SKINTONE,
+--   * Rainbow gets the same animated RAINBOW_SEQ gradient its preview always used,
+--   * everything else gets its colour with the existing top-bright / bottom-dark vertical tint, which is the
+--     same shading relationship the belly itself has (Sheen 1.10 above, Sag 0.85 below).
+-- Galaxy keeps its little stars and Lava keeps its neon ring, so each skin still reads as itself at a glance.
+local function buildSwatch(row, skin, isOwned, size)
 	local isRainbow = (skin.animated == "rainbow")
-	local area = new("Frame", { Name = "Preview", BorderSizePixel = 0,
-		BackgroundColor3 = isRainbow and Color3.fromRGB(40, 40, 55) or darken(swatchColor(skin), 0.18),
-		Position = UDim2.fromOffset(10, 8), Size = UDim2.fromOffset(130, 56) }, card)
-	corner(area, 8); stroke(area, Color3.fromRGB(0, 0, 0), 1)
-	-- background fill: animated rainbow gradient, or a subtle vertical tint of the skin colour
+	local sw = new("Frame", { Name = "Swatch", BorderSizePixel = 0,
+		BackgroundColor3 = isRainbow and Color3.fromRGB(40, 40, 55) or swatchColor(skin),
+		AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 12, 0.5, 0),
+		Size = UDim2.fromOffset(size, size) }, row)
+	-- CornerRadius (1,0) on a square frame = a perfect circle at any size.
+	new("UICorner", { CornerRadius = UDim.new(1, 0) }, sw)
+	stroke(sw, Color3.fromRGB(255, 205, 90), 2) -- gold-ish ring, as in the reference
+
 	if isRainbow then
-		rainbowGradients[#rainbowGradients + 1] = new("UIGradient", { Color = RAINBOW_SEQ, Rotation = 0 }, area)
+		rainbowGradients[#rainbowGradients + 1] = new("UIGradient", { Color = RAINBOW_SEQ, Rotation = 0 }, sw)
 	else
-		new("UIGradient", { Rotation = 90, Color = ColorSequence.new(swatchColor(skin), darken(swatchColor(skin), 0.45)) }, area)
+		new("UIGradient", { Rotation = 90, Color = ColorSequence.new(swatchColor(skin), darken(swatchColor(skin), 0.45)) }, sw)
 	end
 
-	local tint = isRainbow and Color3.new(1, 1, 1) or previewTint(skin) -- white for rainbow so the gradient shows true
-	-- the STOMACH silhouette icon, tinted to the skin
-	local icon = new("ImageLabel", { Name = "GutIcon", Image = GUT_ICON, ImageColor3 = tint, ScaleType = Enum.ScaleType.Fit,
-		BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(0.85, 0.85), ZIndex = 2 }, area)
-	-- belly-shaped fallback (hidden unless the stomach image can't load)
-	local fallback = new("Frame", { Name = "GutShape", BackgroundColor3 = tint, Visible = false, ZIndex = 2,
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(0.7, 0.82) }, area)
-	new("UICorner", { CornerRadius = UDim.new(1, 0) }, fallback); stroke(fallback, Color3.fromRGB(0, 0, 0), 1)
-
-	if isRainbow then
-		rainbowGradients[#rainbowGradients + 1] = new("UIGradient", { Color = RAINBOW_SEQ, Rotation = 0 }, icon)      -- ON the stomach icon
-		rainbowGradients[#rainbowGradients + 1] = new("UIGradient", { Color = RAINBOW_SEQ, Rotation = 0 }, fallback)  -- and the shape fallback
-	elseif skin.id == "Lava" then
-		stroke(icon, Color3.fromRGB(255, 180, 60), 2)     -- subtle neon glow ring on the stomach
-		stroke(fallback, Color3.fromRGB(255, 180, 60), 2)
-	elseif skin.id == "Galaxy" then -- overlay a few stars ON the stomach preview (no uploaded asset needed)
-		for _, p in ipairs({ {0.22, 0.28}, {0.74, 0.32}, {0.58, 0.7}, {0.32, 0.74} }) do
+	if skin.id == "Lava" then
+		stroke(sw, Color3.fromRGB(255, 180, 60), 2) -- neon ring instead of the gold one
+	elseif skin.id == "Galaxy" then
+		for _, p in ipairs({ {0.28, 0.30}, {0.70, 0.34}, {0.55, 0.70} }) do
 			new("TextLabel", { Text = "\xE2\x9C\xA6", Font = Enum.Font.GothamBold, TextScaled = true, BackgroundTransparency = 1,
-				TextColor3 = Color3.fromRGB(235, 225, 255), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(p[1], p[2]), Size = UDim2.fromOffset(11, 11), ZIndex = 3 }, area)
+				TextColor3 = Color3.fromRGB(235, 225, 255), AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromScale(p[1], p[2]), Size = UDim2.fromOffset(9, 9), ZIndex = 3 }, sw)
 		end
 	end
-	if not isOwned then icon.ImageTransparency = 0.4; fallback.BackgroundTransparency = 0.35; area.BackgroundTransparency = 0.25 end -- greyed while locked
-
-	-- swap to the belly shape if the stomach image asset doesn't load (e.g. it's a decal / not approved for this place)
-	task.spawn(function()
-		pcall(function() ContentProvider:PreloadAsync({ icon }) end)
-		if icon.Parent and not icon.IsLoaded then icon.Visible = false; fallback.Visible = true end
-	end)
+	if not isOwned then sw.BackgroundTransparency = 0.35 end -- dimmed while still locked
+	return sw
 end
 
 local function equip(skinId)
@@ -141,74 +123,128 @@ local function equip(skinId)
 			localEquipped = res.equipped or skinId
 			localPlaytimeSec = res.playtimeSec or localPlaytimeSec
 			lastState = { owned = res.owned or lastState.owned, equipped = localEquipped, playtimeSec = localPlaytimeSec }
+			if _G.gutSkinBarRefresh then pcall(_G.gutSkinBarRefresh) end -- "Current skin: X" follows the equip
 			if skinsScroll then rebuildSkins(lastState) end
 		end
 	end)
 end
 
--- live-update each locked card's progress bar + "current / threshold" text from localPlaytimeSec
+-- LIVE PROGRESS toward a locked skin, ticked once a second while the menu is open.
+-- The old grid card had a dedicated progress BAR for this. The row layout has no room for one, so the same
+-- numbers ride the subtitle instead -- "Rare  •  12m / 1h 30m" -- and the pill beside it carries the target.
+-- Losing the readout entirely would have made the locked rows silent about how close you are, which is the
+-- one thing a locked row is for.
 local function refreshLockedProgress()
 	for _, lc in ipairs(lockedCards) do
-		if lc.fill and lc.fill.Parent then
-			local frac = math.clamp(localPlaytimeSec / math.max(1, lc.thresholdSec), 0, 1)
-			lc.fill.Size = UDim2.new(frac, 0, 1, 0)
-			lc.label.Text = GutSkins.formatMinutes(localPlaytimeSec / 60) .. " / " .. GutSkins.formatMinutes(lc.thresholdSec / 60)
+		if lc.label and lc.label.Parent then
+			lc.label.Text = (lc.rarity or "")
+				.. "  \xE2\x80\xA2  " .. GutSkins.formatMinutes(localPlaytimeSec / 60)
+				.. " / " .. GutSkins.formatMinutes(lc.thresholdSec / 60)
 		end
 	end
+end
+
+-- ============================================================================================================
+-- ONE ROW PER SKIN  (list, not a grid -- matches the Space Realm skins layout)
+-- ============================================================================================================
+-- Row: 78px tall, blue (35,60,180), corner 14, stroke (120,160,255) x3. Circular swatch left, bold name +
+-- light-blue subtitle in the middle, status pill right. The EQUIPPED row takes a bright white stroke so the
+-- one you are wearing is obvious at a glance.
+--
+-- THE SKIN LIST ITSELF IS UNTOUCHED. Rows are walked in GutSkins.Order and read straight out of GutSkins --
+-- same six skins, same order, same names, same unlock rules. Nothing here adds, hides, renames or reprices
+-- anything; the whole change is how a row is drawn.
+local ROW_H, GAP = 78, 8
+
+-- The status pill on the right. Which one you get is decided ENTIRELY by the existing data:
+--   equipped      -> gold/orange, "✓ EQUIPPED"
+--   owned         -> grey-tan,    "OWNED"
+--   coin price    -> gold,        "<price> 🪙"   (only if a skin ever gains a `price` field)
+--   robux price   -> gold,        "<price> R$"   (only if a skin ever gains a `robux` field)
+--   locked        -> grey,        "🔒 " + THE GAME'S OWN unlock wording
+-- The Fart Realm's gut skins are all PLAYTIME unlocks, so today only the first, second and last ever appear.
+-- The two price branches are here so the layout is complete if pricing is added later -- they invent no data
+-- and render nothing while `price`/`robux` are absent.
+local function buildPill(row, kind, text)
+	local bg, fg =
+		Color3.fromRGB(150, 150, 160), Color3.new(1, 1, 1)
+	if kind == "equipped" then bg = Color3.fromRGB(255, 180, 40)
+	elseif kind == "owned" then bg = Color3.fromRGB(176, 160, 132)
+	elseif kind == "price"  then bg = Color3.fromRGB(255, 200, 60); fg = Color3.fromRGB(60, 40, 0)
+	elseif kind == "locked" then bg = Color3.fromRGB(120, 120, 132) end
+
+	local pill = new("Frame", { Name = "Status", BorderSizePixel = 0, BackgroundColor3 = bg,
+		AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0),
+		Size = UDim2.fromOffset(178, 40) }, row)
+	corner(pill, 10)
+	local lbl = new("TextLabel", { Text = text, Font = Enum.Font.FredokaOne, TextScaled = true,
+		TextColor3 = fg, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1) }, pill)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8),
+		PaddingTop = UDim.new(0, 7), PaddingBottom = UDim.new(0, 7) }, lbl)
+	new("UITextSizeConstraint", { MaxTextSize = 20 }, lbl)
+	if kind == "equipped" then stroke(lbl, Color3.fromRGB(0, 0, 0), 2) end
+	return pill
 end
 
 function rebuildSkins(state)
 	if not skinsScroll then return end
 	lockedCards = {}
-	rainbowGradients = {} -- old gradients live on destroyed cards; the animator drops them, but reset so we don't grow
-	for _, c in ipairs(skinsScroll:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
+	rainbowGradients = {} -- old gradients live on destroyed rows; the animator drops them, but reset so we don't grow
+	for _, c in ipairs(skinsScroll:GetChildren()) do if c:IsA("Frame") or c:IsA("TextButton") then c:Destroy() end end
 	local owned = (state and state.owned) or { Default = true }
 	local equipped = (state and state.equipped) or "Default"
+
 	for i, id in ipairs(GutSkins.Order) do
 		local skin = GutSkins.get(id); if skin then
 			local isOwned = (id == "Default") or owned[id] == true
 			local isEquipped = (id == equipped)
-			local rarityCol = GutSkins.RarityColor[skin.rarity] or Color3.fromRGB(190,190,200)
 
-			-- card background reads as the skin's colour at a glance (darkened so text stays legible)
-			local cardBg = (skin.animated == "rainbow") and Color3.fromRGB(34, 34, 48) or darken(swatchColor(skin), 0.55)
-			local card = new("Frame", { LayoutOrder = i, BackgroundColor3 = cardBg, Size = UDim2.fromOffset(150, 150) }, skinsScroll)
-			corner(card, 12); stroke(card, isEquipped and Color3.fromRGB(120, 255, 140) or (isOwned and Color3.fromRGB(255,255,255) or Color3.fromRGB(120,120,130)), isEquipped and 3 or 2)
-			if skin.animated == "rainbow" then -- matching animated rainbow gradient behind the whole card
-				rainbowGradients[#rainbowGradients + 1] = new("UIGradient", { Color = RAINBOW_SEQ, Rotation = 0, Transparency = NumberSequence.new(0.55) }, card)
-			end
+			-- The whole row is the button: clicking an owned skin equips it, exactly as the old EQUIP button did.
+			local row = new("TextButton", { Name = "Skin_" .. id, LayoutOrder = i, Text = "", AutoButtonColor = false,
+				BackgroundColor3 = Color3.fromRGB(35, 60, 180), BorderSizePixel = 0,
+				Size = UDim2.new(1, 0, 0, ROW_H) }, skinsScroll)
+			corner(row, 14)
+			-- equipped row gets the bright outer highlight from the reference; the rest keep the blue outline
+			stroke(row, isEquipped and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(120, 160, 255), isEquipped and 4 or 3)
+			if not isOwned then row.BackgroundColor3 = Color3.fromRGB(28, 44, 120) end -- locked rows sit back a little
 
-			-- preview: recoloured stomach icon over a skin-coloured background (rainbow = animated gradient)
-			buildSkinPreview(card, skin, isOwned)
+			buildSwatch(row, skin, isOwned, 54)
 
-			-- name + rarity
-			new("TextLabel", { Text = skin.displayName, Font = Enum.Font.FredokaOne, TextScaled = true, TextColor3 = isOwned and Color3.new(1,1,1) or Color3.fromRGB(200,200,210), BackgroundTransparency = 1,
-				Position = UDim2.fromOffset(8, 66), Size = UDim2.fromOffset(134, 20) }, card)
-			new("TextLabel", { Text = skin.rarity, Font = Enum.Font.GothamBold, TextScaled = true, TextColor3 = rarityCol, BackgroundTransparency = 1,
-				Position = UDim2.fromOffset(8, 86), Size = UDim2.fromOffset(134, 14) }, card)
+			-- NAME + SUBTITLE. The subtitle keeps the wording the card already used -- the skin's RARITY -- so no
+			-- new copy is invented. Locked rows append the live playtime progress after it, which is the only
+			-- place that information still fits now the progress bar is gone.
+			local textX = 12 + 54 + 12
+			local nameLbl = new("TextLabel", { Name = "SkinName", Text = skin.displayName, Font = Enum.Font.FredokaOne,
+				TextXAlignment = Enum.TextXAlignment.Left, TextScaled = true,
+				TextColor3 = isOwned and Color3.new(1, 1, 1) or Color3.fromRGB(205, 205, 215),
+				BackgroundTransparency = 1, Position = UDim2.fromOffset(textX, 12),
+				Size = UDim2.new(1, -(textX + 200), 0, 30) }, row)
+			stroke(nameLbl, Color3.fromRGB(0, 0, 0), 2)
+			new("UITextSizeConstraint", { MaxTextSize = 30 }, nameLbl)
+			local sub = new("TextLabel", { Name = "SkinSub", Text = skin.rarity, Font = Enum.Font.GothamBold,
+				TextXAlignment = Enum.TextXAlignment.Left, TextScaled = true,
+				TextColor3 = Color3.fromRGB(170, 205, 255), BackgroundTransparency = 1,
+				Position = UDim2.fromOffset(textX, 44), Size = UDim2.new(1, -(textX + 200), 0, 20) }, row)
+			new("UITextSizeConstraint", { MaxTextSize = 16 }, sub)
 
 			if isEquipped then
-				local b = new("TextButton", { Text = "EQUIPPED", Font = Enum.Font.FredokaOne, TextScaled = true, TextColor3 = Color3.new(1,1,1), AutoButtonColor = false,
-					BackgroundColor3 = Color3.fromRGB(60, 170, 90), Position = UDim2.fromOffset(8, 110), Size = UDim2.fromOffset(134, 32), BorderSizePixel = 0 }, card)
-				corner(b, 8); new("UITextSizeConstraint", { MaxTextSize = 16 }, b)
+				buildPill(row, "equipped", "\xE2\x9C\x93 EQUIPPED")
 			elseif isOwned then
-				local b = new("TextButton", { Text = "EQUIP", Font = Enum.Font.FredokaOne, TextScaled = true, TextColor3 = Color3.new(1,1,1),
-					BackgroundColor3 = Color3.fromRGB(40, 120, 220), Position = UDim2.fromOffset(8, 110), Size = UDim2.fromOffset(134, 32), BorderSizePixel = 0 }, card)
-				corner(b, 8); new("UITextSizeConstraint", { MaxTextSize = 16 }, b)
-				b.MouseButton1Click:Connect(function() equip(id) end)
+				buildPill(row, "owned", "OWNED")
+				row.MouseButton1Click:Connect(function() equip(id) end)
+			elseif type(skin.price) == "number" then
+				-- coin purchase (no gut skin carries a price today -- see the note above buildPill)
+				buildPill(row, "price", tostring(skin.price) .. " \xF0\x9F\xAA\x99")
+				row.MouseButton1Click:Connect(function() equip(id) end) -- server validates + refuses if unaffordable
+			elseif type(skin.robux) == "number" then
+				buildPill(row, "price", tostring(skin.robux) .. " R$")
+				row.MouseButton1Click:Connect(function() equip(id) end)
 			else
-				-- LOCKED: "Unlocks at Xh Ym" + a live progress bar (current playtime / threshold)
-				local thresholdSec = GutSkins.unlockMinutes(id) * 60
-				new("TextLabel", { Text = "Unlocks at " .. GutSkins.formatMinutes(GutSkins.unlockMinutes(id)), Font = Enum.Font.GothamBold, TextScaled = true,
-					TextColor3 = Color3.fromRGB(210,210,220), BackgroundTransparency = 1, Position = UDim2.fromOffset(8, 104), Size = UDim2.fromOffset(134, 14) }, card)
-				local barBg = new("Frame", { BackgroundColor3 = Color3.fromRGB(25, 35, 60), Position = UDim2.fromOffset(8, 122), Size = UDim2.fromOffset(134, 16), BorderSizePixel = 0 }, card)
-				corner(barBg, 6)
-				local fill = new("Frame", { BackgroundColor3 = rarityCol, Size = UDim2.new(0, 0, 1, 0), BorderSizePixel = 0 }, barBg)
-				corner(fill, 6)
-				local prog = new("TextLabel", { Text = "", Font = Enum.Font.GothamBold, TextScaled = true, TextColor3 = Color3.new(1,1,1), BackgroundTransparency = 1,
-					Size = UDim2.fromScale(1, 1), ZIndex = 3 }, barBg)
-				new("UITextSizeConstraint", { MaxTextSize = 12 }, prog)
-				lockedCards[#lockedCards + 1] = { fill = fill, label = prog, thresholdSec = thresholdSec }
+				-- LOCKED -- worded exactly as the game already words it ("Unlocks at 1h 30m"), just with a lock.
+				local mins = GutSkins.unlockMinutes(id)
+				local pill = buildPill(row, "locked", "\xF0\x9F\x94\x92 Unlocks at " .. GutSkins.formatMinutes(mins))
+				-- keep the LIVE progress the old card had: it now rides the subtitle ("Rare  •  12m / 1h 30m")
+				lockedCards[#lockedCards + 1] = { fill = nil, label = sub, thresholdSec = mins * 60, rarity = skin.rarity, pill = pill }
 			end
 		end
 	end
@@ -232,6 +268,7 @@ GutSkinState.OnClientEvent:Connect(function(state)
 	lastState = state
 	localEquipped = state.equipped or localEquipped
 	if type(state.playtimeSec) == "number" then localPlaytimeSec = state.playtimeSec end -- re-sync the live timer
+	if _G.gutSkinBarRefresh then pcall(_G.gutSkinBarRefresh) end
 	if skinsScroll and skinsScroll.Visible then rebuildSkins(state) end
 end)
 
@@ -266,22 +303,115 @@ task.spawn(function()
 	tierList.Position = UDim2.new(0, 10, 0, 143)
 	tierList.Size = UDim2.new(1, -20, 1, -148)
 
-	-- skins grid lives in the same rect as the tier list, hidden until the Skins tab is picked
+	-- ========================================================================================================
+	-- SHELL RESTYLE  (dark navy, to match the Space Realm skins window)
+	-- ========================================================================================================
+	-- The window itself is built by CoreClient. It is NOT rebuilt here -- the existing instances are re-coloured
+	-- in place. That matters twice over: CoreClient sits at Luau's 200-local ceiling (one more top-level local
+	-- there takes the whole HUD down), and a baked-in copy of CoreClient in the place would shadow any edit made
+	-- to its file anyway. Mutating what is already on screen works whichever copy built it.
+	--
+	-- This is the SHARED shell, so the STOMACHS tab sits in the same window. Its tier rows still carry the old
+	-- warm-brown palette -- restyling those was not part of this brief.
+	panel.BackgroundColor3 = Color3.fromRGB(12, 10, 32)
+	for _, c in ipairs(panel:GetChildren()) do
+		if c:IsA("UIGradient") then c:Destroy() end -- kill the warm brown gradient; the reference is flat navy
+		if c:IsA("UICorner") then c.CornerRadius = UDim.new(0, 20) end
+		if c:IsA("UIStroke") then c.Color = Color3.fromRGB(90, 120, 255); c.Thickness = 4 end
+	end
+	-- outer glow: a slightly larger frame sitting BEHIND the panel (ZIndex 0), so the window reads as lit
+	if not panel:FindFirstChild("OuterGlow") then
+		local glow = new("Frame", { Name = "OuterGlow", BackgroundColor3 = Color3.fromRGB(90, 120, 255),
+			BackgroundTransparency = 0.72, BorderSizePixel = 0, ZIndex = 0,
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.new(1, 18, 1, 18) }, panel)
+		corner(glow, 26)
+	end
+	-- TITLE: white, black-stroked, ~44px. The realm's existing gut icon at the left is left exactly where it is.
+	for _, c in ipairs(panel:GetChildren()) do
+		if c:IsA("TextLabel") and c.Text == "STOMACH SHOP" then
+			c.TextColor3 = Color3.new(1, 1, 1)
+			c.TextScaled = true
+			new("UITextSizeConstraint", { MaxTextSize = 44 }, c)
+			local s = c:FindFirstChildOfClass("UIStroke")
+			if s then s.Color = Color3.fromRGB(0, 0, 0); s.Thickness = 2 end
+		end
+	end
+	-- COIN PILL + CLOSE: the X already exists (CoreClient owns its close handler, so it is only MOVED, never
+	-- rebuilt -- rebuilding it would drop that handler and the shop would stop closing). The coin pill is new
+	-- and slots in to its left.
+	local closeBtn
+	for _, c in ipairs(panel:GetChildren()) do
+		if c:IsA("TextButton") and c.Text == "X" then closeBtn = c end
+	end
+	if closeBtn then
+		closeBtn.Position = UDim2.new(1, -48, 0, 8)
+		local cc = closeBtn:FindFirstChildOfClass("UICorner"); if cc then cc.CornerRadius = UDim.new(0, 8) end
+	end
+	if not panel:FindFirstChild("CoinPill") then
+		local pill = new("Frame", { Name = "CoinPill", BackgroundColor3 = Color3.fromRGB(255, 200, 60), BorderSizePixel = 0,
+			Position = UDim2.new(1, -214, 0, 10), Size = UDim2.fromOffset(158, 36) }, panel)
+		corner(pill, 10); stroke(pill, Color3.fromRGB(190, 140, 20), 2)
+		local lbl = new("TextLabel", { Name = "Amount", Text = "\xF0\x9F\xAA\x99 0", Font = Enum.Font.FredokaOne,
+			TextScaled = true, TextColor3 = Color3.fromRGB(60, 40, 0), BackgroundTransparency = 1,
+			Size = UDim2.fromScale(1, 1) }, pill)
+		new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8),
+			PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6) }, lbl)
+		new("UITextSizeConstraint", { MaxTextSize = 22 }, lbl)
+		-- Read the SAME leaderstats value the HUD coin counter reads, and follow it, so the pill can never
+		-- disagree with the number on screen behind the shop.
+		local function bindCoins()
+			local ls = player:FindFirstChild("leaderstats")
+			local coins = ls and ls:FindFirstChild("Coins")
+			if not coins then return false end
+			local function paint() lbl.Text = "\xF0\x9F\xAA\x99 " .. tostring(coins.Value) end
+			coins.Changed:Connect(paint); paint()
+			return true
+		end
+		if not bindCoins() then
+			task.spawn(function()
+				local waited = 0
+				while waited < 30 and not bindCoins() do task.wait(0.5); waited += 0.5 end
+			end)
+		end
+	end
+
+	-- skins list lives in the same rect as the tier list, hidden until the Skins tab is picked
 	skinsScroll = new("ScrollingFrame", { Name = "SkinsList", Visible = false, BackgroundTransparency = 1, BorderSizePixel = 0,
 		Position = UDim2.new(0, 10, 0, 143), Size = UDim2.new(1, -20, 1, -148),
 		ScrollingEnabled = true, ScrollingDirection = Enum.ScrollingDirection.Y,
 		CanvasSize = UDim2.new(0,0,0,0), AutomaticCanvasSize = Enum.AutomaticSize.Y,  -- same setup as PetInventory/Locker
-		ScrollBarThickness = 6, ScrollBarImageColor3 = Color3.fromRGB(255, 215, 0), ClipsDescendants = true }, panel)
-	new("UIGridLayout", { CellSize = UDim2.fromOffset(150, 150), CellPadding = UDim2.fromOffset(12, 12), SortOrder = Enum.SortOrder.LayoutOrder, HorizontalAlignment = Enum.HorizontalAlignment.Center }, skinsScroll)
+		ScrollBarThickness = 6, ScrollBarImageColor3 = Color3.fromRGB(120, 160, 255), ClipsDescendants = true }, panel)
+	-- ONE ROW PER SKIN, full width, 8px apart -- the grid is gone.
+	new("UIListLayout", { FillDirection = Enum.FillDirection.Vertical, Padding = UDim.new(0, GAP),
+		SortOrder = Enum.SortOrder.LayoutOrder, HorizontalAlignment = Enum.HorizontalAlignment.Center }, skinsScroll)
 	new("UIPadding", { PaddingTop = UDim.new(0,6), PaddingBottom = UDim.new(0,6) }, skinsScroll)
 
-	-- two tabs at the top
+	-- CURRENT BAR (Skins tab). A SEPARATE bar rather than reusing CoreClient's CurrentLabel: that label is
+	-- rewritten by CoreClient every time the gut tier changes ("Current: Tiny Gut (100 max power)"), so writing
+	-- a skin name into it would be overwritten the moment a stomach is bought.
+	local skinBar = new("Frame", { Name = "SkinCurrentBar", Visible = false, BorderSizePixel = 0,
+		BackgroundColor3 = Color3.fromRGB(30, 25, 60),
+		Position = UDim2.new(0, 10, 0, 100), Size = UDim2.new(1, -20, 0, 35) }, panel)
+	corner(skinBar, 10)
+	local skinBarLbl = new("TextLabel", { Name = "Text", Text = "Current skin: Default", Font = Enum.Font.FredokaOne,
+		TextScaled = true, TextColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 1,
+		Size = UDim2.fromScale(1, 1) }, skinBar)
+	new("UITextSizeConstraint", { MaxTextSize = 22 }, skinBarLbl)
+	local function refreshSkinBar()
+		local s = GutSkins.get(localEquipped)
+		skinBarLbl.Text = "Current skin: " .. ((s and s.displayName) or localEquipped or "Default")
+	end
+	_G.gutSkinBarRefresh = refreshSkinBar -- so the state handlers below can update it without a rebuild
+
+	-- two tabs at the top, pill shaped
 	local function mkTab(text, x)
 		local b = new("TextButton", { Text = text, Font = Enum.Font.FredokaOne, TextScaled = true, TextColor3 = Color3.new(1,1,1),
-			BackgroundColor3 = Color3.fromRGB(20, 90, 200), Position = UDim2.fromOffset(x, 62), Size = UDim2.fromOffset(150, 32), BorderSizePixel = 0 }, panel)
+			BackgroundColor3 = Color3.fromRGB(25, 30, 70), Position = UDim2.fromOffset(x, 62), Size = UDim2.fromOffset(150, 32), BorderSizePixel = 0 }, panel)
 		corner(b, 8); stroke(b, Color3.fromRGB(24,14,8), 1.5) -- thin DARK outline (a white stroke here bloomed the white text into an unreadable glow)
 		b.TextColor3 = Color3.new(1,1,1); b.TextXAlignment = Enum.TextXAlignment.Center; b.TextYAlignment = Enum.TextYAlignment.Center
 		new("UITextSizeConstraint", { MaxTextSize = 18 }, b)
+		b:SetAttribute("BTS_Skip", true) -- the tab's colour IS which tab you're on; keep the legibility sweep off it
 		return b
 	end
 	local tabStomachs = mkTab("STOMACHS", 10)
@@ -290,11 +420,13 @@ task.spawn(function()
 	local function showTab(which)
 		local skinsOn = (which == "skins")
 		skinsScroll.Visible = skinsOn
+		skinBar.Visible = skinsOn
 		tierList.Visible = not skinsOn
 		currentLabel.Visible = not skinsOn
-		tabSkins.BackgroundColor3    = skinsOn and Color3.fromRGB(40, 140, 255) or Color3.fromRGB(18, 70, 150)
-		tabStomachs.BackgroundColor3 = skinsOn and Color3.fromRGB(18, 70, 150) or Color3.fromRGB(40, 140, 255)
-		if skinsOn then refreshFromServer() end -- pull the latest owned/equipped each time Skins opens
+		-- active = blue (60,140,255), inactive = dark navy (25,30,70)
+		tabSkins.BackgroundColor3    = skinsOn and Color3.fromRGB(60, 140, 255) or Color3.fromRGB(25, 30, 70)
+		tabStomachs.BackgroundColor3 = skinsOn and Color3.fromRGB(25, 30, 70) or Color3.fromRGB(60, 140, 255)
+		if skinsOn then refreshSkinBar(); refreshFromServer() end -- pull the latest owned/equipped each time Skins opens
 	end
 	tabStomachs.MouseButton1Click:Connect(function() showTab("stomachs") end)
 	tabSkins.MouseButton1Click:Connect(function() showTab("skins") end)

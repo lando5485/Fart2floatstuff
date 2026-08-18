@@ -45,6 +45,11 @@ _G.petSkinEquipped = equipped -- read by the crate/inventory UI so it doesn't ne
 -- Every pet model this script has painted, so an equip change can repaint without searching Workspace.
 -- Weak keys: when PetFollow destroys a pet the entry disappears on its own.
 local painted = setmetatable({}, { __mode = "k" }) -- [model] = petId
+-- Published because this is the only complete register of live pet models anywhere on the client: PetFollow
+-- builds them but keeps them in a local it cannot export (that file sits on Luau's 200-locals ceiling), and
+-- every pet passes through here on build. PetRenderGuard watches it. Weak keys, so publishing it keeps
+-- nothing alive.
+_G.petPaintedModels = painted
 
 -- Original appearance per part, so a skin change restores instead of stacking. Weak keys again.
 local originals = setmetatable({}, { __mode = "k" }) -- [part] = { color, material, refl }
@@ -104,6 +109,32 @@ local function bodyParts(model)
 		end
 	end
 	return out
+end
+
+-- ============================================================================================================
+-- GLOBAL PET DIM -- every pet renders 25% darker than it is built.
+-- ============================================================================================================
+-- The pets were reading as too bright next to the islands: they are built out of saturated primaries and lit by
+-- a bright sky, so a pet standing on pale grass glowed rather than sat in the scene. This is the single place
+-- to fix that, because it is the one function EVERY pet passes through -- PetFollow calls it at the end of
+-- every rebuild and every level change, for live pets and for icon clones alike.
+--
+-- Multiplying the channels (rather than blending toward grey) keeps every hue exactly where it was and only
+-- takes the value down, so a red pet stays red -- it just stops shouting.
+--
+-- It cannot compound across repeated calls: the TRUE colour is snapshotted into `originals` before the first
+-- dim, and applyPetSkinLook's clearLook restores from that snapshot at the top of every call. Snapshotting
+-- here is also what lets a skin equip later restore the real colour instead of a dimmed one.
+local PET_DIM = 0.75 -- 25% down
+
+local function dimBody(model)
+	for _, p in ipairs(bodyParts(model)) do
+		if not originals[p] then
+			originals[p] = { color = p.Color, material = p.Material, refl = p.Reflectance }
+		end
+		local c = p.Color
+		p.Color = Color3.new(c.R * PET_DIM, c.G * PET_DIM, c.B * PET_DIM)
+	end
 end
 
 local function applySkin(model, skinId)
@@ -274,17 +305,22 @@ _G.applyPetSkinLook = function(model, petId, lite)
 	painted[model] = petId
 
 	local e = equipped[petId]
-	if not e or not e.skin then return end -- no skin equipped: the pet keeps its natural look
-
-	applySkin(model, e.skin)
-	-- TRAITS STACK: every bound trait the player has switched on renders together (an aura AND a
-	-- trail is the point of collecting them). clearLook above wiped the previous set, so this can
-	-- never pile up across repaints.
-	if not lite then
-		for _, tid in ipairs(e.traits or (e.trait and { e.trait }) or {}) do
-			applyTrait(model, tid)
+	if e and e.skin then
+		applySkin(model, e.skin)
+		-- TRAITS STACK: every bound trait the player has switched on renders together (an aura AND a
+		-- trail is the point of collecting them). clearLook above wiped the previous set, so this can
+		-- never pile up across repaints.
+		if not lite then
+			for _, tid in ipairs(e.traits or (e.trait and { e.trait }) or {}) do
+				applyTrait(model, tid)
+			end
 		end
 	end
+
+	-- LAST, and unconditionally. A pet with no skin needs the dim just as much as one with a skin, and doing
+	-- it after applySkin means a skin's own colour comes down by the same 25% -- otherwise equipping a skin
+	-- would make a pet suddenly brighter than every unskinned one.
+	dimBody(model)
 end
 
 -- Paint a model with an ARBITRARY skin + trait, independent of what the player has EQUIPPED. This is what the
@@ -446,10 +482,11 @@ local function applyState(state)
 	-- THIS is the moment the server has confirmed the change -- the button only asks, and a request the
 	-- server refuses (pet still locked, skin not owned) must not flip the list to "ON".
 	if _G.petHubSkinsChanged then pcall(_G.petHubSkinsChanged) end -- the crate/inventory UI reads tokens + owned entries from here
-	-- FULL evo re-run BEFORE the repaint: a trait REPLACES the level particle stack (see the gate in
-	-- PetFollow.applyLevelVisual), so an equip/unequip must rebuild the level effects now, not on the
-	-- next level-up. petEvoRefresh ends by re-applying the skin itself, and repaintAll still covers
-	-- painted models that aren't live followers (viewport icons and the like).
+	-- FULL evo re-run BEFORE the repaint: traits STACK ON TOP of the level particle stack (LEVEL_FX in
+	-- PetFollow.applyLevelVisual is on, matching how RemotePets draws everyone else's pet), so an
+	-- equip/unequip must rebuild the level effects now, not on the next level-up. petEvoRefresh ends by
+	-- re-applying the skin itself, and repaintAll still covers painted models that aren't live followers
+	-- (viewport icons and the like).
 	if _G.petEvoRefresh then pcall(_G.petEvoRefresh) end
 	repaintAll()
 end

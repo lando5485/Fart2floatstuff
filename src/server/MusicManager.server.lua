@@ -21,8 +21,11 @@
 
 -- ===== CONFIG (tunables) =====
 local BACKGROUND_MUSIC_ENABLED = true
-local MUSIC_NORMAL_VOLUME = 0.68   -- normal music level (1.0 -> 0.8 (-20%) -> 0.68 (another -15%)) (the group Volume MusicDucking tweens toward)
-local MUSIC_DUCKED_VOLUME = 0.1904 -- event-ducked level (0.28 -> 0.224 (-20%) -> 0.1904 (another -15%) so music stays uniformly quieter)
+-- 0.2 is about -10 dB from the original 0.68, which is the point where music actually reads as HALF as
+-- loud. 0.4 was only -4.6 dB -- a real change, but not one you hear as "quieter", which is why it sounded
+-- untouched. Volume here is linear amplitude; perceived loudness is not, so halve the dB, not the number.
+local MUSIC_NORMAL_VOLUME = 0.2    -- normal music level (the group Volume MusicDucking tweens toward)
+local MUSIC_DUCKED_VOLUME = 0.056  -- event-ducked level = 28% of normal, the ratio this has always used
 
 local SoundService = game:GetService("SoundService")
 

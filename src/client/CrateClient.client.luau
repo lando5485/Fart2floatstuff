@@ -172,11 +172,14 @@ revealGui.DisplayOrder = 100 -- match the shop ScreenGuis (DisplayOrder 100) so 
 revealGui.Enabled = false
 revealGui.Parent = playerGui
 
+-- Click-catcher only -- its fill stays at transparency 1 forever, the world is never darkened. Visible is
+-- what now toggles with the reveal, both to swallow stray taps only while it is open and because
+-- RewardsClient reads Dim.Visible as its "a crate reveal is on screen" signal.
 local dim = Instance.new("Frame")
 dim.Name = "Dim"
 dim.Size = UDim2.fromScale(1, 1)
-dim.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 dim.BackgroundTransparency = 1
+dim.Visible = false
 dim.Parent = revealGui
 
 local revealing = false
@@ -526,13 +529,12 @@ local function freshReveal()
 	revealing = true
 	revealGui.Enabled = true
 	setHudHidden(true) -- hide the bottom HUD for the whole Daily Rewards UI (picker + reward popup)
-	dim.BackgroundTransparency = 1
-	TweenService:Create(dim, TweenInfo.new(0.3), { BackgroundTransparency = 0.45 }):Play()
+	dim.Visible = true -- no tint tween: the catcher is invisible, Visible is purely the open/closed signal
 	local function closeReveal()
 		for _, ch in ipairs(revealGui:GetChildren()) do
 			if ch ~= dim then ch:Destroy() end
 		end
-		TweenService:Create(dim, TweenInfo.new(0.25), { BackgroundTransparency = 1 }):Play()
+		dim.Visible = false
 		task.delay(0.25, function()
 			revealGui.Enabled = false
 			revealing = false
@@ -674,8 +676,28 @@ local function claimAndReveal(petId, closeReveal)
 	task.spawn(function()
 		local ok, result = pcall(function() return ClaimCrate:InvokeServer(petId) end)
 		if ok and type(result) == "table" then
+			-- THE DAILY IS A FREE SKIN CRATE. The server already opened it; all that is left is to show it,
+			-- and the crate shop's reel/result card is a far better payoff than this file's "+N levels" card
+			-- would be for a skin. So the meteor closes here and SkinCrateClient takes the screen.
+			if result.ok and result.kind == "skincrate" and type(_G.skinCrateShowReveal) == "function" then
+				closeReveal()
+				local shown = select(2, pcall(_G.skinCrateShowReveal, result.crateId, result.crate))
+				-- If the crate shop is not up (script missing/erroring), the crate is STILL granted and sits in
+				-- the Collection Book -- so say so rather than leaving the player with nothing on screen.
+				-- closeReveal clears `revealing` on a 0.25s delay and showMessage refuses while it is set, so
+				-- this has to wait for that teardown or the message is swallowed.
+				if shown ~= true then
+					task.delay(0.35, function() showMessage("Free Crate Opened! Check the Crates menu") end)
+				end
+				return
+			end
 			if result.ok then
 				showResultCard(result, closeReveal)
+				return
+			elseif result.reason == "no_pets" then
+				-- Only reachable now if the crate grant failed AND the old level path took over.
+				closeReveal()
+				showMessage("Unlock A Pet To Receive Levels")
 				return
 			elseif result.reason == "cooldown" then
 				if result.nextClaimAt then lastCrateClaim = result.nextClaimAt - CRATE.COOLDOWN_SECONDS end
@@ -1464,31 +1486,15 @@ attemptOpen = function()
 	end
 	opening = true
 	task.spawn(function()
-		local owned = fetchOwnedPets()
-		if #owned == 0 then
-			-- Owns ZERO pets: do NOT claim (no coins, no timer consumed). Show the message, stay ready.
-			opening = false
-			showMessage("Unlock A Pet To Receive Levels")
-			return
-		end
-		local hasUnmaxed = false
-		for _, p in ipairs(owned) do
-			if not p.maxed then hasUnmaxed = true; break end
-		end
-		-- FULL OPEN SEQUENCE: meteor shake -> cracks -> burst FIRST, then the "Choose a Pet to Level Up"
-		-- modal listing ALL owned pets (maxed ones greyed + not selectable). The server PRE-ROLLS the
-		-- rarity (PreviewRoll) so the header/rows/confirm can show the rolled tier + "+N levels"; the
-		-- player only picks WHICH pet. Confirming claims it (reusing that same roll) -> result reveal.
+		-- NO PET GATE ANY MORE. The daily hands out a free Premium skin crate, which is worth exactly the
+		-- same to a player who owns no pets as to one who owns every pet -- so the old "Unlock A Pet To
+		-- Receive Levels" refusal (and the pet picker behind it) would now be turning people away from a
+		-- reward they can use. Both only survive as the fallback path, if the crate grant itself fails.
+		--
+		-- SEQUENCE: meteor shake -> cracks -> burst, then claim, then the crate shop's own reveal reel.
 		local closeReveal = freshReveal()
 		playMeteor(false, function()
-			if not hasUnmaxed then
-				claimAndReveal(nil, closeReveal) -- owns pets but ALL maxed -> coin fallback (unchanged)
-				return
-			end
-			local roll = nil -- { rarity, levelsAdded } from the server, or nil if the preview failed
-			local okR, res = pcall(function() return PreviewRoll:InvokeServer() end)
-			if okR and type(res) == "table" and res.ok and res.rarity then roll = res end
-			showPicker(owned, roll, closeReveal, function(petId) claimAndReveal(petId, closeReveal) end)
+			claimAndReveal(nil, closeReveal)
 		end)
 	end)
 end

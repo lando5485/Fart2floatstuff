@@ -112,6 +112,29 @@ task.delay(1, nukeRivalRemotes); task.delay(4, nukeRivalRemotes); task.delay(9, 
 --------------------------------------------------------------------------------
 local SCALE        = 1.02   -- overall size of the campfire + seats (1 = original). Everything scales off this.
 local SEATS        = 6      -- default stump seats ringed around a fire (a numbered brick like "Fire 2" overrides)
+-- CRACKLE: a looped 3D sound parented to each fire's flame part. Distances matter more than volume here --
+-- four campfires sit within ~200 studs of each other in the garden, so the fade has to finish before you are
+-- close enough to hear the next one, or the whole area turns into one flat wash of fire noise.
+local CRACKLE_SOUND_ID  = "rbxassetid://158853971"
+-- ===== IT WAS AUDIBLE FROM MOST OF THE ISLAND =====
+-- The four garden fires actually sit at roughly (-87, 78), (-88, -69), (80, 25) and (29, 105) -- the two
+-- closest are about 95 studs apart. With the old FADE_DIST of 90 every fire was still audible almost all
+-- the way to its neighbour, so standing anywhere in the middle put you inside two or three overlapping
+-- crackles at once. That is the "flat wash of fire noise" the note above was trying to avoid, and the
+-- numbers were just too generous to achieve it.
+--
+-- ===== WHY THE DISTANCES MOVED AND NOT JUST THE VOLUME =====
+-- Dropping Volume alone would have made the fire quieter when you are SAT AT IT too, which is the one
+-- place it should sound good. What was wrong was the SHAPE of the falloff, not its peak: the sound needs
+-- to be a thing you walk up to, so the honest fix is to pull the fade in so it dies inside its own
+-- clearing. Volume comes down a little as well, but the distances are doing the real work.
+--
+-- FULL_DIST 10 is about the bench ring -- full strength only once you are actually at the fire.
+-- FADE_DIST 45 is a shade under twice REST_RADIUS (24): still clearly there while you are resting, gone
+-- by the time you are halfway to the next fire. Nothing overlaps any more.
+local CRACKLE_VOLUME    = 0.55 -- was 0.75
+local CRACKLE_FULL_DIST = 10   -- was 18 -- studs of full volume, roughly the bench ring
+local CRACKLE_FADE_DIST = 45   -- was 90 -- studs to silence; REST_RADIUS is 24, nearest fire is ~95 away
 local REST_RADIUS  = 24     -- studs from the fire you must be within to count as resting (widened for the bigger ring)
 -- ===== RESTING PAY IS 40% LOWER, AND IT IS THE INTERVAL THAT CHANGED =====
 -- 3 -> 5 seconds between payouts, which is 3 / 0.6, so a minute at the fire now pays exactly 60% of what it
@@ -314,6 +337,23 @@ local function buildCampfire(baseCF, seats)
 	smoke.Acceleration = Vector3.new(0, 3, 0)
 	smoke.Parent = flame
 
+	-- CRACKLE: a looped 3D sound on the flame itself, so it pans and fades with distance and every player in
+	-- the server hears it (built server-side, like the fire/light/smoke it sits beside). It is tied to the LIT
+	-- state below -- a rained-out campfire that still crackles is worse than one that never did.
+	local crackle = Instance.new("Sound")
+	crackle.Name = "CampfireCrackle"
+	crackle.SoundId = CRACKLE_SOUND_ID
+	crackle.Looped = true
+	crackle.Volume = CRACKLE_VOLUME
+	crackle.RollOffMode = Enum.RollOffMode.InverseTapered
+	crackle.RollOffMinDistance = CRACKLE_FULL_DIST -- full volume when you are sat at the fire
+	crackle.RollOffMaxDistance = CRACKLE_FADE_DIST -- silent well before the next campfire's crackle starts
+	-- Fires are built a few studs apart around the garden; a small random pitch per fire stops the overlap
+	-- between two of them from phasing into one weird doubled tone.
+	crackle.PlaybackSpeed = 0.94 + math.random() * 0.12
+	crackle.Parent = flame
+	if firesLit then crackle:Play() end
+
 	-- log-bench seats ringed around the fire -- you can actually sit on these
 	local benchR = 8.5 * S
 	-- seats: one plain wood cylinder each, and nothing else. Kept Y-up (so sitting works) and aimed at the
@@ -395,7 +435,7 @@ local function buildCampfire(baseCF, seats)
 	pp.Triggered:Connect(function(plr) if plr then giveStick(plr) end end)
 
 	-- remember this fire so the weather can douse/relight it and swap its sign text
-	CAMPFIRES[#CAMPFIRES + 1] = { flame = flame, fire = fire, light = light, smoke = smoke, sign = lbl }
+	CAMPFIRES[#CAMPFIRES + 1] = { flame = flame, fire = fire, light = light, smoke = smoke, sign = lbl, crackle = crackle }
 
 	-- gentle flicker: the light and flame breathe while LIT; when doused, it goes dark and cold.
 	task.spawn(function()
@@ -427,6 +467,10 @@ local function setFiresLit(lit)
 		if c.fire  then c.fire.Enabled  = lit end
 		if c.smoke then c.smoke.Enabled = lit end -- (the flame part is driven by the flicker loop)
 		if c.sign  then c.sign.Text = lit and SIGN_LIT or SIGN_RAIN end
+		-- the crackle follows the flame: doused by the storm, back when the logs dry out
+		if c.crackle then
+			if lit then c.crackle:Play() else c.crackle:Stop() end
+		end
 	end
 end
 local function setSignText(text)

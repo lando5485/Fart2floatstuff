@@ -37,6 +37,8 @@ local prefix     = "Fish"
 -- ============================================================================
 local CONFIG = {
 	lakeName       = "ButterLake",     -- the Name of the water Part/Model you fish IN (rays test for this name)
+	-- ...and the fallbacks, tried in order when `lakeName` is not in this realm. See findWater().
+	lakeNames      = { "CandyLake", "SyrupLake", "TaffyLake", "ChocolateLake", "Lake", "Pond", "Water" },
 	barrelSpotName = "RodBarrelSpot",  -- a Part marking where the rod barrel stands (optional)
 	barrelPosFallback = nil,           -- or hardcode a Vector3 here if you don't place a spot part
 	eggShell  = Color3.fromRGB(250,224,120), -- egg color (butter-yellow by default)
@@ -117,6 +119,11 @@ local function ensureReelUI()
 	local dim = Instance.new("Frame"); dim.Size = UDim2.new(1,0,1,0); dim.BackgroundColor3 = Color3.new(0,0,0); dim.BackgroundTransparency = 0.5; dim.Active = true; dim.Parent = g
 	local panel = Instance.new("Frame"); panel.Size = UDim2.new(0,300,0,360); panel.Position = UDim2.new(0.5,0,0.5,0); panel.AnchorPoint = Vector2.new(0.5,0.5)
 	panel.BackgroundColor3 = Color3.fromRGB(25,90,185); panel.Parent = g
+	-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+	-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
+	-- The panel keeps its own size and every child keeps its own pixel coordinates;
+	-- it is centred in the house shell and scaled to fit, so nothing inside moves.
+	pcall(_G.housePanel, panel)   -- fishing panel
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0,16); local ps = Instance.new("UIStroke", panel); ps.Color = Color3.new(1,1,1); ps.Thickness = 3
 	local titl = Instance.new("TextLabel"); titl.Size = UDim2.new(1,-20,0,30); titl.Position = UDim2.new(0,10,0,10); titl.BackgroundTransparency = 1
 	titl.Font = Enum.Font.GothamBold; titl.TextSize = 22; titl.TextColor3 = Color3.fromRGB(255,215,0); titl.Text = "REEL IT IN!"; titl.Parent = panel
@@ -503,8 +510,46 @@ end
 -- BOOT: find the water + barrel spot by name, then build.
 -- ============================================================================
 task.spawn(function()
-	local lake = Workspace:FindFirstChild(CONFIG.lakeName) or Workspace:FindFirstChild(CONFIG.lakeName, true)
-	if not lake then warn("[Fish] no part/model named '"..CONFIG.lakeName.."' found in Workspace -- set CONFIG.lakeName"); return end
+	-- FIND THE WATER BY SHAPE OF NAME, NOT ONE EXACT STRING.
+	-- This file is a drop-in copy of the Food Realm's Butter Swamp, and its config still said
+	-- "ButterLake" -- a name that does not exist in this realm. So the quest warned and returned
+	-- at every single boot and no fishing has ever existed here. The configured name is still
+	-- tried FIRST (an exact match always wins), then a short list of what water actually gets
+	-- called, then anything whose name reads as a body of water.
+	--
+	-- The contains-match is deliberately narrow -- lake / pond / lagoon / swamp only. "water" is
+	-- NOT in it: half the props in a candy realm have Water somewhere in the name and hooking the
+	-- rod onto a decorative waterfall would be worse than not fishing at all.
+	local function findWater()
+		local exact = Workspace:FindFirstChild(CONFIG.lakeName) or Workspace:FindFirstChild(CONFIG.lakeName, true)
+		if exact then return exact, CONFIG.lakeName end
+		for _, n in ipairs(CONFIG.lakeNames) do
+			local hit = Workspace:FindFirstChild(n) or Workspace:FindFirstChild(n, true)
+			if hit then return hit, n end
+		end
+		for _, d in ipairs(Workspace:GetDescendants()) do
+			if d:IsA("BasePart") or d:IsA("Model") then
+				local n = string.lower(d.Name)
+				if n:find("lake") or n:find("pond") or n:find("lagoon") or n:find("swamp") then
+					return d, d.Name
+				end
+			end
+		end
+		return nil
+	end
+	local lake, foundAs = findWater()
+	if not lake then
+		-- No water in this realm is a legitimate state, not a fault: fishing is optional here and is
+		-- not one of the 14 island tasks. Say so once, quietly, instead of warning like something broke.
+		print("[Fish] no water found (tried '" .. CONFIG.lakeName .. "', " .. #CONFIG.lakeNames
+			.. " known names, then anything named lake/pond/lagoon/swamp) -- fishing is off in this realm")
+		return
+	end
+	if foundAs ~= CONFIG.lakeName then
+		print(("[Fish] water found as '%s' (CONFIG.lakeName is '%s') -- fishing on it")
+			:format(foundAs, CONFIG.lakeName))
+		CONFIG.lakeName = foundAs   -- the edge-probe rays test names, so they must agree with what we picked
+	end
 	local lakePos, lakeSize
 	if lake:IsA("BasePart") then lakePos = lake.Position; lakeSize = lake.Size
 	else lakePos = lake:GetPivot().Position; local _, sz = lake:GetBoundingBox(); lakeSize = sz end

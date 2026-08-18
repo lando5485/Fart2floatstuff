@@ -1,73 +1,100 @@
 --======================================================================
 -- ObjectiveHUD.client.luau   (StarterPlayerScripts)
 --======================================================================
--- NEW-PLAYER ONBOARDING: one always-visible objective card that teaches the
--- core loop by DOING it -- buy food -> tap fart -> grab a ring -> reach island 2.
+-- NEW-PLAYER ONBOARDING: one always-visible objective instruction that teaches
+-- the core loop by DOING it -- buy food -> tap fart -> grab a ring -> reach island 2.
 -- Before this, the only explanation of the loop lived behind the Farmer's optional
 -- ProximityPrompt (FarmerTutorial), which a player could walk straight past.
 --
--- The step is DERIVED from live game state every tick -- there is no stored step
--- counter, so it is self-healing (a player who dies, rejoins, or buys food out of
--- order always sees the right instruction) and needs no persistence.
+-- ===== IT IS A BANNER NOW. THE STANDALONE CARD IS GONE. =====
+-- This script used to build its OWN ScreenGui ("ObjectiveHUD") at y=85: its own frame, its own gold-rimmed
+-- CTA-green paint, its own title label, its own subtitle label, its own coin goal bar and its own breathing
+-- stroke pulse. All of it is deleted. Not hidden, not left as an empty frame -- deleted, and the sweep below
+-- destroys any copy of it baked into the place so nothing survives from an older build either.
 --
--- It retires itself for good the moment Island >= 2: reaching Broccoli Bluff IS
--- the graduation, so anyone past island 1 never sees the card again.
+-- The words, the subtitle and the live progress fill are now PINNED to NotifyCenter's hero lane -- the exact
+-- lane arrival banners, event titles and reward nudges use. Three things fall out of that, and all three
+-- were the reason to move:
+--   1. NO MORE TWO-CARDS-AT-ONCE. The directions and a hero banner were separate ScreenGuis, so a player
+--      could be told two things simultaneously and read neither. One lane, one owner, always.
+--   2. IT INHERITS THE GLOBAL UISCALE. ResponsiveUI scales the hero frame like every other HUD element, so
+--      the directions grow and shrink with the rest of the interface instead of carrying a private 0.7
+--      mobile fudge factor that agreed with nothing.
+--   3. IT IS EXCLUSIVE. See below.
 --
--- THE RING STEP IS LOAD-BEARING, not flavour. A fresh player has 25 coins -> 5 Beans
--- -> 40 power -> a ~600-stud flight that pays back ~27 coins. Island 2 is at Y=790.
--- So the opening loop is almost exactly BREAK-EVEN and cannot reach island 2 on
--- height coins alone -- rings (+18 and up) are the only escape, and nothing else in
--- the game mentions they exist. The FULL-TANK coin goal below makes the target legible.
+-- ===== EXCLUSIVE, AND WHAT THAT MEANS =====
+-- The directions are pinned at RANK.TUTORIAL. While they are up nothing else plays: arrival cards, event
+-- titles, friend/group promos, reward toasts and purchase confirmations all QUEUE. They are not dropped --
+-- the moment this step COMPLETES the pin yields, everything waiting drains in priority order, and the next
+-- step's directions take the slot back.
+--
+-- ONE THING OUTRANKS IT: the garden watering quest. While that quest is live and unfinished its step
+-- directions are pinned at RANK.QUEST and simply cover these -- the player has a watering can in their hand
+-- and needs to be told where to point it. Finish the watering, its pin releases, and these come straight
+-- back mid-sentence. Neither side has to know about the other; the ranks do it.
+--
+-- The step is DERIVED from live game state every tick -- there is no stored step counter, so it is
+-- self-healing (a player who dies, rejoins, or buys food out of order always sees the right instruction)
+-- and needs no persistence. It retires itself for good the moment Island >= 2: reaching Broccoli Bluff IS
+-- the graduation, so anyone past island 1 never sees it again.
+--
+-- THE RING STEP IS LOAD-BEARING, not flavour. A fresh player has 25 coins -> 5 Beans -> 40 power -> a ~600-
+-- stud flight that pays back ~27 coins. Island 2 is at Y=790. So the opening loop is almost exactly
+-- BREAK-EVEN and cannot reach island 2 on height coins alone -- rings (+18 and up) are the only escape, and
+-- nothing else in the game mentions they exist. The FULL-TANK coin goal below makes the target legible.
 --======================================================================
 
-local Players           = game:GetService("Players")
-local RunService        = game:GetService("RunService")
-local TweenService      = game:GetService("TweenService")
-local UserInputService  = game:GetService("UserInputService")
+local Players = game:GetService("Players")
 
-local player    = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
+local player = Players.LocalPlayer
 
--- ===== DUPLICATE GUARD =====
+-- ===== DUPLICATE GUARD + THE DEMOLITION OF THE OLD CARD =====
 -- A STALE COPY OF THIS SCRIPT IS BAKED INTO THE PLACE. MenuBackdropGuard names it in both of its warnings --
 -- "18 DUPLICATE LocalScript(s): ... ObjectiveHUD ..." and "8 DUPLICATE ScreenGui name(s): ... ObjectiveHUD".
--- Two copies run, each builds its own card, and both sit at the same anchored position: the old one lands on
--- top of the new one, so the card you read is whichever loaded last -- and it was showing the OLD wording
--- while the arrows followed the new route. Exactly the failure the trail/card sync was meant to end.
+-- That mattered before because two copies each built a card and the old one landed on top of the new one.
+--
+-- It matters MORE now. This file no longer builds a card at all, so a stale copy is the only thing that
+-- could still put one on screen -- and it would sit at y=85 under the banner, which is exactly the "leftover
+-- standalone GUI" this change exists to remove. So the sweep is now unconditional: EVERY ScreenGui named
+-- ObjectiveHUD is destroyed, whoever built it, plus the duplicate LocalScripts that would rebuild one.
 --
 -- Rojo cannot fix this by editing the file, because the stale copy is not this file -- it is a separate
 -- Instance in the place that Rojo never touches. So the live copy evicts it at runtime, the same way
 -- Campfire and DailyTasks already do.
 --
 -- THIS RUNS BEFORE THE GRADUATION EARLY-RETURN BELOW, deliberately. If the player is already past island 2
--- this script bails out and never builds a card -- but the stale copy might not, and an un-evicted stale card
--- would then hang on screen for a graduated player with nothing left to remove it.
+-- this script bails out -- but the stale copy might not, and an un-evicted stale card would then hang on
+-- screen for a graduated player with nothing left to remove it.
 if _G.__ObjectiveHUD then return end
 _G.__ObjectiveHUD = true
 
-local STAMP = "BuiltByLiveScript"
-local function nukeStaleObjectiveHUD()
-	local removed = 0
+local function nukeStandaloneCard()
+	local removed, guis = 0, 0
 	for _, inst in ipairs(player:GetDescendants()) do
-		if inst:IsA("ScreenGui") and inst.Name == "ObjectiveHUD" and not inst:GetAttribute(STAMP) then
-			pcall(function() inst:Destroy() end); removed += 1
+		if inst:IsA("ScreenGui") and inst.Name == "ObjectiveHUD" then
+			-- No stamp test any more: we build nothing, so every one of these is a leftover.
+			pcall(function() inst:Destroy() end); removed += 1; guis += 1
 		elseif inst ~= script and inst:IsA("LocalScript") and inst.Name == script.Name then
 			-- the running copies live under the player (PlayerScripts / PlayerGui), not in StarterPlayer
 			pcall(function() inst.Disabled = true; inst:Destroy() end); removed += 1
 		end
 	end
 	if removed > 0 then
-		warn("[Objective] cleared " .. removed .. " STALE duplicate objective card(s)/script(s) -- the old one " ..
-			"was drawn on top of this one. Delete them in Studio for good.")
+		print(("[Objective] REMOVED the standalone tutorial GUI: %d ObjectiveHUD ScreenGui(s) + %d duplicate " ..
+			"script(s) destroyed -- card, subtitle and progress bar included. The directions are a NotifyCenter " ..
+			"hero banner now."):format(guis, removed - guis))
 	end
+	return guis
 end
-nukeStaleObjectiveHUD()
+local sweptAtBoot = nukeStandaloneCard()
 -- Load order is not ours to choose: a stale copy that starts AFTER us is only reachable once it has built
 -- itself, so sweep again a few times over the first few seconds.
-task.delay(1, nukeStaleObjectiveHUD); task.delay(4, nukeStaleObjectiveHUD); task.delay(9, nukeStaleObjectiveHUD)
+task.delay(1, nukeStandaloneCard); task.delay(4, nukeStandaloneCard); task.delay(9, nukeStandaloneCard)
 
-local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-local scale    = isMobile and 0.7 or 1.0
+print(("[Objective] standalone tutorial GUI REMOVED (no card, no progress-bar frame, no empty leftover -- " ..
+	"%d found and destroyed at boot). Directions now render in the shared NotifyCenter hero lane. " ..
+	"PRIORITY ORDER ACTIVE: garden watering directions > tutorial/achievement (exclusive) > everything else.")
+	:format(sweptAtBoot))
 
 -- Beans = the island-1 food. Mirrors CoreClient's `foods[1]` and PlayerStats' server table
 -- (the food list is already duplicated client/server in this codebase -- keep all three in step).
@@ -76,139 +103,94 @@ local BEAN_PRICE, BEAN_POWER = 5, 8
 local GOAL_ISLAND      = 2
 local GOAL_ISLAND_NAME = "Broccoli Bluff"
 
+-- The banner's paint. Same CTA green the card wore and the same green the BUY FOOD / TAP TO FART button at
+-- the bottom of the screen wears, MEASURED off the live button rather than copied from its declared
+-- constants (FoodRealmHud declares (50,190,60); what actually renders after its gradient is (48,162,56)).
+-- The card and the button are read together -- the words say "go to the food stand", the button IS the food
+-- stand -- so matching them makes the pair read as one instruction.
+local CTA_GREEN   = Color3.fromRGB( 48, 162,  56)
+local BAR_TRACK   = Color3.fromRGB( 24,  92,  32) -- a recessed well in the banner's OWN green, not navy
+local BAR_FILL    = Color3.fromRGB(255, 200,   0)
+local BAR_DONE    = Color3.fromRGB( 80, 220, 100) -- they can afford a full tank
+local WIN_LIME    = Color3.fromRGB(126, 217,  87) -- the house lime, for the graduation moment
+
+local PIN_ID = "Tutorial"   -- our pin id; unpin(PIN_ID) can only ever release OUR banner
+
 -- ===== state =====
-local ls          = player:WaitForChild("leaderstats", 30)
+local ls = player:WaitForChild("leaderstats", 30)
 if not ls then return end
-local coinsVal    = ls:WaitForChild("Coins", 10)
-local islandVal   = ls:WaitForChild("Island", 10)
-local powerVal    = ls:WaitForChild("CurrentPower", 10)
-local stomachVal  = ls:WaitForChild("StomachMax", 10)
+local coinsVal   = ls:WaitForChild("Coins", 10)
+local islandVal  = ls:WaitForChild("Island", 10)
+local powerVal   = ls:WaitForChild("CurrentPower", 10)
+local stomachVal = ls:WaitForChild("StomachMax", 10)
 if not (coinsVal and islandVal and powerVal and stomachVal) then return end
 
--- Already past island 1 -> this player has graduated; never build the card at all.
+-- Already past island 1 -> this player has graduated; never pin anything at all.
 if islandVal.Value >= GOAL_ISLAND then return end
 
 local grabbedARing = false -- sticky across flights: once they've learned rings, stop nagging about them
 local retired      = false
+local sawFullTank  = false -- once-ever latch for the FULL TANK milestone
+local liveStep     = nil   -- the step key currently pinned, so a CHANGE can be detected
 
--- ===== card =====
-local gui = Instance.new("ScreenGui")
-gui.Name          = "ObjectiveHUD"
-gui.ResetOnSpawn  = false
-gui.IgnoreGuiInset = true
-gui.DisplayOrder  = 55 -- above the HUD, below the Farmer dialog (60) and shop popups
--- Stamped BEFORE parenting: the delayed sweeps above destroy any unstamped ObjectiveHUD they find, and a
--- gui that is parented first and stamped a line later can be caught in that gap by its own cleanup.
-gui:SetAttribute(STAMP, true)
-gui.Parent        = playerGui
+-- ===== TALKING TO A NOTIFYCENTER THAT MIGHT BE AN OLDER BUILD =====
+-- A stale duplicate of NotifyCenter is baked into the place and, for the first few seconds of a session, it
+-- can be the one holding _G.NotifyCenter (that file reclaims the global on a loop, but there is a boot
+-- window). An older table has push and nothing else. So: pin() is the ONE thing we hard-require -- without
+-- it there is no lane to write to -- and the two newer calls degrade rather than vanish. A new player must
+-- never end up with no directions at all because of a load-order race.
+local function NC()
+	local nc = _G.NotifyCenter
+	if nc and nc.pin then return nc end
+	return nil
+end
+
+local function yieldPin(nc)
+	if nc.pinYield then nc.pinYield(PIN_ID) end
+end
+
+--- An exclusive teaching moment. Falls back to a plain high-priority push on an older NotifyCenter: it can
+--- then be preempted, which is worse, but the words still reach the player in the same place.
+local function tutorialBanner(nc, spec)
+	if nc.tutorial then nc.tutorial(spec); return end
+	spec.priority = (nc.PRIORITY and nc.PRIORITY.ISLAND) or 100
+	if nc.push then pcall(nc.push, spec) end
+end
 
 -- ===== THE PET COMES FIRST, THEN THE DIRECTIONS =====
 -- A brand-new player is given a free Bean Buddy on their very first join, and PetFollow plays a welcome
--- card for it. That card and this one both want the same first ten seconds of a new player's attention,
--- and two cards at once is how somebody reads neither -- so this one waits its turn.
+-- card for it. That card and these directions both want the same first ten seconds of a new player's
+-- attention, and two things at once is how somebody reads neither -- so this one waits its turn.
 --
 -- The handshake is _G.starterWelcome, set by PetFollow: "pending" the instant the grant lands, "showing"
 -- while the card is up, "done" once it has faded. Claiming "pending" at the GRANT rather than at the card
 -- matters, because that card deliberately waits out the loading screen and the whole Garden Intro before
--- appearing -- without the early claim this card would win the race every single time.
+-- appearing -- without the early claim these directions would win the race every single time.
 --
 -- RETURNING PLAYERS ARE NOT DELAYED AT ALL. SeenGardenIntro is a saved attribute, so anyone who has played
 -- before has it true and skips this entirely; only a first-join can be waiting on a welcome card. The 45s
 -- ceiling is a safety net for a welcome that never resolves (an intro that never reports back, a player who
--- sits on the PLAY button) -- the directions are the more important of the two cards, so if anything goes
--- wrong they show anyway rather than being suppressed.
-gui.Enabled = false
+-- sits on the PLAY button) -- the directions are the more important of the two, so if anything goes wrong
+-- they show anyway rather than being suppressed.
+local ready = false
 task.spawn(function()
 	local waited = 0
 	if player:GetAttribute("SeenGardenIntro") ~= true then
-		-- brand-new: give the grant a moment to announce itself, then wait out the card
 		while _G.starterWelcome == nil and waited < 8 do task.wait(0.25); waited = waited + 0.25 end
 		while (_G.starterWelcome == "pending" or _G.starterWelcome == "showing") and waited < 45 do
 			task.wait(0.25); waited = waited + 0.25
 		end
 	end
-	gui.Enabled = true
-	print(("[Objective] directions shown (%s, waited %.1fs)"):format(
+	ready = true
+	print(("[Objective] directions pinned to the hero lane (%s, waited %.1fs)"):format(
 		_G.starterWelcome == "done" and "after the starter-pet welcome"
 			or (_G.starterWelcome == nil and "no starter pet -- returning player" or "welcome timed out"), waited))
 end)
 
--- y=85: the arrival/announcement banners settle at y=10 and are 65px tall, so this clears them.
-local card = Instance.new("Frame")
-card.Name          = "Card"
-card.AnchorPoint   = Vector2.new(0.5, 0)
-card.Position      = UDim2.new(0.5, 0, 0, math.floor(85 * scale))
-card.Size          = UDim2.new(0, math.floor(470 * scale), 0, math.floor(78 * scale))
-card.BackgroundColor3 = Color3.fromRGB(35, 40, 70)
-card.BackgroundTransparency = 0.08
-card.BorderSizePixel = 0
-card.Parent        = gui
-do
-	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 14); c.Parent = card
-	local g = Instance.new("UIGradient")
-	g.Color = ColorSequence.new(Color3.fromRGB(48, 55, 95), Color3.fromRGB(28, 32, 58))
-	g.Rotation = 90; g.Parent = card
-end
-
-local stroke = Instance.new("UIStroke")
-stroke.Color     = Color3.fromRGB(255, 200, 0)
-stroke.Thickness = 3
-stroke.Parent    = card
-
-local titleLbl = Instance.new("TextLabel")
-titleLbl.AnchorPoint = Vector2.new(0.5, 0)
-titleLbl.Position    = UDim2.new(0.5, 0, 0, math.floor(7 * scale))
-titleLbl.Size        = UDim2.new(1, -20, 0, math.floor(30 * scale))
-titleLbl.BackgroundTransparency = 1
-titleLbl.Font        = Enum.Font.FredokaOne
-titleLbl.TextColor3  = Color3.fromRGB(255, 215, 0)
-titleLbl.TextScaled  = true
-titleLbl.Text        = ""
-titleLbl.Parent      = card
-
-local subLbl = Instance.new("TextLabel")
-subLbl.AnchorPoint = Vector2.new(0.5, 0)
-subLbl.Position    = UDim2.new(0.5, 0, 0, math.floor(38 * scale))
-subLbl.Size        = UDim2.new(1, -24, 0, math.floor(20 * scale))
-subLbl.BackgroundTransparency = 1
-subLbl.Font        = Enum.Font.GothamBold
-subLbl.TextColor3  = Color3.fromRGB(205, 215, 245)
-subLbl.TextScaled  = true
-subLbl.Text        = ""
-subLbl.Parent      = card
-
--- Coin goal bar: only shown on the BUY step, where "how much more do I need?" is the live question.
-local barBg = Instance.new("Frame")
-barBg.Name         = "GoalBar"
-barBg.AnchorPoint  = Vector2.new(0.5, 1)
-barBg.Position     = UDim2.new(0.5, 0, 1, math.floor(-8 * scale))
-barBg.Size         = UDim2.new(1, -24, 0, math.floor(9 * scale))
-barBg.BackgroundColor3 = Color3.fromRGB(18, 22, 44)
-barBg.BorderSizePixel  = 0
-barBg.Visible      = false
-barBg.Parent       = card
-do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(1, 0); c.Parent = barBg end
-
-local barFill = Instance.new("Frame")
-barFill.Size            = UDim2.new(0, 0, 1, 0)
-barFill.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
-barFill.BorderSizePixel = 0
-barFill.Parent          = barBg
-do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(1, 0); c.Parent = barFill end
-
--- ===== attention pulse (runs until retired) =====
-task.spawn(function()
-	while not retired and gui.Parent do
-		TweenService:Create(stroke, TweenInfo.new(0.6, Enum.EasingStyle.Sine), {Thickness = 5}):Play()
-		task.wait(0.6)
-		if retired then break end
-		TweenService:Create(stroke, TweenInfo.new(0.6, Enum.EasingStyle.Sine), {Thickness = 3}):Play()
-		task.wait(0.6)
-	end
-end)
-
 -- ===== the step machine: pure derivation from live state =====
--- Returns title, subtitle, and (coins, cost) when a goal bar should show.
+-- Returns a STEP KEY plus title, subtitle, and (coins, cost) when a progress fill should show. The key is
+-- what makes "the step completed" a thing this file can detect: when it changes, the previous instruction
+-- has been satisfied, and that is the moment the pin yields so everything queued behind it can play.
 local function describeStep()
 	local flying = _G.isFlying == true
 	local power  = powerVal.Value
@@ -216,15 +198,17 @@ local function describeStep()
 	if flying then
 		if (_G.ringsCollectedFlight or 0) > 0 then grabbedARing = true end
 		if not grabbedARing then
-			return "\xF0\x9F\x92\x8D FLY THROUGH A RING!",
+			return "ring",
+			       "\xF0\x9F\x92\x8D FLY THROUGH A RING!",
 			       "Rings pay BONUS coins \xE2\x80\x94 steer into them on the way up"
 		end
-		return "\xF0\x9F\x9A\x80 CLIMB TO " .. string.upper(GOAL_ISLAND_NAME) .. "!",
+		return "climb",
+		       "\xF0\x9F\x9A\x80 CLIMB TO " .. string.upper(GOAL_ISLAND_NAME) .. "!",
 		       "Land on it to unlock it forever"
 	end
 
 	-- ===== WALK THE PLAYER DOWN THE SAME ROUTE THE ARROWS DRAW =====
-	-- GardenGuideTrail lays green chevrons to the Gardener first, then re-routes to the food stand. This card
+	-- GardenGuideTrail lays green chevrons to the Gardener first, then re-routes to the food stand. This
 	-- used to open on "BUY BEANS AT THE FOOD STAND" regardless -- so the very first thing a new player was
 	-- told pointed somewhere the arrows on the floor were not going. Now the arrows lead and the words follow.
 	--
@@ -232,27 +216,30 @@ local function describeStep()
 	-- that gets to be right. Working the route out a second time here is how the two drift apart again.
 	--
 	-- nil means there are no tutorial arrows -- not started, both legs walked, or they have already flown --
-	-- and the card falls through to its own advice below, which is correct with nothing on the ground to follow.
+	-- and it falls through to its own advice below, which is correct with nothing on the ground to follow.
 	local guideStep = _G.gardenGuideStep
 	if guideStep == "gardener" then
-		-- No coin goal bar on this leg: nothing here costs money, and a progress bar under "go and say hello"
-		-- reads as though the player is being asked to save up first.
-		return "\xF0\x9F\x8C\xBB FOLLOW THE ARROWS TO THE GARDENER",
+		-- No progress fill on this leg: nothing here costs money, and a bar under "go and say hello" reads
+		-- as though the player is being asked to save up first.
+		return "gardener",
+		       "\xF0\x9F\x8C\xBB FOLLOW THE ARROWS TO THE GARDENER",
 		       "The green arrows on the ground show you the way \xE2\x80\x94 go and say hello"
 	end
 	if guideStep == "stand" and power <= 0 then
 		-- Same destination as the fallback step below, but phrased so it agrees with the arrows that just
-		-- re-routed. The coin goal bar comes back here, because now the question IS "can I afford a tank?".
+		-- re-routed. The progress fill comes back here, because now the question IS "can I afford a tank?".
 		local need  = math.max(0, stomachVal.Value - power)
 		local beans = math.ceil(need / BEAN_POWER)
-		return "\xF0\x9F\x9B\x92 FOLLOW THE ARROWS TO THE FOOD STAND",
+		return "stand",
+		       "\xF0\x9F\x9B\x92 FOLLOW THE ARROWS TO THE FOOD STAND",
 		       "Buy BEANS to fill your gas meter \xE2\x80\x94 " .. BEAN_PRICE .. " coins each",
 		       coinsVal.Value, beans * BEAN_PRICE
 	end
 
 	if power > 0 then
 		local pct = math.floor((power / math.max(1, stomachVal.Value)) * 100 + 0.5)
-		return "\xF0\x9F\x92\xA8 TAP THE GREEN FART BUTTON!",
+		return "fart",
+		       "\xF0\x9F\x92\xA8 TAP THE GREEN FART BUTTON!",
 		       "Your gas meter is " .. pct .. "% full \xE2\x80\x94 one tap and you're flying"
 	end
 
@@ -260,55 +247,107 @@ local function describeStep()
 	local need  = math.max(0, stomachVal.Value - power)
 	local beans = math.ceil(need / BEAN_POWER)
 	local cost  = beans * BEAN_PRICE
-	return "\xF0\x9F\x9B\x92 BUY BEANS AT THE FOOD STAND",
+	return "buy",
+	       "\xF0\x9F\x9B\x92 BUY BEANS AT THE FOOD STAND",
 	       "Beans fill your GAS METER \xE2\x80\x94 " .. BEAN_PRICE .. " coins each",
 	       coinsVal.Value, cost
 end
 
-local function refresh()
-	if retired then return end
-	local title, sub, coins, cost = describeStep()
-	titleLbl.Text = title
-	subLbl.Text   = sub
-
-	if cost and cost > 0 then
-		barBg.Visible = true
-		local pct = math.clamp(coins / cost, 0, 1)
-		TweenService:Create(barFill, TweenInfo.new(0.25), {Size = UDim2.new(pct, 0, 1, 0)}):Play()
-		-- Once they can afford a full tank, say so plainly -- that's the moment they can actually reach island 2.
-		if coins >= cost then
-			subLbl.Text = "You can afford a FULL TANK! Hit BUY MAX \xE2\x9C\x85"
-			barFill.BackgroundColor3 = Color3.fromRGB(80, 220, 100)
-		else
-			subLbl.Text = sub .. "  \xE2\x80\xA2  " .. coins .. " / " .. cost .. " for a FULL tank"
-			barFill.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
-		end
-	else
-		barBg.Visible = false
-	end
+--======================================================================
+-- FIRST FULL TANK -- an exclusive milestone, once ever
+--======================================================================
+-- Filling the meter to the brim is the moment the opening loop clicks: the player has understood that food
+-- IS fuel and has bought enough of it to actually reach island 2. It gets the lane to itself like every
+-- other teaching moment, and it is a push (news, it happened) rather than a pin (an instruction, do this).
+local function checkFullTank()
+	if sawFullTank or retired then return end
+	local maxP = stomachVal.Value
+	if maxP <= 0 or powerVal.Value < maxP then return end
+	sawFullTank = true
+	local nc = NC()
+	if not nc then return end
+	tutorialBanner(nc, {
+		top   = "\xE2\x9C\xA8 FIRST FULL TANK",
+		text  = "\xE2\x9B\xBD  TANK FULL \xE2\x80\x94 " .. maxP .. " GAS!",
+		sub   = "That is enough to reach " .. GOAL_ISLAND_NAME .. " \xE2\x80\x94 hold the fart button and climb",
+		color = Color3.fromRGB(255, 206, 92),
+		progress = 1,
+		progressColor = BAR_DONE,
+		progressTrack = BAR_TRACK,
+		duration = 4,
+	})
+	print("[Objective] milestone: first FULL TANK (exclusive hero banner)")
 end
 
--- ===== graduation: reaching island 2 retires the card for good =====
+--======================================================================
+-- REFRESH -- repaint the pin, and yield it when a step completes
+--======================================================================
+local function refresh()
+	if retired or not ready then return end
+	local nc = NC()
+	if not nc then return end
+
+	local key, title, sub, coins, cost = describeStep()
+
+	local progress, fillColour
+	if cost and cost > 0 then
+		progress = math.clamp(coins / cost, 0, 1)
+		if coins >= cost then
+			-- Once they can afford a full tank, say so plainly -- that's the moment they can actually
+			-- reach island 2.
+			sub = "You can afford a FULL TANK! Hit BUY MAX \xE2\x9C\x85"
+			fillColour = BAR_DONE
+		else
+			sub = sub .. "  \xE2\x80\xA2  " .. coins .. " / " .. cost .. " for a FULL tank"
+			fillColour = BAR_FILL
+		end
+	end
+
+	-- ===== THE STEP COMPLETED -> LET EVERYONE ELSE THROUGH =====
+	-- A changed key means the player DID the thing the last instruction asked for. That is the one moment
+	-- the exclusive hold is supposed to break: pinYield steps the banner aside, everything that queued up
+	-- behind it drains in priority order, and the pin takes the slot back the instant the lane runs dry.
+	-- Nothing was dropped and nothing overlapped -- the queue simply waited for a sentence to finish.
+	if liveStep ~= nil and key ~= liveStep then
+		print(("[Objective] step complete (%s -> %s) -- yielding the hero lane so queued banners can play")
+			:format(liveStep, key))
+		yieldPin(nc)
+	end
+	liveStep = key
+
+	nc.pin(PIN_ID, {
+		rank  = (nc.RANK and nc.RANK.TUTORIAL) or 150, -- under the garden watering quest, over everything else
+		text  = title,
+		sub   = sub,
+		color = CTA_GREEN,
+		progress = progress,          -- nil on the steps with no coin goal -> the fill is simply not drawn
+		progressColor = fillColour,
+		progressTrack = BAR_TRACK,
+	})
+end
+
+--======================================================================
+-- GRADUATION: reaching island 2 retires the directions for good
+--======================================================================
 local function retire()
 	if retired then return end
 	retired = true
 
-	titleLbl.Text = "\xF0\x9F\x8E\x89 " .. string.upper(GOAL_ISLAND_NAME) .. " UNLOCKED!"
-	subLbl.Text   = "Now buy the food HERE to climb even higher \xE2\x80\x94 good luck!"
-	barBg.Visible = false
-	card.BackgroundColor3 = Color3.fromRGB(30, 90, 45)
-	stroke.Color  = Color3.fromRGB(90, 230, 110)
-	stroke.Thickness = 4
-
-	task.delay(5, function()
-		if not gui.Parent then return end
-		TweenService:Create(card, TweenInfo.new(0.5), {BackgroundTransparency = 1}):Play()
-		TweenService:Create(stroke, TweenInfo.new(0.5), {Transparency = 1}):Play()
-		TweenService:Create(titleLbl, TweenInfo.new(0.5), {TextTransparency = 1}):Play()
-		TweenService:Create(subLbl, TweenInfo.new(0.5), {TextTransparency = 1}):Play()
-		task.wait(0.6)
-		gui:Destroy()
-	end)
+	local nc = NC()
+	if nc then
+		-- Release the standing instruction FIRST, then say the win as its own exclusive moment. Doing it in
+		-- this order means the graduation banner is a push like every other milestone (it ends on a timer
+		-- and hands the lane back), instead of a pin nobody would ever release.
+		if nc.unpin then nc.unpin(PIN_ID) end
+		tutorialBanner(nc, {
+			top   = "\xF0\x9F\x8E\x89 ISLAND 2 UNLOCKED",
+			text  = string.upper(GOAL_ISLAND_NAME) .. " UNLOCKED!",
+			sub   = "Now buy the food HERE to climb even higher \xE2\x80\x94 good luck!",
+			color = WIN_LIME,
+			duration = 5,
+		})
+	end
+	print("[Objective] graduated -- directions retired, hero lane handed back to the normal priority order")
 end
 
 islandVal.Changed:Connect(function(v)
@@ -318,12 +357,12 @@ end)
 -- Re-derive on the signals that change the step, plus a slow tick to catch _G.isFlying
 -- (a plain global, so there's nothing to listen to).
 coinsVal.Changed:Connect(refresh)
-powerVal.Changed:Connect(refresh)
+powerVal.Changed:Connect(function() checkFullTank(); refresh() end)
 stomachVal.Changed:Connect(refresh)
 
-refresh()
 task.spawn(function()
-	while not retired and gui.Parent do
+	while not retired do
+		checkFullTank()
 		refresh()
 		task.wait(0.2)
 	end

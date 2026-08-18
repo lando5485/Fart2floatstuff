@@ -25,7 +25,13 @@ local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
 
-local RainbowBeamSync = ReplicatedStorage:WaitForChild("RainbowBeamSync")
+-- BOUNDED WAIT -- see the note in MeteorUI. Nothing in this realm creates RainbowBeamSync, so waiting on it
+-- forever only produced an "Infinite yield possible" warning and a permanently parked thread.
+local RainbowBeamSync = ReplicatedStorage:WaitForChild("RainbowBeamSync", 30)
+if not RainbowBeamSync then
+	warn("[RainbowBeamUI] RainbowBeamSync never appeared -- no rainbow beam event in this realm, UI not built")
+	return
+end
 
 --======================================================================
 -- A tiny rainbow-tinted full-screen flash for hit feedback. Its own

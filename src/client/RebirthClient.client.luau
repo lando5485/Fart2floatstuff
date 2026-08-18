@@ -32,16 +32,24 @@ local function grad(i, a, b, rot) local g = Instance.new("UIGradient"); g.Color 
 local function juice(i) local g = Instance.new("UIGradient"); g.Color = ColorSequence.new(Color3.fromRGB(255,255,255), Color3.fromRGB(168,168,168)); g.Rotation = 90; g.Parent = i; return g end
 
 -- WARM theme (cozy browns + orange + gold, like the shop) -- names kept from the old palette so nothing else changes.
-local COL_BG     = Color3.fromRGB(74, 40, 72)   -- warm plum panel
-local COL_BG2    = Color3.fromRGB(110, 58, 104)
-local COL_CARD   = Color3.fromRGB(52, 28, 52)   -- deep plum cards
-local COL_PURP   = Color3.fromRGB(214, 96, 180) -- warm magenta header / accent
-local COL_PURP_D = Color3.fromRGB(176, 68, 146)
-local COL_GOLD   = Color3.fromRGB(255, 196, 82)
-local COL_GREEN  = Color3.fromRGB(120, 200, 88) -- warm-leaning green, only for "go"/complete
-local COL_RED    = Color3.fromRGB(230, 96, 82)
-local COL_TXT    = Color3.fromRGB(252, 234, 224) -- warm cream text
-local COL_EDGE   = Color3.fromRGB(158, 84, 138)
+-- ===== HOUSE PALETTE =====
+-- This panel used to be warm plum and magenta, which made it the one menu in the game that looked like it
+-- came from somewhere else: the Shop, Skin Crates, Settings, the Pet House and the Gift panel are all bright
+-- blue with gold accents and cream text on a dark-navy outline. Same numbers, same layout, same gradients --
+-- only the hues moved onto the house set.
+--
+-- The names are kept (COL_PURP still means "the header accent") so every call site below reads the same and
+-- there is exactly one place to retune this again later.
+local COL_BG     = Color3.fromRGB(18, 92, 190)   -- panel base / gradient bottom
+local COL_BG2    = Color3.fromRGB(30, 140, 255)  -- gradient top: the house blue
+local COL_CARD   = Color3.fromRGB(16, 78, 165)   -- cards, a step darker than the panel so they read as inset
+local COL_PURP   = Color3.fromRGB(255, 206, 92)  -- header / accent -- now gold (name kept, see above)
+local COL_PURP_D = Color3.fromRGB(226, 158, 30)
+local COL_GOLD   = Color3.fromRGB(255, 206, 92)
+local COL_GREEN  = Color3.fromRGB(72, 190, 96)   -- only for "go" / complete
+local COL_RED    = Color3.fromRGB(210, 70, 70)
+local COL_TXT    = Color3.fromRGB(255, 250, 236) -- cream text
+local COL_EDGE   = Color3.fromRGB(86, 170, 255)  -- light blue edge
 
 --------------------------------------------------------------------------------
 -- shell
@@ -60,17 +68,17 @@ shadow.Visible = false; shadow.ZIndex = 0; shadow.Parent = screen
 local panel = Instance.new("Frame")
 panel.AnchorPoint = Vector2.new(0.5, 0.5); panel.Position = UDim2.new(0.5, 0, 0.5, -45) -- same 700x520 + up-nudge as the Shop
 panel.Size = UDim2.fromOffset(700, 520); panel.BackgroundColor3 = COL_BG; panel.Visible = false; panel.Parent = screen
-corner(panel, 26); grad(panel, COL_BG2, COL_BG, 90); stroke(panel, Color3.fromRGB(30, 14, 30), 4) -- rounder + thick warm-dark outline
+corner(panel, 26); grad(panel, COL_BG2, COL_BG, 90); stroke(panel, Color3.fromRGB(255, 250, 236), 4) -- rounder + thick warm-dark outline
 
 local header = Instance.new("Frame")
 header.Position = UDim2.fromOffset(16, 14); header.Size = UDim2.new(1, -64, 0, 58); header.BackgroundColor3 = COL_PURP_D
-header.Parent = panel; corner(header, 14); grad(header, Color3.fromRGB(228, 118, 198), COL_PURP_D, 20); stroke(header, Color3.fromRGB(255, 216, 240), 1.5, 0.3)
+header.Parent = panel; corner(header, 14); grad(header, Color3.fromRGB(255, 224, 140), COL_PURP_D, 20); stroke(header, Color3.fromRGB(255, 240, 200), 1.5, 0.3)
 local title = Instance.new("TextLabel")
 title.BackgroundTransparency = 1; title.Position = UDim2.fromOffset(20, 0); title.Size = UDim2.new(1, -28, 1, 0)
 title.Font = Enum.Font.FredokaOne; title.TextScaled = true; title.TextColor3 = Color3.new(1, 1, 1)
 title.TextXAlignment = Enum.TextXAlignment.Left; title.Text = "\xF0\x9F\x94\x84  REBIRTH"; title.ZIndex = 3; title.Parent = header
 do local c = Instance.new("UITextSizeConstraint", title); c.MaxTextSize = 33 end
-stroke(title, Color3.fromRGB(96, 44, 12), 2)
+stroke(title, Color3.fromRGB(16, 44, 96), 2)
 -- subtle shine sweep across the header every few seconds
 header.ClipsDescendants = true
 do
@@ -101,7 +109,7 @@ local countLbl = Instance.new("TextLabel")
 countLbl.BackgroundTransparency = 1; countLbl.Position = UDim2.fromOffset(0, 8); countLbl.Size = UDim2.new(1, 0, 0, 30)
 countLbl.Font = Enum.Font.FredokaOne; countLbl.TextScaled = true; countLbl.TextColor3 = COL_GOLD
 countLbl.TextXAlignment = Enum.TextXAlignment.Center; countLbl.Text = "\xE2\xAD\x90 Rebirths: 0"; countLbl.Parent = statCard
-stroke(countLbl, Color3.fromRGB(96, 44, 12), 1.5)
+stroke(countLbl, Color3.fromRGB(16, 44, 96), 1.5)
 do local c = Instance.new("UITextSizeConstraint", countLbl); c.MaxTextSize = 26 end
 
 -- premium stat badge: rounded, soft bevel, icon + value, identical sizing/spacing
@@ -117,7 +125,7 @@ local function mkStatBadge(parent, x, y, w, icon, txt, pulse)
 	return tx
 end
 local BW, BX = 208, { 12, 230, 448 }
-local curCoin  = mkStatBadge(statCard, BX[1], 44, BW, "\xF0\x9F\xAA\x99", "Coins x1.00", true)
+local curCoin  = mkStatBadge(statCard, BX[1], 44, BW, "\xF0\x9F\x92\xB0", "Coins x1.00", true)
 local curSpeed = mkStatBadge(statCard, BX[2], 44, BW, "\xE2\x9A\xA1", "Speed x1.00", true)
 local curLuck  = mkStatBadge(statCard, BX[3], 44, BW, "\xF0\x9F\x8D\x80", "Luck x1.00", true)
 
@@ -126,7 +134,7 @@ nextHdr.BackgroundTransparency = 1; nextHdr.Position = UDim2.fromOffset(0, 82); 
 nextHdr.Font = Enum.Font.GothamBold; nextHdr.TextScaled = true; nextHdr.TextColor3 = COL_GREEN
 nextHdr.TextXAlignment = Enum.TextXAlignment.Center; nextHdr.Text = "Next Rebirth Rewards"; nextHdr.Parent = statCard
 do local c = Instance.new("UITextSizeConstraint", nextHdr); c.MaxTextSize = 15 end
-local nxtCoin  = mkStatBadge(statCard, BX[1], 104, BW, "\xF0\x9F\xAA\x99", "Coins x1.25")
+local nxtCoin  = mkStatBadge(statCard, BX[1], 104, BW, "\xF0\x9F\x92\xB0", "Coins x1.25")
 local nxtSpeed = mkStatBadge(statCard, BX[2], 104, BW, "\xE2\x9A\xA1", "Speed x1.03")
 local nxtLuck  = mkStatBadge(statCard, BX[3], 104, BW, "\xF0\x9F\x8D\x80", "Luck x1.15")
 
@@ -154,7 +162,7 @@ local function mkReqRow(order, titleText, descText)
 	do local c = Instance.new("UITextSizeConstraint", ttl); c.MaxTextSize = 17 end
 	local desc = Instance.new("TextLabel")
 	desc.BackgroundTransparency = 1; desc.Position = UDim2.fromOffset(54, 21); desc.Size = UDim2.new(1, -66, 0, 13)
-	desc.Font = Enum.Font.Gotham; desc.TextScaled = true; desc.TextColor3 = Color3.fromRGB(206, 188, 170)
+	desc.Font = Enum.Font.Gotham; desc.TextScaled = true; desc.TextColor3 = Color3.fromRGB(190, 215, 245)
 	desc.TextXAlignment = Enum.TextXAlignment.Left; desc.Text = descText; desc.ZIndex = 2; desc.Parent = row
 	do local c = Instance.new("UITextSizeConstraint", desc); c.MaxTextSize = 13 end
 	local sc = Instance.new("UIScale"); sc.Parent = row -- hover lift
@@ -175,7 +183,7 @@ btnShadow.ScaleType = Enum.ScaleType.Slice; btnShadow.SliceCenter = Rect.new(10,
 local doBtn = Instance.new("TextButton")
 doBtn.AnchorPoint = Vector2.new(0.5, 1); doBtn.Position = UDim2.new(0.5, 0, 1, -14); doBtn.Size = UDim2.new(1, -32, 0, 58)
 doBtn.Font = Enum.Font.FredokaOne; doBtn.TextScaled = true; doBtn.TextColor3 = Color3.new(1, 1, 1); doBtn.Text = "\xF0\x9F\x94\x92 Complete all requirements to Rebirth"
-doBtn.BackgroundColor3 = Color3.fromRGB(76, 50, 74); doBtn.ZIndex = 3; doBtn.Parent = panel; corner(doBtn, 16); stroke(doBtn, Color3.fromRGB(28, 14, 28), 2.5); juice(doBtn)
+doBtn.BackgroundColor3 = Color3.fromRGB(24, 110, 205); doBtn.ZIndex = 3; doBtn.Parent = panel; corner(doBtn, 16); stroke(doBtn, Color3.fromRGB(16, 44, 96), 2.5); juice(doBtn)
 do local p = Instance.new("UIPadding", doBtn); p.PaddingTop = UDim.new(0, 8); p.PaddingBottom = UDim.new(0, 8); p.PaddingLeft = UDim.new(0, 12); p.PaddingRight = UDim.new(0, 12) end
 do local c = Instance.new("UITextSizeConstraint", doBtn); c.MaxTextSize = 24 end
 local doBtnScale = Instance.new("UIScale"); doBtnScale.Parent = doBtn
@@ -187,7 +195,7 @@ doBtn.MouseButton1Down:Connect(function() if doBtn.Active then doBtnScale.Scale 
 -- confirm overlay (inside the panel)
 --------------------------------------------------------------------------------
 local confirm = Instance.new("Frame")
-confirm.Size = UDim2.fromScale(1, 1); confirm.BackgroundColor3 = Color3.fromRGB(28, 14, 8); confirm.BackgroundTransparency = 0.12
+confirm.Size = UDim2.fromScale(1, 1); confirm.BackgroundColor3 = Color3.fromRGB(10, 28, 64); confirm.BackgroundTransparency = 0.12
 confirm.Visible = false; confirm.ZIndex = 20; confirm.Parent = panel; corner(confirm, 20)
 local cText = Instance.new("TextLabel")
 cText.AnchorPoint = Vector2.new(0.5, 0); cText.Position = UDim2.fromScale(0.5, 0.22); cText.Size = UDim2.new(0.86, 0, 0, 150)
@@ -197,12 +205,12 @@ do local c = Instance.new("UITextSizeConstraint", cText); c.MaxTextSize = 24 end
 local cYes = Instance.new("TextButton")
 cYes.AnchorPoint = Vector2.new(0.5, 1); cYes.Position = UDim2.new(0.31, 0, 0.82, 0); cYes.Size = UDim2.fromOffset(200, 54)
 cYes.Font = Enum.Font.FredokaOne; cYes.TextScaled = true; cYes.TextColor3 = Color3.new(1, 1, 1); cYes.Text = "YES, REBIRTH"
-cYes.BackgroundColor3 = COL_GREEN; cYes.ZIndex = 21; cYes.Parent = confirm; corner(cYes, 12); stroke(cYes, Color3.fromRGB(28, 84, 44), 3); juice(cYes)
+cYes.BackgroundColor3 = COL_GREEN; cYes.ZIndex = 21; cYes.Parent = confirm; corner(cYes, 12); stroke(cYes, Color3.fromRGB(40, 130, 60), 3); juice(cYes)
 do local p = Instance.new("UIPadding", cYes); p.PaddingTop = UDim.new(0, 8); p.PaddingBottom = UDim.new(0, 8); p.PaddingLeft = UDim.new(0, 10); p.PaddingRight = UDim.new(0, 10) end
 local cNo = Instance.new("TextButton")
 cNo.AnchorPoint = Vector2.new(0.5, 1); cNo.Position = UDim2.new(0.69, 0, 0.82, 0); cNo.Size = UDim2.fromOffset(200, 54)
 cNo.Font = Enum.Font.FredokaOne; cNo.TextScaled = true; cNo.TextColor3 = Color3.new(1, 1, 1); cNo.Text = "Cancel"
-cNo.BackgroundColor3 = Color3.fromRGB(110, 78, 60); cNo.ZIndex = 21; cNo.Parent = confirm; corner(cNo, 12); stroke(cNo, Color3.fromRGB(64, 42, 28), 3); juice(cNo)
+cNo.BackgroundColor3 = Color3.fromRGB(70, 110, 170); cNo.ZIndex = 21; cNo.Parent = confirm; corner(cNo, 12); stroke(cNo, Color3.fromRGB(16, 44, 96), 3); juice(cNo)
 do local p = Instance.new("UIPadding", cNo); p.PaddingTop = UDim.new(0, 8); p.PaddingBottom = UDim.new(0, 8) end
 
 --------------------------------------------------------------------------------
@@ -214,11 +222,11 @@ do local p = Instance.new("UIPadding", cNo); p.PaddingTop = UDim.new(0, 8); p.Pa
 local petsBtn = Instance.new("TextButton")
 petsBtn.AnchorPoint = Vector2.new(1, 0); petsBtn.Position = UDim2.new(1, -60, 0, 20); petsBtn.Size = UDim2.fromOffset(34, 34)
 petsBtn.BackgroundColor3 = COL_PURP; petsBtn.Font = Enum.Font.FredokaOne; petsBtn.Text = "\xF0\x9F\x90\xBE"; petsBtn.TextScaled = true; petsBtn.TextColor3 = Color3.new(1, 1, 1); petsBtn.ZIndex = 6; petsBtn.Parent = panel
-corner(petsBtn, 10); stroke(petsBtn, Color3.fromRGB(80, 44, 74), 2); juice(petsBtn)
+corner(petsBtn, 10); stroke(petsBtn, Color3.fromRGB(30, 90, 175), 2); juice(petsBtn)
 do local p = Instance.new("UIPadding", petsBtn); for _, s in ipairs({ "PaddingTop", "PaddingBottom", "PaddingLeft", "PaddingRight" }) do p[s] = UDim.new(0, 6) end end
 
 local petOverlay = Instance.new("TextButton")
-petOverlay.Size = UDim2.fromScale(1, 1); petOverlay.AutoButtonColor = false; petOverlay.Text = ""; petOverlay.BackgroundColor3 = Color3.fromRGB(20, 10, 4); petOverlay.BackgroundTransparency = 0.25; petOverlay.Visible = false; petOverlay.ZIndex = 25; petOverlay.Parent = panel; corner(petOverlay, 26)
+petOverlay.Size = UDim2.fromScale(1, 1); petOverlay.AutoButtonColor = false; petOverlay.Text = ""; petOverlay.BackgroundColor3 = Color3.fromRGB(10, 28, 64); petOverlay.BackgroundTransparency = 0.25; petOverlay.Visible = false; petOverlay.ZIndex = 25; petOverlay.Parent = panel; corner(petOverlay, 26)
 local petCard = Instance.new("Frame"); petCard.AnchorPoint = Vector2.new(0.5, 0.5); petCard.Position = UDim2.fromScale(0.5, 0.5); petCard.Size = UDim2.fromOffset(470, 300); petCard.BackgroundColor3 = COL_BG; petCard.Active = true; petCard.ZIndex = 26; petCard.Parent = petOverlay
 corner(petCard, 20); stroke(petCard, COL_GOLD, 3); juice(petCard)
 do local h = Instance.new("TextLabel"); h.BackgroundTransparency = 1; h.Position = UDim2.fromOffset(20, 14); h.Size = UDim2.new(1, -40, 0, 34); h.Font = Enum.Font.FredokaOne; h.TextScaled = true; h.TextColor3 = COL_GOLD; h.TextXAlignment = Enum.TextXAlignment.Left; h.Text = "\xF0\x9F\x90\xBE Milestone Pets"; h.ZIndex = 27; h.Parent = petCard; local c = Instance.new("UITextSizeConstraint", h); c.MaxTextSize = 26 end
@@ -235,7 +243,9 @@ for i = 1, 3 do
 end
 do local ok = Instance.new("TextButton"); ok.AnchorPoint = Vector2.new(0.5, 1); ok.Position = UDim2.new(0.5, 0, 1, -14); ok.Size = UDim2.fromOffset(180, 42); ok.Font = Enum.Font.FredokaOne; ok.TextScaled = true; ok.TextColor3 = Color3.new(1, 1, 1); ok.Text = "GOT IT"; ok.BackgroundColor3 = COL_PURP; ok.ZIndex = 27; ok.Parent = petCard; corner(ok, 12); stroke(ok, Color3.fromRGB(80, 44, 74), 2); juice(ok); ok.Activated:Connect(function() petOverlay.Visible = false end) end
 petsBtn.Activated:Connect(function() petOverlay.Visible = true end)
-petOverlay.MouseButton1Click:Connect(function() petOverlay.Visible = false end)
+-- The backdrop SWALLOWS the tap; it does not close the card. "GOT IT" is the way out (built just above).
+-- A stray press on the dim used to dismiss this mid-read -- see the same fix on the MORE+ catcher.
+petOverlay.MouseButton1Click:Connect(function() end)
 
 local function refreshPetMilestones()
 	local pm = S.petMilestones or {}
@@ -354,7 +364,7 @@ local fxTitle = Instance.new("TextLabel")
 fxTitle.AnchorPoint = Vector2.new(0.5, 0); fxTitle.Position = UDim2.new(0.5, 0, 0, 82); fxTitle.Size = UDim2.new(1, -30, 0, 52)
 fxTitle.BackgroundTransparency = 1; fxTitle.Font = Enum.Font.FredokaOne; fxTitle.TextScaled = true; fxTitle.TextColor3 = COL_GOLD
 fxTitle.Text = "REBIRTH!"; fxTitle.ZIndex = 7; fxTitle.Parent = fxCard
-stroke(fxTitle, Color3.fromRGB(70, 32, 6), 3)
+stroke(fxTitle, Color3.fromRGB(16, 44, 96), 3)
 do local c = Instance.new("UITextSizeConstraint", fxTitle); c.MaxTextSize = 46 end
 
 local fxSub = Instance.new("TextLabel")
@@ -377,11 +387,11 @@ local function mkChip(order, icon, col)
 	local sc = Instance.new("UIScale"); sc.Scale = 0; sc.Parent = chip
 	return { val = tx, sc = sc }
 end
-local chipCoins = mkChip(1, "\xF0\x9F\xAA\x99", COL_GOLD)
+local chipCoins = mkChip(1, "\xF0\x9F\x92\xB0", COL_GOLD)
 local chipSpeed = mkChip(2, "\xE2\x9A\xA1", Color3.fromRGB(90, 150, 240))
 local chipLuck  = mkChip(3, "\xF0\x9F\x8D\x80", COL_GREEN)
 
-local CONFETTI     = { "\xE2\x9C\xA6", "\xF0\x9F\xAA\x99", "\xE2\xAD\x90", "\xF0\x9F\x8E\x89" }
+local CONFETTI     = { "\xE2\x9C\xA6", "\xF0\x9F\x92\xB0", "\xE2\xAD\x90", "\xF0\x9F\x8E\x89" }
 local CONFETTI_COL = { Color3.fromRGB(255,214,90), Color3.fromRGB(255,120,220), Color3.fromRGB(120,200,255), Color3.fromRGB(140,255,150), Color3.fromRGB(255,255,255) }
 
 local function playSound(id, vol, speed)

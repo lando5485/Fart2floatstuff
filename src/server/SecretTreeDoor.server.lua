@@ -132,9 +132,9 @@ local function buildDoor(treeCF, trunkR, parent)
 	-- (2) dark backing right at the bark -> a dark opening shows when the door swings aside (never grass)
 	newPart(model, "Backing", Enum.PartType.Block, Vector3.new(dW + 0.06, dH + 0.06, 0.12), DARK, cx(0, doorY, -(surf + 0.04)), SMOOTHPLASTIC)
 	-- (3) simple wood FRAME (left / right / top), protrudes a touch so the door reads as recessed within it
-	newPart(model, "FrameL", Enum.PartType.Block, Vector3.new(fW, dH + fW, fT), FRAME, cx(-(dW / 2 + fW / 2), doorY, -(surf + 0.12)), Enum.Material.Wood)
-	newPart(model, "FrameR", Enum.PartType.Block, Vector3.new(fW, dH + fW, fT), FRAME, cx( (dW / 2 + fW / 2), doorY, -(surf + 0.12)), Enum.Material.Wood)
-	newPart(model, "FrameT", Enum.PartType.Block, Vector3.new(dW + fW * 2, fW, fT), FRAME, cx(0, dH + fW / 2, -(surf + 0.12)), Enum.Material.Wood)
+	newPart(model, "FrameL", Enum.PartType.Block, Vector3.new(fW, dH + fW, fT), FRAME, cx(-(dW / 2 + fW / 2), doorY, -(surf + 0.12)), Enum.Material.SmoothPlastic)
+	newPart(model, "FrameR", Enum.PartType.Block, Vector3.new(fW, dH + fW, fT), FRAME, cx( (dW / 2 + fW / 2), doorY, -(surf + 0.12)), Enum.Material.SmoothPlastic)
+	newPart(model, "FrameT", Enum.PartType.Block, Vector3.new(dW + fW * 2, fW, fT), FRAME, cx(0, dH + fW / 2, -(surf + 0.12)), Enum.Material.SmoothPlastic)
 
 	-- (1)(2) DOOR: SmoothPlastic, recessed within the frame (set back from the frame's front lip)
 	local closedCF = cx(0, doorY, -(surf + 0.12))

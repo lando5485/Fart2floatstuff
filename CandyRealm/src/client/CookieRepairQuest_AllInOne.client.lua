@@ -33,12 +33,12 @@ local PlayerGui = player:WaitForChild("PlayerGui")
 -- ============================================================================
 local ISLAND_NAME      = "island3"
 local TOTAL            = 6
--- CHIP PRY: the per-chunk minigame. DELIBERATELY SHORT -- 6s, not the realm's usual 15s
--- floor, because the Chocolate Monster is hunting you the whole time and a 15s modal
--- would just park you still while it closes in. Six chunks x 6s = 36s, and the chase is
--- doing the rest of the pacing work on this island.
-local PRY_SECONDS      = 6
-local PRY_GAIN         = 0.075   -- bar per tap (~2.2 taps/sec to keep pace -- under the mobile 2.7 ceiling)
+-- CHIP PRY: the per-chunk minigame. FIVE TAPS AND THE CHUNK IS OUT -- no timer, no
+-- rising ceiling. It used to be a 6-second bar that mashing could not beat (the realm's
+-- standard anti-mash rule, just tuned short); it is now a plain click count, so the panel
+-- is open for about a second. The Chocolate Monster is hunting you the whole time, and the
+-- chase is what paces this island -- the modal was only ever in the way of it.
+local PRY_CLICKS       = 5       -- taps to lever one chunk loose
 -- If the monster gets this close the panel BAILS instead of trapping you in it. Slightly
 -- wider than its own SHOVE_RANGE (12) so you get out before it can land the shove.
 local PRY_MONSTER_BAIL = 16
@@ -291,6 +291,23 @@ local hidden = {}   -- [part] = true, so a re-run never double-registers a chip
 local function hideChocolates(quiet)
 	if not cookie or not cookie.Parent then return end
 	local found, how, biscuit = findChocolates(cookie)
+
+	-- HAS IT ACTUALLY STREAMED IN YET? An empty Model replicates immediately; its Parts only arrive when a
+	-- player is near them. So a cookie with ZERO BaseParts is not a badly-named cookie, it is a cookie nobody
+	-- has flown to -- and the "rename your chips" advice below is then flatly wrong, sending you to Studio to
+	-- fix parts that are fine. (This is exactly what the boot log showed: 0 parts, biscuit = none, reported
+	-- while the player was on island 9.) hideChocolates is already re-run on a loop, so it self-heals on
+	-- arrival; all this branch has to do is say so instead of accusing the model.
+	local partCount = 0
+	if cookie:IsA("BasePart") then partCount = 1
+	else for _, d in ipairs(cookie:GetDescendants()) do if d:IsA("BasePart") then partCount += 1 end end end
+
+	if not quiet and partCount == 0 then
+		print(("[CookieQuest] cookie '%s' has no parts yet -- not streamed in. Fly to island 3; this re-checks itself.")
+			:format(cookie.Name))
+		return
+	end
+
 	if not quiet then
 		print(("[CookieQuest] cookie '%s' (%s): %d chocolate part(s) found by %s; biscuit = %s"):format(
 			cookie.Name, cookie.ClassName, #found, how, biscuit and biscuit.Name or "none"))
@@ -423,22 +440,28 @@ local function launchFireworks(fromPos)
 	end
 end
 
+-- ⚠ ANNOUNCEMENTS GO THROUGH THE ONE REALM BANNER -- NEVER A ScreenGui OF THEIR OWN.
+-- This is realm 1's rule (see its CoreClient, and NotifyCenter.luau here: push/pin is the whole
+-- API). It used to build its own card in the middle of the screen, which meant a quest win could
+-- land on top of the objective banner, an island arrival or a live event -- several cards in the
+-- same band, none of them aware of the others. NotifyCenter already ranks, queues and preempts,
+-- so a win is one more push and takes its turn like everything else.
+--
+-- EVENT priority, deliberately: finishing a quest has to outrank the objective banner that is
+-- pinned underneath it (REWARD), but must not talk over a real Robux purchase (PURCHASE).
 local function winBanner()
-	local g = Instance.new("ScreenGui"); g.Name = "CookieWin"; g.ResetOnSpawn = false; g.DisplayOrder = 20; g.IgnoreGuiInset = true; g.Parent = PlayerGui
-	local f = Instance.new("Frame"); f.AnchorPoint = Vector2.new(0.5,0.5); f.Position = UDim2.new(0.5,0,0.42,0); f.Size = UDim2.new(0,0,0,90)
-	f.BackgroundColor3 = FILL; f.Parent = g
-	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,18); c.Parent = f
-	local s = Instance.new("UIStroke"); s.Color = STROKE; s.Thickness = 4; s.Parent = f
-	local l = Instance.new("TextLabel"); l.BackgroundTransparency = 1; l.Size = UDim2.fromScale(1,1); l.Font = Enum.Font.FredokaOne
-	l.TextColor3 = TEXTC; l.TextScaled = true; l.Text = "\xF0\x9F\x8D\xAA You fixed the Giant Cookie! \xF0\x9F\x8E\x86"; l.Parent = f
-	local pad = Instance.new("UIPadding"); pad.PaddingLeft = UDim.new(0,24); pad.PaddingRight = UDim.new(0,24); pad.Parent = l
-	local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 34; sz.Parent = l
-	TweenService:Create(f, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = UDim2.new(0,620,0,90) }):Play()
-	task.delay(5, function()
-		TweenService:Create(f, TweenInfo.new(0.4), { BackgroundTransparency = 1 }):Play()
-		TweenService:Create(l, TweenInfo.new(0.4), { TextTransparency = 1 }):Play()
-		task.delay(0.5, function() g:Destroy() end)
-	end)
+	local msg = "\xF0\x9F\x8D\xAA You fixed the Giant Cookie! \xF0\x9F\x8E\x86"
+	if _G.NotifyCenter and _G.NotifyCenter.push then
+		pcall(function() _G.NotifyCenter.push({
+			top      = "â¨ QUEST COMPLETE",
+			text     = msg,
+			color    = STROKE,
+			priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT or nil,
+			duration = 5,
+		}) end)
+	else
+		print("[CookieQuest] " .. tostring(msg))
+	end
 end
 
 -- expanding neon ring on the ground when the halves slam together
@@ -594,10 +617,10 @@ end
 -- ============================================================================
 -- CHIP PRY -- the per-chunk minigame (short, because you're being chased)
 -- ============================================================================
--- Tap to lever the chunk out of whatever it's set into. Same rising-ceiling
--- enforcement as the rest of the realm -- `ceiling` climbs 0 -> 1 over exactly
--- PRY_SECONDS and clamps the bar every frame and on every tap -- so mashing can't
--- beat it. It is just tuned to 6s instead of 15s.
+-- Tap to lever the chunk out of whatever it's set into. PRY_CLICKS taps, straight
+-- count -- no rising ceiling, unlike the rest of the realm's minigames. The anti-mash
+-- ceiling exists to stop a timed bar being cheated, and there is no timed bar here
+-- any more: the tap count IS the cost, so mashing it is simply playing it.
 --
 -- The monster watch is the reason this one isn't a plain copy of the gumball panel:
 -- a modal that traps you in place while something is charging you is a trap, not a
@@ -636,6 +659,11 @@ local function openPry(chunkModel, onDone)
 	panel.Size = UDim2.fromOffset(400, 250); panel.Position = UDim2.fromScale(0.5, 0.5)
 	panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.BackgroundColor3 = Color3.fromRGB(25, 90, 185); panel.BorderSizePixel = 0; panel.Parent = gui
+	-- HOUSE PANEL: every task HUD is the Pet Hub's 700x520 card in the Pet Hub's spot, and the
+	-- bottom buttons hide while it is up. The panel keeps its own size and every child keeps its
+	-- own pixel coordinates -- it is centred in the house shell and scaled to fit, so nothing
+	-- inside it moves. One call does both jobs -- see HousePanel.client.luau.
+	pcall(_G.housePanel, panel)   -- island3 chip pry
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 14)
 	local ps = Instance.new("UIStroke", panel); ps.Color = Color3.new(1, 1, 1); ps.Thickness = 3
 
@@ -647,7 +675,10 @@ local function openPry(chunkModel, onDone)
 	local hint = Instance.new("TextLabel")
 	hint.BackgroundTransparency = 1; hint.Size = UDim2.new(1, -36, 0, 22); hint.Position = UDim2.fromOffset(18, 48)
 	hint.Font = Enum.Font.Gotham; hint.TextSize = 14; hint.TextXAlignment = Enum.TextXAlignment.Left
-	hint.TextColor3 = Color3.new(1, 1, 1); hint.Text = "Tap fast -- and keep an ear out"; hint.Parent = panel
+	hint.TextColor3 = Color3.new(1, 1, 1); hint.Parent = panel
+	-- Says the actual cost. "Tap fast" was honest when a 6s ceiling meant speed mattered; with a flat count it
+	-- would be a lie, and a kid who cannot see the end of a bar taps at random.
+	hint.Text = ("%d taps -- and keep an ear out"):format(PRY_CLICKS)
 
 	local close = Instance.new("TextButton")
 	close.Size = UDim2.fromOffset(34, 34); close.Position = UDim2.new(1, -44, 0, 12)
@@ -671,10 +702,10 @@ local function openPry(chunkModel, onDone)
 	Instance.new("UICorner", pry).CornerRadius = UDim.new(0, 10)
 	local pst = Instance.new("UIStroke", pry); pst.Color = Color3.new(1, 1, 1); pst.Thickness = 2
 
-	local fill, ceiling = 0, 0
-	local ceilRate = 1 / PRY_SECONDS
+	local clicks = 0
 	local finished = false
 	local conn
+	local function progress() return math.min(1, clicks / PRY_CLICKS) end
 
 	local function shut(result)   -- "win" | "bail" | "monster"
 		if finished then return end
@@ -689,29 +720,55 @@ local function openPry(chunkModel, onDone)
 
 	pry.Activated:Connect(function()
 		if finished then return end
-		fill = math.min(fill + PRY_GAIN, ceiling)
+		clicks += 1
+		-- Win resolved HERE, not in the render loop: at five taps the last one has to land the moment it is
+		-- pressed. Waiting a frame for the loop to notice reads as a dropped tap on a count this short.
+		if clicks >= PRY_CLICKS then
+			fillBar.Size = UDim2.fromScale(1, 1)
+			shut("win")
+			return
+		end
+		hint.Text = ("%d more tap%s"):format(PRY_CLICKS - clicks, (PRY_CLICKS - clicks) == 1 and "" or "s")
 	end)
 	close.Activated:Connect(function() shut("bail") end)
 
-	conn = RunService.RenderStepped:Connect(function(dt)
+	conn = RunService.RenderStepped:Connect(function()
 		if finished then return end
 		if monsterDistance() <= PRY_MONSTER_BAIL then shut("monster"); return end
-		ceiling = math.min(1, ceiling + ceilRate * dt)
-		fill = math.min(fill, ceiling)
+		local fill = progress()
 		fillBar.Size = UDim2.fromScale(fill, 1)
 		-- the chunk judders harder and glows hotter the closer it is to coming free
 		if main and main.Parent and baseSize then
 			main.Size = baseSize * (1 + math.sin(os.clock() * 30) * 0.06 * fill)
 		end
 		if light and light.Parent then light.Brightness = 1.4 + fill * 2.2 end
-		if fill >= 1 then shut("win") end
 	end)
 end
 
 -- ============================================================================
 -- CHUNK COLLECTIBLES -- hide the "chunk" brick, spawn a shiny chocolate chunk
 -- ============================================================================
-local function spawnChunk(src, idx)
+-- ===== ONE CHUNK PER SPOT, FOREVER =====
+-- ⚠ DO NOT GO BACK TO KEYING THIS BY INSTANCE. It was `seen[d] = true` on the Instance itself,
+-- which looks right and is not: island3 streams, and a part that streams out and back in is a
+-- BRAND NEW INSTANCE with the same name at the same place. The old key pointed at a destroyed
+-- object, the scan below saw an unseen part, and it spawned another chunk on top of the one you
+-- had already taken -- roughly every forty seconds, forever. The 16 Aug playtest log shows it:
+-- six chunks at boot, then (7)(8) at 19:12:17, (9)(10) at 19:12:54, (11)(12) at 19:13:36.
+--
+-- THE SPOT IS THE IDENTITY, not the part that happens to be sitting on it. These are anchored
+-- hand-placed markers, so a rounded position is stable across any amount of streaming. One stud
+-- of rounding is far finer than the gap between two markers and far coarser than any float drift.
+local chunkTaken = {}    -- [spotKey] = true once collected -- never spawns again this session
+local function spotKey(d)
+	local ok, pos = pcall(function()
+		return d:IsA("Model") and d:GetPivot().Position or d.Position
+	end)
+	if not (ok and pos) then return nil end
+	return ("%d,%d,%d"):format(math.round(pos.X), math.round(pos.Y), math.round(pos.Z))
+end
+
+local function spawnChunk(src, idx, key)
 	-- src is the user's "chunk" marker: a BasePart, or a Model containing one
 	local part = src:IsA("BasePart") and src or src:FindFirstChildWhichIsA("BasePart", true)
 	if not part then return end
@@ -748,6 +805,9 @@ local function spawnChunk(src, idx)
 	local function award()
 		if done then return end
 		done = true
+		-- this SPOT is spent. Marked before anything else so a chunk that streams back in
+		-- during the pickup animation still cannot re-arm it.
+		if key then chunkTaken[key] = true end
 		collected += 1
 		liveChunks[model] = nil
 		refreshBanner()
@@ -777,7 +837,18 @@ local function spawnChunk(src, idx)
 
 	prompt.Triggered:Connect(function()
 		if done then return end
-		if not questAccepted then flashBanner("\xF0\x9F\x8D\xAA Talk to the Candy NPC first!", 2.5); return end
+		-- the realm banner, not this quest's own strip: "you have not taken this job" is the same
+		-- sentence on every island, so it goes where a player already watches for news. The local
+		-- strip stays as the fallback if DoneCommand (which owns _G.questLocked) has not loaded.
+		if not questAccepted then
+			if _G.questLocked then
+				pcall(_G.questLocked, "the Cookie Repair",
+					"\xF0\x9F\x8D\xAA Talk to the Candy NPC first -- she hands out the job!")
+			else
+				flashBanner("\xF0\x9F\x8D\xAA Talk to the Candy NPC first!", 2.5)
+			end
+			return
+		end
 		prompt.Enabled = false
 		openPry(model, function(result)
 			if result == "win" then
@@ -933,10 +1004,16 @@ task.spawn(function()
 				local inCookie = cookie and (d == cookie or d:IsDescendantOf(cookie))
 				if not inCookie and (d:IsA("BasePart") or d:IsA("Model")) and string.find(string.lower(d.Name), CHUNK_NAME, 1, true)
 					and nearCookie(d) then
-					found += 1
-					if not seen[d] then
-						seen[d] = true; idx += 1; spawnChunk(d, idx)
-						print(("[CookieQuest] chunk '%s' spawned (%d)"):format(d.Name, idx))
+					local key = spotKey(d)
+					-- a spot already collected is not counted either: `found` feeds the
+					-- settle-down target below, and counting a taken spot would keep the
+					-- target at 6 when only 5 are left to find.
+					if key and not chunkTaken[key] then
+						found += 1
+						if not seen[key] then
+							seen[key] = true; idx += 1; spawnChunk(d, idx, key)
+							print(("[CookieQuest] chunk '%s' spawned (%d) at spot %s"):format(d.Name, idx, key))
+						end
 					end
 				end
 			end
@@ -961,6 +1038,11 @@ task.spawn(function()
 	refreshBanner()
 	print(("[CookieQuest] ready -- cookie %s, %d chocolate hidden, NPC %s (chunks spawn as island3 streams in)"):format(
 		cookie and "found" or "MISSING", #chocolates, npcHead and "wired" or "MISSING"))
+	-- RETAINER SIGNAL: the quest reached the end of its build with its world objects up. QuestRetainer
+	-- watches this flag; anything still false once its island has streamed in gets force-streamed and
+	-- re-run. It is set HERE, at the ready print, not at the top of the file -- a quest that bailed
+	-- early on a missing marker must NOT look built. See QuestRetainer.client.luau.
+	_G.questBuilt_cookie = true
 end)
 
 -- ============================================================================

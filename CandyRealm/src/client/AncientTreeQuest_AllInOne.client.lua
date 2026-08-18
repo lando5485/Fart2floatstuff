@@ -50,6 +50,12 @@ local Debris           = game:GetService("Debris")
 local UserInputService = game:GetService("UserInputService")
 local SoundService     = game:GetService("SoundService")
 
+-- DECLARED FALSE AT BOOT, not left nil. Every reader today uses `not _G.parkQuestComplete`,
+-- and nil is falsy, so this changes no behaviour -- but a later `== false` test would
+-- silently never match on a flag that was never declared, and this states up front that
+-- island13 Ancient Tree owns it.
+_G.parkQuestComplete = false
+
 local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
 
@@ -141,12 +147,62 @@ local COIN_REWARD    = 2500     -- paid on step 3. Say the word and I'll change 
 -- Audio: drop in your OWN asset ids. "" = silent, and nothing is created for an empty id --
 -- given how many ids in this place fail auth, silence is the safe default.
 local SOUND_VALVE    = ""       -- the fountain valve creaking open
-local SOUND_WATER    = ""       -- LOOPING water burble from the fountain once it runs
+local SOUND_WATER    = "rbxassetid://110597779584354" -- LOOPING water burble from the fountain
 local SOUND_RUSH     = ""       -- water surging down a channel
 local SOUND_CLUNK    = ""       -- a gate finally giving way
 local SOUND_BLOOM    = ""       -- the garden coming to life
-local WATER_VOLUME   = 0.4
+local WATER_VOLUME   = 1.8      -- full level, once the fountain is actually running (was 0.4 -> 1.2 -> +50%)
+-- IDLE LEVEL, before the valve is opened. "Play it when you're around it" is a PROXIMITY condition, not a
+-- quest one, so the burble is audible from the moment you walk up rather than only after you fix the park.
+-- It is quieter than WATER_VOLUME so the swell when the water finally comes on still lands as an event.
+-- Set this to 0 to go back to a silent dry fountain -- nothing else needs changing.
+--
+-- BOTH levels were tripled together (0.4 -> 1.2, 0.16 -> 0.48) rather than just the loud one. The 0.4 : 0.16
+-- ratio is doing a job -- it is what makes the valve opening read as a SWELL instead of just "sound on" -- so
+-- raising only WATER_VOLUME would have made the idle burble comparatively inaudible and thrown that away.
+local WATER_IDLE_VOLUME = 0.72  -- was 0.16 -> 0.48 -> +50%. Raised WITH the line above, never alone: the
+                                -- 0.4 : 0.16 ratio is what makes the valve read as a swell.
 local WATER_RANGE    = 120      -- studs you can hear the fountain from
+
+-- ===== THE GATE CRANK =====
+-- ONE TABLE, NOT SIX LOCALS. This file sits near Luau's 200 top-level register cap, and going over stops
+-- the WHOLE script compiling -- that is exactly what took island 9's quest out earlier. Group new config.
+--
+-- HOW IT BEHAVES, as asked: every PRESS of HOLD TO CRANK restarts the clip from 0:00, and it is cut at
+-- CLIP_END. Only the first 0.9s of this asset is the crank itself; letting it run past that plays tail
+-- that does not sound like cranking, and holding the button does not extend it either.
+--
+-- PRESS-EDGE triggered, not "while holding". The button fires MouseButton1Down and the keyboard fires
+-- InputBegan, and a held key repeats InputBegan on some setups -- firing on the false->true transition is
+-- what makes "press again to hear it again" true while leaning on the button is not a machine-gun.
+local Crank = {
+	ID       = "rbxassetid://9125626484",
+	CLIP_END = 0.9,   -- seconds into the clip where the crank sound ends
+	VOLUME   = 0.75,
+	sound    = nil,
+	token    = 0,     -- guards the cut-off timer: a newer press must not be stopped by an older delay
+}
+
+function Crank.play()
+	if Crank.ID == "" then return end
+	local s = Crank.sound
+	if not (s and s.Parent) then
+		s = Instance.new("Sound")
+		s.Name = "GateCrank"
+		s.SoundId = Crank.ID
+		s.Volume = Crank.VOLUME
+		s.Parent = SoundService  -- 2D: you are locked in the crank console with the camera on the wheel
+		Crank.sound = s
+	end
+	Crank.token += 1
+	local mine = Crank.token
+	s:Stop()             -- restart from the top even if the previous press is still ringing
+	s:Play()             -- Play() rewinds to 0 itself; the line below is belt-and-braces
+	s.TimePosition = 0
+	task.delay(Crank.CLIP_END, function()
+		if Crank.token == mine and Crank.sound == s then s:Stop() end
+	end)
+end
 
 -- palette
 -- PALETTE. Folded into ONE table on purpose: Luau caps a function at 200 local
@@ -700,10 +756,21 @@ local function buildFountain()
 	lt.Brightness = 0; lt.Range = math.max(10, R * 2.8); lt.Color = PAL.WATER_L; lt.Parent = F.water
 	F.light = lt
 
-	-- looping burble, created silent and only started with the water
+	-- LOOPING BURBLE FROM THE FOUNTAIN ITSELF.
+	--
+	-- Parented to F.water (a BasePart), so it is 3D: Roblox does the "when you're around it" part for free --
+	-- it swells as you approach the fountain and fades out past WATER_RANGE, in the right direction even when
+	-- the fountain is behind you. No proximity loop, no per-frame work.
+	--
+	-- It now starts at WATER_IDLE_VOLUME rather than 0. Created silent, it was inaudible until the valve was
+	-- opened, which is a QUEST condition -- walk up to the fountain before doing the park quest and there was
+	-- nothing to hear at all.
 	if SOUND_WATER ~= "" then
 		local s = Instance.new("Sound")
-		s.SoundId = SOUND_WATER; s.Looped = true; s.Volume = 0; s.RollOffMaxDistance = WATER_RANGE
+		s.SoundId = SOUND_WATER; s.Looped = true
+		s.Volume = WATER_IDLE_VOLUME
+		s.RollOffMinDistance = 12          -- full level this close in, then it falls away
+		s.RollOffMaxDistance = WATER_RANGE
 		s.RollOffMode = Enum.RollOffMode.InverseTapered; s.Parent = F.water
 		pcall(function() s:Play() end)
 		F.ambience = s
@@ -2769,6 +2836,11 @@ function awakenTree()
 	local coinEvent = ReplicatedStorage:FindFirstChild("CoinEvent")
 	if coinEvent then pcall(function() coinEvent:FireServer(COIN_REWARD) end) end
 	_G.parkQuestComplete = true
+	-- CINEMATIC PAYOFF. RevealCommand resolves island13's subject itself and plays the shot, so this
+	-- is one line and re-aiming it later is an edit to TARGETS there, not here. Delayed so the
+	-- completion banner and the world change land FIRST -- the camera is going there to show you
+	-- the result, and cutting away before it happens shows you the before.
+	task.delay(1.2, function() pcall(_G.revealIsland, 13) end)
 
 	task.delay(3.0, function()
 		if refreshBanner then refreshBanner() end
@@ -2926,6 +2998,11 @@ local console = Instance.new("Frame")
 console.AnchorPoint = Vector2.new(0.5, 1); console.Position = UDim2.new(0.5, 0, 1, -18)
 console.Size = UDim2.new(0, 640, 0, 234); console.BackgroundColor3 = PAL.PANEL; console.BorderSizePixel = 0
 console.Parent = gui
+-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
+-- The panel keeps its own size and every child keeps its own pixel coordinates;
+-- it is centred in the house shell and scaled to fit, so nothing inside moves.
+pcall(_G.housePanel, console)   -- island13 irrigation console
 do
 	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 16); c.Parent = console
 	local s = Instance.new("UIStroke"); s.Color = PAL.BRASS_D; s.Thickness = 3; s.Parent = console
@@ -3045,7 +3122,16 @@ takeCrank = function(g)
 end
 
 btnExit.MouseButton1Click:Connect(function() setCranking(nil) end)
-btnCrank.MouseButton1Down:Connect(function() holding = true end)
+-- ONE place turns holding on, so the crank clip fires on the PRESS EDGE and nowhere else. Every input
+-- route below funnels through here: mouse/touch down, and each of the four keys. Re-pressing while already
+-- holding is not a new press and must not restart the sound.
+local function beginHold()
+	if holding then return end
+	holding = true
+	Crank.play()
+end
+
+btnCrank.MouseButton1Down:Connect(beginHold)
 btnCrank.MouseButton1Up:Connect(function() holding = false end)
 btnCrank.MouseLeave:Connect(function() holding = false end)
 
@@ -3053,7 +3139,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 	if processed or not cranking then return end
 	local k = input.KeyCode
 	if k == Enum.KeyCode.E or k == Enum.KeyCode.Space or k == Enum.KeyCode.D or k == Enum.KeyCode.Right then
-		holding = true
+		beginHold()
 	elseif k == Enum.KeyCode.Q or k == Enum.KeyCode.Escape then
 		setCranking(nil)
 	end
@@ -3139,7 +3225,16 @@ end)
 -- OBJECTIVE BANNER
 -- ============================================================================
 local objGui = Instance.new("ScreenGui")
-objGui.Name = "ParkObjective"; objGui.ResetOnSpawn = false; objGui.DisplayOrder = 7; objGui.Parent = PlayerGui
+-- ⚠ DELIBERATELY NOT PARENTED YET. This banner was the "ghost behind the island-1 quest banner": `center`
+-- initialises to Vector3.new() -- THE ORIGIN -- and only becomes the park's real position once island 13's
+-- fountain marker streams in. Island 1 sits at (0,150,0), 150 studs from the origin, so until that stream
+-- happened the proximity gate below (<= 340 studs of `center`) held this dark green-stroked 560px banner
+-- VISIBLE at spawn, peeking out both sides of the island-1 quest's 520px pink one.
+--
+-- Gating the parent -- not the Visible flag -- is the fix: until the park genuinely exists at its real
+-- centre, this gui is not in PlayerGui at all, so there is no frame in the render tree to leak out from
+-- behind anything. It is parented in exactly one place: the build path, immediately after `center = fpos`.
+objGui.Name = "ParkObjective"; objGui.ResetOnSpawn = false; objGui.DisplayOrder = 7
 local objFrame = Instance.new("Frame")
 objFrame.AnchorPoint = Vector2.new(0.5, 0); objFrame.Position = UDim2.new(0.5, 0, 0, 12)
 objFrame.Size = UDim2.new(0, 560, 0, 52); objFrame.BackgroundColor3 = PAL.PANEL; objFrame.Visible = false
@@ -3420,6 +3515,11 @@ do
 	panel.Position = UDim2.new(0.5, -270, 0.74, 0)
 	panel.BackgroundColor3 = PAL.PANEL; panel.BackgroundTransparency = 0.12
 	panel.BorderSizePixel = 0; panel.ZIndex = 2; panel.Parent = gui
+	-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+	-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
+	-- The panel keeps its own size and every child keeps its own pixel coordinates;
+	-- it is centred in the house shell and scaled to fit, so nothing inside moves.
+	pcall(_G.housePanel, panel)   -- island13 wrench minigame
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 16)
 	MG.panel = panel
 
@@ -3534,6 +3634,11 @@ playWrench = function(o)
 				zw    = math.max(o.floor or 0.085, zw - (o.shrink or 0.032))
 				zc    = 0.14 + math.random() * 0.72
 				MG.stroke.Color = Color3.fromRGB(120, 220, 120)
+				-- o.sfx: the same clip the gate crank uses, on each LANDED turn. Opt-in per caller, because
+				-- this widget also runs the crop snap-tap and a wrench noise there would be nonsense. A MISS
+				-- stays silent on purpose -- the sound marks a turn that actually went in, which is the same
+				-- feedback the green flash gives, so the two agree instead of one of them lying.
+				if o.sfx then Crank.play() end
 				if onStroke then onStroke(hit) end
 			else
 				speed = math.max(0.45, speed - 0.08)     -- a miss costs time, not progress
@@ -3692,7 +3797,7 @@ local function buildPipes()
 			-- ONE ROUND OF THE HUD PER PIPE. Each landed stroke turns the wrench a quarter and
 			-- takes a third off the leak, so the world keeps pace with the bar rather than
 			-- everything happening at the end.
-			playWrench({ strokes = PIPE_TURNS, title = "TIGHTEN THE COUPLING",
+			playWrench({ strokes = PIPE_TURNS, title = "TIGHTEN THE COUPLING", sfx = true,
 			             hint = "Tap when the needle is in the green -- it gets tighter",
 			             onStroke = function(n)
 				playSound(SOUND_VALVE, 0.6)
@@ -3875,6 +3980,11 @@ task.spawn(function()
 	basinR  = (FOUNTAIN_RADIUS > 0) and FOUNTAIN_RADIUS or math.max(3, ffoot * 0.5)
 	hideMarker(fountainMark)
 
+	-- NOW the banner may exist on screen: `center` is the park's real position, so the proximity gate can
+	-- no longer fire at spawn (see the note where objGui is built -- it was showing at island 1 because
+	-- center defaulted to the origin and island 1 IS at the origin).
+	objGui.Parent = PlayerGui
+
 	print(("[Park] fountain at (%.0f, %.0f, %.0f), basin radius %.1f, island=%s")
 		:format(center.X, center.Y, center.Z, basinR, island and island.Name or "?"))
 
@@ -4020,4 +4130,9 @@ task.spawn(function()
 		print("[Park] name parts garden1/garden2/garden3 in the island to place the plots yourself.")
 	end
 	print("[Park] all 3 steps live -- valve -> 3 gates -> the tree wakes on its own.")
+	-- RETAINER SIGNAL: the quest reached the end of its build with its world objects up. QuestRetainer
+	-- watches this flag; anything still false once its island has streamed in gets force-streamed and
+	-- re-run. It is set HERE, at the ready print, not at the top of the file -- a quest that bailed
+	-- early on a missing marker must NOT look built. See QuestRetainer.client.luau.
+	_G.questBuilt_park = true
 end)

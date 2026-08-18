@@ -122,13 +122,14 @@ end
 --======================================================================
 local teleportBtn = Instance.new("TextButton")
 teleportBtn.Name = "GoToIsland1Btn"
--- TOP-RIGHT STATUS COLUMN, below the coin pill (y=10) and the event countdown pill (y=66). This used
--- to be hard-coded to the SAME top-centre spot as the countdown pill (both y=12), so an active rocket
--- event simply drew this button over the pill's countdown. Top-centre is now reserved for transient
--- banners (NotifyCenter hero lane) + the objective card; persistent controls live down the right edge.
-teleportBtn.AnchorPoint = Vector2.new(1, 0)
-teleportBtn.Position = UDim2.new(1, -10, 0, 120)
-teleportBtn.Size = UDim2.new(0, 210, 0, 50)
+-- JUST ABOVE THE FART METER, bottom-centre. It lived in the top-right status column, which is where the
+-- coin capsule, the gear and the stats panel all live -- on a scaled screen it overlapped them. The strip
+-- directly above the bottom HUD stack is the one place nothing else claims, and this button is only ever
+-- on screen during the rocket event, so borrowing that strip costs nothing the rest of the time.
+-- Compact, and positioned for real against the stack's live top edge by placeTeleportBtn() below.
+teleportBtn.AnchorPoint = Vector2.new(0.5, 1)
+teleportBtn.Position = UDim2.new(0.5, 0, 1, -260)
+teleportBtn.Size = UDim2.new(0, 190, 0, 44)
 teleportBtn.BackgroundColor3 = Color3.fromRGB(55, 170, 90)
 teleportBtn.AutoButtonColor = true
 teleportBtn.Font = Enum.Font.GothamBold
@@ -167,28 +168,112 @@ teleportBtn.Activated:Connect(function()
 	GoToIsland1Event:FireServer()   -- server teleports us to island 1's stand
 end)
 
+-- SIT IT ON THE BOTTOM STACK'S LIVE TOP EDGE. The stack (gut pill / gas meter / fart button) changes
+-- height with device scale and with which of its rows are showing, so a fixed offset would gap on one
+-- screen and overlap on another. CoreClient publishes the frame as _G.gui.bottomStack and both guis use
+-- IgnoreGuiInset, so they share a coordinate space and AbsolutePosition can be used directly. Falls back
+-- to a safe bottom-centre offset if the stack has not laid out yet.
+local function placeTeleportBtn()
+	local bs = _G.gui and _G.gui.bottomStack
+	if bs and bs.AbsoluteSize.Y > 0 then
+		teleportBtn.Position = UDim2.new(0.5, 0, 0, math.floor(bs.AbsolutePosition.Y) - 10)
+	else
+		teleportBtn.Position = UDim2.new(0.5, 0, 1, -260)
+	end
+end
+do
+	local bs = _G.gui and _G.gui.bottomStack
+	if bs then -- follow the stack as it lays out / rescales, but only while the button is up
+		bs:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
+			if teleportBtn.Visible then placeTeleportBtn() end
+		end)
+		bs:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			if teleportBtn.Visible then placeTeleportBtn() end
+		end)
+	end
+end
+
+--======================================================================
+-- ARE WE ALREADY THERE?
+--======================================================================
+-- A "Go to Island 1" button offered to somebody standing on Island 1 is a button that does nothing, and it
+-- sits in the one strip of screen the bottom HUD does not already own -- so it is worth the check.
+--
+-- ===== WHY THIS IS NOT A leaderstats.Island TEST =====
+-- That value is the HIGHEST island the player has unlocked, not where they are. A player who has reached
+-- Pizza Palms and flown back down to the farm reads as Island 14 while standing on Island 1, which is
+-- exactly backwards. Position is the only honest answer to "am I there".
+--
+-- ===== AND WHY IT CANNOT BE A HEIGHT TEST EITHER =====
+-- The obvious cheap check is "Y below 500" -- Island 1 sits at Y=150 and Island 2 at Y=790, so height alone
+-- separates them cleanly. It is also wrong, because the rocket's own capsule is parked at VOID_Y = 190,
+-- squarely inside that band. A rider strapped into the couch would read as "on Island 1" and lose the
+-- button for the whole ride. The capsule is thousands of studs out HORIZONTALLY (see RocketRideClient's
+-- origin), so the horizontal test is the one that actually distinguishes them -- height is only the tiebreak
+-- against the islands stacked directly overhead.
+local ISLAND1_XZ = 400   -- generous: Island 1's furthest dressing sits ~150 studs out from its centre
+local ISLAND1_Y  = 250   -- covers standing on the stand (Y~245) without reaching Island 2 (Y=790)
+
+local function onIsland1()
+	local ch  = player.Character
+	local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+	if not hrp then return false end
+	-- _G.ISLAND_POS is CoreClient's table and may not exist yet on a very early frame; Island 1 is the
+	-- world origin, so falling back to (0, 150, 0) costs nothing and keeps this working during boot.
+	local p = (_G.ISLAND_POS and _G.ISLAND_POS[1]) or { x = 0, y = 150, z = 0 }
+	local d = hrp.Position - Vector3.new(p.x, p.y, p.z)
+	return (Vector3.new(d.X, 0, d.Z).Magnitude <= ISLAND1_XZ) and (math.abs(d.Y) <= ISLAND1_Y)
+end
+
 -- Show/hide helpers: toggle Visible AND the transparencies together so the
 -- button is genuinely invisible when no rocket event is running.
+--
+-- SPLIT IN TWO ON PURPOSE. `eventActive` means "the rocket event is running" and is owned solely by the
+-- server broadcasts -- the click handler's hard guard depends on that meaning, so the island-1 check must
+-- never touch it. Whether the button is actually ON SCREEN is a separate question, re-answered continuously
+-- by applyTeleportBtn() below, because a player walks on and off Island 1 all through the event.
+local function applyTeleportBtn()
+	local want = eventActive and not onIsland1()
+	if teleportBtn.Visible == want then return end   -- idempotent: the poll below calls this constantly
+	if want then
+		teleportBtn.BackgroundTransparency = 0
+		teleportBtn.TextTransparency = 0
+		tbStroke.Transparency = 0
+		teleportBtn.Active = true        -- clickable ONLY when it is genuinely on screen
+		teleportBtn.Selectable = true
+		placeTeleportBtn()               -- re-measure every time it appears (scale may have changed since load)
+		teleportBtn.Visible = true
+	else
+		teleportBtn.Visible = false
+		teleportBtn.Active = false        -- non-interactive: cannot be clicked / cannot teleport when hidden
+		teleportBtn.Selectable = false
+		teleportBtn.BackgroundTransparency = 1
+		teleportBtn.TextTransparency = 1
+		tbStroke.Transparency = 1
+	end
+	print(("[RocketBtn] event active=%s onIsland1=%s -> button visible=%s")
+		:format(tostring(eventActive), tostring(onIsland1()), tostring(want)))
+end
+
 local function showTeleportBtn()
 	eventActive = true
-	teleportBtn.BackgroundTransparency = 0
-	teleportBtn.TextTransparency = 0
-	tbStroke.Transparency = 0
-	teleportBtn.Active = true        -- clickable ONLY now (event is running)
-	teleportBtn.Selectable = true
-	teleportBtn.Visible = true
-	print("[RocketBtn] event active=true -> button visible=true")
+	applyTeleportBtn()
 end
 local function hideTeleportBtn()
 	eventActive = false
-	teleportBtn.Visible = false
-	teleportBtn.Active = false        -- non-interactive: cannot be clicked / cannot teleport when hidden
-	teleportBtn.Selectable = false
-	teleportBtn.BackgroundTransparency = 1
-	teleportBtn.TextTransparency = 1
-	tbStroke.Transparency = 1
-	print("[RocketBtn] event active=false -> button visible=false")
+	applyTeleportBtn()
 end
+
+-- The player crosses the boundary under their own power -- they fly off Island 1, or they take the teleport
+-- and arrive. Neither fires an event we could listen to, so the state is re-derived on a slow poll. Gated on
+-- eventActive so it costs nothing outside a rocket event, and applyTeleportBtn returns early when nothing
+-- has changed, so the steady state is one distance check every half second.
+task.spawn(function()
+	while true do
+		task.wait(0.5)
+		if eventActive then applyTeleportBtn() end
+	end
+end)
 
 --======================================================================
 -- Helper: briefly show the banner then auto-hide.
@@ -200,7 +285,33 @@ local function hideBanner()
 	freeBannerSlot()
 end
 
+-- ===== THE ROCKET SPEAKS THROUGH NOTIFYCENTER NOW =====
+-- This banner was built before NotifyCenter existed and never moved over, so the biggest event in the game
+-- was announcing itself in a completely different voice from everything else: its own ScreenGui, its own
+-- font, its own dark box, parked at y=0.05 with its own private slot system -- and, because it is not one of
+-- the five GUIs TopCenterStack manages, nothing stopping it drawing straight through an island banner or a
+-- Shady Sal restock that happened to land at the same moment.
+--
+-- It now pushes to the HERO lane like every other announcement. That buys three things for free: the house
+-- banner shape, the queue (so it takes turns instead of overlapping), and EVENT priority -- which is exactly
+-- right for a rocket. It yields to "you just landed on a new island" (ISLAND, 100) and to a real Robux
+-- purchase (90), and beats every reward nudge.
+--
+-- The old local banner is KEPT as a fallback rather than deleted, for the case NotifyCenter is missing or is
+-- an older build without the API. A rocket launch nobody was told about is a worse outcome than a banner in
+-- the wrong font, and this file already runs in three realms that may not all be on the same NotifyCenter.
 local function showBanner(text, duration)
+	local NC = _G.NotifyCenter
+	if NC and NC.push then
+		pcall(NC.push, {
+			text     = text,
+			color    = Color3.fromRGB(255, 150, 60),   -- rocket amber, distinct from Sal's and the island green
+			priority = (NC.PRIORITY and NC.PRIORITY.EVENT) or 80,
+			duration = duration or 4,
+		})
+		return
+	end
+
 	local slot = claimBannerSlot()
 	banner.Position = UDim2.new(0.5, 0, bannerSlotY(slot), 0)
 	banner.Text = text
@@ -289,6 +400,12 @@ sync.OnClientEvent:Connect(function(phase, payload)
 	if phase == "start" then
 		showBanner(payload or "🚀 The Big Rocket Construction Event Starting! Everyone go to Island 1!", 5)
 		showTeleportBtn()   -- show the "Go to Island 1" button for the event
+
+	elseif phase == "boarding" then
+		-- THE HATCH IS OPEN. Nobody will look for a boarding prompt on a rocket that has never had one, so
+		-- the event has to say out loud that this launch is rideable -- it is announced once, here, and the
+		-- prompt itself is then the only other thing the player needs.
+		showBanner("🚀 The hatch is OPEN! Hold E at the rocket's base to ride it!", 6)
 
 	elseif phase == "countdown" then
 		-- payload = the number n.

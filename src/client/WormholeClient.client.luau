@@ -84,8 +84,8 @@ gui.Name = "WormholeMenu"; gui.ResetOnSpawn = false; gui.IgnoreGuiInset = true; 
 gui.Parent = PlayerGui
 
 local backdrop = Instance.new("TextButton")
-backdrop.Name = "Backdrop"; backdrop.Size = UDim2.new(1, 0, 1, 0); backdrop.BackgroundColor3 = Color3.new(0, 0, 0)
-backdrop.BackgroundTransparency = 0.45; backdrop.AutoButtonColor = false; backdrop.Text = ""; backdrop.Active = true; backdrop.Parent = gui
+backdrop.Name = "Backdrop"; backdrop.Size = UDim2.new(1, 0, 1, 0)
+backdrop.BackgroundTransparency = 1; backdrop.AutoButtonColor = false; backdrop.Text = ""; backdrop.Active = true; backdrop.Parent = gui -- click-catcher only; no dim
 
 local panel = Instance.new("Frame")
 panel.AnchorPoint = Vector2.new(0.5, 0.5); panel.Position = UDim2.new(0.5, 0, 0.5, 0)
@@ -187,16 +187,34 @@ for i, name in ipairs(ISLANDS) do
 		if warpTo then warpTo(i, name) end
 	end)
 
+	-- ===== A LOCKED ROW MUST NOT LOOK LIKE A REACHABLE ONE, AND MUST NOT SPOIL THE NAME =====
+	-- This used to grey only the ROW BACKGROUND and dim the little icon. The island's NAME stayed fully
+	-- written out, and its coloured number disc stayed at full saturation -- so "Pizza Palms" sat there in
+	-- readable text next to a bright disc on an island the player has never seen. Two problems in one:
+	--   * it did not read as locked (the brightest thing in the row was the locked island's own colour), and
+	--   * it gave away every island in the game the first time anyone opened the menu.
+	-- Now a locked row is grey THROUGHOUT -- disc included -- and the name is replaced with "???". The NUMBER
+	-- stays, because that is position rather than identity: knowing a 7th island exists is the pull; knowing
+	-- it is called Pasta Peak is the reward for getting there.
+	local LOCK_DISC = Color3.fromRGB(88, 92, 112)   -- the number disc, drained of the island's colour
 	rowRefreshers[i] = function()
 		local reached = i <= highestIsland()
 		local here = currentIsland() == i
 		if reached then
-			row.BackgroundColor3 = PANEL_DEEP; rowStroke.Color = col; rowStroke.Transparency = 0.25; lockOverlay.Visible = false; nameLbl.TextColor3 = WHITE
+			row.BackgroundColor3 = PANEL_DEEP; rowStroke.Color = col; rowStroke.Transparency = 0.25
+			lockOverlay.Visible = false
+			disc.BackgroundColor3 = col                       -- restore: rows re-refresh as islands unlock
+			nameLbl.Text = name
+			nameLbl.TextColor3 = WHITE
 			statusLbl.Text = here and "Here" or "Warp \u{27A4}"
 			statusLbl.TextColor3 = here and MUTED or col
 			row.Active = true; row.AutoButtonColor = not here
 		else
-			row.BackgroundColor3 = LOCK_GREY; rowStroke.Color = Color3.fromRGB(70, 74, 92); rowStroke.Transparency = 0.5; lockOverlay.Visible = true; nameLbl.TextColor3 = MUTED
+			row.BackgroundColor3 = LOCK_GREY; rowStroke.Color = Color3.fromRGB(70, 74, 92); rowStroke.Transparency = 0.5
+			lockOverlay.Visible = true
+			disc.BackgroundColor3 = LOCK_DISC                 -- the disc is the loudest thing in the row; grey it
+			nameLbl.Text = "???"                              -- the name is the reward for reaching it
+			nameLbl.TextColor3 = MUTED
 			statusLbl.Text = "\u{1F512} Reach it first"; statusLbl.TextColor3 = MUTED
 			row.Active = false; row.AutoButtonColor = false
 		end
@@ -238,15 +256,65 @@ end
 if _G.MainMenuManager and _G.MainMenuManager.register then _G.MainMenuManager.register("Wormhole", function() gui.Enabled = false; isOpen = false end) end
 _G.toggleWormhole = function() if isOpen then closeMenu() else openMenu() end end
 
--- "land first" toast (own ScreenGui so it shows over the closed menu)
-local landToastGui = Instance.new("ScreenGui"); landToastGui.Name = "WormholeLandFirst"; landToastGui.ResetOnSpawn = false; landToastGui.IgnoreGuiInset = true; landToastGui.DisplayOrder = 9500; landToastGui.Enabled = false; landToastGui.Parent = PlayerGui
-local landToast = Instance.new("TextLabel"); landToast.AnchorPoint = Vector2.new(0.5, 0); landToast.Position = UDim2.new(0.5, 0, 0, 90); landToast.Size = UDim2.new(0, 470, 0, 52)
-landToast.BackgroundColor3 = Color3.fromRGB(14, 20, 44); landToast.BackgroundTransparency = 0.05; landToast.Font = Enum.Font.FredokaOne; landToast.Text = "\u{1FA90}  Land on an island to use the wormhole!"; landToast.TextColor3 = Color3.fromRGB(210, 226, 255); landToast.TextScaled = true; landToast.Parent = landToastGui
-do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 12); c.Parent = landToast
-	local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(90, 150, 255); s.Thickness = 2; s.Parent = landToast
-	local cns = Instance.new("UITextSizeConstraint"); cns.MaxTextSize = 22; cns.Parent = landToast end
-local landTok = 0
-local function showLandFirst() landTok += 1; local mine = landTok; landToastGui.Enabled = true; task.delay(2.6, function() if landTok == mine then landToastGui.Enabled = false end end) end
+--======================================================================
+-- "LAND FIRST" IS A BANNER NOW -- the standalone toast is deleted
+--======================================================================
+-- This used to be its own ScreenGui ("WormholeLandFirst", DisplayOrder 9500) holding one TextLabel at
+-- y=90, shown by flipping `Enabled = true` and hidden 2.6s later by a `task.delay` guarded on a token.
+-- THAT IS THE BUG THE PLAYER SEES: press WORMHOLE in mid-air and the reminder sticks on screen.
+--
+-- Why a flag + a delay strands text, and why a banner cannot:
+--   * The gui is ResetOnSpawn = false, so it OUTLIVES the character. Warp, die or respawn between the
+--     show and the hide and the label is still up on a screen the timer no longer has any reason to visit.
+--   * Rojo only ADDS. A stale baked-in copy of this script builds a SECOND ScreenGui with the same name,
+--     and that copy's `landTok` is a different variable -- so our hide can never switch off their label.
+--     Nothing in the game clears it after that. It just sits there.
+--   * `Enabled` is a latch. Any path that misses its own hide leaves the text on screen forever, because
+--     there is no owner whose job it is to notice.
+--
+-- A hero banner has none of those failure modes: ONE card, owned by ONE scheduler, which slides it out
+-- itself and hands the slot to whatever is next. It also means this message finally obeys the same rules
+-- as every other message in the game -- same lane, same size, same priority order, and it queues politely
+-- behind the garden watering directions and any tutorial/achievement moment instead of drawing over them.
+--
+-- The old gui is swept below, because deleting the code that BUILDS it does not delete the one a stale
+-- duplicate already built.
+local LAND_MSG = "\u{1FA90}  Land on an island to use the wormhole!"
+
+local function showLandFirst()
+	local NC = _G.NotifyCenter
+	if NC and NC.push then
+		pcall(NC.push, {
+			text  = LAND_MSG,
+			color = Color3.fromRGB(90, 150, 255), -- the wormhole's own blue, so the banner is recognisably its
+			-- EVENT, not higher. This is a "you can't do that yet" nudge: it must not shove an island
+			-- landing off the screen, and it must wait behind the watering directions and any tutorial
+			-- moment. It cannot preempt an exclusive banner at all -- the scheduler refuses that outright.
+			priority = (NC.PRIORITY and NC.PRIORITY.EVENT) or 80,
+			duration = 2.6,                        -- the same 2.6s the old toast used
+		})
+		return
+	end
+	-- No banner system at all (a very early press, or a stale build that lost the global): say it in the
+	-- log rather than resurrecting a second GUI. Silently dropping a refusal is the one thing worse than
+	-- a plain banner, and rebuilding the stuck toast is what we are here to remove.
+	warn("[Wormhole][client] " .. LAND_MSG .. "  (NotifyCenter unavailable -- message not shown on screen)")
+end
+
+-- SWEEP THE OLD TOAST. ResetOnSpawn = false meant one built by a previous session -- or, far more likely,
+-- by a stale copy of this script baked into the place -- hangs around with nothing left to hide it. This is
+-- the same treatment CommunityGarden gives its retired WateringCanHint panel.
+task.spawn(function()
+	for _ = 1, 5 do
+		local old = PlayerGui:FindFirstChild("WormholeLandFirst")
+		if old then
+			old:Destroy()
+			print("[Wormhole][client] removed a leftover WormholeLandFirst toast -- the 'land first' reminder " ..
+				"is a NotifyCenter banner now, so nothing can strand it on screen")
+		end
+		task.wait(2)
+	end
+end)
 
 warpTo = function(islandNum, islandName)
 	if warping then return end

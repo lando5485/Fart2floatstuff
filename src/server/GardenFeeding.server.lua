@@ -37,6 +37,12 @@ local ANIMALS = {
 
 		thanks      = { "Moo! Thank you!", "Moo! So tasty, thank you!", "Mooo \xE2\x9D\xA4 yum!" },
 		hungry      = "Moo? Got any hay for me?",
+		-- The cow's reaction sound. DELAYED on purpose: it plays half a second after the feed, so it lands as
+		-- the cow answering the hay rather than on top of the thanks bubble + heart burst that fire instantly.
+		-- Per-animal config, so the pig simply has no feedSound and stays silent until it's given one.
+		feedSound   = "rbxassetid://124453455193367",
+		feedDelay   = 0.5,
+		feedVolume  = 1,
 	},
 	pig = {
 		foodName    = "Slop Bucket",
@@ -46,6 +52,11 @@ local ANIMALS = {
 		boxColor    = Color3.fromRGB(110, 90, 70),   boxLabel = "\xF0\x9F\x90\xB7 Slop",
 		thanks      = { "Oink! Yummy, thanks!", "Oink oink! Delicious!", "Snort \xE2\x9D\xA4 more please!" },
 		hungry      = "Oink? I'm hungry...",
+		-- The pig's reaction, on the same delayed timing as the cow's: it lands as the pig answering the
+		-- slop rather than on top of the thanks bubble and the heart burst, which both fire instantly.
+		feedSound   = "rbxassetid://95441550839076",
+		feedDelay   = 0.5,
+		feedVolume  = 1,
 	},
 }
 -- ============================================================================
@@ -166,7 +177,7 @@ local function buildBox(animal, body)
 	box.Name = "FoodBox_" .. animal
 	box.Anchored = true; box.CanCollide = true
 	box.Size = Vector3.new(2.4, 2.4, 2.4)
-	box.Color = cfg.boxColor; box.Material = Enum.Material.WoodPlanks
+	box.Color = cfg.boxColor; box.Material = Enum.Material.SmoothPlastic
 	box.Position = Vector3.new(bp.X + off.X, floorY + 1.2, bp.Z + off.Z)
 	box.Parent = Workspace
 	-- a little label sign so players know what it is
@@ -243,6 +254,25 @@ local function buildFeedPrompt(animal, body)
 		grantCoins(player, REWARD_COINS)
 		if entry.say then entry.say(cfg.thanks[math.random(1, #cfg.thanks)]) end
 		heartBurst(entry.body)
+		-- REACTION SOUND, after cfg.feedDelay. Server-side + parented to the animal so it's positional and
+		-- everyone nearby hears it, not just the feeder. The body is re-read when the timer fires rather than
+		-- captured now: the cow can be abducted (or fall) inside that 1.2s and respawn as a NEW body, and
+		-- playing out of the old one would put a moo wherever the corpse went.
+		if cfg.feedSound then
+			task.delay(cfg.feedDelay or 0, function()
+				local reg = _G.gardenAnimals and _G.gardenAnimals[animal]
+				local b = (reg and reg.body) or entry.body
+				if not (b and b.Parent) then return end
+				local snd = Instance.new("Sound")
+				snd.Name = "FeedReaction"
+				snd.SoundId = cfg.feedSound
+				snd.Volume = cfg.feedVolume or 1
+				snd.RollOffMaxDistance = 150
+				snd.Parent = b
+				snd:Play()
+				game:GetService("Debris"):AddItem(snd, 12) -- clean up whether or not it finished
+			end)
+		end
 		-- Tick the daily checklist. Task ids are per-animal ("feed_cow" / "feed_pig"), matching DailyTasks'
 		-- TASKS list -- an unknown id there warns loudly rather than silently never ticking.
 		if _G.dailyTaskDone then pcall(function() _G.dailyTaskDone(player, "feed_" .. animal) end) end

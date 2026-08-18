@@ -25,37 +25,69 @@ local RunService        = game:GetService("RunService")
 local TweenService      = game:GetService("TweenService")
 local Workspace         = game:GetService("Workspace")
 
--- DUPLICATE GUARD: if an old copy of this script got saved into the place file, Rojo adds a SECOND one
--- beside it and both run -- they fight over the portals and you get two of everything. Bail loudly.
-if _G.__RealmPortalsClient then
-	warn("[RealmPortals] a second copy of RealmPortals.client is running -- this one is bailing out. " ..
-		"Delete the stale LocalScript in StarterPlayerScripts and re-sync Rojo.")
-	return
-end
+-- ===== WHY THIS SCRIPT IS NAMED 'RealmPortalsHub' AND NOT 'RealmPortals' =====
+-- An OLD copy of this file is baked into the place, and it is named 'RealmPortals'. Both copies used to run
+-- the SAME first-come-wins guard: whoever started first set a _G flag and destroyed every LocalScript with
+-- a matching name. Roblox does not guarantee sibling start order, so it was a coin flip each join -- and
+-- when the stale copy won, it deleted the Rojo one and the game ran on months-old code. That is exactly
+-- what "sometimes the outro and the sound do not happen" was: not a bug in the outro, a bug in who is alive.
+--
+-- The fix is a name the old copy cannot see. Its sweep matches `inst.Name == script.Name` == 'RealmPortals',
+-- so renaming the Rojo instance to 'RealmPortalsHub' (in default.project.json) makes this copy invisible to
+-- it. It can no longer delete us -- while we can still delete it, because we match on the legacy name below.
+-- The race is not won more often now; it is gone. The new copy wins by construction, every join.
+--
+-- ⚠ This is a WORKAROUND for a place-file problem, not a licence to keep the duplicate. Delete the old
+-- 'RealmPortals' LocalScript in Studio's StarterPlayerScripts and republish; the log line below tells you
+-- every time it is still there.
+local LEGACY_NAMES = { RealmPortals = true, RealmPortalsHub = true }
+
+-- Deliberately NOT a bail-out. If the legacy copy started first it will have set this flag, and bailing is
+-- precisely how the good copy used to lose. We take over instead: note it, then go on and neutralise it.
+local legacyWonTheRace = _G.__RealmPortalsClient == true
 _G.__RealmPortalsClient = true
 
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- NEUTRALIZE STALE DUPLICATES: an OLD copy of this LocalScript baked into the place builds a second set of
--- portals and shows its own messages. Destroy every same-named sibling LocalScript (best effort). The clean
--- fix is deleting it in Studio's StarterPlayerScripts.
+-- NEUTRALIZE STALE DUPLICATES: destroy any LocalScript carrying the legacy name, anywhere the client keeps
+-- scripts. Repeated a few times because a stale copy can be re-parented in late (and because Disabled=true
+-- is what actually stops an already-running thread -- Destroy alone does not).
 local function nukeStaleClientCopies()
 	local removed = 0
 	for _, container in ipairs({ script.Parent, player:FindFirstChild("PlayerScripts"), playerGui, game:GetService("ReplicatedFirst") }) do
 		if container then
 			for _, inst in ipairs(container:GetDescendants()) do
-				if inst ~= script and inst:IsA("LocalScript") and inst.Name == script.Name then
+				if inst ~= script and inst:IsA("LocalScript") and LEGACY_NAMES[inst.Name] then
 					pcall(function() inst.Disabled = true; inst:Destroy() end)
 					removed = removed + 1
 				end
 			end
 		end
 	end
-	if removed > 0 then warn("[RealmPortals] removed " .. removed .. " STALE duplicate client script(s) -- delete them in Studio for good") end
+	if removed > 0 then
+		warn("[RealmPortals] removed " .. removed .. " STALE duplicate client script(s) -- delete them in Studio for good")
+	end
 end
 nukeStaleClientCopies()
 task.delay(1, nukeStaleClientCopies); task.delay(4, nukeStaleClientCopies)
+
+if legacyWonTheRace then
+	warn("[RealmPortals] the STALE baked-in copy started BEFORE this one and has now been shut down. " ..
+		"It may have already drawn part of a portal; this copy owns them from here. " ..
+		"Delete the old 'RealmPortals' LocalScript in Studio to stop this happening at all.")
+end
+
+-- THE PROOF LINE. If the outro or the travel sound ever look like they "did not run" again, check this
+-- first: if it is missing from the output, the copy that booted is not this file, and nothing below ran.
+print("[RealmPortals] CLIENT BUILD 10 ACTIVE -- this is the Rojo copy (outro + travel sound + send receipts)")
+print("[Transition] FULL-BLEED PASS APPLIED. Every realm transition screen now fills the whole viewport -- " ..
+	"no black bars, no band, no hard edge. Updated: RealmPortalOutro (this file -- Space/Dino/Candy outro " ..
+	"card; the 420px capsule glow is GONE, ground + glow are both fromScale(1,1) with vertical gradients), " ..
+	"CandyArrivalCinematic, DinoArrivalCinematic, DinoRiftCinematic (Space->Dino outro card). Verified " ..
+	"already full-bleed, unchanged: BlackHoleCinematic (portal suck-in), DinoRiftCinematic backdrop, " ..
+	"CandyRealm/Dino tower-descent IntroTitle cards. IntroCinematic (Space Realm join intro) LEFT AS IT " ..
+	"WAS -- it is an intro, not a transition card.")
 
 --------------------------------------------------------------------------------
 -- dimensions (studs) -- everything is sized to fit the spacing you already have
@@ -150,6 +182,56 @@ if not enterEvent then
 	return
 end
 
+-- HOW MANY OF THEM ARE THERE?
+-- The server does a getOrCreate on this name AND default.project.json declares one, and this place is known
+-- to carry baked-in duplicates of almost everything else. If ReplicatedStorage ends up holding TWO
+-- RemoteEvents called 'RealmPortalEvent', :FireServer on one is simply not heard by a listener connected to
+-- the other -- the call succeeds, nothing errors, and the request evaporates. That failure is completely
+-- silent from both ends, which is what a client "portal entered" with no matching server line looks like.
+do
+	local n = 0
+	for _, inst in ipairs(ReplicatedStorage:GetChildren()) do
+		if inst.Name == "RealmPortalEvent" then n = n + 1 end
+	end
+	if n > 1 then
+		warn(("[RealmPortals] ⚠ %d RemoteEvents named 'RealmPortalEvent' in ReplicatedStorage -- the client may "
+			.. "be firing into a different one than the server listens on. Delete the extras in Studio."):format(n))
+	else
+		print("[RealmPortals] remote OK -- exactly 1 'RealmPortalEvent' in ReplicatedStorage")
+	end
+end
+
+--------------------------------------------------------------------------------
+-- PORTAL ENTRY SOUND
+--------------------------------------------------------------------------------
+-- Fired the moment your body touches a portal's vortex, before the server has said yes or no. That is
+-- deliberate: the sound is the feedback for WALKING IN, not for being approved -- a locked portal that
+-- makes the same noise still tells you that you hit the thing, and the refusal message arrives right
+-- after. 2D (SoundService), because this is your own crossing rather than an event out in the world.
+--
+-- One Sound reused for all three portals. p.enter() already debounces on p.sending for 2.5s, so walking
+-- through the vortex repeatedly cannot machine-gun this.
+local PORTAL_ENTER_SOUND_ID = "rbxassetid://111559442515692"
+local PORTAL_ENTER_VOLUME   = 0.8
+local portalEnterSound = Instance.new("Sound")
+portalEnterSound.Name = "RealmPortalEnter"
+portalEnterSound.SoundId = PORTAL_ENTER_SOUND_ID
+portalEnterSound.Volume = PORTAL_ENTER_VOLUME
+portalEnterSound.Parent = game:GetService("SoundService")
+task.spawn(function()
+	pcall(function()
+		game:GetService("ContentProvider"):PreloadAsync({ portalEnterSound }, function(_, status)
+			if status == Enum.AssetFetchStatus.Success then
+				print(string.format("[RealmPortals] entry sound %s loaded OK (length %.2fs)",
+					PORTAL_ENTER_SOUND_ID, portalEnterSound.TimeLength))
+			else
+				warn(string.format("[RealmPortals] entry sound %s FAILED to load (%s) -- not an audio asset, "
+					.. "or not approved for this experience's creator.", PORTAL_ENTER_SOUND_ID, tostring(status)))
+			end
+		end)
+	end)
+end)
+
 --------------------------------------------------------------------------------
 -- centre-screen status message
 --------------------------------------------------------------------------------
@@ -189,6 +271,428 @@ local function showMsg(text, tint, seconds)
 				msgLbl.Visible = false; msgLbl.BackgroundTransparency = 1; msgLbl.Text = ""
 			end
 		end)
+	end
+end
+
+--------------------------------------------------------------------------------
+-- THE OUTRO -- walking through a portal
+--------------------------------------------------------------------------------
+-- The counterpart to the black hole's "sucked in" shot, and deliberately its MIRROR IMAGE. That one is a
+-- gravity well: your HUD spirals inward, the frame squeezes, the FOV narrows, you are dragged down a drain.
+-- A portal is a DOORWAY -- you walk through it under your own steam -- so everything here says forward
+-- instead of down:
+--
+--   * the HUD PEELS OUTWARD past the edges of the screen, not inward. The interface stays behind while you
+--     step through it; that single reversal is what makes this read as "crossing" rather than "falling".
+--   * an IRIS of portal-light opens from the centre and swallows the frame -- the doorway getting bigger
+--     because you are walking into it.
+--   * FOV pushes WIDE (stepping forward) where the black hole narrowed.
+--   * IT WEARS THE REALM'S OWN COLOURS. `look` is the same table the portal itself is built from, so Space
+--     crosses over in blue/purple, Dino in green, Candy in pink. One effect, three transitions.
+--
+-- SHORTER THAN THE BLACK HOLE ON PURPOSE (3.6s vs 6.2s). The black hole is a one-time discovery and can
+-- afford to be a set piece; portals are the everyday route between realms and get used over and over, so
+-- this has to stay something you enjoy the fifth time. Must match the task.wait in RealmPortals.server.lua.
+local PORTAL_CINEMATIC_SECONDS = 4.2
+-- FOUR beats, not three. The shot used to detonate on frame one -- you touched the vortex and the entire
+-- interface was already flying off screen, which reads as a glitch before it reads as a transition. INTAKE
+-- is the anticipation beat that fixes it: for half a second nothing leaves, the world just dims and the
+-- portal light swells and the frame tightens, as though the doorway has noticed you. THEN the HUD goes.
+-- Every good transition has a breath before the move; without one the move looks like a mistake.
+local P_INTAKE, P_THRESHOLD, P_CROSS, P_CARD = 0.6, 1.0, 1.6, 1.0
+
+-- Set to the running shot's teardown while an outro is on screen, nil otherwise. It lets the server's
+-- "error" reply cancel the cinematic immediately rather than waiting out the backstop timer.
+local abortOutro = nil
+local outroRunning = false
+local function playPortalOutro(look)
+	if outroRunning then return end
+	outroRunning = true
+	-- Proof the shot actually started, and which realm's look it got. If the travel sound plays and this
+	-- line does NOT appear, the outro was never entered; if it appears and you still see no transition,
+	-- the problem is inside the shot rather than in reaching it.
+	print("[RealmPortals] OUTRO START -> " .. tostring(look and look.title or "?"))
+
+	local cam = Workspace.CurrentCamera
+	local origFov = cam and cam.FieldOfView or 70
+	local heldCF = cam and cam.CFrame or CFrame.new()
+	local restored, renderConn, guiAddedConn, blur, gui = false, nil, nil, nil, nil
+	local hidden = {}
+	local shakeMag = 0
+
+	-- ONE teardown. The SUCCESS path never calls it -- we hold on black and the teleport is the cut. This
+	-- exists for the failure paths and the backstop (Studio, where TeleportAsync does nothing at all).
+	local function restore()
+		if restored then return end
+		restored = true
+		if renderConn then renderConn:Disconnect() end
+		if guiAddedConn then guiAddedConn:Disconnect() end
+		pcall(function()
+			local c = Workspace.CurrentCamera
+			if c then
+				c.CameraType = Enum.CameraType.Custom
+				local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+				if hum then c.CameraSubject = hum end
+				c.FieldOfView = origFov
+			end
+		end)
+		if blur then pcall(function() blur:Destroy() end) end
+		for sg, wasOn in pairs(hidden) do pcall(function() sg.Enabled = wasOn end) end
+		pcall(function() game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.All, true) end)
+		if gui then pcall(function() gui:Destroy() end) end
+		outroRunning = false
+		abortOutro = nil
+	end
+
+	-- Published so the "error" reply from the server can end the shot the instant the teleport is known to
+	-- have failed, instead of leaving the player staring at a card while a timer runs down.
+	abortOutro = restore
+
+	-- THE BACKSTOP -- 2.5s past the end of the shot, not 10.
+	-- On a real crossing this never fires: the server teleports at 4.2s and the place swap takes the whole
+	-- client with it. It only matters when the teleport DOESN'T happen -- in Studio, where TeleportAsync
+	-- always fails, or on a live server that refuses. In that case the old +10 left you sitting on a black
+	-- screen with no HUD for FOURTEEN SECONDS, which does not read as a cinematic, it reads as the HUD being
+	-- broken. If we are still in this place 2.5s after the card has landed, the crossing did not happen and
+	-- the interface should come back promptly.
+	task.delay(PORTAL_CINEMATIC_SECONDS + 2.5, restore)
+
+	-- Dying or respawning mid-shot also ends it. The HUD is hidden by .Enabled, which survives respawn, so
+	-- without this a death during the crossing would strand the player with no interface at all.
+	do
+		local conn
+		conn = player.CharacterAdded:Connect(function()
+			if conn then conn:Disconnect() end
+			restore()
+		end)
+		task.delay(PORTAL_CINEMATIC_SECONDS + 3, function() if conn then conn:Disconnect() end end)
+	end
+
+	gui = Instance.new("ScreenGui")
+	gui.Name = "RealmPortalOutro"; gui.ResetOnSpawn = false; gui.IgnoreGuiInset = true
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Global; gui.DisplayOrder = 10000
+	gui.Parent = playerGui
+
+	local shell = Instance.new("Frame")
+	shell.Size = UDim2.new(1, 0, 1, 0); shell.BackgroundTransparency = 1; shell.ZIndex = 2
+	shell.Parent = gui
+
+	-- ---- measure the HUD where it actually sits, then let it fall behind ----
+	local ghosts = {}
+	pcall(function()
+		for _, sg in ipairs(playerGui:GetChildren()) do
+			if sg:IsA("ScreenGui") and sg.Enabled and sg ~= gui and sg ~= msgGui then
+				for _, obj in ipairs(sg:GetChildren()) do
+					if #ghosts >= 24 then break end
+					if obj:IsA("GuiObject") and obj.Visible and obj.AbsoluteSize.X > 24 and obj.AbsoluteSize.Y > 12 then
+						local g = Instance.new("Frame")
+						g.Position = UDim2.fromOffset(obj.AbsolutePosition.X, obj.AbsolutePosition.Y)
+						g.Size = UDim2.fromOffset(obj.AbsoluteSize.X, obj.AbsoluteSize.Y)
+						g.BackgroundColor3 = obj.BackgroundColor3
+						-- Faint and edgeless -- see the same note in the black hole shot. An outlined, rounded
+						-- rectangle sliding off screen is furniture being thrown; a feathered smear of the
+						-- colour that used to be there is an interface being left behind.
+						g.BackgroundTransparency = math.clamp(obj.BackgroundTransparency, 0.55, 0.82)
+						g.BorderSizePixel = 0; g.ZIndex = 8; g.Parent = shell
+						local gg = Instance.new("UIGradient")
+						gg.Transparency = NumberSequence.new({
+							NumberSequenceKeypoint.new(0, 1),
+							NumberSequenceKeypoint.new(0.5, 0),
+							NumberSequenceKeypoint.new(1, 1),
+						})
+						gg.Rotation = 90
+						gg.Parent = g
+						ghosts[#ghosts + 1] = g
+					end
+				end
+			end
+		end
+	end)
+
+	local function hideOne(child)
+		if child == gui or not child:IsA("ScreenGui") then return end
+		if hidden[child] == nil then hidden[child] = child.Enabled; child.Enabled = false end
+	end
+	for _, c in ipairs(playerGui:GetChildren()) do hideOne(c) end
+	guiAddedConn = playerGui.ChildAdded:Connect(hideOne)
+	pcall(function() game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.All, false) end)
+
+	-- ---- the iris: portal light opening up to take the whole frame ----
+	local iris = Instance.new("Frame")
+	iris.AnchorPoint = Vector2.new(0.5, 0.5); iris.Position = UDim2.new(0.5, 0, 0.5, 0)
+	iris.Size = UDim2.new(0, 0, 0, 0)
+	iris.BackgroundColor3 = look.lightA
+	iris.BackgroundTransparency = 0.15; iris.BorderSizePixel = 0; iris.ZIndex = 12; iris.Parent = shell
+	Instance.new("UICorner", iris).CornerRadius = UDim.new(1, 0)
+	-- NO RIM. A 10px bright ring around a growing circle is the single most "drawn shape" thing this file
+	-- could put on screen. The iris now feathers out through its own gradient instead: solid colour in the
+	-- middle, gone by the edge, so what expands is a wash of portal light with no boundary rather than a
+	-- disc with an outline. The colour still runs lightB -> lightA across it, so it keeps the realm's look.
+	local irisGrad = Instance.new("UIGradient")
+	irisGrad.Color = ColorSequence.new(look.lightB or look.lightA, look.lightA)
+	irisGrad.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1),
+		NumberSequenceKeypoint.new(0.28, 0.15),
+		NumberSequenceKeypoint.new(0.5, 0),
+		NumberSequenceKeypoint.new(0.72, 0.15),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	irisGrad.Rotation = 90; irisGrad.Parent = iris
+
+	-- ---- streaks blowing PAST you (outward = you are moving forward through them) ----
+	local function spawnPass()
+		local s = Instance.new("Frame")
+		local ang = math.rad(math.random(0, 359))
+		s.AnchorPoint = Vector2.new(0.5, 0.5)
+		s.Position = UDim2.new(0.5 + math.cos(ang) * 0.06, 0, 0.5 + math.sin(ang) * 0.06, 0)
+		s.Size = UDim2.new(0, 3, 0, 18)
+		s.BackgroundColor3 = (math.random() < 0.5) and (look.spark or Color3.new(1, 1, 1)) or look.lightB or look.lightA
+		s.BackgroundTransparency = 0.3; s.BorderSizePixel = 0
+		s.Rotation = math.deg(ang) + 90
+		s.ZIndex = 10; s.Parent = shell
+		-- fade to nothing at both ends: a streak of light, not a rounded pill flying past
+		local sg = Instance.new("UIGradient")
+		sg.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1),
+			NumberSequenceKeypoint.new(0.45, 0.1),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+		sg.Rotation = 90
+		sg.Parent = s
+		local dur = 0.3 + math.random() * 0.25
+		pcall(function()
+			TweenService:Create(s, TweenInfo.new(dur, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+				Position = UDim2.new(0.5 + math.cos(ang) * 1.2, 0, 0.5 + math.sin(ang) * 1.2, 0),
+				Size = UDim2.new(0, 2, 0, 150 + math.random() * 90), -- stretches as it flies past
+				BackgroundTransparency = 1,
+			}):Play()
+		end)
+		game:GetService("Debris"):AddItem(s, dur + 0.1)
+	end
+
+	renderConn = RunService.RenderStepped:Connect(function()
+		if restored then return end
+		local c = Workspace.CurrentCamera
+		if c then c.CameraType = Enum.CameraType.Scriptable; c.CFrame = heldCF end
+		if shakeMag > 0 then
+			shell.Position = UDim2.new(0, math.random(-8, 8) * shakeMag, 0, math.random(-8, 8) * shakeMag)
+		else
+			shell.Position = UDim2.new(0, 0, 0, 0)
+		end
+	end)
+
+	blur = Instance.new("BlurEffect"); blur.Size = 0; blur.Parent = game:GetService("Lighting")
+
+	local ok, err = pcall(function()
+		-- ===== BEAT 0: INTAKE (0.6s) -- the doorway notices you =====
+		-- Nothing leaves yet. The world dims a touch, the portal's light rises out of the middle of the
+		-- screen, and the FOV pulls IN slightly -- a held breath before the step forward. The FOV tightening
+		-- here is what makes the widening in the next beats land: without something to push against, a
+		-- widening lens just looks like a lens.
+		pcall(function()
+			TweenService:Create(iris, TweenInfo.new(P_INTAKE, Enum.EasingStyle.Sine,
+				Enum.EasingDirection.Out), { Size = UDim2.new(0, 90, 0, 90) }):Play()
+			TweenService:Create(blur, TweenInfo.new(P_INTAKE), { Size = 4 }):Play()
+		end)
+		local t0 = os.clock()
+		while not restored and (os.clock() - t0) < P_INTAKE do
+			local a = (os.clock() - t0) / P_INTAKE
+			if cam then cam.FieldOfView = origFov - a * 6 end -- the inhale
+			task.wait()
+		end
+		if restored then return end
+
+		-- ===== BEAT 1: THRESHOLD (1.0s) -- the interface falls behind =====
+		for i, g in ipairs(ghosts) do
+			task.delay((i - 1) * 0.03, function()
+				pcall(function()
+					-- each panel flies out through the nearest edge, away from centre
+					local gx = g.AbsolutePosition.X + g.AbsoluteSize.X * 0.5
+					local gy = g.AbsolutePosition.Y + g.AbsoluteSize.Y * 0.5
+					local vx = (gx < shell.AbsoluteSize.X * 0.5) and -1 or 1
+					local vy = (gy < shell.AbsoluteSize.Y * 0.5) and -1 or 1
+					TweenService:Create(g, TweenInfo.new(0.7 + math.random() * 0.3,
+						Enum.EasingStyle.Back, Enum.EasingDirection.In), {
+						Position = UDim2.fromOffset(gx + vx * 900, gy + vy * 520),
+						Rotation = vx * (18 + math.random(0, 26)),
+						BackgroundTransparency = 1,
+					}):Play()
+				end)
+			end)
+			game:GetService("Debris"):AddItem(g, 2)
+		end
+		pcall(function()
+			TweenService:Create(iris, TweenInfo.new(P_THRESHOLD, Enum.EasingStyle.Quad,
+				Enum.EasingDirection.Out), { Size = UDim2.new(0, 240, 0, 240) }):Play()
+			TweenService:Create(blur, TweenInfo.new(P_THRESHOLD), { Size = 10 }):Play()
+		end)
+		t0 = os.clock()
+		while not restored and (os.clock() - t0) < P_THRESHOLD do
+			local a = (os.clock() - t0) / P_THRESHOLD
+			shakeMag = a * 0.5
+			-- picks up exactly where the inhale left off (-6) and swings through to +10, so the release out
+			-- of the anticipation beat is one continuous move rather than a snap back to neutral first
+			if cam then cam.FieldOfView = origFov - 6 + a * 16 end
+			task.wait()
+		end
+		if restored then return end
+
+		-- ===== BEAT 2: CROSS (1.6s) -- the doorway takes the screen =====
+		pcall(function()
+			TweenService:Create(iris, TweenInfo.new(P_CROSS * 0.8, Enum.EasingStyle.Quint,
+				Enum.EasingDirection.In), { Size = UDim2.new(2.6, 0, 2.6, 0), BackgroundTransparency = 0 }):Play()
+			TweenService:Create(blur, TweenInfo.new(P_CROSS), { Size = 22 }):Play()
+		end)
+		local passClock = 0
+		t0 = os.clock()
+		while not restored and (os.clock() - t0) < P_CROSS do
+			local dt = task.wait()
+			local a = (os.clock() - t0) / P_CROSS
+			shakeMag = 0.5 + a * 0.7
+			if cam then cam.FieldOfView = origFov + 10 + a * 16 end
+			passClock += dt
+			-- one at a time, half as often: two per 0.02s filled the screen with individually readable
+			-- objects instead of a sense of speed
+			if passClock > 0.04 then passClock = 0; spawnPass() end
+		end
+		if restored then return end
+
+		-- ===== BEAT 3: CARD (1.0s) -- the destination, and hold =====
+		-- This is the last thing the player sees before the place swaps, and it was the cheapest-looking
+		-- moment in the whole shot: flat black with a word on it. Four changes, all of them light rather
+		-- than shapes, so it stays in the same visual language as the rest:
+		--
+		--   GROUND  not pure black. A near-black tinted toward the realm's own colour, so the screen still
+		--           belongs to where you are going instead of being an absence of picture.
+		--   GLOW    a wide, fully feathered disc of realm light behind the text. It is what stops the card
+		--           reading as a loading screen -- there is depth behind the words.
+		--   SETTLE  the title arrives slightly oversized and eases down to true size as it fades up. A word
+		--           that simply appears is a label; a word that settles was placed there.
+		--   LINE    a thin horizontal light, feathered to nothing at both ends, that widens out from under
+		--           the title. It gives the eye something completing rather than something waiting.
+		shakeMag = 0
+		--======================================================================
+		-- FULL-BLEED. NO BAND, NO BARS, NO SEAM.
+		--======================================================================
+		-- This card used to be a black screen with a 420px-tall CAPSULE of realm light lying across the
+		-- middle of it: `glow` was Size (1.4, 0, 0, 420) with UICorner(1,0) and its transparency tweened to
+		-- 0, so what actually rendered was a solid coloured strip with a hard rounded edge, floating on
+		-- plain black above and below. On a phone that strip was most of the screen; on an ultrawide it was
+		-- a letterbox. Either way it read as a panel that had failed to load rather than as a shot.
+		--
+		-- The fix is two layers, BOTH edge-to-edge, and no shape anywhere:
+		--   GROUND  the whole viewport, carrying a vertical realm gradient. Every pixel is coloured, so
+		--           there is no "rest of the screen" left plain black to have an edge against.
+		--   GLOW    also the whole viewport, feathered to FULLY transparent at the top and bottom edges. It
+		--           still puts light behind the words -- that was the point of it -- but it now arrives at
+		--           the screen edge already at zero, so there is nothing for a seam to form on.
+		-- The ScreenGui is IgnoreGuiInset = true (above) and neither layer has a parent frame with an
+		-- offset height, so this covers the true viewport on every aspect ratio.
+		local black = Instance.new("Frame")
+		black.Size = UDim2.fromScale(1, 1)
+		black.Position = UDim2.fromScale(0, 0)
+		black.AnchorPoint = Vector2.new(0, 0)
+		-- 6% of the realm hue over black: enough to feel coloured, nowhere near enough to look lit
+		black.BackgroundColor3 = look.lightA:Lerp(Color3.new(0, 0, 0), 0.94)
+		black.BackgroundTransparency = 1; black.BorderSizePixel = 0; black.ZIndex = 25; black.Parent = gui
+		do
+			-- Top and bottom sit a touch darker than the middle, so the screen has a direction to it and the
+			-- eye is walked to the title. It is a gradient across the WHOLE height -- not a shape with ends.
+			local bg = Instance.new("UIGradient")
+			local deep = look.lightA:Lerp(Color3.new(0, 0, 0), 0.975)
+			local mid  = look.lightA:Lerp(Color3.new(0, 0, 0), 0.90)
+			bg.Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, deep),
+				ColorSequenceKeypoint.new(0.5, mid),
+				ColorSequenceKeypoint.new(1, deep),
+			})
+			bg.Rotation = 90
+			bg.Parent = black
+		end
+
+		local glow = Instance.new("Frame")
+		glow.AnchorPoint = Vector2.new(0, 0)
+		glow.Position = UDim2.fromScale(0, 0)
+		glow.Size = UDim2.fromScale(1, 1)
+		glow.BackgroundColor3 = look.lightA
+		glow.BackgroundTransparency = 1; glow.BorderSizePixel = 0; glow.ZIndex = 26; glow.Parent = gui
+		-- NO UICorner here. The rounded corner is what turned this layer into a visible capsule with an
+		-- outline; a full-screen layer that fades to nothing needs no shape at all.
+		do
+			local gg = Instance.new("UIGradient")
+			-- Rotation 90 = top-to-bottom. Fully transparent at both screen edges, brightest across the
+			-- middle where the title sits, and every step between is interpolated -- so the light falls off
+			-- smoothly all the way to the edge instead of stopping at one.
+			gg.Rotation = 90
+			gg.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 1),
+				NumberSequenceKeypoint.new(0.28, 0.94),
+				NumberSequenceKeypoint.new(0.5, 0.82),
+				NumberSequenceKeypoint.new(0.72, 0.94),
+				NumberSequenceKeypoint.new(1, 1),
+			})
+			gg.Parent = glow
+		end
+
+		local card = Instance.new("TextLabel")
+		card.AnchorPoint = Vector2.new(0.5, 0.5); card.Position = UDim2.new(0.5, 0, 0.5, 0)
+		card.Size = UDim2.new(1.02, 0, 0, 102) -- oversized; settles to 0.9/90 below
+		card.BackgroundTransparency = 1
+		card.Font = Enum.Font.FredokaOne; card.TextScaled = true
+		card.TextColor3 = look.spark or Color3.new(1, 1, 1); card.TextTransparency = 1
+		card.Text = look.title or "TRAVELLING"; card.ZIndex = 28; card.Parent = gui
+		do local c = Instance.new("UITextSizeConstraint", card); c.MaxTextSize = 58 end
+		local cardStroke = Instance.new("UIStroke", card)
+		cardStroke.Color = look.lightA; cardStroke.Thickness = 3; cardStroke.Transparency = 1
+
+		local sub = Instance.new("TextLabel")
+		sub.AnchorPoint = Vector2.new(0.5, 0.5); sub.Position = UDim2.new(0.5, 0, 0.5, 62)
+		sub.Size = UDim2.new(0.8, 0, 0, 30); sub.BackgroundTransparency = 1
+		sub.Font = Enum.Font.GothamMedium; sub.TextScaled = true
+		sub.TextColor3 = look.lightA; sub.TextTransparency = 1
+		sub.Text = (look.emoji or "") .. "  entering the " .. (look.name or "realm")
+		sub.ZIndex = 28; sub.Parent = gui
+		do local c = Instance.new("UITextSizeConstraint", sub); c.MaxTextSize = 20 end
+
+		local line = Instance.new("Frame")
+		line.AnchorPoint = Vector2.new(0.5, 0.5); line.Position = UDim2.new(0.5, 0, 0.5, 38)
+		line.Size = UDim2.new(0, 0, 0, 2)
+		line.BackgroundColor3 = look.lightA
+		line.BackgroundTransparency = 0.25; line.BorderSizePixel = 0; line.ZIndex = 28; line.Parent = gui
+		do
+			local lg = Instance.new("UIGradient")
+			lg.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 1),
+				NumberSequenceKeypoint.new(0.5, 0),
+				NumberSequenceKeypoint.new(1, 1),
+			})
+			lg.Parent = line
+		end
+
+		pcall(function()
+			TweenService:Create(black, TweenInfo.new(0.4, Enum.EasingStyle.Quad,
+				Enum.EasingDirection.In), { BackgroundTransparency = 0 }):Play()
+		end)
+		task.wait(0.4)
+		pcall(function()
+			TweenService:Create(glow, TweenInfo.new(0.6), { BackgroundTransparency = 0 }):Play()
+			TweenService:Create(card, TweenInfo.new(0.45, Enum.EasingStyle.Quint,
+				Enum.EasingDirection.Out), { TextTransparency = 0, Size = UDim2.new(0.9, 0, 0, 90) }):Play()
+			TweenService:Create(cardStroke, TweenInfo.new(0.45), { Transparency = 0 }):Play()
+			TweenService:Create(line, TweenInfo.new(0.55, Enum.EasingStyle.Quint,
+				Enum.EasingDirection.Out), { Size = UDim2.new(0.42, 0, 0, 2) }):Play()
+		end)
+		task.delay(0.2, function()
+			pcall(function()
+				TweenService:Create(sub, TweenInfo.new(0.4), { TextTransparency = 0.25 }):Play()
+			end)
+		end)
+		-- HOLD. The teleport lands here.
+	end)
+
+	if not ok then
+		warn("[RealmPortals] outro cinematic error: " .. tostring(err))
+		restore()
 	end
 end
 
@@ -695,7 +1199,73 @@ local function buildPortal(key)
 		if p.sending then return end
 		p.sending = true
 		task.delay(2.5, function() p.sending = false end) -- local debounce; the server has its own
-		pcall(function() enterEvent:FireServer(key) end)
+
+		-- A LOCKED PORTAL DOES NOTHING BUT SAY NO.
+		-- The travel cue and the outro ARE the crossing. Running either one at a portal that is about to
+		-- refuse you is a promise it cannot keep: you get the whoosh of a 7.5s journey and then you are still
+		-- standing on the hub, which reads as a broken portal rather than a locked one. Walking into a gate
+		-- you have not earned should cost you nothing and tell you why.
+		--
+		-- The intent still goes to the server -- that is what produces the 🔒 "not unlocked yet" message, and
+		-- it also makes the server re-read the chain, so a realm you finished seconds ago on another place
+		-- can correct a stale cache instead of stranding you. p.unlocked is only the client's cached view;
+		-- the server remains the authority, and the two disagreeing is handled either way:
+		--   * client thinks LOCKED, server says open -> the "traveling" reply starts the shot anyway
+		--   * client thinks OPEN, server says locked -> the "locked" reply aborts the shot mid-run
+		if not p.unlocked then
+			pcall(function() enterEvent:FireServer(key) end)
+
+			-- A SHORT LOW "NO" WHERE THE JOURNEY CUE USED TO BE.
+			-- Killing the 7.5s travel sound on a locked portal left the gate completely silent, and silence
+			-- reads as "nothing registered" rather than "you can't go yet" -- the player taps it again.
+			--
+			-- This deliberately does NOT turn the global button wiring back on. That was reverted on purpose:
+			-- with only one loadable id in the place, every cue is the same recording re-pitched, and a
+			-- chipmunk chime on every single tap is worse than quiet. A refusal at a realm gate is the
+			-- opposite case -- it fires rarely, and 'deny' is the one cue whose shape (0.55x, low and
+			-- blunt) actually suits a single sample: pitched down it reads as a thunk, not as a chime.
+			-- Sfx publishes _G.Sfx even while the sweep is off, so this costs nothing elsewhere.
+			pcall(function() if _G.Sfx then _G.Sfx.play("deny") end end)
+
+			print("[RealmPortals] " .. tostring(key) .. " portal is LOCKED for this player -- deny cue, no outro")
+			return
+		end
+
+		-- ONCE, AND THEN LEFT ALONE. The 2.5s debounce is NOT enough on its own: this cue is 7.5s long, so
+		-- standing in the vortex re-entered every 2.5s and restarted a clip that had 5 seconds left to run.
+		-- The log showed it plainly -- three "travel sound played" lines inside six seconds, and the sound
+		-- never got past its own opening.
+		--
+		-- :Play() on a Sound that is already playing RESTARTS it, so a retrigger does not layer the cue, it
+		-- truncates it. If it is already running, leave it running: a cue mid-play is already doing its job.
+		pcall(function()
+			if portalEnterSound.IsPlaying then return end
+			portalEnterSound:Play()
+			print(string.format("[RealmPortals] %s portal entered -> travel sound started (loaded=%s vol=%.2f)",
+				tostring(key), tostring(portalEnterSound.IsLoaded), portalEnterSound.Volume))
+		end)
+		-- NOT a bare pcall any more. This used to swallow its own failure: if the remote were nil, detached or
+		-- the wrong instance, FireServer would throw (or quietly go nowhere) and we would carry on as if the
+		-- server had been told. Say what happened, so a missing server-side receipt means something specific.
+		local sent, sendErr = pcall(function() enterEvent:FireServer(key) end)
+		print(("[RealmPortals] intent sent for %s -> %s (remote=%s, parent=%s)"):format(
+			tostring(key), sent and "ok" or ("FAILED: " .. tostring(sendErr)),
+			tostring(enterEvent), tostring(enterEvent and enterEvent.Parent)))
+
+		-- START THE SHOT HERE, NOT WHEN THE SERVER ANSWERS.
+		-- The outro used to run only from the "traveling" reply, which made a purely local, purely visual
+		-- effect depend on a round trip: fire an intent, wait for the server to validate the chain gate and
+		-- reply, and only then dim the screen. Anything that delays or loses that reply -- a slow server, a
+		-- gate that answers something else, a remote that never lands -- and the sound plays over ordinary
+		-- gameplay with no transition at all. That is exactly the "sound but no HUD" you were seeing.
+		--
+		-- The client already knows whether this portal is open (p.unlocked, pushed by the server's state
+		-- message and used to draw the lock badge), so it can start the shot on the frame you touch the
+		-- vortex. The server stays the authority on the actual teleport -- it can still refuse, and the
+		-- "locked"/"soon"/"error" replies below abort the shot -- but the picture no longer waits on it.
+		--
+		-- No lock test here: the locked case returned above, so reaching this line already means open.
+		task.spawn(function() playPortalOutro(LOOKS[key]) end)
 	end
 	p.vortex.Touched:Connect(function(hit)
 		local char = player.Character
@@ -978,15 +1548,22 @@ enterEvent.OnClientEvent:Connect(function(kind, a, b, c)
 	if not look then return end
 
 	if status == "traveling" then
-		showMsg(look.emoji .. "  Traveling to the " .. look.name .. "...", look.lightA)
-		-- FAILSAFE: if the teleport never lands (Studio, or a TeleportAsync error), don't strand the box.
-		task.delay(6, function() msgLbl.Visible = false; msgLbl.BackgroundTransparency = 1 end)
+		-- The outro REPLACES the old centre-screen text box: it hides the whole HUD anyway, so the message
+		-- would be covered a frame later, and the realm's title card at the end says the same thing better.
+		task.spawn(function() playPortalOutro(look) end)
 	elseif status == "locked" then
+		-- The client thought this portal was open and may already have started the shot. The server is the
+		-- authority and it says no, so take the shot down before showing the refusal.
+		if abortOutro then pcall(abortOutro) end
 		showMsg("\xF0\x9F\x94\x92  You haven't unlocked the " .. look.name .. " yet!",
 			Color3.fromRGB(255, 190, 90), 3.5)
 	elseif status == "soon" then
+		if abortOutro then pcall(abortOutro) end
 		showMsg("\xF0\x9F\x9A\xA7  " .. look.name .. " \xE2\x80\x94 Coming soon!", look.lightA, 3)
 	elseif status == "error" then
+		-- The teleport failed, so the shot is now a lie -- tear it down at once and give the HUD back rather
+		-- than holding a "entering the Space Realm" card over a crossing that is not going to happen.
+		if abortOutro then pcall(abortOutro) end
 		showMsg("Couldn't travel right now, try again", Color3.fromRGB(255, 120, 120), 3)
 	end
 end)

@@ -37,6 +37,7 @@ print("[CrateService] CrateRemotes ready (ClaimCrate, CrateResult, GetOwnedPets)
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
+local Gamepasses = require(Shared:WaitForChild("Gamepasses"))
 local PlayerState = require(ServerScriptService:WaitForChild("PlayerState"))
 
 local CRATE = Constants.CRATE
@@ -45,6 +46,12 @@ local rng = Random.new()
 -- A rarity roll PRE-rolled by PreviewRoll (so the picker can show the rolled rarity/amount before the
 -- player picks). The matching ClaimCrate grant reuses it so the displayed roll == the granted roll.
 -- Same roll weights / clamp / cooldown as before — this only caches WHEN the single roll happens.
+-- WHICH crate the daily reward hands out. A plain constant so the daily can be re-pointed at Starter (or a
+-- seasonal crate) with a one-word edit rather than a hunt through the claim path. Must be an id that exists
+-- in SkinCrates.CRATES -- if it ever isn't, the free open returns unknown_crate and the claim falls through
+-- to the old level/coin behaviour rather than failing.
+local DAILY_CRATE_ID = "Premium"
+
 local pendingRoll = {} -- [player] = { rarity, levels }
 Players.PlayerRemoving:Connect(function(p) pendingRoll[p] = nil end)
 
@@ -66,9 +73,13 @@ local function hasUnmaxedPet(player)
 end
 
 -- ===== rarity roll (weights summed defensively) =====
-local function rollRarity()
-	local weights = CRATE.RARITY_WEIGHTS
+-- `luck` (optional) multiplies every band above the commonest one and the sum below renormalises, exactly as
+-- SkinCrates.liveRarities does -- one luck rule for every crate in the game rather than two that drift.
+-- Omitted / 1 leaves the weights untouched, so the daily crate rolls identically for a player with no rebirths
+-- and no Lucky Pass.
+local function rollRarity(luck)
 	local order = CRATE.RARITY_ORDER
+	local weights = Gamepasses.applyLuck(CRATE.RARITY_WEIGHTS, order, luck or 1)
 	local total = 0
 	for _, k in ipairs(order) do
 		total = total + (weights[k] or 0)
@@ -113,15 +124,38 @@ local function performClaim(player, chosenPetId, isDev)
 		return { ok = true, kind = "coins", coins = CRATE.FALLBACK_COINS }
 	end
 
+	-- ===== THE DAILY REWARD IS A FREE PREMIUM CRATE =====
+	-- It used to be pet LEVELS, which had two problems. It was worth nothing to a player with no pets (the
+	-- claim was refused outright) and nothing to one whose pets were all maxed (it quietly paid coins
+	-- instead) -- so the headline daily reward was dead for both ends of the player base. And levels now
+	-- route through the post-open picker, so a level payout here would have opened a SECOND picker off a
+	-- panel that has nothing to do with the crate shop.
+	--
+	-- A Premium skin crate has neither problem: it is worth the same to everyone, on day one and at max
+	-- level, and it reuses the crate reveal the game already has. It is granted through
+	-- _G.skinCrateFreeOpen, which is the ordinary paid open with the price skipped -- same roll, same
+	-- Collection Book, same Gold announce -- so the free crate cannot drift away from the bought one.
+	if type(_G.skinCrateFreeOpen) == "function" then
+		local res = _G.skinCrateFreeOpen(player, DAILY_CRATE_ID)
+		if type(res) == "table" and res.ok then
+			PlayerState.setLastCrateClaim(player, now)
+			return { ok = true, kind = "skincrate", crateId = DAILY_CRATE_ID, crate = res }
+		end
+		-- The skin service refused (empty band, open cooldown, service not up). Do NOT consume the daily
+		-- timer for a crate the player never received -- fall through to the old paths below so the claim is
+		-- still worth something rather than being silently eaten.
+		warn(("[Crate] free %s open failed for %s (%s) -- falling back to levels/coins")
+			:format(DAILY_CRATE_ID, player.Name, type(res) == "table" and tostring(res.reason) or "no result"))
+	end
+
 	local owned = listOwnedPets(player)
 
-	-- NO PETS: owns ZERO pets -> grant nothing AND do NOT consume the timer (crate stays ready).
-	-- The client shows "Unlock A Pet To Receive Levels". (Coin fallback is ONLY for all-maxed.)
+	-- FALLBACK PATHS BELOW. Reached only if the skin service could not hand out a crate; they are the old
+	-- level/coin behaviour, kept precisely so a failure there still pays the player something.
 	if #owned == 0 then
 		return { ok = false, reason = "no_pets" }
 	end
 
-	-- Owns pets but every one is at the level cap -> nothing to level -> coin fallback.
 	if not hasUnmaxedPet(player) then
 		return coinFallback()
 	end
@@ -152,7 +186,7 @@ local function performClaim(player, chosenPetId, isDev)
 		rarity, levels = pend.rarity, pend.levels
 		pendingRoll[player] = nil
 	else
-		rarity = rollRarity()
+		rarity = rollRarity(Gamepasses.luckFor(player))
 		levels = CRATE.RARITY_LEVELS[rarity] or 1
 	end
 
@@ -200,7 +234,10 @@ PreviewRoll.OnServerInvoke = function(player)
 	end
 	if #listOwnedPets(player) == 0 then return { ok = false, reason = "no_pets" } end
 	if not hasUnmaxedPet(player) then return { ok = true, kind = "coins" } end -- all maxed -> coins on claim
-	local rarity = rollRarity()
+	-- The PREVIEW is the roll that actually gets granted (performClaim reuses pendingRoll), so luck must be
+	-- applied HERE too -- otherwise a Lucky Pass owner would preview at boosted odds and be granted at base,
+	-- or the reverse, and the picker would be lying about the reward it is showing.
+	local rarity = rollRarity(Gamepasses.luckFor(player))
 	local levels = CRATE.RARITY_LEVELS[rarity] or 1
 	pendingRoll[player] = { rarity = rarity, levels = levels }
 	return { ok = true, rarity = rarity, levelsAdded = levels }

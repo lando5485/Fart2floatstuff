@@ -43,6 +43,14 @@ local ROWS = {
 	{ 15, "Bakery Isle",     "The Great Bake-Off", function()
 		return _G.bakeryQuestComplete == true, _G.bakeryQuestStep
 	end },
+	-- island18 is OFF THE LADDER (reached by command/wormhole, not by a crossing), so it sits
+	-- after the summit here rather than in island-number order -- the journal reads as the climb.
+	{ 18, "Pancake Peak",    "Wake the Pancake Monster", function()
+		return _G.pancakeQuestComplete == true, _G.pancakeQuestStep
+	end },
+	{ 19, "Harvest Hollow",  "Broken Tractor", function()
+		return _G.tractorQuestComplete == true, _G.tractorQuestStep
+	end },
 }
 
 local FILL   = Color3.fromRGB(255, 245, 250)

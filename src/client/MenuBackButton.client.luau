@@ -35,6 +35,7 @@ local PANELS = {
 	RebirthGui       = MORE,
 	RewardsHubGui    = MORE,
 	WormholeMenu     = MORE,  -- moved into MORE+ when Pets took its rail slot
+	GiftGui          = MORE,  -- the Send a Gift card lives in MORE+, so BACK returns there
 	-- These two are opened FROM the Rewards hub, so back means the hub, not the menu.
 	DailyTasksGui    = REWARDS,
 	SocialRewardsGui = REWARDS,
@@ -80,6 +81,7 @@ local CLOSERS = {
 	DailyTasksGui    = function() if _G.toggleDailyTasks    then _G.toggleDailyTasks();    return true end end,
 	SocialRewardsGui = function() if _G.toggleSocialRewards then _G.toggleSocialRewards(); return true end end,
 	WormholeMenu     = function() if _G.toggleWormhole      then _G.toggleWormhole();      return true end end,
+	GiftGui          = function() if _G.toggleGiftPanel     then _G.toggleGiftPanel();     return true end end,
 }
 
 -- The panel frame, by shape. Declared here because both closeGui and the injector need it.
@@ -356,4 +358,4 @@ for _, t in ipairs({ 2, 5, 10, 20 }) do
 	end)
 end
 
-print("[MenuBack] ready -- BACK on Rebirth / Rewards / Pets / Skin Crates -> MORE+, Daily / Free -> Rewards")
+print("[MenuBack] ready -- BACK on Rebirth / Rewards / Wormhole / Gift -> MORE+, Daily / Free -> Rewards")

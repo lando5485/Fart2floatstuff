@@ -76,17 +76,20 @@ local function hideSpeech(adornee)
 	setNameVisible(adornee, true)
 end
 
--- The bubble sits at +5.5 studs and is 150px tall, so its lower edge lands right on the name tag
--- at +3 -- the name is hidden for exactly as long as the NPC is talking, and restored the moment
--- the bubble goes.
+-- SIZED FOR PHONES: BillboardGui pixels are LOGICAL pixels, and a phone viewport is only ~667x375 of
+-- them -- the old 320x150 bubble covered half the width and 40% of the height of a phone screen, and
+-- at prompt range its top edge often left the screen entirely (players rotated the camera to read).
+-- 250x105 still fits every dialogue line (they are single sentences, TextScaled, 3 lines max) and the
+-- lower StudsOffset keeps the whole bubble in frame when standing at the prompt. The name tag at +3 is
+-- hidden for exactly as long as the NPC is talking, so the bubble sitting lower cannot collide with it.
 local function showSpeech(adornee, text, persist, footer)
 	hideSpeech(adornee)
 
 	local bb = Instance.new("BillboardGui")
 	bb.Name = "SpeechBubble"
 	bb.Adornee = adornee
-	bb.Size = UDim2.new(0, 320, 0, 150)
-	bb.StudsOffset = Vector3.new(0, 5.5, 0)
+	bb.Size = UDim2.new(0, 250, 0, 105)
+	bb.StudsOffset = Vector3.new(0, 4.6, 0)
 	bb.AlwaysOnTop = true
 	bb.MaxDistance = 120
 
@@ -97,11 +100,11 @@ local function showSpeech(adornee, text, persist, footer)
 	frame.BorderSizePixel = 0
 	frame.Parent = bb
 
-	local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 18); corner.Parent = frame
+	local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 14); corner.Parent = frame
 	local stroke = Instance.new("UIStroke"); stroke.Color = Color3.fromRGB(60,60,60); stroke.Thickness = 2; stroke.Transparency = 0.4; stroke.Parent = frame
 	local pad = Instance.new("UIPadding")
-	pad.PaddingTop = UDim.new(0,12); pad.PaddingBottom = UDim.new(0,12)
-	pad.PaddingLeft = UDim.new(0,14); pad.PaddingRight = UDim.new(0,14); pad.Parent = frame
+	pad.PaddingTop = UDim.new(0,8); pad.PaddingBottom = UDim.new(0,8)
+	pad.PaddingLeft = UDim.new(0,11); pad.PaddingRight = UDim.new(0,11); pad.Parent = frame
 
 	local label = Instance.new("TextLabel")
 	label.Size = footer and UDim2.fromScale(1, 0.78) or UDim2.fromScale(1, 1)
@@ -112,7 +115,7 @@ local function showSpeech(adornee, text, persist, footer)
 	label.TextScaled = true
 	label.TextWrapped = true
 	label.Parent = frame
-	local sizer = Instance.new("UITextSizeConstraint"); sizer.MaxTextSize = 22; sizer.Parent = label
+	local sizer = Instance.new("UITextSizeConstraint"); sizer.MaxTextSize = 19; sizer.Parent = label
 
 	if footer then
 		local hint = Instance.new("TextLabel")
@@ -124,7 +127,7 @@ local function showSpeech(adornee, text, persist, footer)
 		hint.TextColor3 = Color3.fromRGB(130, 130, 130)
 		hint.TextScaled = true
 		hint.Parent = frame
-		local hsizer = Instance.new("UITextSizeConstraint"); hsizer.MaxTextSize = 14; hsizer.Parent = hint
+		local hsizer = Instance.new("UITextSizeConstraint"); hsizer.MaxTextSize = 12; hsizer.Parent = hint
 	end
 
 	bb.Parent = adornee
@@ -485,9 +488,30 @@ local ISLAND_NPCS = {
 -- ============================================================================================
 -- 6) BUILD + PLACE
 -- ============================================================================================
+-- STREAMING: this place runs with StreamingEnabled, and these NPCs are BUILT AT RUNTIME up to 45,000
+-- studs above the spawn. A runtime model that far out never streams to a client unless it is marked
+-- ModelStreamingMode = Persistent -- which is why the islands themselves (IslandStreaming), the blimp
+-- and the whole rocket build all set it. This container did NOT, so every CLONED / stand-in NPC was
+-- built correctly on the server and was simply never sent to anybody: the islands looked empty.
+--
+-- IT MUST BE A MODEL, NOT A FOLDER. ModelStreamingMode is a Model property; a Folder silently has
+-- nowhere to put the flag (the same trap RocketNPCs.lua and RocketEffects.lua call out). An older
+-- build of this file created a Folder, so replace one if the place still has it.
 local container = Workspace:FindFirstChild("IslandNPCs")
+if container and not container:IsA("Model") then
+	warn("[IslandNPC] existing 'IslandNPCs' is a " .. container.ClassName .. " -- cannot be Persistent; replacing with a Model")
+	container:Destroy(); container = nil
+end
 if not container then
-	container = Instance.new("Folder"); container.Name = "IslandNPCs"; container.Parent = Workspace
+	container = Instance.new("Model"); container.Name = "IslandNPCs"; container.Parent = Workspace
+end
+do
+	local ok = pcall(function() container.ModelStreamingMode = Enum.ModelStreamingMode.Persistent end)
+	if ok and container.ModelStreamingMode == Enum.ModelStreamingMode.Persistent then
+		print("[IslandNPC] container ModelStreamingMode=Persistent -- island NPCs will replicate at any distance")
+	else
+		warn("[IslandNPC] FAILED to set ModelStreamingMode=Persistent on the NPC container -- NPCs on far islands may be invisible")
+	end
 end
 container:ClearAllChildren() -- re-runs must not stack rigs
 
@@ -566,6 +590,11 @@ local function setupIslandNPC(spec, template)
 		finalPos = Vector3.new(pos.X, gy + size.Y * 0.5, pos.Z)
 		model:PivotTo(CFrame.new(finalPos))
 	end
+
+	-- STREAMING, PER RIG. The container above is already Persistent and children inherit that, but mark the
+	-- rig itself too: an ADOPTED rig is left parented where Studio put it (usually inside the island, which
+	-- IslandStreaming persists -- but not always), so it never passes through the container at all.
+	pcall(function() model.ModelStreamingMode = Enum.ModelStreamingMode.Persistent end)
 
 	-- ADORN + WIRE
 	local adornee = pickAdornee(model)

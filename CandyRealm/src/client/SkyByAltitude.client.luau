@@ -94,6 +94,9 @@ local SMOOTH = 2.2 -- how fast the sky chases the target. Too high and it strobe
 -- Atmosphere DENSITY is what washes stars out -- haze scatters light across the whole sky and drowns them. So
 -- the top keyframes drive density to ~0: that, plus a black ambient, is what makes the star field actually
 -- read instead of being a faint speckle behind a grey veil.
+-- ⚠ THE CLIMB NO LONGER DARKENS. Daylight is held at every altitude; see the write in the render
+-- loop for the full reasoning. The two NIGHT_* values below are only read when this is true.
+local DARKEN_WITH_ALTITUDE = false
 local NIGHT_BRIGHTNESS = 0.25                      -- was 0.6 -- properly dark, not just dim
 local NIGHT_AMBIENT    = Color3.fromRGB(8, 9, 18)  -- near-black; anything lighter greys out the stars
 local STAR_COUNT       = 9000                      -- a dense field, not the sparse default
@@ -362,6 +365,12 @@ RunService.RenderStepped:Connect(function(dt)
 		return
 	end
 
+	-- THE INTRO STAYS IN DAYLIGHT, ON PURPOSE. An earlier pass had the cinematic publish the altitude it
+	-- was filming so the summit shots played under the dark high-altitude sky -- and the owner's verdict
+	-- was that the intro must stay BRIGHT. Since the cinematic never moves the character (it moves the
+	-- streaming focus), sampling the character's height here does exactly that: the body stands on
+	-- island 1 for the whole intro, so every shot renders in ground-level candy daylight. During real
+	-- gameplay this is simply the correct behaviour it always was.
 	local char = player.Character
 	local hrp  = char and char:FindFirstChild("HumanoidRootPart")
 	if not hrp then return end
@@ -396,15 +405,34 @@ RunService.RenderStepped:Connect(function(dt)
 	atm.Color   = cur.color
 	atm.Decay   = cur.decay
 
-	-- SPACE. ClockTime toward midnight is what actually makes the stars come out -- Roblox renders them by time
-	-- of day, so this is the lever, not StarCount.
-	Lighting.ClockTime      = DAY.clock + (0 - DAY.clock) * cur.space
-	Lighting.Brightness     = DAY.bright + (NIGHT_BRIGHTNESS - DAY.bright) * cur.space
-	Lighting.OutdoorAmbient = DAY.ambient:Lerp(NIGHT_AMBIENT, cur.space)
+	-- SPACE / DARKENING -- OFF. It is DAYLIGHT AT EVERY ALTITUDE now.
+	--
+	-- The climb used to drive ClockTime toward midnight from island 10 up, dropping Brightness to
+	-- 0.25 and the ambient to near-black so the stars came out at the summit. It reads as dusk
+	-- falling on you the higher you get, and it takes the top third of the tower -- the islands with
+	-- the most built on them -- and puts them in the dark. Not what this realm wants.
+	--
+	-- The ATMOSPHERE gradient above is untouched and still runs the whole height: the air still
+	-- thins, the haze still drops, the horizon still opens up as you climb. That was always the part
+	-- doing the "you are getting high up" work. Only the light level is pinned.
+	--
+	-- Set DARKEN_WITH_ALTITUDE back to true to restore the night sky exactly as it was -- `cur.space`
+	-- is still tracked and eased every frame, so nothing else has to change.
+	if DARKEN_WITH_ALTITUDE then
+		Lighting.ClockTime      = DAY.clock + (0 - DAY.clock) * cur.space
+		Lighting.Brightness     = DAY.bright + (NIGHT_BRIGHTNESS - DAY.bright) * cur.space
+		Lighting.OutdoorAmbient = DAY.ambient:Lerp(NIGHT_AMBIENT, cur.space)
+	else
+		-- written every frame, not once: an event or another script can move these, and the sky is
+		-- the thing that owns them here
+		Lighting.ClockTime      = DAY.clock
+		Lighting.Brightness     = DAY.bright
+		Lighting.OutdoorAmbient = DAY.ambient
+	end
 
 	-- Fog is deliberately NOT touched: the thunderstorm drives FogStart/FogEnd/FogColor as its main effect, and
 	-- two systems writing the same properties would fight every frame.
 end)
 
-print(("[Sky] ready -- gradient Y=%d..%d, dark from island 10, %d craft in orbit, no moon (events untouched)")
+print(("[Sky] ready -- gradient Y=%d..%d, DAYLIGHT AT ALL ALTITUDES (no darkening), %d craft in orbit, no moon (events untouched)")
 	:format(KEYS[1].y, KEYS[#KEYS].y, #FLEET))

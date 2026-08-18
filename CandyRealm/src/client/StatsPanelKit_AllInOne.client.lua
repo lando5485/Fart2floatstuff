@@ -9,7 +9,7 @@
 --   ─── divider ───
 --   ⚡☁️ MID-AIR  / RECHARGE   39 R$   (freezes you mid-flight while the prompt is up)
 --   ⚡   2X POWER / 1 HOUR     59 R$   (live "⚡ 42m 07s" timer replaces the subtitle)
---   🐦💥 BIRD NUKE             79 R$
+--   ☠️  SOUR RAIN             79 R$   (realm-wide acid rain; buyer immune)
 --
 -- Extracted verbatim from src/client/CoreClient.client.lua -- the FINAL in-game
 -- look, i.e. the values AFTER both restyle passes run (not the initial build
@@ -369,9 +369,11 @@ if CONFIG.showImpulseButtons then
 	twoX, twoXSub = mkImpulseBtn("TwoXBtn", 295, Color3.fromRGB(180,80,255), Color3.fromRGB(80,30,140),
 		"\xe2\x9a\xa1", "2X POWER", "1 HOUR", CONFIG.prices.twoX)
 
-	-- BIRD NUKE (y=393) -- FINAL red 255,60,60 / stroke 160,20,20. NOTE: no subtitle row on this one.
-	birdNuke = mkImpulseBtn("BirdNukeBtn", 393, Color3.fromRGB(255,60,60), Color3.fromRGB(160,20,20),
-		"\xF0\x9F\x90\xa6\xF0\x9F\x92\xa5", "BIRD NUKE", nil, CONFIG.prices.birdNuke)
+	-- SOUR RAIN (y=393) -- was BIRD NUKE, same product id, now sour green instead of red. The
+	-- birds had no server behind them in this realm; see SourRain.server.luau for what it buys.
+	-- NOTE: no subtitle row on this one.
+	birdNuke = mkImpulseBtn("SourRainBtn", 393, Color3.fromRGB(126,214,60), Color3.fromRGB(60,120,30),
+		"\xE2\x98\xA0\xEF\xB8\x8F", "SOUR RAIN", nil, CONFIG.prices.birdNuke)
 
 	-- 2x timer: a Frame in the SUBTITLE slot holding a green countdown label. While the boost is live the
 	-- timer shows and the "1 HOUR" subtitle hides; when it lapses they swap back.

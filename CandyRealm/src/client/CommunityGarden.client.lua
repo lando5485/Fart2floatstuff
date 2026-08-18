@@ -31,24 +31,46 @@ local function resolveWaterSpot()
 	return nil
 end
 
--- small on-screen toast
--- HIDDEN by default: the ScreenGui starts Enabled=false so NOTHING shows until a real message fires (this was the
--- bug -- it was lingering visible over the bottom HUD as a dark band). Position restored to its normal 0.78 spot.
-local toastGui = Instance.new("ScreenGui"); toastGui.Name = "GardenToast"; toastGui.ResetOnSpawn = false; toastGui.DisplayOrder = 40; toastGui.Enabled = false; toastGui.Parent = player:WaitForChild("PlayerGui")
--- y 0.68, not 0.78: at 0.78 (54px tall, centre-anchored) this occupied ~0.755..0.807, which sits ON the
--- bottom HUD (the gas meter / fart button stack starts at ~0.74) AND overlapped MeteorUI's reward popup
--- (~0.79..0.85). 0.68 keeps it clear of both.
-local toastLbl = Instance.new("TextLabel"); toastLbl.AnchorPoint = Vector2.new(0.5,0.5); toastLbl.Position = UDim2.new(0.5,0,0.68,0); toastLbl.Size = UDim2.new(0,420,0,54)
-toastLbl.BackgroundColor3 = Color3.fromRGB(28,52,28); toastLbl.BackgroundTransparency = 0.15; toastLbl.Font = Enum.Font.FredokaOne; toastLbl.TextSize = 22
-toastLbl.TextColor3 = Color3.fromRGB(210,255,200); toastLbl.Text = ""; toastLbl.Visible = true; toastLbl.Parent = toastGui -- label always "visible"; the ScreenGui's Enabled gates whether it actually shows
-Instance.new("UICorner", toastLbl).CornerRadius = UDim.new(0,12)
-print("[TOASTFIX] GardenToast hidden by default; shows ~3.5s only on real messages")
-local toastTok = 0 -- guards the auto-hide so a newer toast can't be hidden by an older timer
-local function toast(text)
-	toastLbl.Text = text
-	toastGui.Enabled = true                                   -- show ONLY when a real message fires
-	toastTok = toastTok + 1; local mine = toastTok
-	task.delay(3.5, function() if toastTok == mine then toastGui.Enabled = false end end) -- auto-hide after ~3.5s
+-- THE "GardenToast" SCREENGUI IS GONE -- ported from realm 1, which deleted it for these reasons.
+-- It was a 420x54 label at y 0.68 in its own ScreenGui, gated by an Enabled flag: a private message
+-- box that had already caused one visible bug (it lingered over the bottom HUD as a dark band) and
+-- had already been moved once to dodge the gas meter and MeteorUI's reward popup. Every message it
+-- carried is a banner now, so there is no box to place, nothing to collide with, and no flag to stick.
+--
+-- Swept, because deleting the code that builds it does not delete one a stale baked-in copy already
+-- built -- and this place has ~27 duplicated scripts.
+task.spawn(function()
+	local pg = player:WaitForChild("PlayerGui")
+	for _ = 1, 5 do
+		local old = pg:FindFirstChild("GardenToast")
+		if old then
+			old:Destroy()
+			print("[Garden][client] removed a leftover GardenToast box -- garden replies are banners now")
+		end
+		task.wait(2)
+	end
+end)
+
+-- These short REPLIES -- "come back tomorrow", "you can't water here" -- are the same class of message
+-- as the wormhole's "land on an island first": a short answer to something the player just tried. They
+-- belong in the hero lane with every other answer, same card, same place, same priority order.
+--
+-- `toast()` keeps its name and signature so every call site below is unchanged; only where the words
+-- appear has moved. EVENT priority: a refusal must not shove an island landing off screen, and it
+-- queues behind the watering directions rather than covering the instruction it is correcting.
+-- NotifyCenter owns the hide, so the token guard and the Enabled flag are both gone.
+local function toast(text, colour, seconds)
+	local NC = _G.NotifyCenter
+	if NC and NC.push then
+		pcall(NC.push, {
+			text     = text,
+			color    = colour or Color3.fromRGB(46, 120, 60), -- the garden's green, not the generic banner green
+			priority = (NC.PRIORITY and NC.PRIORITY.EVENT) or 80,
+			duration = seconds or 3.5,
+		})
+		return
+	end
+	warn("[Garden][client] " .. text .. "  (NotifyCenter unavailable -- not shown on screen)")
 end
 
 -- the watering splash: a quick burst of blue droplet sparkles over the field + a sound
@@ -107,21 +129,15 @@ GardenWaterEvent.OnClientEvent:Connect(function(payload)
 		toast("\xF0\x9F\x92\xA7 Come back tomorrow!")
 		setOnCooldown(payload.secs or 0)
 	elseif payload.kind == "celebrate" then
-		-- STAGE 2 harvest celebration: a bigger GOLD banner, shown a little longer than a normal toast
-		-- toastGui.Enabled is what actually gates rendering (it defaults to FALSE and `toast()` is the
-		-- only thing that ever set it true). This branch used to set only toastLbl.Visible, so unless a
-		-- normal toast happened to have fired moments earlier, the server-wide harvest celebration
-		-- NEVER APPEARED. Enable the ScreenGui, and take a token so the auto-hide can't be stolen.
-		local txt = payload.text or "\xF0\x9F\x8C\xBB The garden bloomed! Everyone gets 2x coins!"
-		toastLbl.BackgroundColor3 = Color3.fromRGB(210, 160, 40); toastLbl.TextColor3 = Color3.fromRGB(255, 250, 230)
-		toastLbl.Text = txt; toastLbl.Visible = true
-		toastGui.Enabled = true
-		toastTok = toastTok + 1; local mine = toastTok
-		task.delay(5, function()
-			if toastTok ~= mine then return end -- a newer toast owns the label now
-			toastGui.Enabled = false
-			toastLbl.BackgroundColor3 = Color3.fromRGB(28, 52, 28); toastLbl.TextColor3 = Color3.fromRGB(210, 255, 200)
-		end)
+		-- STAGE 2 harvest celebration: the same banner, in GOLD and held a little longer, because it is
+		-- server-wide news rather than a reply to something you did.
+		--
+		-- This branch used to hand-drive the old toast label's colours and its Enabled flag, and it had
+		-- already been bugged once by exactly that: it set only `Visible`, so unless a normal toast had
+		-- fired moments earlier the whole celebration never appeared. Going through toast() means there
+		-- is one code path, one hide, and no flag to get out of step.
+		toast(payload.text or "\xF0\x9F\x8C\xBB The garden bloomed! Everyone gets 2x coins!",
+			Color3.fromRGB(210, 160, 40), 5)
 	end
 end)
 

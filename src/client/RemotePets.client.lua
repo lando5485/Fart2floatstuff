@@ -24,6 +24,19 @@ local localPlayer = Players.LocalPlayer
 local PetEquipBroadcast = RS:WaitForChild("PetEquipBroadcast", 30)
 if not PetEquipBroadcast then return end -- server publisher not present -> nothing to render
 
+-- PetFollow puts the EQUIPPED SKIN'S RARITY on the nameplate ("Baby Epic"), reading it through
+-- _G.petSkinRarityOf. That helper answers for the LOCAL player only -- it looks up PetSkinLook's own equipped
+-- table -- so it is useless here: a remote pet's skin arrives in the broadcast payload instead. Require the
+-- PetSkins table directly and read the tier off info.skin, so other players' plates carry the same rarity word
+-- and colour yours does. Guarded: a missing module must not take the whole renderer down.
+local PetSkins do
+	local ok, mod = pcall(function()
+		return require(RS:WaitForChild("Shared", 20):WaitForChild("PetSkins", 20))
+	end)
+	PetSkins = ok and mod or nil
+	if not PetSkins then warn("[RemotePets] PetSkins module unavailable -- remote nameplates will show age without skin rarity") end
+end
+
 --======================================================================
 -- ===== VISUAL PIPELINE (ported from PetFollow.client.lua -- kept identical so remote pets look exactly
 -- like the owner's pet: size ramp, aura/trail/sparkles, animated FX, accessories, rare look, tier badge,
@@ -33,7 +46,21 @@ local petAnims = setmetatable({}, { __mode = "k" }) -- [model] = animation state
 local petFX = {}                                    -- [model] = animated FX state (orbs/ring/pulse/burst/shimmer)
 
 local PRESTIGE_GOLD = Color3.fromRGB(255,200,40)
+-- MUST LIST EVERY SPECIES PetFollow'S PET_THEME LISTS. applyLevelVisual below does `if not theme then return end`,
+-- and EVERYTHING that makes a pet read correctly sits after that line: the age SIZE ramp (A.sizeMul, 60% at Baby
+-- -> 100% at Elder), the overhead NAME + AGE nameplate, the accessory ladder, the level FX and the rare look.
+-- This table had only the 5 quest pets, so the other six species rendered on everyone else's screen at FULL SIZE
+-- with NO nameplate -- a Baby Bean Buddy looked like an Elder one and had no name or age over it, while its owner
+-- saw it correctly scaled and labelled. Six missing entries, copied verbatim from PetFollow: change one, change both.
 local PET_THEME = {
+	-- SECRET: Pizza Dragon (10/10 collection reward). Wings are role "wing"; horns sit where other pets' ears do.
+	PizzaDragon = { color=Color3.fromRGB(226,150,68),
+		head=CFrame.new(-0.1,1.7,0), face=CFrame.new(1.5,0.7,0), glassW=0.5, neck=CFrame.new(1.25,-0.1,0), back=CFrame.new(-1.5,0.5,0), ear=CFrame.new(-0.15,1.9,0.62), side=CFrame.new(0.2,0.0,1.4),
+		accs={ {3,"bowtie"},{7,"glasses"},{10,"crown"},{13,"backpack"},{17,"flower"},{20,"haloring"},{23,"staff"} } },
+	-- STARTER: Bean Buddy. Its sprout leaves are role "ear", so it reuses the bunny-style ear anchor.
+	BeanBuddy = { color=Color3.fromRGB(126,200,86),
+		head=CFrame.new(-0.1,1.6,0), face=CFrame.new(1.5,0.5,0), glassW=0.5, neck=CFrame.new(1.25,-0.3,0), back=CFrame.new(-1.4,0.35,0), ear=CFrame.new(-0.1,1.75,0.7), side=CFrame.new(0.2,-0.1,1.35),
+		accs={ {3,"bowtie"},{7,"glasses"},{10,"crown"},{13,"backpack"},{17,"flower"},{20,"haloring"},{23,"staff"} } },
 	BroccoliPet = { color=Color3.fromRGB(120,210,70),
 		head=CFrame.new(0.05,1.62,0), face=CFrame.new(1.5,0.45,0), glassW=0.5, neck=CFrame.new(1.25,-0.3,0), back=CFrame.new(-1.4,0.35,0), ear=CFrame.new(0.1,1.7,0.95), side=CFrame.new(0.2,-0.1,1.35),
 		accs={ {3,"bowtie"},{7,"glasses"},{10,"crown"},{13,"backpack"},{17,"flower"},{20,"haloring"},{23,"staff"} } },
@@ -49,7 +76,40 @@ local PET_THEME = {
 	BurritoArmadillo = { color=Color3.fromRGB(200,160,110),
 		head=CFrame.new(1.15,1.4,0), face=CFrame.new(1.5,0.8,0), glassW=0.45, neck=CFrame.new(1.2,0.15,0), back=CFrame.new(-1.5,0.35,0), side=CFrame.new(0.2,-0.1,1.5), side2=CFrame.new(0.2,-0.1,-1.5),
 		accs={ {3,"bowtie"},{7,"glasses"},{10,"safari"},{13,"backpack"},{17,"gemstuds"},{20,"lantern"},{23,"pickaxe"} } },
+	-- SEASONAL PETS: reuse the standard body/head anchors so they get the same level scaling + accessory schedule.
+	SunflowerBee = { color=Color3.fromRGB(250,205,60),
+		head=CFrame.new(0.05,1.62,0), face=CFrame.new(1.5,0.45,0), glassW=0.5, neck=CFrame.new(1.25,-0.3,0), back=CFrame.new(-1.4,0.35,0), ear=CFrame.new(0.1,1.7,0.95), side=CFrame.new(0.2,-0.1,1.35),
+		accs={ {3,"bowtie"},{7,"glasses"},{10,"crown"},{13,"backpack"},{17,"flower"},{20,"haloring"},{23,"staff"} } },
+	MapleFox = { color=Color3.fromRGB(222,120,52),
+		head=CFrame.new(0.05,1.62,0), face=CFrame.new(1.5,0.45,0), glassW=0.5, neck=CFrame.new(1.25,-0.3,0), back=CFrame.new(-1.4,0.35,0), ear=CFrame.new(0.2,2.35,1.0), side=CFrame.new(0.2,-0.1,1.35),
+		accs={ {3,"bowtie"},{7,"glasses"},{10,"crown"},{13,"backpack"},{17,"flower"},{20,"haloring"},{23,"staff"} } },
+	FrostPenguin = { color=Color3.fromRGB(120,150,200),
+		head=CFrame.new(0.15,1.6,0), face=CFrame.new(1.5,0.5,0), glassW=0.5, neck=CFrame.new(1.3,-0.3,0), back=CFrame.new(-1.4,0.4,0), side=CFrame.new(0.3,-0.3,1.35),
+		accs={ {3,"bowtie"},{7,"glasses"},{10,"tophat"},{13,"scarf"},{17,"monocle"},{20,"sparklecluster"},{23,"cane"} } },
+	BlossomBunny = { color=Color3.fromRGB(186,224,150),
+		head=CFrame.new(0.05,1.62,0), face=CFrame.new(1.5,0.45,0), glassW=0.5, neck=CFrame.new(1.25,-0.3,0), back=CFrame.new(-1.4,0.35,0), ear=CFrame.new(0.1,1.7,0.95), side=CFrame.new(0.2,-0.1,1.35),
+		accs={ {3,"bowtie"},{7,"glasses"},{10,"crown"},{13,"backpack"},{17,"flower"},{20,"haloring"},{23,"staff"} } },
 }
+-- The three REBIRTH pets are recolour-clones of BeanBuddy / PizzaDragon / MapleFox, so they share those bodies
+-- exactly -- give them the same anchors rather than leaving them themeless (which is what dropped their nameplate
+-- and age scaling). PetFollow resolves them through PET_THEME[pet.Name] on the same table; keep both in step.
+PET_THEME.MoltenBean = PET_THEME.BeanBuddy
+PET_THEME.VoidDragon = PET_THEME.PizzaDragon
+PET_THEME.PrismFox   = PET_THEME.MapleFox
+-- ===== RARE PET BRIGHTNESS =====
+-- Rare variants read 30% dimmer than they used to. They were the brightest thing on screen -- glass/metal
+-- body sheens, an 0.85-LightEmission sparkle aura and a Brightness-3 PointLight on top -- which is a lot of
+-- glare to stand next to for the whole game.
+--
+-- Applied as ONE factor at the point of use rather than by editing the colours in RARE_LOOK, for two
+-- reasons: the table stays readable as authored intent, and RemotePets carries an identical copy of both the
+-- table and this code, so a single tunable in each is far harder to let drift than ten edited hex values.
+-- Raise it back toward 1.0 to undo.
+local RARE_DIM = 0.7
+local function rareDim(c)
+	return Color3.new(c.R * RARE_DIM, c.G * RARE_DIM, c.B * RARE_DIM)
+end
+
 local RARE_LOOK = {
 	BroccoliPet      = { name="Emerald Bunny",    body=Color3.fromRGB(20,150,80),   mat=Enum.Material.Glass,  refl=0.25, fx=Color3.fromRGB(70,255,150) },
 	CoconutCrab      = { name="Golden Crab",      body=Color3.fromRGB(255,200,40),  mat=Enum.Material.Metal,  refl=0.35, fx=Color3.fromRGB(255,225,90) },
@@ -57,11 +117,25 @@ local RARE_LOOK = {
 	BurritoArmadillo = { name="Crystal Armadillo",body=Color3.fromRGB(150,80,210),  mat=Enum.Material.Glass,  refl=0.25, fx=Color3.fromRGB(195,125,255) },
 	ButterDuck       = { name="Cosmic Duck",      body=Color3.fromRGB(30,24,66),    mat=Enum.Material.Plastic,refl=0.1,  fx=Color3.fromRGB(180,140,255), cosmic=true, light=true },
 }
-local PET_DISPLAY = { BroccoliPet="Broccoli Bunny", CoconutCrab="Coconut Crab", PopcornSheep="Popcorn Sheep", ButterDuck="Butter Duck", BurritoArmadillo="Burrito Armadillo" }
+-- The overhead nameplate reads from this. A species missing here fell back to its raw id, so a remote pet was
+-- labelled "BeanBuddy" where its owner saw "Bean Buddy". Same list as PetFollow's PET_DISPLAY -- keep in step.
+local PET_DISPLAY = { BeanBuddy="Bean Buddy", PizzaDragon="Pizza Dragon", BroccoliPet="Broccoli Bunny", CoconutCrab="Coconut Crab", PopcornSheep="Popcorn Sheep", ButterDuck="Butter Duck", BurritoArmadillo="Burrito Armadillo",
+	SunflowerBee="Sunflower Bee", MapleFox="Maple Fox", FrostPenguin="Frost Penguin", BlossomBunny="Blossom Bunny",
+	MoltenBean="Molten Bean", VoidDragon="Void Dragon", PrismFox="Prism Fox" }
+-- MUST LIST EVERY SPECIES PetFollow LISTS. A species missing from here has no template to clone, so
+-- buildPetModel returns nil and that player is INVISIBLE to everyone else -- permanently, not briefly.
+-- BeanBuddy was missing, and BeanBuddy is the free first-join starter: every new player in the server
+-- was carrying a pet nobody else could see. PizzaDragon (10/10 secret) and the three rebirth recolours
+-- were missing for the same reason. Keep this table in sync with PET_TEMPLATE_NAME in PetFollow.
 local PET_TEMPLATE_NAME = {
+	BeanBuddy="BeanBuddyTemplate",                -- starter (free on first join)
+	PizzaDragon="PizzaDragonTemplate",            -- SECRET 10/10 collection reward
 	BroccoliPet="BroccoliBunnyTemplate", CoconutCrab="CoconutCrabTemplate", PopcornSheep="PopcornSheepTemplate",
 	ButterDuck="ButterDuckTemplate", BurritoArmadillo="BurritoArmadilloTemplate",
 	SunflowerBee="SunflowerBeeTemplate", MapleFox="MapleFoxTemplate", FrostPenguin="FrostPenguinTemplate", BlossomBunny="BlossomBunnyTemplate",
+	MoltenBean="MoltenBeanTemplate",              -- REBIRTH 3  (recoloured Bean Buddy)
+	VoidDragon="VoidDragonTemplate",              -- REBIRTH 6  (recoloured Pizza Dragon)
+	PrismFox="PrismFoxTemplate",                  -- REBIRTH 10 (recoloured Maple Fox)
 }
 local function petTier(level, isRare, petId)
 	if isRare then
@@ -233,21 +307,21 @@ local function applyRareLook(pet, A, root, petId)
 		if d:IsA("BasePart") and d ~= root then
 			local n = d.Name
 			if n~="Eye" and n~="Highlight" and n~="EvoPart" and n~="PetOrb" and n~="PetRing" and n~="PetPulse" then
-				d.Color = r.body; d.Material = r.mat; d.Reflectance = r.refl
+				d.Color = rareDim(r.body); d.Material = r.mat; d.Reflectance = r.refl
 			end
 		end
 	end
-	local rfx = Instance.new("ParticleEmitter"); rfx.Name="PetRareFX"; rfx.Color=ColorSequence.new(r.fx); rfx.LightEmission=0.85
+	local rfx = Instance.new("ParticleEmitter"); rfx.Name="PetRareFX"; rfx.Color=ColorSequence.new(rareDim(r.fx)); rfx.LightEmission=0.85*RARE_DIM
 	rfx.Rate = r.cosmic and 65 or 32; rfx.Lifetime = NumberRange.new(0.6,1.2); rfx.Rotation = NumberRange.new(0,360)
 	rfx.Speed = NumberRange.new(r.cosmic and 1.4 or 0.5, r.cosmic and 3.2 or 1.4); rfx.Size = NumberSequence.new(r.cosmic and 0.45 or 0.4)
 	rfx.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0,0.15), NumberSequenceKeypoint.new(1,1) }); rfx.Parent = root
-	if r.light then local pl = Instance.new("PointLight"); pl.Name="PetRareLight"; pl.Color=r.fx; pl.Brightness=3; pl.Range=12; pl.Parent=root end
+	if r.light then local pl = Instance.new("PointLight"); pl.Name="PetRareLight"; pl.Color=rareDim(r.fx); pl.Brightness=3*RARE_DIM; pl.Range=12; pl.Parent=root end
 	if r.puffs and A then for k=0,3 do local ang=math.rad(k*90); accPart(pet,A,root, BAL_, 0.55,0.5,0.55, Color3.fromRGB(255,255,255), CFrame.new(math.sin(ang)*1.6, 0.7, math.cos(ang)*1.6)) end end
 	if r.cosmic and petFX[pet] then petFX[pet].cosmic = true end
 end
 -- size + aura/trail/sparkles + FX + accessories + rare + overhead tier badge. Mirrors PetFollow's
 -- applyLevelVisual (minus its [PetEvo] owner diagnostics + the icon "lite" path, neither needed here).
-local function applyLevelVisual(pet, level, petId, isRare)
+local function applyLevelVisual(pet, level, petId, isRare, skinId)
 	if not pet then return end
 	level = level or 1
 	local root = pet.PrimaryPart
@@ -315,6 +389,17 @@ local function applyLevelVisual(pet, level, petId, isRare)
 			Instance.new("UICorner", tg).CornerRadius=UDim.new(0,4); Instance.new("UIStroke", tg)
 		end
 		local tierName, tierColor, isVariant, flashy = petTier(level, isRare, petId)
+		-- SKIN RARITY joins the badge -- "Baby Epic  Age 3" -- exactly as PetFollow builds it for your own pet
+		-- (age from the level, rarity + colour from the equipped skin). Exotic/Mythical variants keep their own
+		-- badge: that name outranks any skin, same rule as PetFollow.
+		if not isVariant and PetSkins and skinId then
+			local okS, skTier = pcall(PetSkins.tierOf, skinId)
+			if okS and skTier then
+				tierName = tierName .. " " .. tostring(skTier)
+				local okC, skCol = pcall(PetSkins.tierColor, skTier)
+				if okC and skCol then tierColor = skCol end
+			end
+		end
 		bb.L.Text = petDisplayName(petId, isRare)
 		bb.L.TextColor3 = isVariant and tierColor or Color3.new(1,1,1)
 		bb.Tag.Text = isVariant and tierName or (tierName .. "  Age " .. tostring(level))
@@ -373,8 +458,12 @@ do
 				end
 				if fx.cosmic then
 					local cc = Color3.fromHSV((t * 0.4) % 1, 0.7, 1)
-					local rl = root:FindFirstChild("PetRareLight"); if rl then rl.Color = cc end
-					local rfx = root:FindFirstChild("PetRareFX"); if rfx then rfx.Color = ColorSequence.new(cc) end
+					-- Dimmed like the static rare colours are. Without this the Cosmic Duck would rewrite
+					-- its light and sparkles to FULL brightness every frame and be the one rare pet the
+					-- 30% reduction never touched -- and it is the brightest of the five to begin with.
+					local dimCc = rareDim(cc)
+					local rl = root:FindFirstChild("PetRareLight"); if rl then rl.Color = dimCc end
+					local rfx = root:FindFirstChild("PetRareFX"); if rfx then rfx.Color = ColorSequence.new(dimCc) end
 				end
 				if fx.shimmer then
 					local hue = (t * 0.25) % 1
@@ -523,6 +612,7 @@ local FACE_K        = 4
 local MAX_TRAIL     = 45
 
 local remotePets = {} -- [userId] = { userId, player, playerName, petId, level, isRare, pet, smoothPos, smoothFwd, bobT, appliedLevel, appliedRare }
+local heard = {}      -- [userId] = true once we have PROCESSED a payload for that player (drives the catch-up poll below)
 
 local function destroyEntryPet(entry)
 	if entry.pet then
@@ -541,6 +631,36 @@ local function removeRemotePet(userId, reason)
 	print(string.format("[RemotePets] removed remote pet for %s (%s)", tostring(entry.playerName or userId), tostring(reason)))
 end
 
+-- THE SKIN IS PART OF THE LOOK. The payload carries the owner's equipped skin + trait; painting them here is
+-- what makes a remote pet match what its owner sees. applyPetSkinPreview is PetSkinLook's "paint an ARBITRARY
+-- skin+trait on this model" entry point, the same one the crate reveal uses; static=false gives the full
+-- treatment (emitter, light, hue cycling), which is right here because this is a live pet in the world.
+--
+-- PetSkinLook is a SEPARATE LocalScript with no ordering guarantee against this one. At join it is routinely
+-- still booting (it waits on SkinRemotes + a GetSkinState round-trip) when the first catch-up burst arrives.
+-- The old code just gave up in that case, so remote pets rendered SKINLESS for the whole session. Retry until
+-- the renderer exists, re-reading the entry each time so a skin change mid-retry wins.
+local function paintEntrySkin(entry)
+	if not entry.pet then return end
+	if _G.applyPetSkinPreview then
+		pcall(_G.applyPetSkinPreview, entry.pet, entry.appliedSkin, entry.appliedTrait, false)
+		return
+	end
+	if entry.skinPending then return end -- one waiter per player, not one per broadcast
+	entry.skinPending = true
+	task.spawn(function()
+		for _ = 1, 40 do -- ~20s: PetSkinLook's own WaitForChild budget is 30s, this covers the normal case
+			task.wait(0.5)
+			if remotePets[entry.userId] ~= entry then break end
+			if _G.applyPetSkinPreview then
+				if entry.pet then pcall(_G.applyPetSkinPreview, entry.pet, entry.appliedSkin, entry.appliedTrait, false) end
+				break
+			end
+		end
+		entry.skinPending = false
+	end)
+end
+
 local function buildEntryPet(entry)
 	local pet = buildPetModel(entry.petId)
 	if not pet then return false end
@@ -551,7 +671,7 @@ local function buildEntryPet(entry)
 	entry.appliedRare = entry.isRare
 	print(string.format("[RemotePets] building remote pet for %s (%s lvl %s rare %s)",
 		tostring(entry.playerName), tostring(entry.petId), tostring(entry.level or 1), entry.isRare and "y" or "n"))
-	applyLevelVisual(pet, entry.level or 1, entry.petId, entry.isRare) -- correct size/accessories/FX/rare look
+	applyLevelVisual(pet, entry.level or 1, entry.petId, entry.isRare, entry.appliedSkin) -- size/accessories/FX/rare look/nameplate
 	print(string.format("[RemotePets] remote pet for %s following", tostring(entry.playerName)))
 	return true
 end
@@ -560,36 +680,27 @@ local function onBroadcast(info)
 	if type(info) ~= "table" then return end
 	local userId = info.userId
 	if not userId or userId == localPlayer.UserId then return end -- own pet is PetFollow's job
-	if not info.petId then removeRemotePet(userId, "unequipped"); return end -- nothing equipped -> remove
+	if not info.petId then heard[userId] = true; removeRemotePet(userId, "unequipped"); return end -- nothing equipped
 	local plr = Players:GetPlayerByUserId(userId)
-	if not plr then return end -- not in the server (shouldn't happen for a live broadcast)
-	-- THE SKIN IS PART OF THE LOOK, so it is part of the identity check below.
-	-- The payload carries the owner's equipped skin + trait; painting them here is what makes a remote pet
-	-- match what its owner sees. Before this the broadcast described only a species and everyone rendered the
-	-- plain base pet -- the owner saw a Cosmic-skinned duck, everyone else saw an ordinary duck.
-	-- applyPetSkinPreview is PetSkinLook's "paint an ARBITRARY skin+trait on this model" entry point, the same
-	-- one the crate reveal uses; static=false gives the full treatment (emitter, light, hue cycling), which is
-	-- right here because this is a live pet in the world rather than a thumbnail.
-	local function paintSkin(model, skin, trait)
-		if not (model and _G.applyPetSkinPreview) then return end
-		pcall(_G.applyPetSkinPreview, model, skin, trait, false)
-	end
-
+	if not plr then return end -- not in the server yet -> stay UNHEARD so the catch-up poll asks again
+	heard[userId] = true
 	local entry = remotePets[userId]
 	if entry and entry.pet and entry.petId == info.petId then
 		-- SAME pet -> refresh the look if level / rare / SKIN changed (no rebuild)
 		entry.level = info.level; entry.isRare = info.isRare
-		if entry.appliedLevel ~= info.level or entry.appliedRare ~= info.isRare then
-			entry.appliedLevel = info.level; entry.appliedRare = info.isRare
-			applyLevelVisual(entry.pet, info.level or 1, info.petId, info.isRare)
-		end
 		-- Skin changes arrive as their own broadcast (SkinCrateService re-announces on equip), and they do NOT
 		-- change the pet id -- so without this the payload would be treated as "nothing to do" and the new
 		-- skin would never appear on anyone else's screen.
-		if entry.appliedSkin ~= info.skin or entry.appliedTrait ~= info.trait then
+		local skinChanged = (entry.appliedSkin ~= info.skin or entry.appliedTrait ~= info.trait)
+		if entry.appliedLevel ~= info.level or entry.appliedRare ~= info.isRare or skinChanged then
+			entry.appliedLevel = info.level; entry.appliedRare = info.isRare
 			entry.appliedSkin = info.skin; entry.appliedTrait = info.trait
-			paintSkin(entry.pet, info.skin, info.trait)
+			-- a SKIN change re-runs this too: the badge carries the skin's rarity word + colour, so swapping
+			-- skins has to relabel the plate, not just repaint the body. (PetFollow does the same -- a skin
+			-- equip goes through _G.petEvoRefresh, a full evo re-run, before the repaint.)
+			applyLevelVisual(entry.pet, info.level or 1, info.petId, info.isRare, entry.appliedSkin)
 		end
+		if skinChanged then paintEntrySkin(entry) end
 		return
 	end
 	-- DIFFERENT pet (or first time / respawn) -> (re)build cleanly
@@ -601,19 +712,68 @@ local function onBroadcast(info)
 	remotePets[userId] = entry
 	entry.appliedSkin = info.skin; entry.appliedTrait = info.trait
 	if buildEntryPet(entry) then
-		paintSkin(entry.pet, info.skin, info.trait)
-	else
-		-- template not replicated yet -> retry once shortly (a later broadcast also rebuilds)
-		task.delay(2, function()
-			if remotePets[userId] == entry and not entry.pet then
-				if buildEntryPet(entry) then paintSkin(entry.pet, entry.appliedSkin, entry.appliedTrait) end
-			end
-		end)
+		paintEntrySkin(entry)
+		return
 	end
+	-- TEMPLATE NOT REPLICATED YET. The server builds all 14 pet templates in one task.spawn at boot (each one a
+	-- union operation), so on a fresh server they can land well after the first players do. The old code retried
+	-- exactly ONCE at 2s and then gave up forever -- and nothing re-broadcasts on its own, so that player stayed
+	-- invisible for the rest of the session. Keep retrying instead.
+	if entry.buildPending then return end
+	entry.buildPending = true
+	task.spawn(function()
+		for _ = 1, 15 do -- buildPetModel already waits up to 4s per try -> ~90s of cover, then give up quietly
+			task.wait(2)
+			if remotePets[userId] ~= entry or entry.pet then break end
+			if buildEntryPet(entry) then paintEntrySkin(entry); break end
+		end
+		entry.buildPending = false
+	end)
 end
 
 PetEquipBroadcast.OnClientEvent:Connect(onBroadcast)
-Players.PlayerRemoving:Connect(function(plr) removeRemotePet(plr.UserId, "left") end)
+Players.PlayerRemoving:Connect(function(plr) removeRemotePet(plr.UserId, "left"); heard[plr.UserId] = nil end)
+
+-- ===== "I'M READY" HANDSHAKE: ask the server for everyone's current equips, UNTIL WE'VE HEARD FROM EVERYONE =====
+-- The server's late-join catch-up fires when OUR SAVE loads -- routinely before this script has connected
+-- onBroadcast above, and remote fires that land before a handler exists are simply dropped. That made pet
+-- visibility one-way: players already here saw our join broadcast, we never saw their catch-up.
+--
+-- The old fix was two blind asks (t=0 and t=6). Both can still be lost, because the SERVER side has the mirror
+-- race: PetSystem creates the PetEquipBroadcast remote near the top of the file but does not connect its
+-- OnServerEvent until ~1200 lines later, so a request that arrives while the server is still booting goes
+-- nowhere -- and a client-to-server fire has no delivery receipt to tell us that happened.
+--
+-- So don't ask blindly: ask, then CHECK. `heard` records every player we've actually processed a payload for;
+-- while any player in the server is still unaccounted for, ask again. Interval is 4s because the server
+-- debounces this remote at 3s (a faster poll would be silently dropped as spam).
+task.spawn(function()
+	for attempt = 1, 15 do -- ~60s of cover; a normal join resolves on the first or second ask
+		local missing = nil
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= localPlayer and not heard[p.UserId] then missing = p.Name; break end
+		end
+		if attempt > 1 and not missing then
+			print("[RemotePets] catch-up complete -- heard from every player in the server")
+			return
+		end
+		if missing then print("[RemotePets] catch-up ask #"..attempt.." (still nothing for "..missing..")") end
+		pcall(function() PetEquipBroadcast:FireServer() end)
+		task.wait(4)
+	end
+	warn("[RemotePets] gave up asking for catch-up -- some players' pets may not be rendered")
+end)
+
+-- A player who joins AFTER us is announced by the server when their save loads, and we are already listening --
+-- so this is only a backstop for a dropped announce. Costs one remote fire per join, at most.
+Players.PlayerAdded:Connect(function(plr)
+	task.delay(10, function()
+		if plr.Parent and not heard[plr.UserId] then
+			print("[RemotePets] never heard about "..plr.Name.." -- asking the server again")
+			pcall(function() PetEquipBroadcast:FireServer() end)
+		end
+	end)
+end)
 
 -- FOLLOW + ANIMATE loop: each remote pet glides behind ITS player's character (reads the live character
 -- each frame, so it auto-re-targets on respawn). Same smooth glide/face feel as PetFollow's own-pet loop.

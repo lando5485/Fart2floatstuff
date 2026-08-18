@@ -26,6 +26,47 @@
 -- ============================================================================================================
 
 local Workspace = game:GetService("Workspace")
+local Players = game:GetService("Players")
+
+-- ===== ONE COPY ONLY =====
+-- A stale baked-in copy of this script is in the place alongside the Rojo one, so BOTH run (BootCheck reports
+-- "AmbientSmoke 2 copies", and every attach line appears twice in the log). That matters here more than it
+-- would elsewhere: the "one plume per part, ever" guard below is a LOCAL table, so it can only stop the copy
+-- that owns it. The second copy has its own empty table, does not know the brick is claimed, and attaches a
+-- SECOND emitter to the same chimney -- double the particles, two watchdogs fighting over one host.
+--
+-- A latch rather than the mutual-Destroy pattern used elsewhere in this codebase: two copies each destroying
+-- "the other one" is a race that can leave you with none. First to run wins, second returns immediately.
+if _G.__ambientSmokeRunning then
+	warn("[Smoke] a second copy of AmbientSmoke started -- standing down (the first copy owns the plumes)."
+		.. " Delete the stale baked-in LocalScript in Studio for good.")
+	return
+end
+_G.__ambientSmokeRunning = true
+
+-- Having won the latch, retire the loser's script instance so it does not start again on the next respawn.
+-- Destroying it cannot kill this copy: the check above already returned for anything that is not us.
+do
+	local player = Players.LocalPlayer
+	local retired = 0
+	if player then
+		for _, inst in ipairs(player:GetDescendants()) do
+			if inst ~= script and inst:IsA("LocalScript") and inst.Name == script.Name then
+				pcall(function() inst.Disabled = true; inst:Destroy() end)
+				retired += 1
+			end
+		end
+	end
+	if retired > 0 then
+		warn(("[Smoke] retired %d STALE duplicate AmbientSmoke script(s). Delete them in Studio for good.")
+			:format(retired))
+	end
+end
+
+-- How long a host may be missing before it counts as a real rebuild rather than a streaming blip. Long enough
+-- to ride out any stream-out/in (those resolve in well under a second), short enough that a genuinely rebuilt
+-- landmark gets its plume back quickly.
+local HOST_GRACE_SECONDS = 8
 
 -- Each entry: the NAME to look for, and how its plume should behave. Everything about a plume that matters is in
 -- these numbers -- rate, speed, drift, lifetime, size, colour -- so a new landmark is one table row, not new code.
@@ -49,17 +90,23 @@ local PLUMES = {
 		-- below, IS a pure marker and stays hidden.
 		hideHost = false,
 		find = "SmokeBrick", label = "chimney smoke (Bean Farm)",
-		-- DARKER AND THICKER. Three separate levers, all pulled -- one on its own would not have been enough:
-		--   * RATE 7 -> 16      : twice as many puffs, so it is a continuous column instead of a dotted line
-		--   * TRANS 0.45 -> 0.12: nearly opaque at its densest. The old value was see-through and washed out
-		--                         against a bright sky, which is where this smoke actually lives.
-		--   * COLOUR            : starts a dirty grey rather than near-white, and DARKENS as it rises. Real smoke
-		--                         from a wood fire is sooty at the source; near-white reads as steam, not smoke.
-		rate = 16, speed = { 1.2, 2.6 }, lifetime = { 4.5, 8 }, spread = 14,
+		-- ===== LIGHTENED: A CHIMNEY, NOT A HAZE OVER THE WHOLE ISLAND =====
+		-- A previous pass pushed this to nearly-opaque near-black soot (rate 16, trans 0.12, size up to 11,
+		-- lifetime up to 8s, colour fading to 64,62,68). Each lever was defensible alone; together, on the
+		-- STARTING island, with the chimney sweep below attaching the same spec to every part named "smoke",
+		-- the plumes overlapped and lingered into one large dark cloud hanging over Bean Farm -- the first
+		-- thing a new player ever sees, and it read as gloom rather than as a cosy fire.
+		-- The smoke STAYS -- it is just a lighter, thinner, shorter-lived version of itself:
+		--   * RATE 16 -> 8      : half the puffs, so columns stop merging into a sheet
+		--   * TRANS 0.12 -> 0.5 : clearly see-through; it tints the sky instead of blocking it
+		--   * SIZE  11 -> 6     : a column that billows, not a cloud bank that swallows the rooftops
+		--   * LIFETIME 8 -> 4.5 : thins out and is GONE, so it can never accumulate into standing haze
+		--   * COLOUR            : light warm grey that stays light -- wood smoke in daylight, not soot
+		rate = 8, speed = { 1.2, 2.6 }, lifetime = { 2.5, 4.5 }, spread = 14,
 		accel = Vector3.new(1.6, 2.2, 0.6),             -- rises AND leans: a chimney in a breeze, not a rocket
-		size = { 1.6, 11 },                             -- billows out wide as it climbs and cools
-		trans = { 0.12, 1 },
-		color = ColorSequence.new(Color3.fromRGB(120, 118, 122), Color3.fromRGB(64, 62, 68)),
+		size = { 1.4, 6 },                              -- billows out as it climbs, without engulfing the island
+		trans = { 0.5, 1 },
+		color = ColorSequence.new(Color3.fromRGB(214, 212, 216), Color3.fromRGB(178, 176, 182)),
 		offsetY = 0.6,                                  -- just above the brick's top face
 	},
 	{
@@ -72,11 +119,13 @@ local PLUMES = {
 		-- player through the building.
 		hideHost = true,
 		find = "SmokeBrick1", label = "chimney smoke 2 (Bean Farm)",
-		rate = 16, speed = { 1.2, 2.6 }, lifetime = { 4.5, 8 }, spread = 14,
+		-- same lightened chimney values as its twin above (see the note there) -- the two must match, or
+		-- one roof smokes light grey while the roof beside it smokes soot
+		rate = 8, speed = { 1.2, 2.6 }, lifetime = { 2.5, 4.5 }, spread = 14,
 		accel = Vector3.new(1.6, 2.2, 0.6),
-		size = { 1.6, 11 },
-		trans = { 0.12, 1 },
-		color = ColorSequence.new(Color3.fromRGB(120, 118, 122), Color3.fromRGB(64, 62, 68)),
+		size = { 1.4, 6 },
+		trans = { 0.5, 1 },
+		color = ColorSequence.new(Color3.fromRGB(214, 212, 216), Color3.fromRGB(178, 176, 182)),
 		offsetY = 0.6,
 	},
 	{
@@ -288,6 +337,9 @@ function attach(spec, target)
 		-- On either, we tear down and RE-RESOLVE THE HOST BY NAME. The previous version re-attached to the old
 		-- `target` reference -- but if an event destroyed and rebuilt that part, `target` is a dangling instance
 		-- with no parent, so it would rebuild the plume onto a corpse.
+		--
+		-- graceStart: when the host first went missing. See the streaming note in the loop.
+		local graceStart = nil
 		while true do
 			task.wait(1)
 			local hostAlive   = host.Parent ~= nil and host:IsDescendantOf(Workspace)
@@ -295,9 +347,37 @@ function attach(spec, target)
 
 			if hostAlive and anchorAlive then
 				if not e.Enabled then e.Enabled = true end -- something disabled it; turn it back on
+				graceStart = nil -- host is back (or never left); cancel any pending teardown
+
+			elseif anchorAlive and not hostAlive then
+				-- ===== HOST GONE: WAIT BEFORE TEARING ANYTHING DOWN =====
+				-- This used to destroy the plume the instant the host vanished and rebuild it a second or two
+				-- later, which is the flicker you see: walk away from Bean Farm and back, or turn the camera,
+				-- and the chimney smoke blinks out and returns.
+				--
+				-- Two very different things nil a host's Parent:
+				--   STREAMING  -- the part is coming back, at the same position, usually within a second.
+				--   AN EVENT   -- a meteor/rocket/garden rebuild genuinely replaced the world.
+				-- Nothing distinguishes them at the moment it happens, so assume the common one (streaming)
+				-- and keep the smoke running through it. The anchor is client-created and ANCHORED, so it
+				-- does not stream out with the host and the plume simply continues where it was.
+				--
+				-- Only if the host stays gone past the grace window is this treated as a real rebuild, and
+				-- only then do we tear down and re-resolve.
+				graceStart = graceStart or os.clock()
+				if (os.clock() - graceStart) < HOST_GRACE_SECONDS then
+					if not e.Enabled then e.Enabled = true end
+					continue -- keep smoking; check again next tick
+				end
+				print(("[Smoke] '%s' host gone for %ds -- treating as a rebuild, re-resolving '%s'")
+					:format(spec.label, HOST_GRACE_SECONDS, spec.find))
+				graceStart = nil
+				if anchor.Parent then anchor:Destroy() end -- kill the orphan so it can't smoke from mid-air
+
 			else
 				local why = (not anchorAlive) and "anchor destroyed" or "host destroyed"
 				print(("[Smoke] '%s' died (%s) -- re-resolving '%s'"):format(spec.label, why, spec.find))
+				graceStart = nil
 				if anchor.Parent then anchor:Destroy() end -- kill the orphan so it can't smoke from mid-air
 
 				-- Wait for the part to come back. A garden rebuild or an event takes a moment to put the world
@@ -362,13 +442,16 @@ end)
 -- bricks the named specs already handled.
 -- ============================================================================================================
 task.spawn(function()
+	-- Lightened to match the two named chimney specs at the top of the file (see the note on the first one).
+	-- THIS copy mattered most for the dark haze: the sweep attaches it to EVERY part named "smoke" on Bean
+	-- Farm, so the heavy old values were multiplied by however many such parts exist in the place.
 	local CHIMNEY = {
 		hideHost = false,
-		rate = 16, speed = { 1.2, 2.6 }, lifetime = { 4.5, 8 }, spread = 14,
+		rate = 8, speed = { 1.2, 2.6 }, lifetime = { 2.5, 4.5 }, spread = 14,
 		accel = Vector3.new(1.6, 2.2, 0.6),
-		size = { 1.6, 11 },
-		trans = { 0.12, 1 },
-		color = ColorSequence.new(Color3.fromRGB(120, 118, 122), Color3.fromRGB(64, 62, 68)),
+		size = { 1.4, 6 },
+		trans = { 0.5, 1 },
+		color = ColorSequence.new(Color3.fromRGB(214, 212, 216), Color3.fromRGB(178, 176, 182)),
 		offsetY = 0.6,
 	}
 

@@ -39,17 +39,33 @@ local function comma(n)
 	return (out:gsub("^,", ""))
 end
 
--- ===== the gut tiers (from CLAUDE.md stomachTiers) =====
--- maxPower drives the "current tier" match against leaderstats.StomachMax.
-local TIERS = {
-	{ name="Tiny Gut",     max=40,    cost=0,      robux=false, emoji="\xF0\x9F\x91\xB6" }, -- baby
-	{ name="Small Gut",    max=96,    cost=200,    robux=false, emoji="\xF0\x9F\x90\xB9" }, -- hamster
-	{ name="Medium Gut",   max=282,   cost=1500,   robux=false, emoji="\xF0\x9F\x90\xB7" }, -- pig
-	{ name="Large Gut",    max=603,   cost=8000,   robux=false, emoji="\xF0\x9F\x90\x98" }, -- elephant
-	{ name="XL Gut",       max=1425,  cost=40000,  robux=false, emoji="\xF0\x9F\xA6\x9B" }, -- hippo
-	{ name="Iron Gut",     max=2639,  cost=200000, robux=false, emoji="\xF0\x9F\x8F\x8B\xEF\xB8\x8F" }, -- weightlifter
-	{ name="Infinite Gut", max=99999, cost=499,    robux=true,  emoji="\xF0\x9F\x90\x8B" }, -- whale
-}
+-- ===== the gut tiers -- read from the SHARED module (ReplicatedStorage.Shared.
+-- StomachTiers), the same table the server prices from, so panel and server can
+-- never drift. 12 coin tiers (one per crossing) + the Robux Sugar Rush Gut.
+-- unlockSlot = the climb slot you must have REACHED before the tier can be bought
+-- (the server enforces it; this panel just draws the lock).
+local StomachTiersShared = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("StomachTiers"))
+local TIERS = {}
+for _, t in ipairs(StomachTiersShared.LIST) do
+	TIERS[#TIERS+1] = { name=t.name, max=t.maxPower, cost=t.cost, robux=t.robux, emoji=t.emoji, unlockSlot=t.unlockSlot }
+end
+
+-- ===== THE ROBUX GUT IS A GAMEPASS (Infinite Gut, id in Shared.Gamepasses) =====
+-- Sugar Rush Gut used to fire BuyStomachEvent like every other row -- and the server drops Robux tiers on the
+-- floor ("Robux tiers are not bought through this event"), so the button did nothing at all. It is a GAMEPASS,
+-- so it prompts Roblox instead, and ownership is what grants the tank: PassOwnership publishes HasInfiniteGut
+-- and StomachUpgrade raises StomachMax off that attribute. Nothing here grants anything.
+local Gamepasses = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Gamepasses"))
+local GUT_PASS = "InfiniteGut"
+local function gutPassLive()  return Gamepasses.isConfigured(GUT_PASS) end
+local function gutPassOwned() return Gamepasses.owns(player, GUT_PASS) end
+-- Price comes from the pass, not the tier row, so the card and the Robux prompt can never disagree.
+local function gutPassPrice() return Gamepasses.PRICE[GUT_PASS] or 0 end
+
+-- highest climb slot reached (server-set attribute; gates the locked rows)
+local function highestSlot()
+	return math.max(1, math.floor(tonumber(player:GetAttribute("HighestSlot")) or 1))
+end
 
 -- ===== read server-owned state (this place stores it in _G.leaderstats) =====
 local function getLeaderstats()
@@ -89,7 +105,7 @@ mkStroke(title,Color3.new(0,0,0),2)
 
 -- Current: <tier>  (GutSkinClient repositions this on open; name matters)
 local currentLabel = mkLabel(panel, {
-	Name="CurrentLabel", Text="Current: Tiny Gut", Font=Enum.Font.GothamBold, TextSize=18,
+	Name="CurrentLabel", Text="Current: "..TIERS[1].name, Font=Enum.Font.GothamBold, TextSize=18,
 	TextColor3=Color3.fromRGB(255,235,120), Size=UDim2.new(1,-40,0,26), Position=UDim2.new(0,20,0,72),
 	TextXAlignment=Enum.TextXAlignment.Left,
 })
@@ -134,8 +150,26 @@ local function buildRows()
 		buyBtn.MouseButton1Click:Connect(function()
 			click()
 			if getStomachMax() >= t.max then return end -- already owned/current
+			if t.robux then
+				-- GAMEPASS, not a coin purchase. prompt() is guarded on an unset id, so a pass with no Robux
+				-- product yet opens nothing rather than a broken prompt.
+				if gutPassOwned() then return end
+				if not gutPassLive() then
+					local old = buyBtn.Text; buyBtn.Text = "Coming Soon"
+					task.delay(1.2, function() buyBtn.Text = old end)
+					return
+				end
+				Gamepasses.prompt(player, GUT_PASS)
+				print("[StomachShop] prompted gamepass:", GUT_PASS, Gamepasses.IDS[GUT_PASS])
+				return
+			end
+			if (t.unlockSlot or 1) > highestSlot() then -- (robux already returned above)
+				local old = buyBtn.Text; buyBtn.Text = "Locked"; buyBtn.BackgroundColor3 = Color3.fromRGB(150,150,150)
+				task.delay(1, function() buyBtn.Text = old end)
+				return
+			end
 			local coins = getCoins()
-			if not t.robux and coins < t.cost then
+			if coins < t.cost then
 				local old = buyBtn.Text; buyBtn.Text = "Not Enough"; buyBtn.BackgroundColor3 = Color3.fromRGB(150,150,150)
 				task.delay(1, function() buyBtn.Text = old end)
 				return
@@ -166,15 +200,33 @@ local function refresh()
 	for _, t in ipairs(TIERS) do
 		local r = rows[t.name]; if not r then continue end
 		local btn = r.buyBtn
-		if smax >= t.max then
+		if t.robux then
+			-- OWNED is read off the pass attribute, NOT off StomachMax: the grant is asynchronous (PassOwnership
+			-- does a web round trip on join), so between joining and the grant landing the card would otherwise
+			-- offer a pass the player already paid for.
+			if gutPassOwned() or smax >= t.max then
+				btn.Active = false; btn.AutoButtonColor = false
+				btn.BackgroundColor3 = Color3.fromRGB(90,90,90)
+				btn.Text = (smax >= t.max) and "EQUIPPED" or "OWNED"
+			elseif not gutPassLive() then
+				btn.Active = false; btn.AutoButtonColor = false
+				btn.BackgroundColor3 = Color3.fromRGB(120,120,120)
+				btn.Text = "COMING SOON"
+			else
+				btn.Active = true; btn.AutoButtonColor = true
+				btn.BackgroundColor3 = Color3.fromRGB(230,60,140)
+				btn.Text = comma(gutPassPrice()).." R$"
+			end
+		elseif smax >= t.max then
 			-- owned / current
 			btn.Active = false; btn.AutoButtonColor = false
 			btn.BackgroundColor3 = Color3.fromRGB(90,90,90)
 			btn.Text = (t.name == currentName) and "EQUIPPED" or "OWNED"
-		elseif t.robux then
-			btn.Active = true; btn.AutoButtonColor = true
-			btn.BackgroundColor3 = Color3.fromRGB(230,60,140)
-			btn.Text = comma(t.cost).." R$"
+		elseif (t.unlockSlot or 1) > highestSlot() then
+			-- not reached this tier's island yet -- the wall stays drawn
+			btn.Active = false; btn.AutoButtonColor = false
+			btn.BackgroundColor3 = Color3.fromRGB(120,120,120)
+			btn.Text = "\xF0\x9F\x94\x92 Island "..(t.unlockSlot or 1)
 		else
 			btn.Active = true; btn.AutoButtonColor = true
 			local afford = coins >= t.cost
@@ -203,6 +255,14 @@ end
 
 -- refresh whenever the shop opens, and live while it's open
 gui:GetPropertyChangedSignal("Enabled"):Connect(function() if gui.Enabled then refresh() end end)
+player:GetAttributeChangedSignal("HighestSlot"):Connect(function() if gui.Enabled then refresh() end end)
+-- The gut pass lands as an attribute -- on join (a web round trip, so AFTER this panel is built) and again the
+-- instant a purchase completes. Refresh UNCONDITIONALLY, not just while open: the buyer is looking at the panel
+-- when the prompt closes, and a gated refresh would leave the card still saying "499 R$" until they reopen it.
+do
+	local attr = Gamepasses.ATTR[GUT_PASS]
+	if attr then player:GetAttributeChangedSignal(attr):Connect(refresh) end
+end
 task.spawn(function()
 	-- bind to leaderstats value changes once they exist
 	local bound = false

@@ -83,7 +83,7 @@ end
 local GARDENER_GREETING = "Howdy, friend! \xF0\x9F\x8C\xBB What would you like to know?"
 local GARDENER_QA = {
 	{ key = "what",   label = "What is the Community Garden?", answer = "We all water it together to grow one giant sunflower! When it's full, everyone gets rewarded. \xF0\x9F\x8C\xBB" },
-	{ key = "help",   label = "How do I help it grow?",        answer = "Walk up to the watering spot and hold E to water it! You can water once a day. \xF0\x9F\x92\xA7" },
+	{ key = "help",   label = "How do I help it grow?",        answer = "Take my Watering Can, walk to the watering spot and swing it! You can water once a day. \xF0\x9F\x92\xA7" },
 	{ key = "close",  label = "How close are we?",             answer = "" }, -- filled LIVE by the server (gardenerLiveAnswer)
 	{ key = "reward", label = "What do I get?",                answer = "When it's fully grown, everyone online gets a reward -- plus a seasonal cosmetic! \xF0\x9F\x8E\x81" },
 	{ key = "who",    label = "Who are you?",                  answer = "Me? I'm the old garden keeper -- I tend the soil and cheer on every drop you pour! \xF0\x9F\x98\x84" },
@@ -98,7 +98,7 @@ local gardenProgress = 0
 local onProgressChanged  -- forward-declared (defined after the visuals)
 local refreshGrowthDial  -- forward-declared; (re)draws the central growth dial from the LIVE progress (assigned in buildHardscape)
 local contributorLabel   -- the TextLabel on the "PLAYERS CONTRIBUTED" sign (refreshed alongside the dial)
-local gardenContributors -- TODO: wire to the real contributor count; nil -> signs/dial show an em-dash placeholder
+local gardenContributors -- the live TIMES WATERED total; nil -> signs/dial show an em-dash placeholder
 local function getProgress() return gardenProgress end
 local function setProgress(n)
 	gardenProgress = math.clamp(math.floor(n), 0, GOAL)
@@ -106,6 +106,26 @@ local function setProgress(n)
 	if onProgressChanged then pcall(onProgressChanged) end
 end
 local function addProgress(n) setProgress(gardenProgress + n) end
+
+-- ===== THE GROWTH METER AND THE "TIMES WATERED" CHART ARE THE SAME STORY =====
+-- The meter counts growth POINTS (0 -> GOAL). The chart counts CONTRIBUTIONS (one per watering, one per Robux
+-- donation). They were two separate DataStore keys that never spoke: the meter could read 800/2000 while the
+-- chart read an em-dash, and nothing in the garden could answer "how many kids put that 800 there?".
+--
+-- They are linked by one number -- WATER_AMOUNT, the growth a single watering adds. Every point on the meter
+-- came from somebody, so `progress / WATER_AMOUNT` is how many waterings it must have taken to get there.
+-- That gives the garden a way to DERIVE the contributor count from the meter alone, which matters twice:
+--   * before the chart's own key exists (a garden that has been growing since before the counter was added
+--     would otherwise report zero contributors while standing at 40% grown), and
+--   * when the counter store is unreachable -- Studio with API access off shows a real number instead of "—".
+--
+-- It's a FLOOR, not an exact count: Robux donations add more than one watering's worth of growth, so the real
+-- number of contributions is at least this. Wherever both numbers exist the STORED count wins, because it
+-- counted the actual events; the estimate is only ever used to pull the figure UP, never down.
+local function contributionsFromProgress()
+	if WATER_AMOUNT <= 0 then return 0 end
+	return math.floor(getProgress() / WATER_AMOUNT + 0.5)
+end
 
 -- ===== STAGE 4 (GLOBAL CROSS-SERVER) forward declarations. The bodies live in the "GLOBAL GARDEN" module further
 -- down; declared here so the watering handler, the fill milestone, and INIT can call them. When the backend is
@@ -1207,19 +1227,33 @@ end
 -- Refresh the "PLAYERS CONTRIBUTED" sign (Sign_TR) NOW from the live count. Sets `gardenContributors` (which
 -- refreshGrowthDial reads on every future redraw) AND updates its `contributorLabel` immediately.
 local function refreshDonorSign()
-	gardenContributors = uniqueDonorCount
-	if contributorLabel then pcall(function() contributorLabel.Text = tostring(uniqueDonorCount) end) end
+	-- Same max() the dial uses, so the sign by the gate and the number on the meter are never two different
+	-- answers to one question -- whichever the player reads first, the other agrees with it.
+	gardenContributors = math.max(uniqueDonorCount, contributionsFromProgress())
+	if contributorLabel then pcall(function() contributorLabel.Text = tostring(gardenContributors) end) end
 end
 
--- Load the persisted unique-donor total once (at init) and refresh the sign.
+-- Load the persisted TIMES WATERED total once (at init), reconcile it against the growth meter, refresh the sign.
+--
+-- RECONCILE, don't just load. The meter and this counter are two separate keys written at different times, so
+-- they can disagree -- a garden that grew before this counter existed loads progress=800 alongside count=0, and
+-- the sign would claim nobody has ever watered a garden that is visibly 40% grown. Taking the HIGHER of the
+-- stored count and what the meter implies (see contributionsFromProgress) makes the two agree, and can only
+-- ever raise the number: growth that exists had to come from somebody.
+-- Kept inside a task.spawn: GetAsync yields, and every caller of this expects it to return immediately.
 local function loadDonorCount()
-	if not donorStore then return end
 	task.spawn(function()
-		local ok, v = pcall(function() return donorStore:GetAsync(DONOR_COUNT_KEY) end)
-		if ok and tonumber(v) then
-			uniqueDonorCount = math.floor(tonumber(v))
-			refreshDonorSign()
+		local stored
+		if donorStore then
+			local ok, v = pcall(function() return donorStore:GetAsync(DONOR_COUNT_KEY) end)
+			if ok and tonumber(v) then stored = math.floor(tonumber(v)) end
 		end
+		local implied = contributionsFromProgress()
+		uniqueDonorCount = math.max(stored or 0, implied)
+		refreshDonorSign()
+		if refreshGrowthDial then pcall(refreshGrowthDial) end -- the dial carries the same number; redraw it
+		print(("[GARDEN DONORS] times watered = %d  (stored=%s, implied by the %d/%d growth meter=%d)")
+			:format(uniqueDonorCount, tostring(stored), getProgress(), GOAL, implied))
 	end)
 end
 
@@ -1528,10 +1562,10 @@ local function buildHardscape()
 			end
 			-- darker wooden frame/trim BEHIND the board (a touch larger -> a clean border ring shows around the plank)
 			local frame = hpart("ArchSignFrame", BLK, Vector3.new(12.0, 3.4, 0.5), Color3.fromRGB(90, 58, 30), faceCF(1.15), false)
-			frame.Material = Enum.Material.WoodPlanks
+			frame.Material = Enum.Material.SmoothPlastic
 			-- the WOOD PLANK board (proud of the frame); its outward Front(-Z) face holds the text
 			local board = hpart("ArchSignBoard", BLK, Vector3.new(11.0, 2.8, 0.45), Color3.fromRGB(120, 80, 45), faceCF(1.45), false)
-			board.Material = Enum.Material.Wood
+			board.Material = Enum.Material.SmoothPlastic
 			local sg = Instance.new("SurfaceGui")
 			sg.Name = "ArchSignUI"; sg.Face = Enum.NormalId.Front
 			sg.CanvasSize = Vector2.new(550, 140); sg.Parent = board
@@ -2419,24 +2453,34 @@ local function buildHardscape()
 		end
 		label(sg, "GLOBAL GROWTH", 0.14, 0.20, GOLD, Enum.Font.FredokaOne)
 		local pctL = label(sg, "0%", 0.40, 0.42, DGREEN, Enum.Font.FredokaOne)          -- big bold percent
-		label(psg, "NEXT REWARD", 0.06, 0.42, GOLDB, Enum.Font.FredokaOne)
-		local cntL = label(psg, "0 / " .. GOAL, 0.52, 0.42, WHITETXT, Enum.Font.GothamBold)
+		label(psg, "NEXT REWARD", 0.02, 0.34, GOLDB, Enum.Font.FredokaOne)
+		local cntL  = label(psg, "0 / " .. GOAL, 0.36, 0.32, WHITETXT, Enum.Font.GothamBold)
+		-- The meter now says WHO grew it, not just how much. Same number as the TIMES WATERED sign by the
+		-- gate -- one figure, two places -- so a kid reading the dial doesn't have to walk over to find out
+		-- whether anyone else is helping.
+		local helpedL = label(psg, "0 players helped", 0.68, 0.28, GOLD, Enum.Font.GothamBold)
 		-- the module-level updater (UNCHANGED logic): reads the live progress, updates text + lights the ring proportionally
 		refreshGrowthDial = function()
 			local p, g = getProgress(), GOAL
 			local pct = math.clamp(math.floor(p / g * 100), 0, 100)
+			-- HOW MANY KIDS HELPED. The live TIMES WATERED total when we have it; otherwise what the meter
+			-- itself implies (progress / WATER_AMOUNT), so the dial answers the question either way instead
+			-- of showing a dash. max() of the two because growth on the meter had to come from somebody --
+			-- the count can be behind reality, never ahead of it.
+			local helpers = math.max(gardenContributors or 0, contributionsFromProgress())
 			pcall(function()
 				pctL.Text = pct .. "%"
 				cntL.Text = string.format("%d / %d", p, g)
+				helpedL.Text = (helpers == 1) and "1 player helped" or string.format("%d players helped", helpers)
 				local lit = math.floor(pct / 100 * N + 0.5)
 				for i = 1, N do
 					local on = (i <= lit)
 					segs[i].Color = on and DGREEN or GOLDB
 					segs[i].Material = on and Enum.Material.Neon or Enum.Material.SmoothPlastic
 				end
-				if contributorLabel then contributorLabel.Text = tostring(gardenContributors or "\xE2\x80\x94") end
+				if contributorLabel then contributorLabel.Text = tostring(helpers) end
 			end)
-			print("[Garden][Dial] refreshed -> " .. pct .. "% (" .. p .. "/" .. g .. ")")
+			print(("[Garden][Dial] refreshed -> %d%% (%d/%d), %d player(s) helped"):format(pct, p, g, helpers))
 		end
 		refreshGrowthDial() -- initial draw
 	end)
@@ -2677,7 +2721,17 @@ local function buildGarden(island)
 	-- SOIL: keep the existing CommunityGarden plot at its ORIGINAL colour (no full-plot recolor) -- the dark
 	-- fertilized soil is drawn as a ROUND disc inside the border ring in renderStage, so the rectangle's corners
 	-- stay normal grass/ground outside the ring.
-	pcall(function() if fieldM:IsA("BasePart") then fieldM.Transparency = 0; fieldM.CanCollide = false end end) -- keep the dirt visible
+	-- HIDE THE PLOT RECTANGLE (it is the "random fallen board").
+	-- This part is Workspace.Island_1_BeanFarm.CommunityGarden -- the garden's ANCHOR, the thing the whole build
+	-- parents under. It must keep existing, so it is hidden, never destroyed: deleting it takes the entire garden
+	-- with it.
+	--
+	-- It is a 63 x 0.1 x 80 slab, and it used to be left visible as "the dirt". But the hardscape now lays ONE
+	-- continuous stone surface out to about r46, and the round soil beds sit inside that -- so the only parts of
+	-- the rectangle anyone ever saw were its four CORNERS, poking out past the stone as a thin flat board lying on
+	-- the grass. There is no dirt left for it to show; the soil is drawn by the ring beds and the centre bed.
+	-- CanCollide stays false either way, so hiding it changes nothing you can walk on.
+	pcall(function() if fieldM:IsA("BasePart") then fieldM.Transparency = 1; fieldM.CanCollide = false end end)
 
 	-- COMPOSITION FRAME: the center of the field's top surface (the centerpiece sits here) + a usable layout
 	-- radius. The rings of flowers, the planter border + the edge bushes are all arranged out from this center
@@ -2728,19 +2782,24 @@ end
 -- WATERING (server-authoritative). The client sends a "water" intent; the server validates the cooldown
 -- + proximity, adds the progress, and broadcasts the splash so all clients play the effect.
 --======================================================================
--- WATERING CAN toggle. false = the can is a nicer ALTERNATIVE (the WaterSpot hold-E still works, so nothing
--- that exists today breaks). true = the can is the ONLY way to water and the WaterSpot prompt is refused.
+-- WATERING CAN toggle. false = the can is a nicer ALTERNATIVE (the WaterSpot hold-E also works).
+-- true = THE CAN IS THE ONLY WAY TO WATER, and a bare "water" intent is refused.
+--
+-- Now TRUE: watering the global garden by walking up and holding E has been removed. Getting the can from the
+-- Gardener and swinging it is the single route, so there is one thing to learn instead of two that do the same
+-- job. CommunityGarden.client.lua no longer builds the WaterSpot prompt at all -- the refusal below is only a
+-- backstop against a stale client or a hand-crafted remote call, not something a real player can reach.
 -- Declared up here because the remote handler below reads it.
-local CAN_REQUIRED = false
+local CAN_REQUIRED = true
 
 local function holdingCan(player)
 	local char = player.Character
 	return (char and char:FindFirstChild("Watering Can")) ~= nil -- equipped = parented to the character
 end
 
--- The ONE watering action. Both entry points -- the WaterSpot hold-E prompt (via GardenWaterEvent) and the
--- Watering Can tool (below) -- funnel through here, so the cooldown + proximity checks can't be bypassed by
--- using one path instead of the other. Returns false (and tells the caller why) if the water was rejected.
+-- The ONE watering action. The Watering Can tool (below) is now the only route that reaches it -- the WaterSpot
+-- hold-E prompt has been removed -- but it stays a shared funnel so the cooldown + proximity checks live in
+-- exactly one place if a second route is ever added back. Returns false (and tells the caller why) on reject.
 local function tryWater(player)
 	local remain = cooldownRemaining(player)
 	if remain > 0 then
@@ -2776,18 +2835,20 @@ GardenWaterEvent.OnServerEvent:Connect(function(player, action)
 		return
 	end
 	if action ~= "water" then return end
-	-- When the can is REQUIRED, the WaterSpot prompt is refused unless you're actually holding it.
+	-- The can is REQUIRED, so a bare "water" intent is refused unless they're actually holding it. Answer with
+	-- "needcan", NOT "denied" -- denied means "already watered today" and the client says "Come back tomorrow!",
+	-- which would be a flat lie to someone who simply hasn't picked up the can yet.
 	if CAN_REQUIRED and not holdingCan(player) then
-		pcall(function() GardenWaterEvent:FireClient(player, { kind = "denied", secs = 0 }) end)
+		pcall(function() GardenWaterEvent:FireClient(player, { kind = "needcan" }) end)
 		return
 	end
 	tryWater(player)
 end)
 
 --======================================================================
--- WATERING CAN. The Gardener hands you a can (hold-E on him); swing it near the WaterSpot to water. This is a
--- SECOND route into tryWater() above -- the original hold-E on the WaterSpot still works, so nothing that
--- exists today breaks. Set CAN_REQUIRED = true to make the can the ONLY way to water.
+-- WATERING CAN. The Gardener hands you a can (hold F on him); swing it near the WaterSpot to water. This is
+-- now the ONLY route into tryWater() above -- CAN_REQUIRED is true and the WaterSpot's hold-E prompt has been
+-- removed from CommunityGarden.client.lua. Set CAN_REQUIRED = false to bring the second route back.
 --
 -- No LocalScript: Tool.Activated fires on the SERVER for an equipped tool, so the whole flow is server-side.
 -- (CAN_REQUIRED is declared up by tryWater, since the remote handler needs to read it too.)
@@ -2990,25 +3051,47 @@ task.spawn(function()
 	end
 	if not gardener then warn("[Garden][Can] Gardener never appeared -- no watering can prompt"); return end
 
-	local anchor = gardener:FindFirstChild("HumanoidRootPart") or gardener:FindFirstChildWhichIsA("BasePart")
+	-- HEAD FIRST, to match GardenerTalkPrompt. Both prompts are E and only one shows at a time, so hanging
+	-- them on the same part means that one E button appears in exactly the same place whichever action is
+	-- being offered -- instead of jumping from his chest to his head as the state flips. Root is kept as the
+	-- fallback for a rig with no Head.
+	local anchor = gardener:FindFirstChild("Head")
+		or gardener:FindFirstChild("HumanoidRootPart")
+		or gardener:FindFirstChildWhichIsA("BasePart")
 	if not anchor then warn("[Garden][Can] Gardener has no part to hang the prompt on"); return end
 
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name             = "TakeWateringCan"
 	prompt.ActionText       = "Take Watering Can"
 	prompt.ObjectText       = "Gardener"
-	-- F, NOT E. The Gardener already carries a hold-E "GardenerTalkPrompt" on his head, and Roblox only fires
-	-- the NEAREST prompt bound to a key -- so a second E prompt on his root was swallowing every press and his
-	-- chat panel could never open. Different key = both live side by side, and Talk keeps E.
-	prompt.KeyboardKeyCode  = Enum.KeyCode.F
+	-- ===== ALWAYS E =====
+	-- Both of the Gardener's prompts are E. That is only safe because they are now MUTUALLY EXCLUSIVE -- see
+	-- applyPromptRules() in GardenerChat.client: exactly one of Talk / Take Watering Can is ever Enabled for
+	-- a given player, so Roblox's "fire the nearest prompt bound to this key" rule has nothing to arbitrate.
+	--
+	-- This was F precisely BECAUSE two live E prompts fought: the can sat lower on the model, won every
+	-- press, and the chat panel could never open. Rekeying on its own would bring that straight back -- the
+	-- exclusivity rule is what makes one key correct. If that client rule is ever removed, this goes back to
+	-- F the same day.
+	prompt.KeyboardKeyCode = Enum.KeyCode.E
+	prompt.GamepadKeyCode  = Enum.KeyCode.ButtonX -- the default, same as Talk: one button everywhere, like E
+
+	-- Explicit rather than relying on the default: this is the property that makes a prompt TAPPABLE, and a
+	-- phone player has no other route to the can -- no keyboard, and CoreClient hides the hotbar.
+	prompt.ClickablePrompt = true
+
+	-- No UIOffset: with one prompt live at a time there is nothing to separate, and nudging this one down
+	-- would make the same E button jump position depending on which action was being offered.
+
 	prompt.HoldDuration     = 0.5
 	prompt.MaxActivationDistance = 12
 	prompt.RequiresLineOfSight   = false
 	prompt.Parent           = anchor
 	prompt.Triggered:Connect(giveCan)
 
-	print("[Garden][Can] watering can ready -- hold F on the Gardener to take one (E still talks to him)" ..
-		(CAN_REQUIRED and " [REQUIRED to water]" or ""))
+	print("[Garden][Can] watering can ready -- hold E (or tap) on the Gardener to take one. Talk is E too; "
+		.. "the client shows exactly one of them at a time, so they never fight."
+		.. (CAN_REQUIRED and " [REQUIRED to water]" or ""))
 end)
 
 --======================================================================

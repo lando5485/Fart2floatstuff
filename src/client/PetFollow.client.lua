@@ -138,9 +138,40 @@ local localQuestProg = {}    -- [petId] = { started=bool, found=n, total=n_or_ni
 local refreshQuestHUD        -- assigned where the tracker GUI is built (below); closures capture this upvalue
 local function pushQuestProg(petId, fields)
 	local lp = localQuestProg[petId] or {}
+	local wasComplete = lp.complete == true
 	for k, v in pairs(fields) do lp[k] = v end
 	localQuestProg[petId] = lp
 	if refreshQuestHUD then pcall(refreshQuestHUD) end
+
+	-- ===== A QUEST STEP FINISHING IS A MILESTONE, SO IT TAKES THE HERO LANE ALONE =====
+	-- The tracker above is a persistent counter -- it says "3/3" and keeps sitting there. The COMPLETION is
+	-- news, and this realm's rule is that a tutorial/milestone moment gets the top-centre banner to itself:
+	-- while it plays, arrival cards, event titles, promos, reward toasts and purchase confirmations all
+	-- queue and follow it, in order, never over or beside it. The one thing that outranks it is the garden
+	-- watering quest's live step directions.
+	--
+	-- Guarded on the TRANSITION (wasComplete -> complete), because pushQuestProg is called again on later
+	-- field updates for the same quest and a completion is a once-ever beat, not a repeating state.
+	--
+	-- Everything here is inline on purpose: this file's main chunk sits at 198 of Luau's 200 local
+	-- registers, so a top-level `local NC = ...` would take the script over the ceiling and silently kill
+	-- every pet, quest and tracker in the game.
+	if lp.complete == true and not wasComplete then
+		if _G.NotifyCenter then
+			local spec = {
+				top   = "\xE2\x9C\x85 QUEST COMPLETE",
+				text  = "\xF0\x9F\xA5\x9A  YOUR EGG IS READY!",
+				sub   = "Follow the arrows \xE2\x80\x94 they are pointing straight at it",
+				color = Color3.fromRGB(126, 217, 87),
+				exclusive = true,
+				priority = (_G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.TUTORIAL) or 150,
+				duration = 4,
+			}
+			if _G.NotifyCenter.tutorial then pcall(_G.NotifyCenter.tutorial, spec)
+			elseif _G.NotifyCenter.push then pcall(_G.NotifyCenter.push, spec) end
+		end
+		print("[Pet][HUD] quest step COMPLETE for " .. tostring(petId) .. " -- exclusive hero banner")
+	end
 end
 
 local PetCollectEvent      = RS:WaitForChild("PetCollectEvent", 30)
@@ -418,13 +449,42 @@ do
 		local attr = attrFor(def)
 		if not attr then return true end -- seasonal/starter pets have no island: nothing to gate
 		if player:GetAttribute(attr) == true then return true end
-		-- refused. Say why ONCE -- mashing E must not stack ten labels on top of each other.
+		-- ===== THE REFUSAL IS A BANNER NOW, NOT FLOATING WORLD TEXT =====
+		-- This used to be a floatText: a 3D label spawned two and a half studs above whichever prop you
+		-- touched. Three problems, all of them fixed by using the same lane every other message uses.
+		--   1. IT WAS SOMEWHERE ELSE. Every other "you can't do that yet" in this game -- the locked food
+		--      stand, the wormhole's "land first" -- arrives as a banner at the top. This one appeared over
+		--      a bush, in a different size, in a different font, at whatever distance you happened to be
+		--      standing. A player learns where to look for refusals; this taught the opposite.
+		--   2. IT WAS UNREADABLE AT RANGE. World text scales with distance. Touch a prop from the far side
+		--      of a prompt's radius and the sentence was a few pixels tall.
+		--   3. IT COULD OVERLAP ANYTHING. Being world-space it had no idea what was on screen, so it could
+		--      land straight across a hero banner or a tutorial instruction.
+		-- As a banner it is the same 500-wide card, in the same place, at EVENT priority: it queues behind
+		-- the garden watering directions and any exclusive tutorial/achievement moment rather than talking
+		-- over them, and it cannot preempt one at all.
+		--
+		-- The 2s throttle is KEPT and still matters -- it is what stops mashing E from queueing ten
+		-- identical banners behind each other. (NotifyCenter also drops an exact repeat within 2s, so this
+		-- is belt and braces, but the throttle is the one that keeps the log quiet too.)
+		--
+		-- `pos` is now only a "was this an actual interaction" flag rather than a place to draw at; it is
+		-- kept in the signature because every call site passes it and the silent form still passes nil.
+		--
+		-- Inline on _G with no new top-level local: this file's main chunk is at Luau's 200-register
+		-- ceiling and one more would stop the entire script -- pets, quests and trackers -- from compiling.
 		if pos and os.clock() - msgAt > 2 then
 			msgAt = os.clock()
-			if typeof(pos) == "Vector3" then
-				floatText(pos + Vector3.new(0, 2.5, 0), "Talk to the Quest NPC to start this quest!")
+			if _G.NotifyCenter and _G.NotifyCenter.push then
+				pcall(_G.NotifyCenter.push, {
+					top   = "\u{1F512} Quest Not Started",
+					text  = "Talk to the Quest NPC to start this quest!",
+					color = Color3.fromRGB(255, 190, 60), -- the same amber the locked food stand uses
+					priority = (_G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT) or 80,
+					duration = 3,
+				})
 			end
-			print("[Pet][Quest] blocked -- " .. tostring(attr) .. " not accepted yet")
+			print("[Pet][Quest] blocked -- " .. tostring(attr) .. " not accepted yet (hero banner shown)")
 		end
 		return false
 	end
@@ -653,55 +713,32 @@ local function ensureCrackUI()
 	return crackUI
 end
 -- Per-coconut difficulty for the TUG-OF-WAR crack: drain = how fast the bar falls/sec; fill = how much each
--- tap pushes it up. Success when the bar reaches the TOP (need taps/sec > drain/fill). Tuned EASIER than the
--- old tap-count -- a few easy, a couple medium, a couple hard; even the hard ones are doable by a fast tapper.
--- RETUNED FOR LENGTH: a coconut used to crack in ~2 seconds. Two things now hold it to 15s+:
---   * each tap moves the bar a small amount, so it's ~40-50 taps of real work, and
---   * `secs` is a HARD FLOOR -- the bar is clamped to a ceiling that rises over exactly that many seconds,
---     so no amount of mashing finishes a coconut early. Tapping SLOWER than the ceiling still costs you time,
---     the ceiling only stops you going faster.
+-- tap pushes it up. Success when the bar reaches the TOP (need taps/sec > drain/fill). `secs` is a HARD
+-- FLOOR -- the bar is clamped to a ceiling that rises over exactly that many seconds, so no amount of
+-- mashing finishes a coconut early; tapping slower than the ceiling still costs extra time.
 --
--- ===== 75% FEWER TAPS THAN THE ORIGINAL (40%, 10% x3, 15% x2, THEN 20%) =====
--- Every `fill` below has been divided by 0.6, then 0.9 three times, then 0.85 twice, then 0.8 -- 0.252 of
--- the original tap cost, so a coconut now takes a quarter of the taps it did originally, and 80% of the
--- last pass.
+-- ===== RETUNED SHORT AGAIN: 2.5-4s FLOORS (was 6-11s, before that 15-19s) =====
+-- `secs` is the only number that decides how long a coconut ACTUALLY takes, because the ceiling it drives
+-- is a hard clamp -- no amount of mashing beats it. 6-11s still read as slow across seven coconuts, so the
+-- floors come down to "a few seconds each": 2.5s on the first, 4s on the last.
 --
--- `drain` and `secs` are deliberately UNCHANGED, every time. The ask was fewer clicks, not a shorter quest:
--- the `secs` floor still holds each coconut at 15-19 seconds no matter how fast you tap, so the pacing of
--- Coconut Cove -- and the total length of the climb -- is exactly as it always was. What changed is how hard
--- a finger works to fill that same window.
+-- `fill` is raised to match. The ceiling now rises ~0.34/sec, so the bar needs ~2.5 taps/sec just to keep
+-- pace with it -- at the old fill values a player would tap well UNDER the ceiling and the real time would
+-- drift back over the floor, which is exactly how the 15-19s floors played as 45s. A big fill keeps normal
+-- tapping pinned to the ceiling, so the floor is what players actually experience.
 --
 -- Taps to crack = (rise + drain x secs) / fill, where rise = 1 - CRACK_START:
---   coconut 1   68 -> 41 -> 37 -> 33 -> 30 -> 26 -> 21 -> 17 taps    coconut 7   89 -> ... -> 28 -> 22
---   whole quest 536 -> 322 -> 290 -> 261 -> 235 -> 200 -> 169 -> 135 taps
---
--- The difficulty CURVE is untouched -- easy 1-3, medium 4-5, hard 6-7 all scale by the same factor every
--- time, so 7 is still nominally harder than 1.
---
--- ===== `fill` IS NOW SPENT AS A LEVER, ON EVERY COCONUT =====
--- The tap rate needed to out-pace the drain is drain/fill. Below 1.0 the `secs` ceiling rises faster than
--- the bar drains, so the bar climbs on its own: the coconut cannot be failed, only waited out.
---
---   1: 0.63   2: 0.63   3: 0.68   |   4: 0.71   5: 0.75   6: 0.77   |   7: 0.81
---
--- ALL SEVEN are now well under 1.0 -- the highest sits at 0.81. Every coconut is a 15-19 second wait with
--- light tapping; none of them can be lost, and the "difficulty curve" above is now a difference in the
--- number on the label rather than anything a player experiences.
---
--- Cutting `fill` again would change nothing anyone can feel: the bar already out-climbs the drain by a
--- wide margin everywhere, so fewer taps just means more idle seconds staring at a bar that fills itself.
--- The ONLY remaining cost is `secs` -- 7 coconuts x 15-19s, about two minutes of Coconut Cove. If this
--- still feels long, that is the number to change, but it makes the quest SHORTER rather than easier and
--- it moves the pacing of the whole climb.
+--   coconut 1 ~4 taps ... coconut 7 ~5 taps; whole quest ~31 taps and ~23s of floors (was ~57s, orig ~115s).
+-- Still a real tapping minigame -- just a short one. The easy/medium/hard curve keeps its shape.
 local CRACK_START = 0.16 -- where the bar starts (also fixes how far it has to climb)
 local CRACK_DIFFICULTY = {
-	[1] = { drain = 0.070, fill = 0.1109, secs = 15, name = "Easy" },
-	[2] = { drain = 0.070, fill = 0.1109, secs = 15, name = "Easy" },
-	[3] = { drain = 0.075, fill = 0.1109, secs = 16, name = "Easy" },
-	[4] = { drain = 0.082, fill = 0.1148, secs = 17, name = "Medium" },
-	[5] = { drain = 0.086, fill = 0.1148, secs = 17, name = "Medium" },
-	[6] = { drain = 0.092, fill = 0.1189, secs = 18, name = "Hard" },
-	[7] = { drain = 0.096, fill = 0.1189, secs = 19, name = "Hard" },
+	[1] = { drain = 0.05, fill = 0.24, secs = 2.5, name = "Easy" },
+	[2] = { drain = 0.05, fill = 0.24, secs = 2.5, name = "Easy" },
+	[3] = { drain = 0.06, fill = 0.23, secs = 3,   name = "Easy" },
+	[4] = { drain = 0.06, fill = 0.22, secs = 3,   name = "Medium" },
+	[5] = { drain = 0.07, fill = 0.21, secs = 3.5, name = "Medium" },
+	[6] = { drain = 0.07, fill = 0.20, secs = 3.5, name = "Hard" },
+	[7] = { drain = 0.08, fill = 0.20, secs = 4,   name = "Hard" },
 }
 
 -- TUG-OF-WAR crack: the fill bar constantly DRAINS down; each tap pushes it UP. Fill it to the TOP to crack.
@@ -710,9 +747,9 @@ local function openCrackMinigame(onCracked, diff)
 	if crackBusy then return end
 	crackBusy = true
 	local ui = ensureCrackUI()
-	-- fill scaled by the same factor as CRACK_DIFFICULTY above -- an 8th coconut falling back to this default
+	-- default matches the retuned CRACK_DIFFICULTY above -- an 8th coconut falling back to this default
 	-- would otherwise be the one that still cost the old number of taps
-	diff = diff or { drain = 0.082, fill = 0.1148, secs = 16, name = "" }
+	diff = diff or { drain = 0.06, fill = 0.22, secs = 3, name = "" }
 	local fill = CRACK_START -- small head start so the long crack still starts near-empty
 	-- TIME FLOOR: `ceiling` rises from the start position to full over diff.secs and the bar is clamped to it,
 	-- so the crack can NEVER complete faster than that no matter how fast the player taps.
@@ -817,7 +854,7 @@ local function buildCoconutWorld(petId, def, positions)
 			pos = pos + (COCO_NUDGE[i] or Vector3.zero)
 			st.hintAnchor = st.hintAnchor or pos -- the on-landing hint anchors at a COCONUT (on the island), not the cave chest
 			local coco = Instance.new("Model"); coco.Name = "Coconut"..i
-			local b = newPart(coco, "Coco", Enum.PartType.Ball, Vector3.new(1.6,1.6,1.6), Color3.fromRGB(112,72,42), CFrame.new(pos), Enum.Material.Wood)
+			local b = newPart(coco, "Coco", Enum.PartType.Ball, Vector3.new(1.6,1.6,1.6), Color3.fromRGB(112,72,42), CFrame.new(pos), Enum.Material.SmoothPlastic)
 			coco.PrimaryPart = b
 			for _, sp in ipairs({ {0,0.2,0.65}, {-0.3,-0.2,0.6}, {0.3,-0.2,0.6} }) do
 				newPart(coco, "Spot", Enum.PartType.Ball, Vector3.new(0.3,0.3,0.2), Color3.fromRGB(66,40,22), CFrame.new(pos) * CFrame.new(sp[1],sp[2],sp[3]))
@@ -858,13 +895,13 @@ local function buildCoconutWorld(petId, def, positions)
 	local chestRot = CFrame.Angles(0, math.rad(130), 0)
 	local function chestCF(ox, oy, oz) return CFrame.new(eggPos) * chestRot * CFrame.new(ox, oy, oz) end
 	local chest = Instance.new("Model"); chest.Name = petId.."Chest"
-	local base = newPart(chest, "ChestBase", Enum.PartType.Block, Vector3.new(4,2.2,3), Color3.fromRGB(120,78,40), chestCF(0,1.1,0), Enum.Material.Wood)
+	local base = newPart(chest, "ChestBase", Enum.PartType.Block, Vector3.new(4,2.2,3), Color3.fromRGB(120,78,40), chestCF(0,1.1,0), Enum.Material.SmoothPlastic)
 	chest.PrimaryPart = base
 	newPart(chest, "Band", Enum.PartType.Block, Vector3.new(4.1,0.4,3.1), Color3.fromRGB(70,70,80), chestCF(0,0.6,0), Enum.Material.Metal)
 	newPart(chest, "Band", Enum.PartType.Block, Vector3.new(4.1,0.4,3.1), Color3.fromRGB(70,70,80), chestCF(0,1.7,0), Enum.Material.Metal)
 	local lid = Instance.new("Model"); lid.Name = "Lid"; lid.Parent = chest
 	local lidHinge = chestCF(0, 2.2, -1.5).Position -- back-top hinge (in the rotated frame)
-	local lidPart = newPart(lid, "ChestLid", Enum.PartType.Block, Vector3.new(4,1.2,3), Color3.fromRGB(138,92,50), chestCF(0,2.6,0), Enum.Material.Wood)
+	local lidPart = newPart(lid, "ChestLid", Enum.PartType.Block, Vector3.new(4,1.2,3), Color3.fromRGB(138,92,50), chestCF(0,2.6,0), Enum.Material.SmoothPlastic)
 	lid.PrimaryPart = lidPart
 	newPart(lid, "Lock", Enum.PartType.Block, Vector3.new(0.7,0.9,0.4), Color3.fromRGB(220,190,60), chestCF(0,2.1,1.55), Enum.Material.Metal)
 	chest.Parent = Workspace
@@ -1904,6 +1941,52 @@ local function ensureReelUI()
 	reelUI = { gui = ui.gui, zone = zone, fish = fish, pb = pb, hint = ui.hint, ready = ready }
 	return reelUI
 end
+--======================================================================
+-- FISHING SOUNDS
+--======================================================================
+-- The Butter Swamp fishing quest had NO audio at all -- every beat of it (the cast, the bobber landing, the
+-- bite, the fight, the catch) happened in silence, which is why the minigame reads as a bar moving rather
+-- than as fishing. Five cues, one per beat.
+--
+-- ===== 2D vs 3D, AND WHY THE SPLASH IS THE ODD ONE =====
+-- Four of these are things happening TO YOU and play flat out of SoundService: you always hear your own cast
+-- and your own bite at full strength regardless of where the camera is. The SPLASH is the exception -- it is
+-- a thing happening OUT THERE, at the bobber, several studs away across the butter. Parenting it to the
+-- bobber makes it positional, so it arrives from the direction you just cast in. That is the whole reason
+-- the cast reads as travelling somewhere.
+--
+-- ===== THE SPLASH IS DELAYED ON PURPOSE =====
+-- The cast tween is 0.6s (see the NumberValue arc below), so the bobber is still in the AIR for that whole
+-- time. Playing the splash on the cast would land the water sound while the bobber is at the top of its arc.
+-- It fires at +0.6s, when the bobber actually touches down.
+local FISH_SFX = {
+	cast    = { id = "rbxassetid://119135010875996", volume = 1.2 },  -- bobber leaves the rod tip
+	splash  = { id = "rbxassetid://124279162156159", volume = 1.4 },  -- +0.6s, ON the bobber (the landing)
+	bite    = { id = "rbxassetid://115878657073501", volume = 1.6 },  -- with the "!" billboard
+	reel    = { id = "rbxassetid://79404754846319",  volume = 1.0, looped = true }, -- while you HOLD
+	pullOut = { id = "rbxassetid://93360393539898",  volume = 1.5 },  -- egg or junk, before the status text
+}
+
+-- Play a cue. `parent` makes it positional (3D) from that part; omitted, it plays flat out of SoundService.
+-- Returns the Sound so a LOOPED cue can be stopped by its caller; one-shots clean themselves up via Debris.
+--
+-- pcall-wrapped at every call site rather than here: a bad or unapproved asset id is a silent no-op in
+-- Roblox (the Sound simply never loads), so a broken cue can never take the fishing quest down with it.
+local function playFishSfx(cue, parent)
+	local c = FISH_SFX[cue]
+	if not c then return nil end
+	local s = Instance.new("Sound")
+	s.SoundId = c.id
+	s.Volume  = c.volume
+	s.Looped  = (c.looped == true)
+	-- A 3D cue parented to the bobber dies with the bobber, which is correct: destroying the bobber IS the
+	-- end of that sound's subject. Debris only guards the flat ones, which have nothing to outlive.
+	s.Parent = parent or SoundService
+	s:Play()
+	if not s.Looped then game:GetService("Debris"):AddItem(s, 6) end
+	return s
+end
+
 local function openReelMinigame(onDone)
 	if reelBusy then if onDone then onDone(false) end return end
 	reelBusy = true
@@ -1922,13 +2005,26 @@ local function openReelMinigame(onDone)
 	ui.pb.Size = UDim2.new(1,0,progress,0)
 	local done, holding = false, false
 	local c1, c2
+	-- THE REEL LOOP. Created once and started/stopped with the hold rather than spawned per press: a new
+	-- Sound on every tap would restart the recording from zero and machine-gun its attack, which on a
+	-- 15-second fight of rapid taps is a rattle rather than a reel.
+	local reelSnd = playFishSfx("reel")
+	if reelSnd then pcall(function() reelSnd:Stop() end) end -- created stopped; the first hold starts it
+	local function setReeling(on)
+		if not reelSnd then return end
+		pcall(function() if on then if not reelSnd.IsPlaying then reelSnd:Play() end else reelSnd:Stop() end end)
+	end
 	local function isHold(t) return t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch end
-	c1 = UIS.InputBegan:Connect(function(i) if isHold(i.UserInputType) then holding = true end end)
-	c2 = UIS.InputEnded:Connect(function(i) if isHold(i.UserInputType) then holding = false end end)
+	c1 = UIS.InputBegan:Connect(function(i) if isHold(i.UserInputType) then holding = true; setReeling(true) end end)
+	c2 = UIS.InputEnded:Connect(function(i) if isHold(i.UserInputType) then holding = false; setReeling(false) end end)
 	ui.gui.Enabled = true
 	local function finish(success)
 		if done then return end
 		done = true; if c1 then c1:Disconnect() end; if c2 then c2:Disconnect() end
+		-- Destroy, not just Stop: finish() is the only exit from the minigame (win, loss, or the early-out
+		-- above), so this is the one place that can guarantee the loop does not outlive the fight and follow
+		-- the player around the island forever.
+		if reelSnd then pcall(function() reelSnd:Stop(); reelSnd:Destroy() end); reelSnd = nil end
 		ui.gui.Enabled = false; reelBusy = false
 		if onDone then onDone(success) end
 	end
@@ -2002,7 +2098,7 @@ local function buildButterWorld(petId, def, positions)
 			p.Material = mat or Enum.Material.SmoothPlastic; p.Anchored = true; p.CanCollide = false
 			p.CanQuery = false; p.CastShadow = false; p.Parent = rod; return p
 		end
-		local shaft = rp("Shaft", Enum.PartType.Cylinder, Vector3.new(6,0.16,0.16), Color3.fromRGB(110,70,40), Enum.Material.Wood)
+		local shaft = rp("Shaft", Enum.PartType.Cylinder, Vector3.new(6,0.16,0.16), Color3.fromRGB(110,70,40), Enum.Material.SmoothPlastic)
 		local grip  = rp("Grip",  Enum.PartType.Cylinder, Vector3.new(1.1,0.26,0.26), Color3.fromRGB(35,30,28))
 		local reel  = rp("Reel",  Enum.PartType.Cylinder, Vector3.new(0.3,0.7,0.7), Color3.fromRGB(40,40,46), Enum.Material.Metal)
 		rodTip = rp("Tip", Enum.PartType.Ball, Vector3.new(0.16,0.16,0.16), Color3.fromRGB(235,235,235)); rodTip.Transparency = 1
@@ -2087,11 +2183,11 @@ local function buildButterWorld(petId, def, positions)
 	if typeof(barrelPos) == "Vector3" then
 		local barrel = Instance.new("Model"); barrel.Name = petId.."RodBarrel"
 		-- WOODEN BARREL: a brown wood cylinder standing upright (axis = Y) with darker slat BANDS around it.
-		local body = newPart(barrel, "Barrel", Enum.PartType.Cylinder, Vector3.new(3.4,3.0,3.0), Color3.fromRGB(124,82,44), CFrame.new(barrelPos + Vector3.new(0,1.7,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.Wood)
+		local body = newPart(barrel, "Barrel", Enum.PartType.Cylinder, Vector3.new(3.4,3.0,3.0), Color3.fromRGB(124,82,44), CFrame.new(barrelPos + Vector3.new(0,1.7,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.SmoothPlastic)
 		barrel.PrimaryPart = body
-		newPart(barrel, "Lip", Enum.PartType.Cylinder, Vector3.new(0.5,3.2,3.2), Color3.fromRGB(96,62,32), CFrame.new(barrelPos + Vector3.new(0,3.35,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.Wood) -- top rim
-		newPart(barrel, "Inside", Enum.PartType.Cylinder, Vector3.new(0.4,2.5,2.5), Color3.fromRGB(48,32,18), CFrame.new(barrelPos + Vector3.new(0,3.3,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.Wood) -- dark opening (so rods read as sticking OUT of it)
-		for _, oy in ipairs({0.7, 1.8, 2.9}) do newPart(barrel, "Band", Enum.PartType.Cylinder, Vector3.new(0.28,3.5,3.5), Color3.fromRGB(58,40,24), CFrame.new(barrelPos + Vector3.new(0,oy,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.Wood) end -- dark slat bands
+		newPart(barrel, "Lip", Enum.PartType.Cylinder, Vector3.new(0.5,3.2,3.2), Color3.fromRGB(96,62,32), CFrame.new(barrelPos + Vector3.new(0,3.35,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.SmoothPlastic) -- top rim
+		newPart(barrel, "Inside", Enum.PartType.Cylinder, Vector3.new(0.4,2.5,2.5), Color3.fromRGB(48,32,18), CFrame.new(barrelPos + Vector3.new(0,3.3,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.SmoothPlastic) -- dark opening (so rods read as sticking OUT of it)
+		for _, oy in ipairs({0.7, 1.8, 2.9}) do newPart(barrel, "Band", Enum.PartType.Cylinder, Vector3.new(0.28,3.5,3.5), Color3.fromRGB(58,40,24), CFrame.new(barrelPos + Vector3.new(0,oy,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.SmoothPlastic) end -- dark slat bands
 		-- SEVERAL FISHING RODS sticking up and OUTWARD out of the barrel, at slight angles around the rim.
 		local rimY = barrelPos + Vector3.new(0, 3.0, 0)
 		local NRODS = 4
@@ -2104,7 +2200,7 @@ local function buildButterWorld(petId, def, positions)
 			local axis = (outward * out + Vector3.new(0, up, 0)).Unit          -- the rod's lean direction
 			local center = rimY + outward * 0.7 + axis * (rodLen/2)
 			local cf = CFrame.lookAt(center, center + axis) * CFrame.Angles(0, math.rad(90), 0) -- align cylinder length (local X) to axis
-			newPart(barrel, "Rod", Enum.PartType.Cylinder, Vector3.new(rodLen,0.16,0.16), Color3.fromRGB(110,70,40), cf, Enum.Material.Wood)
+			newPart(barrel, "Rod", Enum.PartType.Cylinder, Vector3.new(rodLen,0.16,0.16), Color3.fromRGB(110,70,40), cf, Enum.Material.SmoothPlastic)
 			-- a small dark reel near the rod's base + a tiny tip bead so it reads as a real rod
 			newPart(barrel, "RodReel", Enum.PartType.Cylinder, Vector3.new(0.28,0.6,0.6), Color3.fromRGB(38,38,44), cf * CFrame.new(-rodLen/2 + 0.9, -0.32, 0) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.Metal)
 			newPart(barrel, "RodTip", Enum.PartType.Ball, Vector3.new(0.22,0.22,0.22), Color3.fromRGB(235,235,235), cf * CFrame.new(rodLen/2, 0, 0))
@@ -2140,8 +2236,55 @@ local function buildButterWorld(petId, def, positions)
 	Instance.new("UICorner", status).CornerRadius = UDim.new(0,10); local sstk = Instance.new("UIStroke", status); sstk.Color = Color3.fromRGB(255,215,0); sstk.Thickness = 2
 	local statusText = Instance.new("TextLabel"); statusText.Size = UDim2.new(1,0,1,0); statusText.BackgroundTransparency = 1
 	statusText.Font = Enum.Font.GothamBold; statusText.TextSize = 20; statusText.TextColor3 = Color3.new(1,1,1); statusText.Text = ""; statusText.Parent = status
-	local function setStatus(txt) statusText.Text = txt; status.Visible = true end -- show the backdrop FRAME (+ message)
-	local function hideStatus() status.Visible = false end                          -- hide the backdrop FRAME entirely
+	-- ===== THE FISHING COMMENTARY IS A BANNER NOW =====
+	-- "Waiting for a bite..." / "Something's biting! TAP!" / "Reel it in!" ran in a private blue pill at
+	-- y 0.12, in its own font, with its own colours -- a fourth place the game speaks to you from. It is a
+	-- banner now, in the shared hero lane, so fishing looks like everything else in the game.
+	--
+	-- IT IS PINNED, AT RANK.STATUS (30). A pin is right because this is a STANDING readout that changes
+	-- several times per cast: re-pinning the same id repaints in place, so the words follow the cast inside
+	-- ONE continuous card rather than a stream of separate banners fighting for the slot.
+	--
+	-- The rank is what stops that being a problem. RANK.STATUS sits BELOW every push priority, so unlike the
+	-- tutorial and watering pins this one holds nothing shut: an island landing, a reward, an event, a
+	-- milestone -- anything at all preempts it, plays in full, and the commentary steps back in afterwards,
+	-- mid-cast, exactly where it was. Somebody can fish for ten minutes without silencing the game.
+	--
+	-- The old stranding bug is gone by construction. There is no Visible flag to leave true: the card belongs
+	-- to NotifyCenter, and the only way to keep it is to keep re-pinning. The unpin below is still called on
+	-- the normal path, and the timeout is the backstop for the paths that never reach it (an error mid-loop,
+	-- an early break, dying mid-cast) -- the failure this file had, which had NO backstop at all.
+	-- Kept in step with FishingQuest_AllInOne.client.lua, which owns a second copy of this HUD.
+	local STATUS_PIN = "Fishing"
+	local STATUS_MAX_SHOW = 25
+	local statusTok = 0
+	local function hideStatus()
+		statusTok += 1
+		status.Visible = false -- the old pill, in case a stale duplicate of this script still shows one
+		local NC = _G.NotifyCenter
+		if NC and NC.unpin then pcall(NC.unpin, STATUS_PIN) end
+	end
+	local function setStatus(txt)
+		local NC = _G.NotifyCenter
+		if NC and NC.pin then
+			pcall(NC.pin, STATUS_PIN, {
+				rank  = (NC.RANK and NC.RANK.STATUS) or 30,
+				top   = "\xF0\x9F\x8E\xA3 FISHING",
+				text  = txt,
+				color = Color3.fromRGB(25, 90, 185), -- the pill's own blue, so the feature keeps its colour
+			})
+		else
+			status.Visible = true; statusText.Text = txt -- no banner system: fall back to the old pill
+		end
+		statusTok += 1
+		local mine = statusTok
+		task.delay(STATUS_MAX_SHOW, function()
+			if statusTok ~= mine then return end -- a newer message owns it; its own timer will handle it
+			hideStatus()
+			warn("[Pet][Fish] status banner auto-cleared after " .. STATUS_MAX_SHOW .. "s -- the fishing flow " ..
+				"ended without releasing it. Last text: " .. tostring(txt))
+		end)
+	end
 	local JUNK_EMOJI = {
 		["an old boot"] = "\xF0\x9F\xA5\xBE", ["a butter blob"] = "\xF0\x9F\xA7\x88", ["a rubber duck"] = "\xF0\x9F\xA6\x86",
 		["a soggy sock"] = "\xF0\x9F\xA7\xA6", ["a rusty tin can"] = "\xF0\x9F\xA5\xAB", ["a clump of swamp weed"] = "\xF0\x9F\x8C\xBF",
@@ -2154,16 +2297,54 @@ local function buildButterWorld(petId, def, positions)
 		TS:Create(pop, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.new(0,120,0,120), TextTransparency = 0}):Play()
 		task.delay(1.2, function() TS:Create(pop, TweenInfo.new(0.4), {TextTransparency = 1}):Play(); task.delay(0.45, function() pop:Destroy() end) end)
 	end
+	-- ===== "TAP TO HOOK!" HOLDS FOR A FULL SECOND =====
+	-- The label used to die with the catcher on the same frame the tap landed, so a player with quick
+	-- reflexes -- exactly the player who is doing it right -- saw the words for two or three frames and then
+	-- the screen was back to fishing. The prompt read as a flicker rather than as a moment, and on a fast
+	-- hook you could not tell whether you had caught it or missed it.
+	--
+	-- So the two jobs are separated. They were only ever fused because both lived on the same instance:
+	--   THE CATCHER (the orange wash + the invisible full-screen button) ends the INSTANT the tap lands.
+	--     It blocks input and tints the screen, so holding it any longer would put a full second of lag
+	--     between the tap and the reel minigame -- the one thing that must stay immediate.
+	--   THE LABEL is reparented to the HUD and stays up until it has been on screen a full second. It is
+	--     just text at that point: not tinting, not blocking, purely the confirmation that you hooked it.
+	-- A miss is unaffected -- the window is 1.3s, so the label has already outlived the minimum.
+	local HOOK_MIN_SHOW = 1.0
 	local function waitForTap(timeout)
 		local tapped = false
+		local shownAt = os.clock()
 		local catcher = Instance.new("TextButton"); catcher.Size = UDim2.new(1,0,1,0); catcher.BackgroundColor3 = Color3.fromRGB(255,120,40)
-		catcher.BackgroundTransparency = 0.8; catcher.AutoButtonColor = false; catcher.Text = ""; catcher.Parent = hud
+		catcher.BackgroundTransparency = 0.8; catcher.AutoButtonColor = false; catcher.Text = ""
+		-- MenuBackdropGuard hunts full-screen tinted input sinks and hides them as orphaned menu backdrops.
+		-- This one is deliberate -- you tap ANYWHERE to hook -- and the guard was killing it 0.25s into the
+		-- 1.3s window, which is why every hook was missed. Stamped here as well as exempted by gui name over
+		-- there, because a stale baked-in copy of the guard will not have the name list but WILL read this.
+		catcher:SetAttribute("NoBackdropGuard", true)
+		catcher.Parent = hud
 		local big = Instance.new("TextLabel"); big.AnchorPoint = Vector2.new(0.5,0.5); big.Position = UDim2.new(0.5,0,0.5,0); big.Size = UDim2.new(0,320,0,120)
 		big.BackgroundTransparency = 1; big.Font = Enum.Font.FredokaOne; big.TextSize = 60; big.TextColor3 = Color3.fromRGB(255,240,120); big.Text = "TAP TO HOOK!"; big.Parent = catcher
 		Instance.new("UIStroke", big).Thickness = 3
+		-- TouchTap as well as MouseButton1Click: on a phone the click event is not guaranteed on a button
+		-- this large, and a missed tap here reads to the player as the hook window being broken.
 		local c = catcher.MouseButton1Click:Connect(function() tapped = true end)
+		local c2 = catcher.TouchTap:Connect(function() tapped = true end)
 		local t = 0; while t < timeout and not tapped do t = t + task.wait() end
-		c:Disconnect(); catcher:Destroy()
+		c:Disconnect(); c2:Disconnect()
+
+		-- Both are full-screen and `big` is centre-anchored, so moving it from the catcher to the HUD does
+		-- not shift it by a pixel -- it simply outlives the thing that was tinting the screen.
+		big.Parent = hud
+		catcher:Destroy()
+
+		local remain = HOOK_MIN_SHOW - (os.clock() - shownAt)
+		if remain > 0 then
+			-- task.delay, NOT a wait: this function must return the moment the tap is known, or the whole
+			-- fishing sequence stalls for a second before the reel minigame opens.
+			task.delay(remain, function() if big.Parent then big:Destroy() end end)
+		else
+			big:Destroy()
+		end
 		return tapped
 	end
 
@@ -2330,6 +2511,14 @@ local function buildButterWorld(petId, def, positions)
 				local nv = Instance.new("NumberValue"); nv.Value = 0; nv.Parent = bob
 				nv:GetPropertyChangedSignal("Value"):Connect(function() local t = nv.Value; bob.CFrame = CFrame.new(startP:Lerp(target, t) + Vector3.new(0, math.sin(t*math.pi)*6, 0)) end)
 				TS:Create(nv, TweenInfo.new(0.6, Enum.EasingStyle.Quad), {Value = 1}):Play()
+				-- CAST: flat, on the frame the bobber leaves the rod tip.
+				pcall(function() playFishSfx("cast") end)
+				-- SPLASH: at +0.6s, matching the arc tween above, and parented to the BOBBER so it arrives
+				-- from where the bobber actually landed. Re-checks bob.Parent because the player can walk
+				-- away from the butter edge mid-arc, which destroys the bobber before it ever touches down.
+				task.delay(0.6, function()
+					if bob and bob.Parent then pcall(function() playFishSfx("splash", bob) end) end
+				end)
 				print("[Pet] "..player.Name.." cast"); setStatus("Waiting for a bite...")
 				-- gentle idle BOB on the butter surface once the cast lands (until the bite takes over).
 				local floating = true
@@ -2343,6 +2532,10 @@ local function buildButterWorld(petId, def, positions)
 				if st.owns or not isNearButterEdge() then pcall(function() bob:Destroy() end) break end -- walked away from the butter edge (or owns) -> stop; loop-end hides the status
 				-- STEP 2: THE BITE -- bobber dips/wiggles + "!" ; tap within ~1.3s to HOOK
 				print("[Pet] "..player.Name.." bite")
+				-- BITE: flat and loud (1.6). This cue is a 1.3-second REACTION WINDOW opening -- if the player
+				-- is looking anywhere but at the bobber, this sound is the only thing that tells them to tap,
+				-- so it deliberately does not fall off with distance the way the splash does.
+				pcall(function() playFishSfx("bite") end)
 				local bb = Instance.new("BillboardGui"); bb.Size = UDim2.new(0,36,0,36); bb.StudsOffset = Vector3.new(0,2.4,0); bb.AlwaysOnTop = true; bb.Parent = bob
 				local bl = Instance.new("TextLabel"); bl.Size = UDim2.new(1,0,1,0); bl.BackgroundTransparency = 1; bl.Font = Enum.Font.GothamBold; bl.TextSize = 34; bl.TextColor3 = Color3.fromRGB(255,70,70); bl.Text = "!"; bl.Parent = bb
 				local biteBase = bob.Position
@@ -2368,6 +2561,16 @@ local function buildButterWorld(petId, def, positions)
 						pushQuestProg(petId, { started = true, found = ((localQuestProg[petId] and localQuestProg[petId].found) or 0) + 1 }) -- HUD: bump the reeled-in counter
 						-- STEP 4: SERVER rolls the catch (pity) -- the client NEVER decides
 						local ok, res = pcall(function() return PetFishRoll:InvokeServer() end)
+						-- PULL-OUT: the moment something breaks the surface, fired BEFORE the status text so the
+						-- sound leads the words rather than trailing them.
+						--
+						-- It plays for an EGG **and** for JUNK, deliberately: the player pulled something out
+						-- either way, and staying silent on junk would turn the absence of a sound into a
+						-- spoiler -- you would know it was a miss before the text told you. It does NOT play on
+						-- the third branch, where the server roll itself failed and nothing was ever pulled out.
+						if ok and type(res) == "table" then
+							pcall(function() playFishSfx("pullOut") end)
+						end
 						if ok and type(res) == "table" and res.egg then
 							setStatus("You reeled in... an EGG! \xF0\x9F\xA5\x9A"); keepGoing = false; pushQuestProg(petId, { complete = true }) -- HUD: quest complete
 							task.wait(0.6); spawnButterEgg(); task.wait(1.4) -- show "EGG!" a moment; the loop-end below hides the backdrop
@@ -2546,8 +2749,8 @@ local function buildBurritoWorld(petId, def, positions)
 			p.CFrame = cf; return p
 		end
 		local root = rp("Root", Enum.PartType.Ball, Vector3.new(0.2,0.2,0.2), SH_WOOD, CFrame.new()); root.Transparency = 1; m.PrimaryPart = root
-		rp("Handle", Enum.PartType.Cylinder, Vector3.new(SH_LEN,0.26,0.26), SH_WOOD, CFrame.new(SH_LEN/2,0,0), Enum.Material.Wood)        -- shaft along +X
-		rp("Grip",   Enum.PartType.Cylinder, Vector3.new(1.3,0.24,0.24), SH_WOOD, CFrame.new(-0.1,0,0) * CFrame.Angles(0,math.rad(90),0), Enum.Material.Wood) -- T grip cross-bar at the top
+		rp("Handle", Enum.PartType.Cylinder, Vector3.new(SH_LEN,0.26,0.26), SH_WOOD, CFrame.new(SH_LEN/2,0,0), Enum.Material.SmoothPlastic)        -- shaft along +X
+		rp("Grip",   Enum.PartType.Cylinder, Vector3.new(1.3,0.24,0.24), SH_WOOD, CFrame.new(-0.1,0,0) * CFrame.Angles(0,math.rad(90),0), Enum.Material.SmoothPlastic) -- T grip cross-bar at the top
 		rp("Socket", Enum.PartType.Cylinder, Vector3.new(0.6,0.34,0.34), SH_BLADE, CFrame.new(SH_LEN+0.1,0,0), Enum.Material.Metal)        -- shaft->blade collar
 		rp("Blade",  Enum.PartType.Block,    Vector3.new(0.45,1.4,1.2), SH_BLADE, CFrame.new(SH_LEN+0.85,0,0), Enum.Material.Metal)        -- flat metal scoop at the far end
 		m.Parent = Workspace
@@ -2610,12 +2813,12 @@ local function buildBurritoWorld(petId, def, positions)
 	if typeof(shovelPos) == "Vector3" then
 		local stand = Instance.new("Model"); stand.Name = petId.."ShovelStand"
 		local cyc = function(y) return CFrame.new(shovelPos + Vector3.new(0,y,0)) * CFrame.Angles(0,0,math.rad(90)) end -- vertical cylinder CFrame at height y
-		local body = newPart(stand, "Barrel", Enum.PartType.Cylinder, Vector3.new(3.4,2.4,2.4), SH_WOOD, cyc(1.7), Enum.Material.Wood)
+		local body = newPart(stand, "Barrel", Enum.PartType.Cylinder, Vector3.new(3.4,2.4,2.4), SH_WOOD, cyc(1.7), Enum.Material.SmoothPlastic)
 		stand.PrimaryPart = body
-		newPart(stand, "Bulge", Enum.PartType.Cylinder, Vector3.new(1.5,2.85,2.85), SH_WOOD, cyc(1.7), Enum.Material.Wood)            -- slight middle bulge (classic barrel)
-		newPart(stand, "RimBot", Enum.PartType.Cylinder, Vector3.new(0.5,2.55,2.55), SH_WOOD_D, cyc(0.45), Enum.Material.Wood)        -- top + bottom rims
-		newPart(stand, "RimTop", Enum.PartType.Cylinder, Vector3.new(0.5,2.55,2.55), SH_WOOD_D, cyc(2.95), Enum.Material.Wood)
-		newPart(stand, "Inside", Enum.PartType.Cylinder, Vector3.new(0.4,2.0,2.0), Color3.fromRGB(46,30,16), cyc(3.05), Enum.Material.Wood) -- dark opening (shovels read as sticking OUT of it)
+		newPart(stand, "Bulge", Enum.PartType.Cylinder, Vector3.new(1.5,2.85,2.85), SH_WOOD, cyc(1.7), Enum.Material.SmoothPlastic)            -- slight middle bulge (classic barrel)
+		newPart(stand, "RimBot", Enum.PartType.Cylinder, Vector3.new(0.5,2.55,2.55), SH_WOOD_D, cyc(0.45), Enum.Material.SmoothPlastic)        -- top + bottom rims
+		newPart(stand, "RimTop", Enum.PartType.Cylinder, Vector3.new(0.5,2.55,2.55), SH_WOOD_D, cyc(2.95), Enum.Material.SmoothPlastic)
+		newPart(stand, "Inside", Enum.PartType.Cylinder, Vector3.new(0.4,2.0,2.0), Color3.fromRGB(46,30,16), cyc(3.05), Enum.Material.SmoothPlastic) -- dark opening (shovels read as sticking OUT of it)
 		for _, oy in ipairs({1.0, 2.4}) do newPart(stand, "Hoop", Enum.PartType.Cylinder, Vector3.new(0.32,2.75,2.75), SH_HOOP, cyc(oy), Enum.Material.Metal) end -- metal barrel bands/hoops
 		stand.Parent = Workspace; st.digProps[#st.digProps+1] = stand
 		-- SHOVELS sticking up out of the barrel (same low-poly shovel as the held one -> matching set): grip + handle
@@ -2861,22 +3064,35 @@ end
 -- PLANTED in the dirt, so collecting one is no longer a free E-tap: HOLD to pull. The harder you lean
 -- into it the faster it comes up, but the STRAIN on the stalk builds -- redline it and the stalk slips
 -- and you lose ground. Let go, let the strain bleed off, pull again. Deliberately DIFFERENT from the
--- coconut tug-of-war (tap-spam) and the film-reel meter (timing): this one is a HOLD/RELEASE rhythm,
--- tuned to ~15s per broccoli for clean play (riding just under the redline is the fast line).
+-- coconut tug-of-war (tap-spam) and the film-reel meter (timing): this one is a HOLD/RELEASE rhythm.
 -- Cosmetic-only -- the server still dedups by piece index.
--- ============================================================================================
-
+--
+-- ===== EASED BY 40%: THIS IS THE FIRST QUEST IN THE GAME =====
+-- Broccoli Bluff is island 2, so this is the very first minigame anybody meets, played by someone who has
+-- had the controls for about two minutes. At the old tuning it was also the LONGEST of the three -- ~16-18s
+-- of hold/release per piece, three pieces, ~50s of rhythm before the quest paid out anything. That is a
+-- teaching moment priced like an endgame one.
+--
+-- WHAT WAS CHANGED, AND WHAT DELIBERATELY WAS NOT.
+-- The uproot rate is up 66.7% (x1/0.6), which is exactly a 40% cut in time-to-finish: ~16/17/18s becomes
+-- ~9.6/10.2/10.8s per piece. `strain` and `cool` are UNTOUCHED on purpose -- they are what make this a
+-- hold/release rhythm rather than a hold-the-button-and-wait bar, and softening them would not make the
+-- quest easier so much as make it a different (and duller) minigame. The redline still sits where a player
+-- learns to feel for it; you simply reach the top of the soil sooner.
+--
+-- The two PUNISHMENT knobs below are also eased 40%, because forgiveness is the half of "easier" that
+-- actually matters to somebody meeting the mechanic for the first time: a slip now costs 6% of the uproot
+-- instead of 10%, and locks you out for 0.48s instead of 0.8s.
+--
 -- per-piece difficulty. pull = uproot/sec at neutral strain, strain = strain/sec while holding,
--- cool = strain bled off/sec while released. Piece 1 easiest -> piece 3 hardest (all ~14-17s).
--- Tuned so even the OPTIMAL rhythm (hold to just under the redline, release, repeat) can't finish a broccoli
--- in under ~15s -- 16/17/18s for pieces 1/2/3, more if you slip. Holding through the slips is slower still.
+-- cool = strain bled off/sec while released. Piece 1 easiest -> piece 3 hardest.
 local PULL_DIFFICULTY = {
-	[1] = { pull = 0.090, strain = 0.40, cool = 0.60 }, -- ~16s played well
-	[2] = { pull = 0.088, strain = 0.44, cool = 0.61 }, -- ~17s
-	[3] = { pull = 0.086, strain = 0.48, cool = 0.62 }, -- ~18s
+	[1] = { pull = 0.150, strain = 0.40, cool = 0.60 }, -- ~9.6s played well  (was 0.090 / ~16s)
+	[2] = { pull = 0.147, strain = 0.44, cool = 0.61 }, -- ~10.2s             (was 0.088 / ~17s)
+	[3] = { pull = 0.143, strain = 0.48, cool = 0.62 }, -- ~10.8s             (was 0.086 / ~18s)
 }
-local PULL_SNAP_COST = 0.10  -- uproot progress lost when the stalk slips (never enough to dead-end you)
-local PULL_LOCKOUT   = 0.8   -- seconds you can't pull after a slip
+local PULL_SNAP_COST = 0.06  -- uproot progress lost when the stalk slips (was 0.10 -- 40% gentler)
+local PULL_LOCKOUT   = 0.48  -- seconds you can't pull after a slip (was 0.8 -- 40% shorter)
 
 local pullUI, pullBusy = nil, false
 local function ensurePullUI()
@@ -3097,6 +3313,11 @@ local function buildPetWorld(petId, def, positions)
 	-- 3 collectible pieces (built at the received coordinates), each PLANTED in a dirt patch: the prompt
 	-- opens the PULL minigame (~15s) instead of handing the piece over on a single E-tap.
 	for i = 1, #def.pieceMarkers do
+		-- ONE PIECE MUST NEVER TAKE THE REST DOWN WITH IT. st.built is set above, before any of this runs, so a
+		-- single error mid-loop used to leave a HALF-BUILT world permanently: piece 3 and the EGG never got built
+		-- and nothing would ever retry them -- an uncompletable quest that looks like "only some broccoli showed
+		-- up". Per-piece pcall: a piece that fails is reported by name and the others still appear.
+		local okPiece, errPiece = pcall(function()
 		local pos = pieces[i]
 		if typeof(pos) == "Vector3" then
 			-- container: dirt patch (static) + the broccoli blob (rises out of the soil as you pull).
@@ -3187,6 +3408,11 @@ local function buildPetWorld(petId, def, positions)
 		else
 			warn("[Pet][DIAG] piece "..i.." position MISSING from server for "..petId.." -- that piece will NOT exist in the world (check the server's '[Pet] piece marker ... MISSING' warning)")
 		end
+		end)
+		if not okPiece then
+			warn("[Pet][DIAG] piece "..i.." for "..petId.." FAILED to build: "..tostring(errPiece)
+				.." -- the remaining pieces and the egg were still built")
+		end
 	end
 	-- EGG (ovoid) sitting in a twiggy NEST, built at the received coordinate; shown only when found==total.
 	local eggPos = positions.egg
@@ -3199,12 +3425,12 @@ local function buildPetWorld(petId, def, positions)
 		local nestCenter = CFrame.new(eggPos + Vector3.new(0, 1.0, 0))
 		for k = 1, 14 do
 			local a = (k-1) * (2*math.pi/14)
-			local twig = newPart(nest, "Twig", Enum.PartType.Cylinder, Vector3.new(2.2, 0.55, 0.55), Color3.fromRGB(105, 65, 38), nil, Enum.Material.Wood)
+			local twig = newPart(nest, "Twig", Enum.PartType.Cylinder, Vector3.new(2.2, 0.55, 0.55), Color3.fromRGB(105, 65, 38), nil, Enum.Material.SmoothPlastic)
 			twig.CFrame = nestCenter * CFrame.Angles(0, a, 0) * CFrame.new(0, 0, 2.7) * CFrame.Angles(0, math.rad(90), math.rad(18))
 		end
 		for k = 1, 10 do -- a lower second layer for a bowl look
 			local a = (k-1) * (2*math.pi/10) + 0.3
-			local twig = newPart(nest, "Twig", Enum.PartType.Cylinder, Vector3.new(2.0, 0.5, 0.5), Color3.fromRGB(90, 55, 32), nil, Enum.Material.Wood)
+			local twig = newPart(nest, "Twig", Enum.PartType.Cylinder, Vector3.new(2.0, 0.5, 0.5), Color3.fromRGB(90, 55, 32), nil, Enum.Material.SmoothPlastic)
 			twig.CFrame = nestCenter * CFrame.new(0, -0.7, 0) * CFrame.Angles(0, a, 0) * CFrame.new(0, 0, 2.2) * CFrame.Angles(0, math.rad(90), math.rad(30))
 		end
 
@@ -3316,8 +3542,30 @@ local PET_THEME = {
 		head=CFrame.new(0.05,1.62,0), face=CFrame.new(1.5,0.45,0), glassW=0.5, neck=CFrame.new(1.25,-0.3,0), back=CFrame.new(-1.4,0.35,0), ear=CFrame.new(0.1,1.7,0.95), side=CFrame.new(0.2,-0.1,1.35),
 		accs={ {3,"bowtie"},{7,"glasses"},{10,"crown"},{13,"backpack"},{17,"flower"},{20,"haloring"},{23,"staff"} } },
 }
+-- REBIRTH PETS (rebirth 3/6/10) are recolour-CLONES of Bean Buddy / Pizza Dragon / Maple Fox -- same bodies, same
+-- anchor points -- so they reuse those themes. Without an entry they fall through applyLevelVisual's
+-- `if not theme then return end` and lose their age SIZE ramp and their overhead name/age plate entirely.
+-- Assignments, not new locals: this file is at Luau's 200-local ceiling (see the note above applyLevelVisual).
+-- RemotePets.client.lua carries the identical three lines -- change one, change both.
+PET_THEME.MoltenBean = PET_THEME.BeanBuddy
+PET_THEME.VoidDragon = PET_THEME.PizzaDragon
+PET_THEME.PrismFox   = PET_THEME.MapleFox
 local petFX = {}         -- [pet] = animated effect state (orbs/ring/pulse/burst/shimmer) driven by the FX loop
 -- RARE variant looks (Stage 2): body sheen (color/material/reflectance) + a rare-only sparkle aura. Cosmetic.
+-- ===== RARE PET BRIGHTNESS =====
+-- Rare variants read 30% dimmer than they used to. They were the brightest thing on screen -- glass/metal
+-- body sheens, an 0.85-LightEmission sparkle aura and a Brightness-3 PointLight on top -- which is a lot of
+-- glare to stand next to for the whole game.
+--
+-- Applied as ONE factor at the point of use rather than by editing the colours in RARE_LOOK, for two
+-- reasons: the table stays readable as authored intent, and RemotePets carries an identical copy of both the
+-- table and this code, so a single tunable in each is far harder to let drift than ten edited hex values.
+-- Raise it back toward 1.0 to undo.
+local RARE_DIM = 0.7
+local function rareDim(c)
+	return Color3.new(c.R * RARE_DIM, c.G * RARE_DIM, c.B * RARE_DIM)
+end
+
 local RARE_LOOK = {
 	BroccoliPet      = { name="Emerald Bunny",    body=Color3.fromRGB(20,150,80),   mat=Enum.Material.Glass,  refl=0.25, fx=Color3.fromRGB(70,255,150) },                       -- emerald crystal sheen + green crystal sparkles
 	CoconutCrab      = { name="Golden Crab",      body=Color3.fromRGB(255,200,40),  mat=Enum.Material.Metal,  refl=0.35, fx=Color3.fromRGB(255,225,90) },                        -- solid shiny gold + gold sparkles
@@ -3349,7 +3597,9 @@ local function petTier(level, isRare, petId)
 	else                    return "Elder", Color3.fromRGB(255,170,40),  false, false end
 end
 local PET_DISPLAY = { BeanBuddy="Bean Buddy", PizzaDragon="Pizza Dragon", BroccoliPet="Broccoli Bunny", CoconutCrab="Coconut Crab", PopcornSheep="Popcorn Sheep", ButterDuck="Butter Duck", BurritoArmadillo="Burrito Armadillo",
-	SunflowerBee="Sunflower Bee", MapleFox="Maple Fox", FrostPenguin="Frost Penguin", BlossomBunny="Blossom Bunny" }
+	SunflowerBee="Sunflower Bee", MapleFox="Maple Fox", FrostPenguin="Frost Penguin", BlossomBunny="Blossom Bunny",
+	-- rebirth pets: without these three the plate read the raw id ("MoltenBean"). Names match the server catalog.
+	MoltenBean="Molten Bean", VoidDragon="Void Dragon", PrismFox="Prism Fox" }
 -- the name shown above a pet: the rare variant name if rare, else the normal display name.
 local function petDisplayName(petId, isRare) return (isRare and RARE_LOOK[petId] and RARE_LOOK[petId].name) or PET_DISPLAY[petId] or petId end
 local function flagAccPart(p) -- clean matte-plastic cosmetic flags (matches the pet style; never collides/affects physics)
@@ -3518,15 +3768,15 @@ local function applyRareLook(pet, A, root, petId)
 		if d:IsA("BasePart") and d ~= root then
 			local n = d.Name
 			if n~="Eye" and n~="Highlight" and n~="EvoPart" and n~="PetOrb" and n~="PetRing" and n~="PetPulse" then
-				d.Color = r.body; d.Material = r.mat; d.Reflectance = r.refl
+				d.Color = rareDim(r.body); d.Material = r.mat; d.Reflectance = r.refl
 			end
 		end
 	end
-	local rfx = Instance.new("ParticleEmitter"); rfx.Name="PetRareFX"; rfx.Color=ColorSequence.new(r.fx); rfx.LightEmission=0.85
+	local rfx = Instance.new("ParticleEmitter"); rfx.Name="PetRareFX"; rfx.Color=ColorSequence.new(rareDim(r.fx)); rfx.LightEmission=0.85*RARE_DIM
 	rfx.Rate = r.cosmic and 65 or 32; rfx.Lifetime = NumberRange.new(0.6,1.2); rfx.Rotation = NumberRange.new(0,360)
 	rfx.Speed = NumberRange.new(r.cosmic and 1.4 or 0.5, r.cosmic and 3.2 or 1.4); rfx.Size = NumberSequence.new(r.cosmic and 0.45 or 0.4)
 	rfx.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0,0.15), NumberSequenceKeypoint.new(1,1) }); rfx.Parent = root
-	if r.light then local pl = Instance.new("PointLight"); pl.Name="PetRareLight"; pl.Color=r.fx; pl.Brightness=1.5; pl.Range=12; pl.Parent=root end -- glow halved (was 3, too bright)
+	if r.light then local pl = Instance.new("PointLight"); pl.Name="PetRareLight"; pl.Color=rareDim(r.fx); pl.Brightness=3*RARE_DIM; pl.Range=12; pl.Parent=root end -- SAME as RemotePets' rare light, so your rare pet shines like the ones you see on others
 	if r.puffs and A then for k=0,3 do local ang=math.rad(k*90); accPart(pet,A,root, BAL_, 0.55,0.5,0.55, Color3.fromRGB(255,255,255), CFrame.new(math.sin(ang)*1.6, 0.7, math.cos(ang)*1.6)) end end
 	if r.cosmic and petFX[pet] then petFX[pet].cosmic = true end -- the FX loop rainbow-cycles the rare light + stars
 end
@@ -3555,13 +3805,13 @@ local function applyLevelVisual(pet, level, petId, isRare, lite)
 	local prevLevel = A and A.lastVisualLevel or nil
 	accScale = 1
 	clearEvo(pet, A) -- removes ONLY the added effects + EvoPart accessories; the BASE PET is never touched
-	-- ===== AGE IS SIZE; TRAITS ARE THE EFFECT SYSTEM =====
-	-- Levels drive the PHYSICAL side only: size growth, the accessory ladder and the Elder gold trim.
-	-- The level PARTICLE stack (aura/trail/sparkles/orbs/ring/pulse/burst) is retired outright --
-	-- particle effects come from crate TRAITS now, which stack freely (an aura AND a trail), and two
-	-- overlapping particle systems was exactly the soup this replaces. LEVEL_FX is a switch, not dead
-	-- code: flip it true and the whole ladder is back.
-	local LEVEL_FX = false
+	-- ===== LEVEL FX: MUST STAY ON, BECAUSE EVERY OTHER PLAYER'S PET HAS THEM =====
+	-- RemotePets.client.lua (which draws every OTHER player's pet on this screen) runs this exact ladder
+	-- unconditionally. While this was false, your own pet was the ONLY plain pet in the server: you saw
+	-- everyone else's aura/trail/sparkles/orbs/ring/pulse and had none of it yourself, which reads as
+	-- "my pet is broken". The two renderers must agree -- if you ever retire the level particle stack,
+	-- retire it in RemotePets in the SAME commit.
+	local LEVEL_FX = true
 	-- (1) SIZE: 60% at Lv1 -> 100% at Lv25 (+1.667%/level) -- the guaranteed visible change every level. (popMul = level-up bounce)
 	if A then A.sizeMul = 0.6 + 0.4 * frac end
 	local function ramp(startL) return math.clamp((level - startL) / (MAXL - startL), 0, 1) end
@@ -3573,7 +3823,7 @@ local function applyLevelVisual(pet, level, petId, isRare, lite)
 		hl.FillColor = theme.color; hl.OutlineColor = theme.color
 		hl.FillTransparency = math.clamp(0.8 - 0.45*t, 0, 1); hl.OutlineTransparency = math.clamp(0.4 - 0.4*t, 0, 1)
 		hl.Parent = pet
-		local pl = Instance.new("PointLight"); pl.Name="PetAuraLight"; pl.Color=theme.color; pl.Brightness=1.25+2*t; pl.Range=8+8*t; pl.Parent=root -- glow halved (was 2.5+4*t, too bright)
+		local pl = Instance.new("PointLight"); pl.Name="PetAuraLight"; pl.Color=theme.color; pl.Brightness=2.5+4*t; pl.Range=8+8*t; pl.Parent=root -- SAME as RemotePets: your pet must not glow dimmer than everyone else's
 		local ae = Instance.new("ParticleEmitter"); ae.Name="PetAura"; ae.Color=ColorSequence.new(theme.color); ae.LightEmission=0.7
 		ae.Rate=8+34*t; ae.Lifetime=NumberRange.new(0.6,1.1); ae.Speed=NumberRange.new(0.2,0.8); ae.Size=NumberSequence.new(0.5+0.5*t)
 		ae.Transparency=NumberSequence.new({ NumberSequenceKeypoint.new(0,0.3), NumberSequenceKeypoint.new(1,1) }); ae.Parent=root
@@ -3718,8 +3968,12 @@ do
 				end
 				if fx.cosmic then -- COSMIC DUCK rare: vivid rainbow cycle on the rare light + star sparkles
 					local cc = Color3.fromHSV((t * 0.4) % 1, 0.7, 1)
-					local rl = root:FindFirstChild("PetRareLight"); if rl then rl.Color = cc end
-					local rfx = root:FindFirstChild("PetRareFX"); if rfx then rfx.Color = ColorSequence.new(cc) end
+					-- Dimmed like the static rare colours are. Without this the Cosmic Duck would rewrite
+					-- its light and sparkles to FULL brightness every frame and be the one rare pet the
+					-- 30% reduction never touched -- and it is the brightest of the five to begin with.
+					local dimCc = rareDim(cc)
+					local rl = root:FindFirstChild("PetRareLight"); if rl then rl.Color = dimCc end
+					local rfx = root:FindFirstChild("PetRareFX"); if rfx then rfx.Color = ColorSequence.new(dimCc) end
 				end
 				if fx.shimmer then
 					-- SUBTLE rainbow sheen: cycle a gentle hue (lower saturation/value) and keep the Highlight FILL
@@ -3769,7 +4023,14 @@ local PET_FALLBACK = {
 }
 local function buildPetModel(petId)
 	local tn = PET_TEMPLATE_NAME[petId]
-	local template = tn and (RS:FindFirstChild(tn) or RS:WaitForChild(tn, 4)) -- instant if replicated; brief wait covers join lag
+	-- WAIT LONGER THAN 4s FOR THE TEMPLATE. This is called during the busiest second of the join -- the server
+	-- is unioning 14 pet bodies, positioning 14 islands and building the garden, all while this client is
+	-- still streaming in -- and 4s was enough on a fast connection and not on a slow one. Timing out doesn't
+	-- fail loudly, it silently drops to PET_FALLBACK... which has NO BeanBuddy entry, so it lands on
+	-- buildBroccoliDinoFallback and hands a brand-new player a broccoli dino named BeanBuddy as their first
+	-- pet. 15s costs nothing when the template is already there (FindFirstChild returns instantly, and it
+	-- normally is) and covers a slow join properly.
+	local template = tn and (RS:FindFirstChild(tn) or RS:WaitForChild(tn, 15))
 	if template then
 		local clone = template:Clone(); clone.Name = petId
 		if registerClonedTemplate(clone) then
@@ -3801,7 +4062,12 @@ _G.petBuildModel = buildPetModel
 
 local function spawnFollowerPet(petId)
 	local st = petState[petId]
-	if st.pet then -- already following: just refresh the visual if the level OR the rare flag changed
+	-- `and st.pet.Parent` MATTERS. st.pet holds a reference to a DESTROYED model just as happily as a live
+	-- one, and a destroyed Instance is still truthy -- so the old test made this return early for a pet that
+	-- no longer exists in the world, and the self-heal watchdog below (which detects exactly that case and
+	-- calls this function to fix it) could never actually fix anything. It only ever healed the case where
+	-- st.pet was nil. With the Parent check the reference is treated as stale and a fresh model is built.
+	if st.pet and st.pet.Parent then -- already following: just refresh the visual if the level OR the rare flag changed
 		if st.appliedLevel ~= st.level or st.appliedRare ~= st.rare then
 			st.appliedLevel = st.level; st.appliedRare = st.rare; applyLevelVisual(st.pet, st.level or 1, petId, st.rare)
 		end
@@ -3813,9 +4079,41 @@ local function spawnFollowerPet(petId)
 	end
 	st.pet = buildPetModel(petId)
 	st.pet.Name = petId
+	-- ===== SHOW IT ONLY ONCE IT IS WHOLE =====
+	-- A union body renders in stages: the parts appear, then the fused solid resolves, then its colours and
+	-- the face on top of it. Parent it straight to Workspace and the first thing a brand-new player sees of
+	-- their free pet is it assembling itself in mid-air -- and applyLevelVisual (accessories, aura, size
+	-- tier) lands on top of that, so it flickers twice.
+	--
+	-- LocalTransparencyModifier, not Transparency: this is a purely local "don't draw yet" that the pet's own
+	-- transparency values are read back out of untouched. Writing Transparency here would fight applyLevelVisual
+	-- and permanently flatten the deliberately-invisible root part and the semi-transparent aura pieces.
+	local hidden = {}
+	for _, d in ipairs(st.pet:GetDescendants()) do
+		if d:IsA("BasePart") then d.LocalTransparencyModifier = 1; hidden[#hidden + 1] = d end
+	end
 	st.pet.Parent = Workspace
 	st.appliedLevel = st.level; st.appliedRare = st.rare
 	applyLevelVisual(st.pet, st.level or 1, petId, st.rare)
+	task.spawn(function()
+		-- PreloadAsync yields until the model's assets (union meshes, any textures) are actually resolved,
+		-- which is the real "is it renderable yet" signal. Then one frame so the first draw includes
+		-- everything applyLevelVisual just added, and it fades up whole.
+		pcall(function() ContentProvider:PreloadAsync({ st.pet }) end)
+		RunService.RenderStepped:Wait()
+		local shown = 0
+		for _, d in ipairs(hidden) do
+			if d.Parent then d.LocalTransparencyModifier = 0; shown = shown + 1 end
+		end
+		-- Anything applyLevelVisual added while we were hidden was never in `hidden`, so it drew normally --
+		-- only the body needed holding back. Clear the modifier on the whole model to be certain nothing
+		-- stays ghosted if a part was re-parented mid-build.
+		for _, d in ipairs(st.pet:GetDescendants()) do
+			if d:IsA("BasePart") then d.LocalTransparencyModifier = 0 end
+		end
+		print(("[Pet][DIAG] %s revealed fully rendered (%d body part(s) held until the model was ready)")
+			:format(petId, shown))
+	end)
 	print("[Pet][DIAG] pet spawned, following player ("..petId..") at Lv "..tostring(st.level or 1))
 end
 
@@ -4031,11 +4329,18 @@ local hintStroke = uiStroke(hint, 2); hintStroke.Transparency=1
 -- Anchor is (0.5, 0) to match the tracker's: that tween sets Position = tracker.Position, and with two
 -- different anchor points the popup was landing offset from the box it was supposedly merging into.
 local popup = Instance.new("Frame")
-popup.Name="Popup"; popup.AnchorPoint=Vector2.new(0.5,0); popup.Position=UDim2.new(0.5,0,0,76); popup.Size=UDim2.new(0,300,0,110)
+-- SHARED BANNER SIZE (500 x 65), like the tracker above it and every card in this column. It was 300 x 110
+-- -- narrower AND taller than everything it sits under, which is the worst of both: it never lined up with
+-- the card above and it pushed further down the screen than any banner does.
+popup.Name="Popup"; popup.AnchorPoint=Vector2.new(0.5,0); popup.Position=UDim2.new(0.5,0,0,76); popup.Size=UDim2.new(0,500,0,65)
 popup.BackgroundColor3=Color3.fromRGB(38,72,38); popup.BackgroundTransparency=0.05; popup.Visible=false; popup.Parent=questGui
 uiCorner(popup, 16); uiStroke(popup, 3, Color3.fromRGB(120,220,120))
-local popTitle = Instance.new("TextLabel"); popTitle.BackgroundTransparency=1; popTitle.Font=Enum.Font.FredokaOne; popTitle.TextSize=26; popTitle.TextColor3=Color3.fromRGB(180,255,180); popTitle.Size=UDim2.new(1,-12,0,40); popTitle.Position=UDim2.new(0,6,0,8); popTitle.Text="Pet Search Active!"; popTitle.Parent=popup; uiStroke(popTitle,2)
-local popSub = Instance.new("TextLabel"); popSub.BackgroundTransparency=1; popSub.Font=Enum.Font.FredokaOne; popSub.TextSize=22; popSub.TextColor3=Color3.fromRGB(255,255,255); popSub.Size=UDim2.new(1,-12,0,36); popSub.Position=UDim2.new(0,6,0,54); popSub.Text=""; popSub.Parent=popup; uiStroke(popSub,2)
+-- Laid out like the hero card's top line + main line: a small caption at y6 over the bigger line at y29,
+-- inside the shared 65px height. The old 40 + 36 stack needed 110px and no longer fits (nor should it).
+local popTitle = Instance.new("TextLabel"); popTitle.BackgroundTransparency=1; popTitle.Font=Enum.Font.FredokaOne; popTitle.TextScaled=true; popTitle.TextColor3=Color3.fromRGB(180,255,180); popTitle.Size=UDim2.new(1,-14,0,22); popTitle.Position=UDim2.new(0,7,0,6); popTitle.Text="Pet Search Active!"; popTitle.Parent=popup; uiStroke(popTitle,2)
+do local c=Instance.new("UITextSizeConstraint"); c.MaxTextSize=20; c.Parent=popTitle end
+local popSub = Instance.new("TextLabel"); popSub.BackgroundTransparency=1; popSub.Font=Enum.Font.FredokaOne; popSub.TextScaled=true; popSub.TextColor3=Color3.fromRGB(255,255,255); popSub.Size=UDim2.new(1,-14,0,30); popSub.Position=UDim2.new(0,7,0,30); popSub.Text=""; popSub.Parent=popup; uiStroke(popSub,2)
+do local c=Instance.new("UITextSizeConstraint"); c.MaxTextSize=26; c.Parent=popSub end
 
 -- (2b) CORNER TRACKER: top-right, persistent. Two modes -- "available" shows quest NAME + objective on two
 -- lines; "progress"/"complete" minimize to a single compact counter line. refreshQuestHUD() drives both.
@@ -4052,10 +4357,15 @@ local tracker = Instance.new("Frame")
 -- It lives on an ATTRIBUTE, not a top-level local: this file's main chunk is at 198 of Luau's 200 local
 -- registers, and BOTH the visibility gate below and showDiscoveryPopup need to read it. Change it here and
 -- the other two follow.
-tracker.Name="Tracker"; tracker.AnchorPoint=Vector2.new(0.5,0); tracker.Position=UDim2.new(0.5,0,0,-20); tracker.Size=UDim2.new(0,240,0,52)
+-- ONE BANNER SIZE FOR THE WHOLE GAME: 500 x 65, the hero card's dimensions and the big event banner's,
+-- which were already identical. The tracker was 240 x 52 and RESIZED ITSELF to fit its text, so the same
+-- lane showed a different-shaped box depending on whether you were mid-quest, mid-event or mid-arrival --
+-- a card would slide out and something visibly smaller and differently-rounded took its place. It is a
+-- fixed banner now, like everything else in this column; the text scales inside it instead.
+tracker.Name="Tracker"; tracker.AnchorPoint=Vector2.new(0.5,0); tracker.Position=UDim2.new(0.5,0,0,-20); tracker.Size=UDim2.new(0,500,0,65)
 tracker:SetAttribute("LaneY", -20)
 tracker.BackgroundColor3=Color3.fromRGB(28,52,28); tracker.BackgroundTransparency=0.12; tracker.Visible=false; tracker.Parent=questGui
-uiCorner(tracker, 10); uiStroke(tracker, 2, Color3.fromRGB(120,220,120))
+uiCorner(tracker, 16); uiStroke(tracker, 2, Color3.fromRGB(120,220,120)) -- 16 = the shared banner radius (was 10)
 
 -- ---- TRACKER VISIBILITY GATE: yield the top-centre slot to whatever banner is showing --------------
 -- The tracker is PERSISTENT while a quest is live, and it sits in the same top-centre space as
@@ -4104,8 +4414,11 @@ do
 		while true do task.wait(0.15); apply() end -- NotifyCenter has no signal to listen to; poll it
 	end)
 end
-local trkIcon = Instance.new("TextLabel"); trkIcon.BackgroundTransparency=1; trkIcon.Font=Enum.Font.Gotham; trkIcon.TextSize=24; trkIcon.Size=UDim2.new(0,30,1,0); trkIcon.Position=UDim2.new(0,8,0,0); trkIcon.Text=""; trkIcon.Parent=tracker
-local trkLabel = Instance.new("TextLabel"); trkLabel.BackgroundTransparency=1; trkLabel.Font=Enum.Font.FredokaOne; trkLabel.TextSize=16; trkLabel.TextColor3=Color3.fromRGB(255,255,255); trkLabel.Size=UDim2.new(1,-50,1,0); trkLabel.Position=UDim2.new(0,42,0,0); trkLabel.TextXAlignment=Enum.TextXAlignment.Center; trkLabel.Text=""; trkLabel.Parent=tracker; uiStroke(trkLabel,2) -- centered in the box
+-- Icon column widened for the taller card. TextScaled on the label, capped: the box is a fixed 500x65 now,
+-- so the TEXT is what adapts (a long nextStep line shrinks to fit) rather than the box growing to suit it.
+local trkIcon = Instance.new("TextLabel"); trkIcon.BackgroundTransparency=1; trkIcon.Font=Enum.Font.Gotham; trkIcon.TextSize=30; trkIcon.Size=UDim2.new(0,36,1,0); trkIcon.Position=UDim2.new(0,10,0,0); trkIcon.Text=""; trkIcon.Parent=tracker
+local trkLabel = Instance.new("TextLabel"); trkLabel.BackgroundTransparency=1; trkLabel.Font=Enum.Font.FredokaOne; trkLabel.TextScaled=true; trkLabel.TextColor3=Color3.fromRGB(255,255,255); trkLabel.Size=UDim2.new(1,-56,1,0); trkLabel.Position=UDim2.new(0,44,0,0); trkLabel.TextXAlignment=Enum.TextXAlignment.Center; trkLabel.Text=""; trkLabel.Parent=tracker; uiStroke(trkLabel,2) -- centred in the box
+do local c=Instance.new("UITextSizeConstraint"); c.MaxTextSize=24; c.Parent=trkLabel end
 local trkSub = Instance.new("TextLabel"); trkSub.BackgroundTransparency=1; trkSub.Font=Enum.Font.Gotham; trkSub.TextSize=13; trkSub.TextColor3=Color3.fromRGB(210,235,210); trkSub.Size=UDim2.new(1,-50,0,18); trkSub.Position=UDim2.new(0,42,0,28); trkSub.TextXAlignment=Enum.TextXAlignment.Left; trkSub.Text=""; trkSub.Visible=false; trkSub.Parent=tracker; uiStroke(trkSub,1)
 
 -- (3) POINTER: on-screen arrow guiding to the egg (shown at 3/3)
@@ -4177,15 +4490,16 @@ refreshQuestHUD = function()
 	trkIcon.Text = def.iconEmoji or "\xF0\x9F\x90\xBE"
 	if mode == "available" then
 		-- AVAILABLE: show the OBJECTIVE cleanly (no "???"). TextWrapped so a longer objective fits two lines.
-		tracker.Size = UDim2.new(0,224,0,52)
+		-- THE BOX NO LONGER CHANGES SIZE. Both modes are the shared 500 x 65 banner; only the label inside
+		-- it moves. A lane whose card silently grows and shrinks between states is the thing that made the
+		-- top of the screen look unsettled, and it is the whole reason the size is fixed at build time now.
 		trkLabel.TextWrapped = true
-		trkLabel.Position = UDim2.new(0,36,0,4); trkLabel.Size = UDim2.new(1,-44,0,44) -- centered (icon left ~36, equal-ish right margin)
+		trkLabel.Position = UDim2.new(0,44,0,6); trkLabel.Size = UDim2.new(1,-56,0,53) -- centred; icon column left
 		trkLabel.Text = def.objective or ""; trkLabel.TextColor3 = Color3.fromRGB(255,240,150)
 		trkSub.Visible = false
 	else
-		tracker.Size = UDim2.new(0,200,0,38)
 		trkLabel.TextWrapped = false
-		trkLabel.Position = UDim2.new(0,36,0,0); trkLabel.Size = UDim2.new(1,-44,1,0) -- centered (icon left ~36, equal-ish right margin)
+		trkLabel.Position = UDim2.new(0,44,0,0); trkLabel.Size = UDim2.new(1,-56,1,0) -- centred; icon column left
 		trkSub.Visible = false
 		if mode == "complete" then
 			-- count finished -> show the NEXT step for this quest (def.nextStep), not the finished count
@@ -4196,6 +4510,15 @@ refreshQuestHUD = function()
 			trkLabel.Text = (total ~= nil) and (word.." "..found.."/"..total) or (word..": "..found)
 			trkLabel.TextColor3 = Color3.fromRGB(255,255,255)
 		end
+		-- THE PILL NO LONGER SIZES ITSELF TO ITS TEXT.
+		-- It used to: a fixed 200-wide box with an unwrapped, unscaled, centred label overflowed its own
+		-- rounded edges on any longer counter ("Coconut 1/7", every longer nextStep line), so the box was
+		-- measured and grown to fit. That solved the overflow and created a worse problem -- a card in the
+		-- shared top-centre column that was a different width every time you looked at it.
+		--
+		-- The banner is 500 wide now, which is roomier than the widest string this ever produced, and the
+		-- label is TextScaled (set at build time) so anything longer shrinks to fit INSIDE the card instead
+		-- of pushing it wider. Fixed size, no overflow, and it matches every other banner in the lane.
 	end
 	_G.__petTrackerSet(true) -- "quest is live" -> the gate decides whether a banner is currently in the way
 end
@@ -4221,7 +4544,7 @@ local function showDiscoveryPopup(def, found, total)
 	-- tall the tracker actually renders + 8 of air. Desktop -20+52+8 = 40, this phone -20+31+8 = 19 --
 	-- the same gap under the tracker on both, in the top-centre lane on both.
 	local th = tracker.AbsoluteSize.Y
-	if th < 1 then th = 52 end   -- not laid out yet (gui disabled): fall back to the authored height
+	if th < 1 then th = 65 end   -- not laid out yet (gui disabled): fall back to the shared banner height
 	local SHOWN_AT = UDim2.new(0.5, 0, 0, (tracker:GetAttribute("LaneY") or -20) + math.ceil(th) + 8)
 	local function bannerUp()
 		local NC = _G.NotifyCenter
@@ -4234,8 +4557,11 @@ local function showDiscoveryPopup(def, found, total)
 
 		popSub.Text = found.."/"..total.." "..(def.pieceLabel or "Pieces").." Found"
 		popTitle.TextTransparency=0; popSub.TextTransparency=0; popup.BackgroundTransparency=0.05
-		popup.Position = SHOWN_AT; popup.Size = UDim2.new(0,240,0,88); popup.Visible = true
-		TweenService:Create(popup, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size=UDim2.new(0,300,0,110)}):Play()
+		-- Pops in from 80% of the shared banner size to the full 500 x 65. It used to grow 240x88 -> 300x110,
+		-- i.e. it settled at a size no other card in this column uses; the pop is kept, the destination is
+		-- now the one banner size.
+		popup.Position = SHOWN_AT; popup.Size = UDim2.new(0,400,0,52); popup.Visible = true
+		TweenService:Create(popup, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size=UDim2.new(0,500,0,65)}):Play()
 		print("[Pet][UI] discovery popup shown ("..found.."/"..total..") top-centre")
 
 		local retired = false
@@ -4444,11 +4770,25 @@ end
 do
 	-- Remember the last state the server sent, so accepting a quest can re-apply it with no round trip.
 	local lastPetState = {}
+	local stateReceived = false -- true once a REAL server state has landed (guards the re-apply below)
 	if PetStateEvent then -- guarded: a missing remote can't crash the script
 		PetStateEvent.OnClientEvent:Connect(function(state)
 			lastPetState = state or lastPetState
+			stateReceived = true
 			applyState(lastPetState)
 		end)
+	end
+
+	-- ===== BUILD-AFTER-STATE FIX: "broccoli / film reels / coconuts sometimes never appear" =====
+	-- Every quest world builds its pieces HIDDEN and waits for applyState to reveal them -- but applyState
+	-- only runs when a PetStateEvent arrives. The marker fetch can take a long time (the server's scan may
+	-- hold the RF for up to 90s), so the world routinely finishes building AFTER the last state push...
+	-- and then nothing ever reveals the pieces. The startup builder calls this hook right after each
+	-- buildPetWorld to re-apply the latest known state to the freshly built (still hidden) pieces.
+	-- Gated on stateReceived so a build finishing before ANY real state cannot reveal pieces to a player
+	-- who might own the pet (the original reason they build hidden).
+	_G.petWorldBuilt = function()
+		if stateReceived then applyState(lastPetState) end
 	end
 
 -- ===== ACCEPTING A QUEST OPENS IT, IMMEDIATELY =====
@@ -4690,23 +5030,39 @@ for petId, def in pairs(PETS) do
 	-- markers, no pieces and no island world to build. They only ever appear as the equipped follower.
 	if def.questType == "seasonal" or def.questType == "starter" or def.questType == "collection" then continue end
 	task.spawn(function()
-		if not PetGetMarkers then
-			warn("[Pet][DIAG] PetGetMarkers RemoteFunction MISSING -- cannot build "..petId.." (server PetSystem not loaded/synced?)")
-			return
+		-- RETRY, DON'T GIVE UP: this used to be one attempt, and every failure path was terminal -- a nil
+		-- from the server (its marker scan can time out at 90s on a slow start), a failed invoke, or the
+		-- remote itself missing all meant that pet's collectibles never existed for the whole session, with
+		-- only a warn to show for it. That IS the "broccoli / reels / coconuts randomly don't render" bug's
+		-- other half. Retries with growing gaps cover a slow server scan; the cap keeps a genuinely broken
+		-- marker set (already loudly warned server-side) from polling forever.
+		local positions
+		for attempt = 1, 6 do
+			if not PetGetMarkers then -- late re-acquire: the 30s WaitForChild at the top may have timed out
+				PetGetMarkers = RS:FindFirstChild("PetGetMarkers")
+			end
+			if PetGetMarkers then
+				local ok, result = pcall(function() return PetGetMarkers:InvokeServer(petId) end)
+				if ok and type(result) == "table" then
+					positions = result
+					if attempt > 1 then print("[Pet][DIAG] marker positions for "..petId.." arrived on retry #"..attempt) end
+					break
+				end
+				warn("[Pet][DIAG] PetGetMarkers attempt "..attempt.."/6 for "..petId.." failed ("
+					..(ok and "server had no positions yet" or tostring(result))..")"..(attempt < 6 and " -- retrying" or " -- giving up"))
+			else
+				warn("[Pet][DIAG] PetGetMarkers RemoteFunction still missing (attempt "..attempt.."/6) for "..petId)
+			end
+			if attempt < 6 then task.wait(8 * attempt) end -- 8,16,24,32,40s between tries (~2 min window on top of the server's own wait)
 		end
-		local ok, positions = pcall(function() return PetGetMarkers:InvokeServer(petId) end)
-		if not ok then
-			warn("[Pet][DIAG] PetGetMarkers invoke FAILED for "..petId..": "..tostring(positions))
-			return
-		end
-		if type(positions) ~= "table" then
-			warn("[Pet][DIAG] received NIL/invalid positions for "..petId.." -- server had no markers (check the server '[Pet] markers found' logs)")
-			return
-		end
+		if not positions then return end
 		local pp = positions.pieces or {}
 		local function v(p) return (typeof(p) == "Vector3") and string.format("(%.0f,%.0f,%.0f)", p.X, p.Y, p.Z) or "nil" end
 		print("[Pet][DIAG] received positions: piece1="..v(pp[1]).." piece2="..v(pp[2]).." piece3="..v(pp[3]).." egg="..v(positions.egg))
 		buildPetWorld(petId, def, positions)
+		-- the world just built with every piece HIDDEN -- re-apply the latest server state so uncollected
+		-- pieces reveal NOW instead of waiting for a state push that may never come (see _G.petWorldBuilt)
+		if _G.petWorldBuilt then _G.petWorldBuilt() end
 	end)
 end
 
@@ -4862,7 +5218,7 @@ do
 	local tl = Instance.new("TextLabel"); tl.Name = "Value"; tl.BackgroundTransparency = 1
 	tl.Size = UDim2.new(1,-10,1,0); tl.Position = UDim2.new(0,5,0,0)
 	tl.Font = Enum.Font.GothamBold; tl.TextSize = 14; tl.TextColor3 = Color3.fromRGB(255,215,0)
-	tl.Text = "\xF0\x9F\xAA\x99 0"; tl.Parent = tokChip
+	tl.Text = "\xF0\x9F\x92\xB0 0"; tl.Parent = tokChip
 	-- CoreClient force-sets TextScaled on every PlayerGui TextLabel, so cap it here or a long balance grows
 	do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 14; c.Parent = tl; tl.TextScaled = true end
 end
@@ -4908,7 +5264,7 @@ do
 	_G.PetHub.setTokens = function(n)
 		local chip = header:FindFirstChild("HubTokens")
 		local lbl = chip and chip:FindFirstChild("Value")
-		if lbl then lbl.Text = "\xF0\x9F\xAA\x99 " .. tostring(math.floor(tonumber(n) or 0)) end
+		if lbl then lbl.Text = "\xF0\x9F\x92\xB0 " .. tostring(math.floor(tonumber(n) or 0)) end
 	end
 	-- SkinCrateClient calls this whenever the server pushes a new balance, so the hub header and the crate
 	-- panel can never show two different token counts.
@@ -4935,6 +5291,14 @@ do
 		b.Font = Enum.Font.FredokaOne; b.TextSize = 15; b.TextScaled = true
 		b.TextColor3 = Color3.fromRGB(255,215,0); b.Parent = bar
 		uicorner(b, 10); uistroke(b, Color3.new(1,1,1), 1.5)
+		-- HANDS OFF: THESE TABS DRIVE THEIR OWN FILL, TEXT AND OUTLINE.
+		-- syncNav below paints selected as dark-on-gold with a 2.5px gold-brown outline and unselected as
+		-- gold-on-blue with a 1.5px white one -- the colour IS how you tell which tab you're on.
+		-- ButtonTextStyle's legibility sweep would repaint all four cream with a 2px dark-blue outline and
+		-- darken the fill from whichever state the tab happened to be in the first time it was seen, so the
+		-- selected tab stopped looking selected and the four tabs stopped matching each other. BTS_Skip is
+		-- that sweep's documented opt-out for exactly this: a button whose colour carries meaning.
+		b:SetAttribute("BTS_Skip", true)
 		do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 15; c.Parent = b end
 		_G.PetHub.navButtons[t.id] = b
 		-- showPage is defined much further down (it needs the trade + quest overlays to exist first). Looked
@@ -5389,10 +5753,26 @@ _G.PetHub.showDetail = function(key, p)
 	-- STAT ROWS: the "cool stuff" -- what this pet has actually been through with the player. Computed UP FRONT
 	-- because both the build path and the live-patch path below need them (and the row COUNT is part of the
 	-- patch-vs-rebuild identity check).
+	-- ===== HOW RARE IS IT =====
+	-- The server has always sent rareOdds (750, or 10,000 for the Cosmic Duck) on BOTH the owned entry and the
+	-- locked catalog entry, with a comment saying it was meant for exactly this line -- and the client never read
+	-- it. Printed in the house "1 in N" wording, the same phrasing the server derives from the roll weights
+	-- (HATCH_ODDS_TEXT), so the card and the actual roll can never word the same number two different ways.
+	--
+	-- Deliberately NOT the age-tier hatch odds. Those are the odds of hatching AT a stage, and a pet's stage
+	-- changes every time it levels -- a grown pet would advertise the odds of a roll it never made. rareOdds is a
+	-- property of the SPECIES and stays true for the life of the pet.
+	local function oddsText(n)
+		if type(n) ~= "number" or n <= 0 then return nil end
+		return "1 in " .. comma(math.floor(n + 0.5))
+	end
 	local rows = {}
 	if locked then
 		rows[#rows+1] = { "Found on", p.islandName or "???" }
 		rows[#rows+1] = { "How to get it", p.questLabel or "???" }
+		-- a reason to care WHICH pet you go for, before you own it
+		local o = oddsText(p.rareOdds)
+		if o then rows[#rows+1] = { "Rare chance", o } end
 		-- (no "Status: not collected" row -- the header already says LOCKED in letters twice this size)
 	else
 		-- FOUR facts, deliberately. This card is read by 10-year-olds, and the old eleven-row dump (Lifetime
@@ -5400,6 +5780,16 @@ _G.PetHub.showDetail = function(key, p)
 		-- about -- "how strong is it" and "what do I do next" -- in a wall of numbers. Everything cut is either
 		-- shown elsewhere (rarity on the chip strip below), or was trivia.
 		rows[#rows+1] = { "Level", maxed and ("MAX (" .. cap .. ")") or ((p.level or 1) .. " / " .. cap) }
+		-- RARITY. For a rare variant the odds ARE its rarity, so name the tier alongside them ("Exotic - 1 in 750",
+		-- "Mythical - 1 in 10,000"). For a normal pet the same number is the chance of pulling this species' rare
+		-- version, which is the thing worth knowing before you grind it, so it's labelled for what it is.
+		do
+			local o = oddsText(p.rareOdds)
+			if o then
+				if p.rare then rows[#rows+1] = { "Rarity", tierName .. "  \xE2\x80\xA2  " .. o }
+				else rows[#rows+1] = { "Rare chance", o } end
+			end
+		end
 		rows[#rows+1] = { "Highest flight", comma(p.height or 0) .. " studs" }
 		rows[#rows+1] = { "Time together", hms(p.time or 0) }
 		if (p.count or 1) > 1 then rows[#rows+1] = { "You own", "x" .. p.count } end
@@ -5653,6 +6043,11 @@ _G.PetHub.showDetail = function(key, p)
 		eq.BackgroundColor3 = p.equipped and Color3.fromRGB(120,120,120) or Color3.fromRGB(50,200,50)
 		eq.Text = p.equipped and ("\xE2\x9C\x94 EQUIPPED") or "EQUIP PET"
 		eq:SetAttribute("Equipped", p.equipped and true or false)
+		-- HANDS OFF for the same reason as the nav tabs: GREY means "already equipped", GREEN means "press me",
+		-- and the live-patch path above recolours THIS SAME INSTANCE when you equip. ButtonTextStyle remembers a
+		-- button's fill on first sight and re-asserts a darkened version of it every 3s, so an equipped pet's
+		-- grey button would drift back toward green (or the reverse) and advertise an action that isn't there.
+		eq:SetAttribute("BTS_Skip", true)
 		uicorner(eq, 8); uistroke(eq, Color3.new(0,0,0), 2)
 		eq.MouseButton1Click:Connect(function()
 			-- reads the live attribute, NOT a captured p.equipped: the patch path keeps the attribute current, so a
@@ -6265,6 +6660,74 @@ local function rebuildInventory(payload)
 	if not ok then warn("[PetInv] ERROR building inventory: " .. tostring(err)) end
 end
 if PetInventoryEvent then PetInventoryEvent.OnClientEvent:Connect(rebuildInventory) end
+
+-- =====================================================================================================
+-- TIER-UP SOUND: the pet crossed into the NEXT tier (Baby -> Kid -> Teen -> Adult -> Elder).
+-- =====================================================================================================
+-- NOT a per-level sound. Levels tick over constantly (coins and flight both feed XP), so a sound on every
+-- level-up would be noise -- this fires only on the FOUR level-ups that change the pet's TIER, i.e. the
+-- steps that actually rename the badge over its head and unlock the next look:
+--     5 -> 6 (Baby -> Kid) | 10 -> 11 (Kid -> Teen) | 15 -> 16 (Teen -> Adult) | 20 -> 21 (Adult -> Elder)
+-- The bands are petTier()'s, read from the same authoritative inventory payload the cards are built from,
+-- so this can never disagree with what the badge says. (petTier's labels are ages now -- Baby/Kid/Teen/
+-- Adult/Elder -- but they are the same five bands the old Common/Uncommon/Rare/Epic/Legendary ladder used.)
+--
+-- A SEPARATE connection, not a line inside rebuildInventory: that function is a big pcall'd rebuild, and a
+-- sound has no business being skipped because a card failed to draw.
+--
+-- Rare variants (Exotic / Mythical) are LOOK tiers, not level bands -- they hatch pre-maxed and never climb,
+-- so they're excluded; their fanfare is PetRareEvent's, at hatch.
+do
+	local tierUpSound = Instance.new("Sound")
+	tierUpSound.Name = "PetTierUpSound"
+	tierUpSound.SoundId = "rbxassetid://117166473587029"
+	tierUpSound.Volume = 3            -- matches the hatch sounds: a milestone should land, not whisper
+	tierUpSound.Parent = SoundService -- SoundService (not the pet) = 2D, always audible, and SettingsMenu's
+	                                  -- SFX toggle routes it like every other ungrouped sound
+	task.spawn(function() pcall(function() ContentProvider:PreloadAsync({ tierUpSound }) end) end)
+
+	-- Band index for a level: 1=Baby(1-5) 2=Kid(6-10) 3=Teen(11-15) 4=Adult(16-20) 5=Elder(21+).
+	local function bandOf(level)
+		level = tonumber(level) or 1
+		if level <= 5 then return 1
+		elseif level <= 10 then return 2
+		elseif level <= 15 then return 3
+		elseif level <= 20 then return 4
+		else return 5 end
+	end
+
+	local lastBand = {}     -- storage key -> the band this pet was in at the previous payload
+	local baselined = false -- the FIRST payload only RECORDS: joining with a Teen pet is not a tier-up
+
+	if PetInventoryEvent then
+		PetInventoryEvent.OnClientEvent:Connect(function(payload)
+			local owned = (type(payload) == "table" and payload.owned) or nil
+			if type(owned) ~= "table" then return end
+			local rang = false
+			for skey, p in pairs(owned) do
+				if type(p) == "table" and not p.rare then -- rare variants sit outside the level bands
+					local band = bandOf(p.level)
+					local prev = lastBand[skey]
+					-- Only ever UPWARD, and only on a real transition. Levels never fall, but a trade or a
+					-- fresh payload for a pet we've not seen (prev == nil) must not sound.
+					if baselined and prev and band > prev and not rang then
+						rang = true -- one sound per payload, even if a crate pushed two pets up at once
+						pcall(function() tierUpSound:Play() end)
+						print(string.format("[PetLvl] %s reached a NEW TIER (Lv %s) -- tier-up sound played",
+							tostring(p.petId or skey), tostring(p.level)))
+					end
+					lastBand[skey] = band
+				end
+			end
+			-- Pets that vanished from the payload (traded away) shouldn't keep a stale band around: if that key
+			-- comes back later it must re-baseline rather than sound off the old number.
+			for skey in pairs(lastBand) do
+				if owned[skey] == nil then lastBand[skey] = nil end
+			end
+			baselined = true
+		end)
+	end
+end
 
 -- =====================================================================================================
 -- STAGE 3: TRADE UI (housed in the Pet Hub). The client sends INTENTS only; the server owns the trade.

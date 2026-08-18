@@ -397,27 +397,22 @@ local function winStorm()
 		Debris:AddItem(c, 3)
 	end
 
-	local g = Instance.new("ScreenGui"); g.Name = "StormWin"; g.ResetOnSpawn = false
-	g.DisplayOrder = 20; g.IgnoreGuiInset = true; g.Parent = PlayerGui
-	local f = Instance.new("Frame"); f.AnchorPoint = Vector2.new(0.5, 0.5); f.Position = UDim2.new(0.5, 0, 0.42, 0)
-	f.Size = UDim2.new(0, 0, 0, 92); f.BackgroundColor3 = FILL; f.Parent = g
-	local c2 = Instance.new("UICorner"); c2.CornerRadius = UDim.new(0, 18); c2.Parent = f
-	local s2 = Instance.new("UIStroke"); s2.Color = STROKE; s2.Thickness = 4; s2.Parent = f
-	local l2 = Instance.new("TextLabel"); l2.BackgroundTransparency = 1; l2.Size = UDim2.fromScale(1, 1)
-	l2.Font = Enum.Font.FredokaOne; l2.TextColor3 = TEXTC; l2.TextScaled = true
-	l2.Text = ("\xF0\x9F\x8D\xAC STORM WEATHERED!  %d caught"):format(caught); l2.Parent = f
-	local pd = Instance.new("UIPadding"); pd.PaddingLeft = UDim.new(0, 24); pd.PaddingRight = UDim.new(0, 24); pd.Parent = l2
-	local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 32; sz.Parent = l2
-	TweenService:Create(f, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-		{ Size = UDim2.new(0, 640, 0, 92) }):Play()
-	task.delay(5, function()
-		TweenService:Create(f, TweenInfo.new(0.4), { BackgroundTransparency = 1 }):Play()
-		TweenService:Create(l2, TweenInfo.new(0.4), { TextTransparency = 1 }):Play()
-		task.delay(0.5, function() g:Destroy() end)
-	end)
-
-	if _G.NotifyCenter then
-		pcall(function() _G.NotifyCenter.push({ text = "\xF0\x9F\x8D\xAC Taffy Storm weathered!", color = STROKE }) end)
+	-- ⚠ ANNOUNCEMENTS GO THROUGH THE ONE REALM BANNER -- NEVER A ScreenGui OF THEIR OWN.
+	-- This is realm 1's rule (see NotifyCenter.luau: push/pin is the whole API). This quest was
+	-- the clearest case for it: it built its OWN "STORM WEATHERED!" card in the middle of the
+	-- screen AND pushed a banner saying the same thing, so finishing announced itself twice, in
+	-- two places, at two different sizes. One push now, and the catch count -- the only thing
+	-- the card said that the banner did not -- comes with it.
+	--
+	-- The confetti above stays: that is a world effect, not an announcement.
+	if _G.NotifyCenter and _G.NotifyCenter.push then
+		pcall(function() _G.NotifyCenter.push({
+			top      = "\xE2\x9C\xA8 QUEST COMPLETE",
+			text     = ("\xF0\x9F\x8D\xAC Taffy Storm weathered!  %d caught"):format(caught),
+			color    = STROKE,
+			priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT or nil,
+			duration = 5,
+		}) end)
 	end
 	print(("[Storm] complete -- %d caught, %d missed"):format(caught, missed))
 end
@@ -513,11 +508,18 @@ do
 	catch.Text = ""; catch.AutoButtonColor = false; catch.ZIndex = 1; catch.Parent = g
 	MG.catch = catch
 
-	MG.home = UDim2.new(0.5, -280, 0.72, 0)
+	-- HOME is the shell's centre, not a hand-placed corner. _G.housePanel below centres this panel
+	-- inside the house card, so every slide-in/slide-out tween has to be an offset off that centre
+	-- -- the old (0.5,-280),(0.72,0) would fling it out of the card the first time it re-homed.
+	MG.home = UDim2.fromScale(0.5, 0.5)
 	local panel = Instance.new("Frame")
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.Size = UDim2.new(0, 560, 0, 158); panel.Position = MG.home
 	panel.BackgroundColor3 = FILL; panel.BackgroundTransparency = 0.04
 	panel.BorderSizePixel = 0; panel.ZIndex = 2; panel.Parent = g
+	-- HOUSE PANEL: the Pet Hub's 700x520 card in the Pet Hub's spot, and the bottom buttons hide
+	-- while it is up. The strip keeps its own 560x158 coordinates -- see HousePanel.client.luau.
+	pcall(_G.housePanel, panel)   -- island5 taffy catch
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 16)
 	MG.panel = panel
 	local st = Instance.new("UIStroke"); st.Color = STROKE; st.Thickness = 3; st.Parent = panel
@@ -1288,6 +1290,11 @@ task.spawn(function()
 	refreshBanner()
 	print(("[Storm] ready -- centre %.0f,%.0f,%.0f, target %d, %d wave(s)"):format(
 		stormCentre.X, stormCentre.Y, stormCentre.Z, TARGET, #WAVES))
+	-- RETAINER SIGNAL: the quest reached the end of its build with its world objects up. QuestRetainer
+	-- watches this flag; anything still false once its island has streamed in gets force-streamed and
+	-- re-run. It is set HERE, at the ready print, not at the top of the file -- a quest that bailed
+	-- early on a missing marker must NOT look built. See QuestRetainer.client.luau.
+	_G.questBuilt_storm = true
 end)
 
 -- ============================================================================

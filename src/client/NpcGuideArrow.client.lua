@@ -58,6 +58,7 @@ end
 
 local reached  = {}     -- island name -> true once met OR timed out this session (no more arrows)
 local visitAt  = {}     -- island name -> os.clock() this visit began; nil while flying
+local lastTick = nil    -- previous scan's clock, so a thunderstorm can freeze the visit countdown
 local boxes    = {}     -- island -> { c = centre, h = half-extents }; islands do not move
 local island, npcPart   -- what we are currently pointing at
 local nextScan = 0
@@ -92,7 +93,13 @@ end
 local function islandUnder(pos)
 	local best, bestScore
 	for _, m in ipairs(Workspace:GetChildren()) do
-		if m:IsA("Model") and norm(m.Name):sub(1, #ISLAND_PREFIX) == ISLAND_PREFIX then
+		-- "island" must be followed by a DIGIT. Without that guard any top-level model whose name merely
+		-- STARTS with the word counts as an island -- and there are now six birds called IslandBird_<colour>
+		-- flying around Bean Farm, one of which won this test the moment it landed ("[NpcGuide] now on
+		-- IslandBird_Goldfinch"). A bird is not an island; a landed one would hijack the arrows.
+		local nm = norm(m.Name)
+		if m:IsA("Model") and nm:sub(1, #ISLAND_PREFIX) == ISLAND_PREFIX
+			and tonumber(nm:sub(#ISLAND_PREFIX + 1, #ISLAND_PREFIX + 1)) then
 			local b = boxOf(m)
 			if b then
 				-- HOW FAR OUTSIDE THE BOX YOU ARE, IN ALL THREE AXES. Zero means you are inside it.
@@ -241,7 +248,22 @@ RunService.Heartbeat:Connect(function()
 	-- start (or resume) this visit's clock the first grounded frame on the island
 	if not visitAt[island.Name] then visitAt[island.Name] = now end
 
-	-- 30 SECONDS AND IT RETIRES. Latched, so it does not light up again every time you cross back
+	-- ===== A THUNDERSTORM PAUSES THE VISIT CLOCK =====
+	-- NpcWaypointArrow hides the ▼ for the duration of a storm (it is AlwaysOnTop with LightInfluence 0, so
+	-- it burns bright green straight through the storm's dark and reads as a bug rather than as guidance).
+	-- Hiding alone is not enough, though: this 45-second timer would keep running behind the storm, and a
+	-- storm outlasting it would RETIRE the island -- latched, for the session -- so "give it back when it
+	-- ends" would silently give back nothing.
+	--
+	-- Pushing the start time along by exactly the elapsed frame freezes the countdown without touching any
+	-- of the other retire rules. You still lose the arrow by reaching the NPC or by flying away, and the
+	-- moment the storm clears the clock picks up with the same time left it had when the sky went dark.
+	if _G.thunderstormActive == true then
+		visitAt[island.Name] = visitAt[island.Name] + (now - (lastTick or now))
+	end
+	lastTick = now
+
+	-- 45 SECONDS AND IT RETIRES. Latched, so it does not light up again every time you cross back
 	-- over this island later in the run.
 	if now - visitAt[island.Name] >= SHOW_SECONDS then
 		reached[island.Name] = true

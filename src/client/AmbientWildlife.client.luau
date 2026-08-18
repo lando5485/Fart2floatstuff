@@ -15,9 +15,10 @@
 -- Nothing here collides, is queryable, casts shadows, or can be touched. It is scenery that happens to move.
 -- ============================================================================================================
 
-local Players    = game:GetService("Players")
-local Workspace  = game:GetService("Workspace")
-local RunService = game:GetService("RunService")
+local Players      = game:GetService("Players")
+local Workspace    = game:GetService("Workspace")
+local RunService   = game:GetService("RunService")
+local SoundService = game:GetService("SoundService") -- birdsong reads the music's live loudness to balance against it
 
 local BUTTERFLIES = 10
 local BEES        = 7
@@ -43,6 +44,7 @@ local function part(parent, name, size, color, material)
 	p.Name = name; p.Size = size; p.Color = color
 	p.Material = material or Enum.Material.SmoothPlastic
 	p.Anchored = true; p.CanCollide = false; p.CanQuery = false; p.CanTouch = false; p.CastShadow = false
+	p:SetAttribute("BaseT", 0) -- what the cull restores to; callers that want a see-through part re-stamp it
 	p.TopSurface = Enum.SurfaceType.Smooth; p.BottomSurface = Enum.SurfaceType.Smooth
 	p.Parent = parent
 	return p
@@ -57,6 +59,7 @@ local function buildButterfly(col1, col2)
 	local wingL = part(m, "WingL", Vector3.new(0.06, 0.5, 0.62), col1)
 	local wingR = part(m, "WingR", Vector3.new(0.06, 0.5, 0.62), col2)
 	wingL.Transparency = 0.1; wingR.Transparency = 0.1
+	wingL:SetAttribute("BaseT", 0.1); wingR:SetAttribute("BaseT", 0.1)
 	return { model = m, body = body, wingL = wingL, wingR = wingR }
 end
 
@@ -68,16 +71,32 @@ local function buildBee()
 	local wingL = part(m, "WingL", Vector3.new(0.03, 0.16, 0.30), Color3.fromRGB(230, 245, 255))
 	local wingR = part(m, "WingR", Vector3.new(0.03, 0.16, 0.30), Color3.fromRGB(230, 245, 255))
 	wingL.Transparency = 0.55; wingR.Transparency = 0.55
+	wingL:SetAttribute("BaseT", 0.55); wingR:SetAttribute("BaseT", 0.55)
 	return { model = m, body = body, wingL = wingL, wingR = wingR, stripe = m.Stripe }
 end
 
+-- A distant soaring bird. It is circling 150 studs out and 60-odd up, so nothing here is about detail -- at
+-- that range the whole animal is a few pixels and only the SILHOUETTE survives. The old one was a body block
+-- with two straight bars stuck out either side: a plus sign, which is the shape of a plane, not a bird.
+-- Three changes, all silhouette:
+--   * A TAIL. A bird's outline is a cross with a wedge behind it; without one the body just stops.
+--   * A HEAD/neck bump out front, so the cross is not symmetrical front-to-back -- that asymmetry is what
+--     tells you which way it is flying.
+--   * SWEPT wings (see the pose code): angled back rather than square out, which is how a soaring bird holds
+--     them and the difference between reading as a bird and reading as a paper dart.
 local function buildBird()
 	local m = Instance.new("Model"); m.Name = "SkyBird"; m.Parent = folder
 	local body = part(m, "Body", Vector3.new(0.5, 0.4, 1.3), Color3.fromRGB(52, 48, 58))
+	body.Shape = Enum.PartType.Ball   -- a rounded body loses the boxy corners the moment it catches the light
 	m.PrimaryPart = body
+	local head = part(m, "Head", Vector3.new(0.32, 0.30, 0.42), Color3.fromRGB(46, 42, 52))
+	head.Shape = Enum.PartType.Ball
+	-- Tail: wider than the body and thin, so it reads as a fan from below -- which is the angle the player
+	-- almost always sees these from.
+	local tail = part(m, "Tail", Vector3.new(0.62, 0.07, 0.78), Color3.fromRGB(58, 54, 66))
 	local wingL = part(m, "WingL", Vector3.new(0.08, 0.18, 2.2), Color3.fromRGB(64, 60, 72))
 	local wingR = part(m, "WingR", Vector3.new(0.08, 0.18, 2.2), Color3.fromRGB(64, 60, 72))
-	return { model = m, body = body, wingL = wingL, wingR = wingR }
+	return { model = m, body = body, head = head, tail = tail, wingL = wingL, wingR = wingR }
 end
 
 -- ===== FIND THE GARDEN + THE ISLAND (both build asynchronously, long after this script starts) =====
@@ -105,6 +124,129 @@ task.spawn(function()
 	end
 	print(("[Wildlife] garden=%s island=%s"):format(tostring(gardenPos ~= nil), tostring(islandPos ~= nil)))
 end)
+
+-- ============================================================================================================
+-- ISLAND BIRDSONG: a looping ambience heard ANYWHERE on Bean Farm, fading out only once you leave it.
+-- ============================================================================================================
+-- It started life as a garden-only sound (full inside the garden, silent 240 studs out). It now covers the
+-- whole island at one steady level, because that is what birds on an island actually sound like -- you don't
+-- walk out of the birdsong when you leave the flowerbeds, and the six birds circling overhead are everywhere.
+--
+-- STILL POSITIONAL, not a proximity check. The Sound lives on an invisible part parked over the island's
+-- centre, so Roblox itself does the distance falloff every frame on the audio thread: flat at MIN_DIST (a
+-- radius big enough to swallow the island whole), then fading to nothing by MAX_DIST as you fly away or
+-- climb. No Heartbeat work, no "am I close enough" polling, and no hard cut at a boundary line -- which is
+-- what a scripted enter/leave check always ends up sounding like.
+--
+-- CENTRED ON THE ISLAND, NOT THE GARDEN: the garden sits off to one side, so a falloff centred there is
+-- lopsided -- quieter on the far side of the island than the near. X/Z come from the island, but Y comes
+-- from the GARDEN, because the island model's pivot is ~90 studs below the surface you stand on (the same
+-- trap the island birds fell into) and a sound buried under the island is 90 studs of distance away for free.
+--
+-- CLIENT-SIDE for the same reason the critters are: it's ambience, every player hears their own, and a server
+-- Sound would have to fight StreamingEnabled to exist for a player who is nowhere near the island yet.
+--
+-- It deliberately has NO SoundGroup: SettingsMenu's SFX toggle adopts every ungrouped Sound under Workspace,
+-- so this obeys the Sound Effects switch like everything else.
+do
+	local BIRD_SOUND = "rbxassetid://9119383479"
+	local MIN_DIST   = 280  -- flat, full volume within this -- comfortably the whole island
+	local MAX_DIST   = 700  -- gone by here: leaving the island or flying up out of it fades it away
+	local VOLUME     = 0.45 -- the level it holds anywhere on the island
+
+	task.spawn(function()
+		while not gardenPos do task.wait(0.5) end -- the garden builds long after this script starts
+
+		-- Island X/Z + garden Y (see the note above). islandPos may still be nil if the model never resolved;
+		-- the garden is on the island either way, so it's a safe fallback.
+		local function emitterPos()
+			local ground = gardenPos + Vector3.new(0, 6, 0)
+			if islandPos then return Vector3.new(islandPos.X, ground.Y, islandPos.Z) end
+			return ground
+		end
+
+		local emitter, song
+		local function build()
+			if folder.Parent == nil then folder.Parent = Workspace end -- our whole folder can go with a sweep too
+			emitter = part(folder, "IslandBirdsong", Vector3.new(1, 1, 1), Color3.new(1, 1, 1))
+			emitter.Transparency = 1
+			emitter.Position = emitterPos()
+			song = Instance.new("Sound")
+			song.Name = "IslandBirdsongLoop"
+			song.SoundId = BIRD_SOUND
+			song.Looped = true            -- on repeat, forever
+			song.Volume = VOLUME
+			song.RollOffMode = Enum.RollOffMode.InverseTapered -- smooth swell rather than a linear ramp
+			song.RollOffMinDistance = MIN_DIST
+			song.RollOffMaxDistance = MAX_DIST
+			song.Parent = emitter
+			song:Play()
+		end
+		build()
+		print(("[Wildlife] island birdsong looping at vol %.2f (flat within %d studs, silent past %d)")
+			:format(VOLUME, MIN_DIST, MAX_DIST))
+
+		-- ===== RIDE THE MUSIC =====================================================================
+		-- The four background tracks are not mastered to the same level -- some are noticeably louder than
+		-- others -- so ONE fixed birdsong volume is either buried under the loud tracks or sitting on top of
+		-- the quiet ones. This measures how loud the music ACTUALLY is right now and moves the birdsong with
+		-- it, so it keeps the same relationship to the music whichever track is playing.
+		--
+		-- It reads Sound.PlaybackLoudness, not Sound.Volume. Every track plays at the same configured Volume
+		-- (MusicClient sets each voice to gain 1 and never varies it) -- the difference is in the ASSETS
+		-- themselves, which only a real-time loudness read can see. Loudness is per-frame jittery, so it's
+		-- smoothed with a running average and the volume is eased toward the target rather than snapped, or
+		-- the birdsong would pump on every drum hit.
+		--
+		-- MUSIC OFF is not "music at zero" -- when the player mutes music (or an event ducks it), the birds
+		-- go back to their normal standalone volume rather than dropping to the quiet-track floor.
+		task.spawn(function()
+			local REF_LOUD = 120     -- a "normal" music loudness; at this the birds sit at exactly VOLUME
+			local MIN_VOL, MAX_VOL = VOLUME * 0.62, VOLUME * 1.55
+			local smoothLoud, applied = 0, VOLUME
+			while true do
+				task.wait(0.25)
+				if song and song.Parent then
+					-- Loudest currently-playing music voice. They live in the BackgroundMusic group, which is
+					-- also what MusicDucking mutes -- so a muted group reads as silence and we fall back.
+					local loud, groupVol = 0, 1
+					for _, s in ipairs(SoundService:GetDescendants()) do
+						if s:IsA("Sound") and s.IsPlaying and s.SoundGroup and s.SoundGroup.Name == "BackgroundMusic" then
+							loud = math.max(loud, s.PlaybackLoudness)
+							groupVol = s.SoundGroup.Volume
+						end
+					end
+					smoothLoud = smoothLoud + (loud - smoothLoud) * 0.35
+					local target
+					if smoothLoud < 5 or groupVol <= 0.01 or _G.musicEnabled == false then
+						target = VOLUME                                  -- no music to balance against
+					else
+						-- ^0.6 rather than a straight ratio: loudness differences between tracks should nudge
+						-- the birds, not track them 1:1 (that would make a loud track shout the birds over it).
+						target = math.clamp(VOLUME * (smoothLoud / REF_LOUD) ^ 0.6, MIN_VOL, MAX_VOL)
+					end
+					applied = applied + (target - applied) * 0.25         -- ease, never snap
+					song.Volume = applied
+				end
+			end
+		end)
+
+		-- KEEP IT ALIVE. A garden stage-rebuild, a world reset or anything else sweeping Workspace can take our
+		-- emitter with it, and a one-shot :Play() that got stopped leaves the garden silent for the rest of the
+		-- session with nothing in the log to say so. Re-park it on the garden centre (the pivot settles as the
+		-- build finishes), rebuild it if it's gone, and restart the loop if something stopped it.
+		while true do
+			task.wait(3)
+			if not (emitter and emitter.Parent) then
+				warn("[Wildlife] garden birdsong emitter was removed -- rebuilding it")
+				build()
+			else
+				if gardenPos then emitter.Position = gardenPos + Vector3.new(0, 6, 0) end
+				if song and not song.IsPlaying then song:Play() end
+			end
+		end
+	end)
+end
 
 -- ===== SPAWN =====
 -- Each critter gets its OWN random speed, radius, height and phase. Give them shared values and they move as a
@@ -175,10 +317,13 @@ RunService.Heartbeat:Connect(function()
 				end
 			else
 				if c.body.Transparency >= 1 then
-					c.body.Transparency = 0
-					c.wingL.Transparency = (c.kind == "bee") and 0.55 or ((c.kind == "butterfly") and 0.1 or 0)
-					c.wingR.Transparency = c.wingL.Transparency
-					if c.stripe then c.stripe.Transparency = 0 end
+					-- RESTORE FROM EACH PART'S OWN BUILD-TIME VALUE. This used to name body/wings/stripe one by
+					-- one, which meant any part added to a critter afterwards was hidden by the first cull and
+					-- never came back -- and the cull loop above hides EVERY part, so the omission was silent.
+					-- Reading the value back off the part cannot fall out of step with what was built.
+					for _, p in ipairs(c.model:GetChildren()) do
+						if p:IsA("BasePart") then p.Transparency = p:GetAttribute("BaseT") or 0 end
+					end
 				end
 
 				local a = t * c.speed + c.phase
@@ -201,8 +346,15 @@ RunService.Heartbeat:Connect(function()
 				local beat = math.sin(t * c.flap + c.phase)
 				if c.kind == "bird" then
 					local sweep = math.rad(38) * beat
-					c.wingL.CFrame = cf * CFrame.new(-0.9, 0.1, 0) * CFrame.Angles(0, 0, sweep)
-					c.wingR.CFrame = cf * CFrame.new(0.9, 0.1, 0) * CFrame.Angles(0, 0, -sweep)
+					-- SWEPT BACK ~16 degrees, and the wings sweep a little FURTHER back on the downstroke (when
+					-- `beat` is negative and the wing is below the body) -- a soaring bird pulls its wings in as
+					-- it drives down and spreads them again on the recovery. One extra term, and it is the
+					-- difference between wings that flap and wings that row.
+					local yaw = math.rad(16) + math.rad(7) * math.max(0, -beat)
+					c.head.CFrame = cf * CFrame.new(0, 0.06, -0.72)
+					c.tail.CFrame = cf * CFrame.new(0, 0.02, 0.86)
+					c.wingL.CFrame = cf * CFrame.new(-0.9, 0.1, 0.16) * CFrame.Angles(0, -yaw, sweep)
+					c.wingR.CFrame = cf * CFrame.new(0.9, 0.1, 0.16) * CFrame.Angles(0, yaw, -sweep)
 				else
 					local open = math.rad((c.kind == "bee") and 55 or 78) * (0.35 + 0.65 * ((beat + 1) / 2))
 					c.wingL.CFrame = cf * CFrame.new(-0.06, 0.16, 0) * CFrame.Angles(0, 0, open)

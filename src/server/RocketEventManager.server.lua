@@ -39,6 +39,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RocketNPCs = require(ServerScriptService:WaitForChild("RocketNPCs"))
 local RocketLogic = require(ServerScriptService:WaitForChild("RocketLogic"))
 local RocketEffects = require(ServerScriptService:WaitForChild("RocketEffects"))
+-- Boardable rocket. Kept in its own module rather than folded into RocketLogic because RocketLogic is the
+-- flight path and nothing else -- it must stay something you can read end-to-end to answer "where does the
+-- rocket go", without seats and player handling in the middle of it.
+local RocketRide = require(ServerScriptService:WaitForChild("RocketRide"))
 
 -- The sync RemoteEvent (added to ReplicatedStorage via default.project.json).
 local RocketEventSync = ReplicatedStorage:WaitForChild("RocketEventSync")
@@ -153,6 +157,23 @@ local function runEvent()
 		RocketNPCs.build()                         -- hammer loop
 
 		-- ---- 2) CONSTRUCTION ----
+		-- THE COMMAND STAND GOES UP WITH THE ROCKET, not thirty seconds before liftoff.
+		--
+		-- It used to appear at T-30, and that was the wrong call. The rocket takes over a minute to build
+		-- and the whole time it is the most conspicuous thing on the island -- people walk over and stand
+		-- watching it. Holding the console back until the last half-minute meant the answer to "can I get
+		-- on that?" was invisible for the entire period when players were actually asking it, and then
+		-- arrived as a surprise they had to sprint for.
+		--
+		-- Now it is there from the first girder: you see the pad and the console together, the clock reads
+		-- the real time to liftoff the whole way down, and boarding is a decision you can make early
+		-- instead of a scramble. The lead is the FULL remaining launch clock, so the countdown on its
+		-- screen stays honest no matter how BUILD_DURATION and COUNTDOWN are retuned.
+		local RIDE_LEAD = CONFIG.BUILD_DURATION + CONFIG.COUNTDOWN
+		RocketRide.install(site, RIDE_LEAD)
+		RocketRide.openBoarding()
+		rocketPhase("boarding", site)
+
 		-- 5 stages spread evenly across BUILD_DURATION so it visibly builds.
 		local stageGap = CONFIG.BUILD_DURATION / 5
 		for stage = 1, 5 do
@@ -192,15 +213,20 @@ local function runEvent()
 		-- ---- 4) LAUNCH ----
 		-- LAUNCH SOUND is now CLIENT-side: each client plays it locally on the "launch" sync below
 		-- (mobile-reliable one-shot from SoundService — see RocketSounds.client.lua).
+		RocketRide.closeBoarding()                 -- boarding shuts the instant it lifts, not before
 		RocketEffects.startLaunchTrail(primary)    -- fire + smoke trail (visual only)
 		RocketNPCs.wave()                          -- workers wave; one falls backward
 		rocketPhase("launch")   -- client may react (e.g. clear countdown)
 
 		-- ---- 5) FLIGHT (no teleport) + 6) ENDING explosion on arrival ----
 		RocketLogic.launch(CONFIG.FLIGHT_END, function()
-			-- onArrive: cinematic explosion at FLIGHT_END.
+			-- onArrive: cinematic explosion at FLIGHT_END, WITH THE RIDERS STILL IN IT.
 			RocketEffects.explode(CONFIG.FLIGHT_END, CONFIG.MAX_DEBRIS)
 			RocketEventSync:FireAllClients("flash")            -- brief client sky flash
+			-- The blast is already on screen when this runs, so a rider sees the rocket go up around them
+			-- rather than dying to an explosion they never saw. detonate() banks the ride bonus BEFORE it
+			-- touches anyone's health, and PlayerStats' own death flow respawns them on their island.
+			RocketRide.detonate()
 			RocketEventSync:FireAllClients("end", "🚀 The rocket reached the stars!")
 		end, CONFIG.LIFTOFF_DURATION, CONFIG.FLIGHT_DURATION)
 
@@ -216,6 +242,7 @@ local function runEvent()
 	-- Safety: ensure the CLIENT-side construction loop stops even if the event aborted BEFORE the
 	-- countdown's "constructionStop" fired (idempotent on the client if already stopped).
 	RocketEventSync:FireAllClients("constructionStop")
+	RocketRide.cleanup()   -- releases any rider left aboard, and takes the command stand off the pad
 	RocketNPCs.cleanup()
 	RocketLogic.cleanup()
 	RocketEffects.cleanup()
@@ -242,5 +269,8 @@ end
 _G.BigEvents = _G.BigEvents or {}
 _G.BigEvents.rocket = { start = startEvent, isRunning = function() return eventRunning end }
 
--- (Pre-launch cleanup: the "/rocket" chat command + _G.startRocketEvent manual test trigger were removed.
--- The event still fires on its own via the BigEventScheduler using the registration above.)
+-- The event fires on its own via the BigEventScheduler using the registration above. DevCommands' "/rocket"
+-- calls that same registration to start one on demand -- it is test-user gated and lives in DevCommands
+-- (which is marked REMOVE BEFORE LAUNCH), so there is no manual trigger left in this file to strip.
+-- (_G.startRocketEvent, the old global trigger, stays removed: a bare global anyone could call is not a
+-- test hook, it is a way for any other script to launch a rocket by accident.)

@@ -19,7 +19,7 @@ local screen = Instance.new("ScreenGui")
 screen.Name = "RebirthGui"; screen.ResetOnSpawn = false; screen.DisplayOrder = 58; screen.Parent = gui
 
 local S = { rebirths = 0, coinMult = 1, speedMult = 1, luckMult = 1, nextCoin = 1.25, nextSpeed = 1.03, nextLuck = 1.15,
-	reqs = { islands = false, space = false, dino = false, candy = false }, reqIsland = 14, canRebirth = false, petMilestones = {} }
+	reqs = { islands = false, space = false, dino = false, candy = false }, reqIsland = 11, canRebirth = false, petMilestones = {} }
 
 --------------------------------------------------------------------------------
 -- style helpers
@@ -90,6 +90,15 @@ local closeBtn = Instance.new("TextButton")
 closeBtn.AnchorPoint = Vector2.new(1, 0); closeBtn.Position = UDim2.new(1, -12, 0, 13); closeBtn.Size = UDim2.fromOffset(40, 40)
 closeBtn.BackgroundColor3 = COL_RED; closeBtn.Font = Enum.Font.FredokaOne; closeBtn.Text = "X"; closeBtn.TextScaled = true
 closeBtn.TextColor3 = Color3.new(1, 1, 1); closeBtn.ZIndex = 5; closeBtn.Parent = panel; corner(closeBtn, 11); stroke(closeBtn, Color3.fromRGB(150, 40, 32), 3); juice(closeBtn)
+-- BACK, left of the X -- realm 1's header pattern via the shared kit (BackButtonKit.client.luau).
+-- Deferred: the kit is a sibling LocalScript and load order between them is not guaranteed.
+task.defer(function()
+	for _ = 1, 40 do
+		if _G.addBackButton then _G.addBackButton(closeBtn); return end
+		task.wait(0.1)
+	end
+end)
+
 do local p = Instance.new("UIPadding", closeBtn); for _, s in ipairs({"PaddingTop","PaddingBottom","PaddingLeft","PaddingRight"}) do p[s] = UDim.new(0, 9) end end
 
 -- ===== rebirth count + current/next boosts card =====

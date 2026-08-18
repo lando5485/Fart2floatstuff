@@ -55,14 +55,17 @@ local foods = {
 	{name="Pizza",    price=518,  power=750, island=14},
 }
 -- getMaxHeight(maxPower) = 50 + maxPower*14. Iron is the top of the free path; Infinite is a Robux-only premium gut.
+-- `island` = the island that must have been REACHED before this gut can be bought. Keep these in
+-- step with the same table in PlayerStats.server.lua, which is the live one -- a gut unlocks on the
+-- island where the previous gut runs out. Infinite Gut stays at 1: it is the Robux tier.
 local stomachTiers = {
-	{name="Tiny Gut",     maxPower=100,  cost=0,      robux=false},
-	{name="Small Gut",    maxPower=182,  cost=1600,   robux=false},
-	{name="Medium Gut",   maxPower=520,  cost=3000,   robux=false},
-	{name="Large Gut",    maxPower=1075, cost=5200,   robux=false},
-	{name="XL Gut",       maxPower=2146, cost=8000,   robux=false},
-	{name="Iron Gut",     maxPower=3218, cost=11000,  robux=false},
-	{name="Infinite Gut", maxPower=9999, cost=499,    robux=true},
+	{name="Tiny Gut",     maxPower=100,  cost=0,      robux=false, island=1},
+	{name="Small Gut",    maxPower=182,  cost=1600,   robux=false, island=2},
+	{name="Medium Gut",   maxPower=520,  cost=3000,   robux=false, island=4},
+	{name="Large Gut",    maxPower=1075, cost=5200,   robux=false, island=7},
+	{name="XL Gut",       maxPower=2146, cost=8000,   robux=false, island=11},
+	{name="Iron Gut",     maxPower=3218, cost=11000,  robux=false, island=14},
+	{name="Infinite Gut", maxPower=9999, cost=499,    robux=true,  island=1},
 }
 -- expose for the client (the real game sets these in CoreClient; harmless if already set)
 _G.foods = _G.foods or foods
@@ -191,12 +194,21 @@ BuyStomachEvent.OnServerEvent:Connect(function(player, newMax, cost)
 	end
 	if costN <= 0 or newMaxN <= 0 then return end
 	local valid = false
+	local wantTier = nil
 	for _, tier in ipairs(stomachTiers) do
 		if tier.maxPower == newMaxN and tier.cost == costN and not tier.robux then
-			valid = true; break
+			valid = true; wantTier = tier; break
 		end
 	end
 	if not valid or coins.Value < costN then return end
+	-- ISLAND LOCK (mirrors PlayerStats). Read from the HighestIsland ATTRIBUTE rather than a local
+	-- table, because the landing detection that owns that number lives in PlayerStats and this file
+	-- cannot see its locals. PlayerStats sets the attribute on load and on every new island reached.
+	if wantTier.island and (player:GetAttribute("HighestIsland") or 1) < wantTier.island then
+		print(("STOMACH LOCKED: %s tried to buy %s (needs island %d)")
+			:format(player.Name, wantTier.name, wantTier.island))
+		return
+	end
 	coins.Value = coins.Value - costN
 	coinsSpentOnGuts[player] = (coinsSpentOnGuts[player] or 0) + costN -- [BALANCE LOGGING] track gut spend
 	stomachMaxStat.Value = newMaxN

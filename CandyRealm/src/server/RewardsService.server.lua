@@ -23,6 +23,10 @@ local GROUP_ID  = 758781978                                                   --
 local GROUP_URL = "https://www.roblox.com/communities/758781978/MLR-Studios"  -- shown in-game so non-members can join
 local FRIEND_BOOST = 0.25  -- +25% coins when at least one Roblox friend is in the server
 local GROUP_PERK   = 0.10  -- +10% coins for group members (stacks with the friend boost)
+-- VIP's share lives in the shared Gamepasses module with the rest of the pass tuning, so the pass's value is
+-- described in one place across all three realms rather than half here and half there.
+local Gamepasses = require(RS:WaitForChild("Shared"):WaitForChild("Gamepasses"))
+local VIP_PERK   = Gamepasses.VIP_COIN_PERK  -- +25% coins for VIP owners (stacks with friend + group)
 -- ============================================================================
 
 -- --- remotes (created at runtime so no project.json edit is needed) ---
@@ -83,8 +87,12 @@ local function pushState(p)
 	local mult = 1
 	if friendActive[p] then mult = mult + FRIEND_BOOST end
 	if groupMember[p]  then mult = mult + GROUP_PERK  end
+	-- VIP is read straight off the replicated attribute PassOwnership sets on join/purchase -- no cached table
+	-- to go stale, so buying VIP mid-session takes effect on the next pushState with no rejoin.
+	local vip = Gamepasses.owns(p, "VIP")
+	if vip then mult = mult + VIP_PERK end
 	_G.coinBonusMult[p] = mult
-	pcall(function() CoinBoostState:FireClient(p, { friend = friendActive[p] == true, group = groupMember[p] == true, mult = mult }) end)
+	pcall(function() CoinBoostState:FireClient(p, { friend = friendActive[p] == true, group = groupMember[p] == true, vip = vip, mult = mult }) end)
 	pcall(function() GroupInfo:FireClient(p, { isMember = groupMember[p] == true, groupId = GROUP_ID, url = GROUP_URL }) end)
 end
 
@@ -107,6 +115,12 @@ end
 local function onPlayerAdded(p)
 	_G.coinBonusMult[p] = 1
 	task.spawn(loadRedeemed, p)
+	-- VIP can be bought mid-session. PassOwnership sets HasVIP the moment the purchase completes, so watch the
+	-- attribute and recompute -- otherwise the perk would not apply until the player rejoined, which is a
+	-- terrible first impression for something they just paid for.
+	p:GetAttributeChangedSignal(Gamepasses.ATTR.VIP):Connect(function()
+		if p.Parent then pushState(p) end
+	end)
 	-- GROUP: IsInGroup caches per session, so a player who joins the group mid-session must rejoin to claim
 	-- (the client shows that note). Checked once here on join.
 	task.spawn(function()

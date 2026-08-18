@@ -183,52 +183,58 @@ ProximityPromptService.PromptTriggered:Connect(function(prompt, plr)
 	if prompt.Name == "GardenerTalkPrompt" and hasWatered() then openChat() end
 end)
 
--- Hide the Talk prompt entirely until watered, so there isn't even a hold-E hint yet. Same reasoning as the
--- can prompt below: set Enabled on the CLIENT so it only affects our own view (Enabled is a global property,
--- so flipping it server-side would hide the prompt for everyone). A disabled prompt also can't be triggered,
--- so the guard above is really just belt-and-braces.
-task.spawn(function()
-	local talkPrompt
-	for _ = 1, 240 do -- he's built async inside the garden init, so wait him out
-		for _, d in ipairs(workspace:GetDescendants()) do
-			if d:IsA("ProximityPrompt") and d.Name == "GardenerTalkPrompt" then talkPrompt = d; break end
-		end
-		if talkPrompt then break end
-		task.wait(0.5)
-	end
-	if not talkPrompt then return end
-
-	local function refresh() talkPrompt.Enabled = hasWatered() end
-	refresh()
-	player:GetAttributeChangedSignal("HasWateredGarden"):Connect(refresh)
-end)
-
--- ===== ONCE YOU'VE GOT A CAN, THE GARDENER GOES BACK TO BEING A GARDENER =====
--- His "Take Watering Can" prompt only makes sense while he actually has one to give. Once you're carrying one
--- (or you've used it and you're on cooldown until tomorrow), it just sits there on top of him. The server
--- publishes a WateringCanReady attribute; we hide the prompt LOCALLY when it's false, which leaves only his
--- Talk prompt -- so he chats and opens his HUD exactly as he did before you ever took a can.
+-- ===== ONE KEY, ONE PROMPT AT A TIME =====
+-- Both of the Gardener's prompts are bound to E. Roblox fires only the NEAREST prompt bound to a key, so two
+-- live E prompts on one NPC means the lower one wins every press and the other is unreachable -- which is
+-- exactly why the can used to be F. Making E correct means guaranteeing the two are never live together.
 --
--- Why here and not on the server: ProximityPrompt.Enabled is a GLOBAL property. Switching it off server-side
--- would take the prompt away from every other player in the server too. Setting it on the client only affects
--- our own view, which is precisely what "this player already has a can" needs.
+-- THE RULE, in priority order:
+--   1. Can available (not carrying one, not on cooldown)  -> E TAKES THE CAN. Talk is suppressed.
+--   2. Otherwise, if they have watered before             -> E TALKS.
+--   3. Otherwise (new player, no can offered)             -> neither; he is just scenery for a moment.
+--
+-- The can wins the tie because it is the ACTIONABLE thing: the chat is flavour and stays reachable a second
+-- later, since taking the can immediately makes WateringCanReady false and hands E straight back to Talk.
+--
+-- THE TIE IS NOT HYPOTHETICAL. Before watering, Talk is hidden and only the can shows -- fine. After
+-- watering, the cooldown hides the can and only Talk shows -- also fine. But a RETURNING player whose
+-- cooldown has expired has HasWateredGarden = true AND a can waiting, so both were live at once. That is the
+-- ordinary daily loop, not an edge case, and it is the window this rule exists to close.
+--
+-- BOTH FLAGS DRIVE BOTH PROMPTS, so the two can never be refreshed out of step -- the bug you get from two
+-- independent refresh functions each watching one attribute.
+--
+-- CLIENT-SIDE, deliberately: ProximityPrompt.Enabled is a GLOBAL property, so flipping it on the server would
+-- take the prompt away from every other player too. "Have I got a can" is a per-player question.
 task.spawn(function()
-	local canPrompt
-	for _ = 1, 240 do -- he's built async inside the garden init, so wait him out
+	local talkPrompt, canPrompt
+	for _ = 1, 240 do -- he is built async inside the garden init, so wait him out
 		for _, d in ipairs(workspace:GetDescendants()) do
-			if d:IsA("ProximityPrompt") and d.Name == "TakeWateringCan" then canPrompt = d; break end
+			if d:IsA("ProximityPrompt") then
+				if d.Name == "GardenerTalkPrompt" then talkPrompt = d
+				elseif d.Name == "TakeWateringCan" then canPrompt = d end
+			end
 		end
-		if canPrompt then break end
+		if talkPrompt and canPrompt then break end
 		task.wait(0.5)
 	end
-	if not canPrompt then return end -- no can prompt in this place: nothing to hide, Talk works regardless
+	if not (talkPrompt or canPrompt) then return end -- no Gardener in this place: nothing to arbitrate
 
-	local function refresh()
-		-- nil (attribute not published yet) is treated as "ready", so a missing server never hides his prompt
-		canPrompt.Enabled = (player:GetAttribute("WateringCanReady") ~= false)
+	-- nil (never published) counts as READY, so a server that has not answered yet never hides his offer
+	local function canAvailable()
+		return player:GetAttribute("WateringCanReady") ~= false
 	end
-	refresh()
-	player:GetAttributeChangedSignal("WateringCanReady"):Connect(refresh)
+
+	local function applyPromptRules()
+		local canOn = (canPrompt ~= nil) and canAvailable()
+		if canPrompt then canPrompt.Enabled = canOn end
+		-- Talk yields to the can, and stays hidden until they have actually watered once.
+		if talkPrompt then talkPrompt.Enabled = hasWatered() and not canOn end
+	end
+
+	applyPromptRules()
+	player:GetAttributeChangedSignal("HasWateredGarden"):Connect(applyPromptRules)
+	player:GetAttributeChangedSignal("WateringCanReady"):Connect(applyPromptRules)
 end)
 
 -- ===== HIDE THE BOTTOM HUD WHILE THE GARDENER CHAT IS OPEN (same logic the Shop / Pet Hub / Seasonal Pets use) =====

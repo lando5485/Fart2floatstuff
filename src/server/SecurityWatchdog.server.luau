@@ -62,14 +62,20 @@ local ALLOWLIST = {
 }
 
 -- ============================ GENERATED MANIFEST ============================
--- 137 script instances, from FartToFloat/default.project.json + src/ on disk.
+-- 143 script instances, from FartToFloat/default.project.json + src/ on disk.
 local MANIFEST = {
 	["ReplicatedFirst.LoadingScreen"] = true,
 	["ReplicatedStorage.PhoneHUD"] = true,
 	["ReplicatedStorage.Shared.Constants"] = true,
+	["ReplicatedStorage.Shared.Sfx"] = true,
 	["ReplicatedStorage.Shared.CosmeticConfig"] = true,
 	["ReplicatedStorage.Shared.CosmeticIcon"] = true,
 	["ReplicatedStorage.Shared.CrateTokens"] = true,
+	["ReplicatedStorage.Shared.Gamepasses"] = true,
+	-- PetRarity is a real project module (src/shared/PetRarity.luau, synced by default.project.json) that was
+	-- never added here, so every boot logged it as NOT-IN-MANIFEST. That noise is what makes a genuine backdoor
+	-- alert easy to scroll past, so it is listed now.
+	["ReplicatedStorage.Shared.PetRarity"] = true,
 	["ReplicatedStorage.Shared.GutSkins"] = true,
 	["ReplicatedStorage.Shared.PetCollection"] = true,
 	["ReplicatedStorage.Shared.PetSkins"] = true,
@@ -78,6 +84,9 @@ local MANIFEST = {
 	["ReplicatedStorage.Shared.Remotes"] = true,
 	["ReplicatedStorage.Shared.SkinCrates"] = true,
 	["ServerScriptService.BeamCollision"] = true,
+	["ServerScriptService.SocialStats"] = true,
+	["ServerScriptService.BadgeAwards"] = true,
+	["ServerScriptService.Gifting"] = true,
 	["ServerScriptService.BeamEffects"] = true,
 	["ServerScriptService.BeamGeneration"] = true,
 	["ServerScriptService.BeamKnockback"] = true,
@@ -112,6 +121,7 @@ local MANIFEST = {
 	["ServerScriptService.MeteorSpawn"] = true,
 	["ServerScriptService.MilkCap"] = true,
 	["ServerScriptService.MusicManager"] = true,
+	["ServerScriptService.PetBarn"] = true,
 	["ServerScriptService.PetSystem"] = true,
 	["ServerScriptService.PlanetSelectService"] = true,
 	["ServerScriptService.PlayerState"] = true,
@@ -119,7 +129,9 @@ local MANIFEST = {
 	["ServerScriptService.PopcornTrees"] = true,
 	["ServerScriptService.RainbowBeamManager"] = true,
 	["ServerScriptService.RealmPortals"] = true,
+	["ServerScriptService.RealmPortalsHub"] = true,
 	["ServerScriptService.RealmReturnReceiver"] = true,
+	["ServerScriptService.DevArrival"] = true,
 	["ServerScriptService.RebirthSystem"] = true,
 	["ServerScriptService.RewardsService"] = true,
 	["ServerScriptService.RocketEffects"] = true,
@@ -135,7 +147,24 @@ local MANIFEST = {
 	["ServerScriptService.SocialRewards"] = true,
 	["ServerScriptService.SquirrelEasterEgg"] = true,
 	["ServerScriptService.ToasterEasterEgg"] = true,
+	["ServerScriptService.VipService"] = true,
 	["ServerScriptService.WormholeService"] = true,
+	-- ---- ADDED TO THE PROJECT BUT NEVER ADDED HERE -------------------------------------------------------
+	-- These eight are all real, Rojo-synced scripts listed in default.project.json. They were flagged
+	-- NOT-IN-MANIFEST on every single boot purely because this table was never updated alongside the project
+	-- file. Eight false alarms in a 71-alert boot audit is how a genuine backdoor gets scrolled past, which is
+	-- the one job this file has. Verified by diffing default.project.json against this table -- the scripts
+	-- that legitimately remain flagged (PetWheel, DailyStreak, CampfirePromptWindow) are place-only and are
+	-- NOT in the project, so they are supposed to be reported.
+	["ServerScriptService.RocketRide"] = true,
+	["ServerScriptService.TradeRequests"] = true,
+	["StarterPlayer.StarterPlayerScripts.BlimpRide"] = true,
+	["StarterPlayer.StarterPlayerScripts.FirstPersonMenuMouse"] = true,
+	["StarterPlayer.StarterPlayerScripts.MobileTextFit"] = true,
+	["StarterPlayer.StarterPlayerScripts.PetRenderGuard"] = true,
+	["StarterPlayer.StarterPlayerScripts.RocketRideClient"] = true,
+	["StarterPlayer.StarterPlayerScripts.TradeRequests"] = true,
+	-- ------------------------------------------------------------------------------------------------------
 	["StarterPlayer.StarterPlayerScripts.AmbientSmoke"] = true,
 	["StarterPlayer.StarterPlayerScripts.AmbientWildlife"] = true,
 	["StarterPlayer.StarterPlayerScripts.BellyPuff"] = true,
@@ -143,6 +172,7 @@ local MANIFEST = {
 	["StarterPlayer.StarterPlayerScripts.BootCheck"] = true,
 	["StarterPlayer.StarterPlayerScripts.ButtonTextStyle"] = true,
 	["StarterPlayer.StarterPlayerScripts.Campfire"] = true,
+	["StarterPlayer.StarterPlayerScripts.CoinMagnet"] = true,
 	["StarterPlayer.StarterPlayerScripts.CommunityGarden"] = true,
 	["StarterPlayer.StarterPlayerScripts.CoreClient"] = true,
 	["StarterPlayer.StarterPlayerScripts.CrateClient"] = true,
@@ -159,6 +189,9 @@ local MANIFEST = {
 	["StarterPlayer.StarterPlayerScripts.GardenerChat"] = true,
 	["StarterPlayer.StarterPlayerScripts.GardenerLife"] = true,
 	["StarterPlayer.StarterPlayerScripts.GutSkinClient"] = true,
+	["StarterPlayer.StarterPlayerScripts.GroupBannerClient"] = true,
+	["StarterPlayer.StarterPlayerScripts.DevArrivalBanner"] = true,
+	["StarterPlayer.StarterPlayerScripts.DevAuraFX"] = true,
 	["StarterPlayer.StarterPlayerScripts.HeldItemSync"] = true,
 	["StarterPlayer.StarterPlayerScripts.LandingImpact"] = true,
 	["StarterPlayer.StarterPlayerScripts.MenuBackButton"] = true,
@@ -179,8 +212,19 @@ local MANIFEST = {
 	["StarterPlayer.StarterPlayerScripts.RailGuard"] = true,
 	["StarterPlayer.StarterPlayerScripts.RainbowBeamUI"] = true,
 	["StarterPlayer.StarterPlayerScripts.RealmPortals"] = true,
+	["StarterPlayer.StarterPlayerScripts.RealmPortalsHub"] = true,
 	["StarterPlayer.StarterPlayerScripts.RebirthClient"] = true,
 	["StarterPlayer.StarterPlayerScripts.RebirthTag"] = true,
+	["StarterPlayer.StarterPlayerScripts.Achievements"] = true,
+	["StarterPlayer.StarterPlayerScripts.CoinPulse"] = true,
+	["StarterPlayer.StarterPlayerScripts.IslandNameTag"] = true,
+	["StarterPlayer.StarterPlayerScripts.IslandTaskReward"] = true,
+	["StarterPlayer.StarterPlayerScripts.RareAnnounce"] = true,
+	["StarterPlayer.StarterPlayerScripts.SfxWiring"] = true,
+	["StarterPlayer.StarterPlayerScripts.RivalCallout"] = true,
+	["StarterPlayer.StarterPlayerScripts.Gifting"] = true,
+	["StarterPlayer.StarterPlayerScripts.FirstBuy"] = true,
+	["StarterPlayer.StarterPlayerScripts.PetBarn"] = true,
 	["StarterPlayer.StarterPlayerScripts.RemotePets"] = true,
 	["StarterPlayer.StarterPlayerScripts.RewardsClient"] = true,
 	["StarterPlayer.StarterPlayerScripts.RewardsHub"] = true,
@@ -198,6 +242,7 @@ local MANIFEST = {
 	["StarterPlayer.StarterPlayerScripts.TitleTags"] = true,
 	["StarterPlayer.StarterPlayerScripts.TokenHud"] = true,
 	["StarterPlayer.StarterPlayerScripts.TopCenterStack"] = true,
+	["StarterPlayer.StarterPlayerScripts.VipClient"] = true,
 	["StarterPlayer.StarterPlayerScripts.WarpEffect"] = true,
 	["StarterPlayer.StarterPlayerScripts.WorldClient"] = true,
 	["StarterPlayer.StarterPlayerScripts.WormholeClient"] = true,
@@ -267,7 +312,7 @@ do
 			auditScript(inst, "at boot")
 		end
 	end
-	print(("[SECURITY] FartToFloat boot audit: %d scripts against a 137-entry manifest, %d alert(s)")
+	print(("[SECURITY] FartToFloat boot audit: %d scripts against a 143-entry manifest, %d alert(s)")
 		:format(n, alerts))
 	if alerts > 0 then
 		warn("[SECURITY] Clean these in Studio with tools/BackdoorScan.studio.luau, then REPUBLISH.")

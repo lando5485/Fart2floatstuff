@@ -434,6 +434,26 @@ end)
 Players.PlayerRemoving:Connect(function(p) lastIsland[p] = nil; promptLatched[p] = nil end)
 
 do
+	-- ⚠ WAIT FOR THE TOWER TO BE BUILT BEFORE MEASURING IT.
+	-- IslandLayout PivotTo's every island from its Studio position into its slot in the tower, and sets
+	-- _G.islandsPositioned when it is done. Server scripts start in NO GUARANTEED ORDER, so this file has
+	-- always been racing it -- it just happened to lose the race rarely enough to look fine. Adding one
+	-- unrelated script to ServerScriptService reshuffled the order and it started winning instead: every
+	-- anchor was measured at the pre-move Studio height, and the boot line read
+	-- "11@Y221 13@Y222 14@Y338 15@Y222 1@Y222 ..." -- eleven islands stacked 60,000 studs apart, all
+	-- reported at Y~222. The 5s anchor cache papers over it after the fact, but until it expires the
+	-- Return button teleports players to the wrong altitude entirely.
+	--
+	-- Bounded, and it proceeds anyway on timeout: a Return button measuring the wrong heights is bad, but a
+	-- Return button that never initialises because one flag was never set is worse.
+	local t0 = os.clock()
+	while not _G.islandsPositioned and (os.clock() - t0) < 20 do task.wait(0.1) end
+	if not _G.islandsPositioned then
+		warn("[Return] _G.islandsPositioned never set after 20s -- measuring anchors anyway. If the heights"
+			.. " below are all within a few studs of each other, IslandLayout did not run and the tower was"
+			.. " never built.")
+	end
+
 	local list = {}
 	for idx, e in pairs(rebuildAnchors()) do list[#list + 1] = ("%d@Y%.0f"):format(idx, e.surfaceY) end
 	table.sort(list)

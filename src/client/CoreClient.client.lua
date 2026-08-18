@@ -46,8 +46,15 @@ local hrp = character and character:FindFirstChildOfClass("HumanoidRootPart")
 -- the scripts that build/drive it — instances + loops keep running, they're just not drawn until reveal.
 local hudRevealed = false
 local hudWantEnabled = {} -- [ScreenGui] = the Enabled state it was created with
+-- The GardenIntro overlays are exempt for the same reason LoadingScreen is: they are TRANSITION COVERS, not
+-- game HUD. This handler runs on ChildAdded until the character spawns, and the intro's black cover is parented
+-- BEFORE that (PLAY at .723, spawn at .221 in the boot log) -- so it was being disabled the instant it was
+-- created, and the cinematic ran with no black at all. A per-frame probe measured the result: 39 of 44 frames
+-- uncovered, ~895ms of plain world visible right after PLAY. Anything named GardenIntro* owns its own
+-- visibility; never touch it here.
 local function hideGameGui(child)
-	if child:IsA("ScreenGui") and child.Name ~= "LoadingScreen" and hudWantEnabled[child] == nil then
+	if child:IsA("ScreenGui") and child.Name ~= "LoadingScreen" and child.Name:sub(1, 11) ~= "GardenIntro"
+		and hudWantEnabled[child] == nil then
 		hudWantEnabled[child] = child.Enabled
 		child.Enabled = false
 	end
@@ -171,6 +178,80 @@ do -- REGISTER BUDGET: setup locals scoped so their registers are freed (see the
 	end
 end
 
+-- ===== FLIGHT LOOP SOUND =====
+-- A single looped bed that runs for as long as the player is rising, layered UNDER the one-shot fart above.
+-- Same scoped-do-block pattern as the fart sound: this file is at Luau's 200-local ceiling, so the setup
+-- locals live inside the block (their registers are freed at `end`) and only the two functions escape.
+--
+-- IT NEVER PLAYS THE FIRST FLIGHT_LOOP_START SECONDS. The clip's opening is skipped on the first play AND on
+-- every loop after it -- Roblox restarts a looped sound at 0, not at wherever you started it, so without the
+-- DidLoop handler below you would hear the skipped intro on every repeat but the first.
+do
+	local FLIGHT_LOOP_ID     = "rbxassetid://139095330035399"
+	local FLIGHT_LOOP_START  = 2      -- seconds into the clip that playback begins, first play and every loop
+	local FLIGHT_LOOP_VOLUME = 0.5    -- sits under the fart one-shot; raise if it disappears in the mix
+	local FLIGHT_LOOP_FADE   = 0.25   -- seconds to fade out on landing, so it stops instead of snapping off
+
+	local loopSound = Instance.new("Sound")
+	loopSound.Name = "FlightLoopSound"
+	loopSound.SoundId = FLIGHT_LOOP_ID
+	loopSound.Looped = true
+	loopSound.Volume = FLIGHT_LOOP_VOLUME
+	loopSound.Parent = game:GetService("SoundService") -- 2D: it is THIS player's flight, not a world position
+
+	-- Every repeat jumps back to the start offset instead of replaying the skipped intro.
+	loopSound.DidLoop:Connect(function()
+		loopSound.TimePosition = FLIGHT_LOOP_START
+	end)
+
+	-- Load it now so the first launch isn't silent while Roblox fetches the asset, and say out loud whether
+	-- the id is usable -- a bad id fails silently at :Play() and looks identical to "the code never ran".
+	task.spawn(function()
+		pcall(function()
+			game:GetService("ContentProvider"):PreloadAsync({ loopSound }, function(_, status)
+				if status == Enum.AssetFetchStatus.Success then
+					print(string.format("FLIGHT LOOP sound %s loaded OK (length %.2fs, starts at %ds)",
+						FLIGHT_LOOP_ID, loopSound.TimeLength, FLIGHT_LOOP_START))
+				else
+					warn(string.format("FLIGHT LOOP sound %s FAILED to load (%s) -- the id is not audio, or not "
+						.. "approved for this experience's creator. No code change will make it play.",
+						FLIGHT_LOOP_ID, tostring(status)))
+				end
+			end)
+		end)
+	end)
+
+	function startFlightLoop()
+		if loopSound.IsPlaying then return end -- re-launching mid-flight must not restart the bed
+		loopSound.Volume = FLIGHT_LOOP_VOLUME  -- undo a fade that was interrupted by a fast re-launch
+		loopSound:Play()
+		-- TimePosition only sticks AFTER Play() (and only once the asset is loaded), so it is set here
+		-- rather than before, and again on the Loaded signal if the clip was still streaming in.
+		loopSound.TimePosition = FLIGHT_LOOP_START
+		if not loopSound.IsLoaded then
+			local conn; conn = loopSound.Loaded:Connect(function()
+				if conn then conn:Disconnect(); conn = nil end
+				if loopSound.IsPlaying and loopSound.TimePosition < FLIGHT_LOOP_START then
+					loopSound.TimePosition = FLIGHT_LOOP_START
+				end
+			end)
+		end
+	end
+
+	function stopFlightLoop()
+		if not loopSound.IsPlaying then return end
+		game:GetService("TweenService"):Create(loopSound,
+			TweenInfo.new(FLIGHT_LOOP_FADE), { Volume = 0 }):Play()
+		task.delay(FLIGHT_LOOP_FADE, function()
+			-- Only actually stop if the player has NOT taken off again during the fade.
+			if not _G.isFlying then
+				loopSound:Stop()
+				loopSound.Volume = FLIGHT_LOOP_VOLUME
+			end
+		end)
+	end
+end
+
 -- ===== SHARED DATA =====
 local ISLAND_NAMES = {
 	"Island_1_BeanFarm","Island_2_BroccoliBluff","Island_3_CabbageCliffs",
@@ -270,7 +351,7 @@ local maxGasMeter = 100
 -- internal gas meter may fill up to maxGasMeter * POWER_PASS_MULT (longer flight => higher). The
 -- DISPLAYED meter is still clamped to the normal 0..maxGasMeter / 0..stomachMax range (see
 -- updateMeter). Must match POWER_PASS_MULT in PlayerStats.server.lua.
-local POWER_PASS_MULT = 1.4
+local POWER_PASS_MULT = 2.0
 -- True when this player owns 2x-forever or has an unexpired 2x-hour product (mirrors the server's
 -- has2x). Reads the gamepass state the server replicates into _G.playerGamepasses.
 local function powerPassActive()
@@ -336,7 +417,7 @@ mkCorner(coinPill,25); mkStroke(coinPill,Color3.fromRGB(180,120,0),3)
 local coinGrad=Instance.new("UIGradient")
 coinGrad.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromRGB(255,190,20)),ColorSequenceKeypoint.new(1,Color3.fromRGB(200,140,0))})
 coinGrad.Rotation=90; coinGrad.Parent=coinPill
--- Shared coin / checkmark IMAGE assets. Emoji glyphs (🪙 / ✅) do NOT render in Roblox
+-- Shared coin / checkmark IMAGE assets. Emoji glyphs (💰 / ✅) do NOT render in Roblox
 -- text labels, so we use real images instead. Defined on _G so BOTH the coin counter
 -- here and the daily-rewards icons below reference the EXACT SAME asset (consistency),
 -- and so we add no new main-chunk locals (Luau 200-local-per-function limit). To change
@@ -428,6 +509,19 @@ end
 -- register full-hide fns for the two menus CoreClient drives (used when ANOTHER menu opens over them)
 _G.MainMenuManager.register("Premium", function() local g=PlayerGui:FindFirstChild("PremiumShopGui"); if g then g.Enabled=false end end)
 _G.MainMenuManager.register("Stomach", function() local g=PlayerGui:FindFirstChild("StomachShopGui"); if g then g.Enabled=false end end)
+
+-- ===== PUBLISH THE TWO SHOP OPENERS =====
+-- toggleMainMenu is a LOCAL, so nothing outside this file could open these menus -- and TokenHud's currency
+-- capsule tries to. Its coin "+" button reads `_G.openCoinShop or _G.togglePremiumShop`, and NEITHER of those
+-- was published by any script in the game, so that button was silently dead: it ran `if type(open) ==
+-- "function"` , got nil twice, and returned. The token "+" beside it worked only because its fallback
+-- (_G.toggleSkinCrates) does exist, which is exactly why the dead one was easy to miss -- one of the pair
+-- behaved.
+--
+-- Published here rather than "fixed" in TokenHud because TokenHud is right: an opener belongs to the script
+-- that owns the menu. Stomach gets one too, for the same reason and so the pair is symmetrical.
+_G.togglePremiumShop = function() toggleMainMenu("Premium", "PremiumShopGui") end
+_G.toggleStomachShop = function() toggleMainMenu("Stomach", "StomachShopGui") end
 
 coinPlusBtn.MouseButton1Click:Connect(function()
 	toggleMainMenu("Premium", "PremiumShopGui")
@@ -699,7 +793,11 @@ local shopSideFrame,shopSideClick=mkSideBtn(-90*scale,Color3.fromRGB(50,180,50),
 -- PETS button (was WORMHOLE -> was REBIRTH -> was INVITE). Var names kept (inviteSideFrame/inviteSideClick) so the
 -- HUD layout + restyle passes still target this slot. Wormhole moved into the MORE+ menu -- fast travel is a
 -- sometimes action; the pet hub is an every-minute one, so Pets holds the always-visible slot.
-local inviteSideFrame,inviteSideClick=mkSideBtn(0,Color3.fromRGB(80,170,70),"\xF0\x9F\x90\xBE","PETS")
+-- PURPLE, not green. SHOP (50,180,50), PETS and Stomach (both 80,170,70) made three green buttons in a
+-- vertical row -- nothing told them apart at a glance. Purple is already this UI's second accent (the 2x
+-- Fart Power button on the right panel is 130,50,200), so the sidebar borrows it rather than inventing a
+-- colour, and Pets is now the one button in the row you can find without reading the labels.
+local inviteSideFrame,inviteSideClick=mkSideBtn(0,Color3.fromRGB(140,70,210),"\xF0\x9F\x90\xBE","PETS")
 -- SWAP: the STOMACH button now lives here on the main screen, in the PETS button's OLD slot (same anchor/position/
 -- size/styling). It keeps its OWN icon (GUT_IMAGE), label ("Stomach"), and click action (opens the stomach shop).
 -- Var names dailySideFrame/dailySideClick are kept so the existing HUD layout + restyle code still target this slot.
@@ -1889,6 +1987,10 @@ local trailBtnContainer=mkFrame(trailPanel,{Size=UDim2.new(1,0,0,0),Position=UDi
 local trailBtnLayout=Instance.new("UIListLayout"); trailBtnLayout.FillDirection=Enum.FillDirection.Vertical
 trailBtnLayout.HorizontalAlignment=Enum.HorizontalAlignment.Center; trailBtnLayout.Padding=UDim.new(0,6); trailBtnLayout.Parent=trailBtnContainer
 _G.customTrailColor=nil; _G.useCustomTrail=false; _G.selectedTrail="default"; _G.unlockedTrails={}
+-- GLITTER TRAIL IS ON FOR OWNERS. The Settings toggle that used to gate this is gone, so a default of
+-- false would leave a PAID gamepass doing nothing at all. Owners get their sparkles; the opt-out is the
+-- trail picker above (a custom or rainbow trail wins the branch below), which is where it belongs.
+_G.glitterTrailOn=true
 local selectedTrailBtn=nil
 local function highlightTrailBtn(btn)
 	if selectedTrailBtn then
@@ -1953,6 +2055,8 @@ do
 	local rtSg = Instance.new("ScreenGui"); rtSg.Name="ReturnIslandGui"; rtSg.ResetOnSpawn=false; rtSg.IgnoreGuiInset=true; rtSg.Parent=PlayerGui
 	-- Off to the side: left edge, vertically centered, clear of the left sidebar, the
 	-- bottom fart/gas controls, and the right stats panel. Never covers the middle.
+	-- (This is the PERMANENT "return to your highest island" button and it stays here. The button that
+	-- moved above the fart meter is the ROCKET EVENT's temporary "Go to Island 1" -- see RocketUI.)
 	local rtBtn = mkButton(rtSg,{
 		Name="ReturnBtn",
 		Size=UDim2.new(0,180*scale,0,56*scale),
@@ -2067,13 +2171,17 @@ task.spawn(function()
 	end
 
 	local tierDefs={
-		{name="Tiny Gut",     maxPower=100,  cost=0,      robux=false, emoji="\xF0\x9F\x91\xB6"},
-		{name="Small Gut",    maxPower=182,  cost=1600,   robux=false, emoji="\xF0\x9F\xA7\x92"},
-		{name="Medium Gut",   maxPower=520,  cost=3000,   robux=false, emoji="\xF0\x9F\x90\xB7"},
-		{name="Large Gut",    maxPower=1075, cost=5200,   robux=false, emoji="\xF0\x9F\x90\x98"},
-		{name="XL Gut",       maxPower=2146, cost=8000,   robux=false, emoji="\xF0\x9F\x92\xAA"},
-		{name="Iron Gut",     maxPower=3218, cost=11000,  robux=false, emoji="\xF0\x9F\x8F\x8B\xEF\xB8\x8F"},
-		{name="Infinite Gut", maxPower=9999, cost=499,    robux=true,  emoji="\xe2\x99\xbe\xef\xb8\x8f"},
+		-- `island` = the island you must have REACHED before the tier can be bought. DISPLAY ONLY --
+		-- PlayerStats owns the real check and rejects the purchase itself, so these numbers just make
+		-- the shop tell the truth instead of a tap failing silently. Keep them in step with the server
+		-- table; if they ever drift, the server wins and the button lies (which is the safe direction).
+		{name="Tiny Gut",     maxPower=100,  cost=0,      robux=false, island=1,  emoji="\xF0\x9F\x91\xB6"},
+		{name="Small Gut",    maxPower=182,  cost=1600,   robux=false, island=2,  emoji="\xF0\x9F\xA7\x92"},
+		{name="Medium Gut",   maxPower=520,  cost=3000,   robux=false, island=4,  emoji="\xF0\x9F\x90\xB7"},
+		{name="Large Gut",    maxPower=1075, cost=5200,   robux=false, island=7,  emoji="\xF0\x9F\x90\x98"},
+		{name="XL Gut",       maxPower=2146, cost=8000,   robux=false, island=11, emoji="\xF0\x9F\x92\xAA"},
+		{name="Iron Gut",     maxPower=3218, cost=11000,  robux=false, island=14, emoji="\xF0\x9F\x8F\x8B\xEF\xB8\x8F"},
+		{name="Infinite Gut", maxPower=9999, cost=499,    robux=true,  island=1,  emoji="\xe2\x99\xbe\xef\xb8\x8f"},
 	}
 	local BuyStomachEvent=RS:WaitForChild("BuyStomachEvent",30)
 	local StomachUpdateEvent=RS:WaitForChild("StomachUpdateEvent",30)
@@ -2167,13 +2275,30 @@ task.spawn(function()
 			mkLabel(card,{Size=UDim2.new(0,220,0,24),Position=UDim2.new(0,72,0,38),TextXAlignment=Enum.TextXAlignment.Left,Text=(tier.maxPower>=9999 and "\xe2\x88\x9e Unlimited power" or tostring(tier.maxPower).." max power"),Font=Enum.Font.FredokaOne,TextScaled=true,TextColor3=Color3.fromRGB(180,220,255)})
 			local buyBtn=Instance.new("TextButton"); buyBtn.Size=UDim2.new(0,150,0,46)
 			buyBtn.Position=UDim2.new(1,-158,0.5,0); buyBtn.AnchorPoint=Vector2.new(0,0.5); buyBtn.BorderSizePixel=0
-			if tier.cost==0 then buyBtn.BackgroundColor3=Color3.fromRGB(100,100,100); buyBtn.Text="\xe2\x9c\x93 FREE"
-			elseif tier.robux then buyBtn.BackgroundColor3=Color3.fromRGB(255,160,20); buyBtn.Text=tostring(tier.cost).." R$"
-			else buyBtn.BackgroundColor3=Color3.fromRGB(50,220,50); buyBtn.Text="\xF0\x9F\xAA\x99 "..tostring(tier.cost) end
+			-- ISLAND LOCK (display). Reads the HighestIsland attribute PlayerStats sets on every landing,
+			-- so it updates live as the player climbs -- no rebuild of the shop needed.
+			local function isLocked()
+				return tier.island and tier.island > 1 and not tier.robux
+					and (player:GetAttribute("HighestIsland") or 1) < tier.island
+			end
+			local function paintBuyBtn()
+				if tier.cost==0 then buyBtn.BackgroundColor3=Color3.fromRGB(100,100,100); buyBtn.Text="\xe2\x9c\x93 FREE"
+				elseif tier.robux then buyBtn.BackgroundColor3=Color3.fromRGB(255,160,20); buyBtn.Text=tostring(tier.cost).." R$"
+				elseif isLocked() then
+					-- Grey + padlock + the island it opens on, so the price is not dangled at someone who
+					-- cannot buy it yet and the reason is on the button rather than nowhere.
+					buyBtn.BackgroundColor3=Color3.fromRGB(90,90,95)
+					buyBtn.Text="\xF0\x9F\x94\x92 ISLAND "..tostring(tier.island)
+				else buyBtn.BackgroundColor3=Color3.fromRGB(50,220,50); buyBtn.Text="\xF0\x9F\x92\xB0 "..tostring(tier.cost) end
+			end
+			paintBuyBtn()
 			buyBtn.Font=Enum.Font.FredokaOne; buyBtn.TextScaled=true; buyBtn.TextColor3=Color3.fromRGB(255,255,255); buyBtn.Parent=card
 			mkCorner(buyBtn,10); mkStroke(buyBtn,Color3.fromRGB(0,0,0),2)
 			buyBtn.MouseButton1Click:Connect(function()
 				if tier.cost==0 then return end
+				-- Locked: same error sound + shake the can't-afford path uses, and DO NOT fire. The server
+				-- would refuse anyway; not firing just avoids a pointless round trip and a silent no-op.
+				if isLocked() then playErrorSound(); shakeButton(buyBtn); return end
 				if tier.robux then pcall(function() game:GetService("MarketplaceService"):PromptGamePassPurchase(player,1860686821) end) -- Infinite/Unlimited Gut gamepass (the only robux tier); was 0 (invalid -> prompt never opened)
 				elseif BuyStomachEvent then
 						-- Coin-priced tier: on a can't-afford tap (and only if NOT already owned), give
@@ -2201,7 +2326,8 @@ task.spawn(function()
 					pcall(function()
 						local ls=player:FindFirstChild("leaderstats"); if not ls then return end
 						local sm=ls:FindFirstChild("StomachMax"); if not sm then return end
-						if tier.maxPower<=sm.Value then buyBtn.BackgroundColor3=Color3.fromRGB(80,80,80); buyBtn.Text="\xe2\x9c\x93 OWNED" end
+						if tier.maxPower<=sm.Value then buyBtn.BackgroundColor3=Color3.fromRGB(80,80,80); buyBtn.Text="\xe2\x9c\x93 OWNED"
+						else paintBuyBtn() end -- re-paint so a tier UNLOCKS in place the moment its island is reached
 					end)
 				end
 			end)
@@ -2621,6 +2747,55 @@ task.spawn(function()
 				else
 					showFloatingText("\xF0\x9F\x94\x92 " .. msg, Color3.fromRGB(255,190,60))
 				end
+			elseif reason == "food_below_island" then
+				-- FLOOR: the food is from an island BELOW the one the player is standing on. Third arg is the
+				-- island they are currently on. Its own branch for the same reason as food_locked -- the
+				-- generic branch opens the gut shop, and a bigger gut has nothing to do with this refusal.
+				--
+				-- ===== THIS ONE IS THE EASIEST REFUSAL TO MISS, SO IT IS THE LOUDEST =====
+				-- The other two locks are amber "you haven't unlocked this yet" notices, and this one used to
+				-- look exactly like them -- same colour, same padlock, same wording shape. But it is a
+				-- different KIND of refusal: nothing is locked, the player simply tapped the wrong row. A kid
+				-- on Island 5 tapping Beans is not being told "come back later", they are being told "that one
+				-- is useless up here, pick a stronger one" -- and an amber padlock identical to the two
+				-- genuine locks is the worst possible way to say that. Three changes:
+				--
+				--   1. NAMES THE FOOD. `foodName` was already being passed and thrown away. "Beans is Island 1
+				--      food" is instantly readable; "that food is from a lower island" makes you go and work
+				--      out which food you even tapped.
+				--   2. HOT RED-ORANGE + an UP ARROW, not amber + a padlock. Different colour and different
+				--      glyph from the two lock notices, because it is a different problem with a different
+				--      fix. The arrow also points the way out: go UP the list.
+				--   3. SOUND AND SHAKE, the same pair every other refusal in this game uses (playErrorSound +
+				--      shakeButton). A silent toast at the top of the screen is exactly what a kid mid-tap
+				--      does not look at; the buzz and the jolt are what make them look up in the first place.
+				local isl = tonumber(needPet) or 0
+				local food = tostring(foodName or "That food")
+				local msg = isl > 0
+					and (food .. " is too weak up here \xe2\x80\x94 you're on Island " .. isl
+						.. ". Buy Island " .. isl .. "'s food or higher!")
+					or  (food .. " is from a lower island \xe2\x80\x94 pick a stronger food!")
+
+				pcall(playErrorSound)
+				-- Jolt the panel they are actually looking at. The food shop is what is open when this fires,
+				-- so the shake lands under their finger rather than somewhere off-screen.
+				do
+					local fs = PlayerGui:FindFirstChild("FoodShopGui")
+					local frame = fs and fs:FindFirstChildWhichIsA("Frame")
+					if frame then pcall(shakeButton, frame) end
+				end
+
+				if _G.NotifyCenter and _G.NotifyCenter.push then
+					_G.NotifyCenter.push({
+						top = "\xe2\xac\x86\xef\xb8\x8f TOO WEAK FOR THIS ISLAND",
+						text = msg,
+						color = Color3.fromRGB(255, 108, 62), -- hot orange-red: NOT the amber the two locks use
+						priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.PURCHASE or nil,
+						duration = 4.5,                        -- a beat longer: it names a food AND an island
+					})
+				else
+					showFloatingText("\xe2\xac\x86\xef\xb8\x8f " .. msg, Color3.fromRGB(255, 108, 62))
+				end
 			elseif reason == "not_enough_room" then
 				-- HAS room but this food is too big to fit -> distinct message; nudge to a bigger gut.
 				showFloatingText("\xe2\x9a\xa0 Not Enough Room!", Color3.fromRGB(255,100,100))
@@ -2697,33 +2872,66 @@ local function getWindArrow(wx,wz)
 	else return wz>0 and "\xe2\x86\x93" or "\xe2\x86\x91" end
 end
 
-local gColors={Color3.fromRGB(0,200,50),Color3.fromRGB(50,220,80),Color3.fromRGB(100,255,100),Color3.fromRGB(80,180,40)}
-local rainbowHue=0
+-- ===== FART TRAIL: layered comedic gas, not lone neon bubbles =====
+-- Called every 0.1s of thrust. Each tick lays down a small CLUSTER instead of one ball:
+--   1) a big soft matte GAS CLOUD that EXPANDS as it fades -- gas dissipating, not a bubble popping;
+--   2) two glossy neon MINI-BUBBLES that scatter outward and shrink (the fizz inside the cloud);
+--   3) ~1-in-7 ticks, an exaggerated TOOT PULSE: a translucent sphere that balloons out fast.
+-- Color priority is unchanged (custom > rainbow > glitter gamepass > default gas green); the glitter
+-- pass keeps its dainty sparkle identity (small bright motes, no big cloud). Everything is local-only
+-- (client-spawned parts never replicate), anchored, and non-collidable -- pure cosmetics.
 local function spawnCloud()
 	local ch=player.Character; local h=ch and ch:FindFirstChild("HumanoidRootPart"); if not h then return end
-	local cloud=Instance.new("Part"); cloud.Shape=Enum.PartType.Ball
-	local sz=math.random(10,25)/10
-	cloud.Size=Vector3.new(sz,sz,sz)
 	local gp=_G.playerGamepasses
+	local baseColor, glitter
 	if _G.useCustomTrail and _G.customTrailColor then
-		cloud.Color=_G.customTrailColor
+		baseColor=_G.customTrailColor
 	elseif _G.selectedTrail=="rainbow" and _G.hasRainbowTrail then
-		local hue=(tick()*0.5)%1
-		cloud.Color=Color3.fromHSV(hue,1,1)
-	elseif gp and gp.glitterTrail then
-		cloud.Color=Color3.fromRGB(255,220,255)
-		cloud.Material=Enum.Material.Neon
-		cloud.Size=Vector3.new(sz*0.5,sz*0.5,sz*0.5)
+		baseColor=Color3.fromHSV((tick()*0.5)%1,1,1)
+	elseif gp and gp.glitterTrail and _G.glitterTrailOn == true then
+		-- Owning the pass equips the sparkles. _G.glitterTrailOn defaults to TRUE (set below) -- the Settings
+		-- row that used to gate it was removed, and leaving the default at false would have made the pass
+		-- purely decorative in the store. The two branches ABOVE this one are the escape hatch: pick a custom
+		-- or rainbow trail and that wins, so an owner is never locked into glitter.
+		baseColor=Color3.fromRGB(255,220,255); glitter=true
 	else
-		local greens={Color3.fromRGB(0,200,50),Color3.fromRGB(50,220,80),Color3.fromRGB(100,255,100)}
-		cloud.Color=greens[math.random(1,#greens)]
+		local gasGreens={Color3.fromRGB(96,200,84),Color3.fromRGB(124,186,58),Color3.fromRGB(152,214,72),Color3.fromRGB(84,170,66)}
+		baseColor=gasGreens[math.random(1,#gasGreens)]
 	end
-	cloud.Material=Enum.Material.Neon; cloud.Transparency=0.3
-	cloud.CanCollide=false; cloud.Anchored=true; cloud.CastShadow=false
-	cloud.Position=h.Position+Vector3.new(math.random(-15,15)/10,math.random(-10,5)/10,math.random(-15,15)/10)
-	cloud.Parent=workspace
-	local tw=TweenService:Create(cloud,TweenInfo.new(1.5,Enum.EasingStyle.Linear),{Transparency=1.0,Size=Vector3.new(0.1,0.1,0.1)})
-	tw:Play(); tw.Completed:Connect(function() cloud:Destroy() end)
+	-- one throwaway puff part: spawn at offset, tween to (pos+drift, size*grow, invisible), then clean up
+	local function puff(size,color,mat,transp,offset,drift,grow,life)
+		local p=Instance.new("Part"); p.Shape=Enum.PartType.Ball
+		p.Size=Vector3.new(size,size,size); p.Color=color; p.Material=mat; p.Transparency=transp
+		p.CanCollide=false; p.Anchored=true; p.CastShadow=false; p.CanQuery=false; p.CanTouch=false
+		p.Position=h.Position+offset
+		p.Parent=workspace
+		local tw=TweenService:Create(p,TweenInfo.new(life,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),
+			{Transparency=1, Size=Vector3.new(size*grow,size*grow,size*grow), Position=p.Position+drift})
+		tw:Play(); tw.Completed:Connect(function() p:Destroy() end)
+	end
+	local jx,jz=math.random(-14,14)/10, math.random(-14,14)/10
+	if glitter then -- glitter gamepass: small bright sparkle motes, exactly the old dainty look
+		puff(math.random(5,9)/10, baseColor, Enum.Material.Neon, 0.15,
+			Vector3.new(jx, math.random(-10,4)/10, jz),
+			Vector3.new(jx*1.6, -0.8, jz*1.6), 0.3, 1.0)
+		return
+	end
+	-- 1) the big comedic gas cloud (drifts down + outward behind the climb)
+	puff(math.random(16,26)/10, baseColor, Enum.Material.SmoothPlastic, 0.35,
+		Vector3.new(jx, math.random(-12,2)/10, jz),
+		Vector3.new(jx*1.4, -1.6, jz*1.4), 2.0, 1.1)
+	-- 2) layered fizz: two glossy mini-bubbles scattering out of the cloud
+	for _=1,2 do
+		local bx,bz=math.random(-20,20)/10, math.random(-20,20)/10
+		puff(math.random(4,8)/10, baseColor:Lerp(Color3.new(1,1,1),0.35), Enum.Material.Neon, 0.1,
+			Vector3.new(bx*0.5, math.random(-8,6)/10, bz*0.5),
+			Vector3.new(bx, math.random(-4,10)/10, bz), 0.12, 0.8)
+	end
+	-- 3) occasional exaggerated toot pulse (fast ballooning translucent sphere, yellow-green flash)
+	if math.random(1,7)==1 then
+		puff(2.2, baseColor:Lerp(Color3.fromRGB(230,255,120),0.5), Enum.Material.SmoothPlastic, 0.55,
+			Vector3.new(0,-0.6,0), Vector3.new(0,-1.0,0), 3.2, 0.55)
+	end
 end
 
 -- ===== LANDING DETECTION =====
@@ -2774,36 +2982,39 @@ local cloudTimer = 0
 local coinTimer = 0
 
 -- ===== ISLAND UNLOCK BY PEAK HEIGHT =====
--- getMaxHeight is the gut's height ceiling. It is used ONLY to gate which islands a gut can
--- unlock — it never moves, stops, clamps, or snaps the player. The player's vertical motion
--- is ALWAYS just their fart BodyVelocity plus gravity.
+-- getMaxHeight is the gut's height ceiling. It never moves, stops, clamps, or snaps the player —
+-- the player's vertical motion is ALWAYS just their fart BodyVelocity plus gravity. It used to
+-- also gate which islands a gut could unlock; unlocking is now physical-landing only, server-side,
+-- so this is left as a readout/reference value rather than a progression gate.
 local function getMaxHeight()
 	return 50 + (stomachMax * 14)
 end
 
 local highestUnlockedByHeight = 1
--- Unlock island N once the player's peak flight height reaches ISLAND_Y[N] (and the gut's
--- ceiling is high enough to reach it). Driven purely by how high they actually fly.
+-- YOU HAVE TO LAND ON AN ISLAND TO UNLOCK IT.
+--
+-- This used to unlock island N the instant the player's PEAK HEIGHT passed ISLAND_Y[N] -- so
+-- brushing an island's altitude on the way past, without ever touching it, handed over its
+-- foods. Progression is meant to be "I got up there and stood on it", and drifting past at the
+-- right altitude is not that.
+--
+-- The unlock now comes from ONE place: the server's physical-landing detection in
+-- PlayerStats (islandUnderCharacter -> raises the Island leaderstat). That check already
+-- existed and already ignored flying past -- it was driving highestIslandReached while this
+-- function raced it with a laxer rule, which is how the two could disagree.
+--
+-- Kept as a no-op rather than deleted because the flight loop calls it every frame, and
+-- because the server now REFUSES a peak-height unlock anyway (see UnlockIslandEvent there) --
+-- so a stale baked-in copy of this script still firing the old event changes nothing.
 local function checkPeakUnlock(peakY)
-	for n = highestUnlockedByHeight + 1, 14 do
-		local iy = ISLAND_POS[n] and ISLAND_POS[n].y
-		if iy and peakY >= iy and iy <= getMaxHeight() then
-			highestUnlockedByHeight = n
-			_G.unlockedIslands = _G.unlockedIslands or {}
-			for i = 1, n do _G.unlockedIslands[i] = true end
-			if UnlockIslandEvent then pcall(function() UnlockIslandEvent:FireServer(n) end) end
-			-- NOTE: no welcome here. The "You reached [Island]!" welcome fires ONLY from the
-			-- server's physical-landing detection (via WelcomeEvent), never from peak height.
-		else
-			break
-		end
-	end
+	-- intentionally empty: unlocking is server-side, on physical landing only
 end
 
 local function stopFlying()
 	if not isFlying then return end
 	isFlying = false
 	_G.isFlying = false
+	stopFlightLoop() -- the rise is over: fade the looped flight bed out
 	if bodyVel then bodyVel:Destroy(); bodyVel = nil end
 	local char = player.Character
 	if char then
@@ -2907,6 +3118,7 @@ local function startFlying()
 	_G.isFlying = true
 	_G.flewSinceGrounded = true -- [LOGGING ACCURACY] a genuine fart-launch happened; only these count as attempts
 	playFartSound() -- random fart SFX on every ascent start (after the guards above pass)
+	startFlightLoop() -- looped flight bed underneath it; runs until the rise ends
 	flightStartTime = tick()
 	_G.peakHeight = hrp.Position.Y; _G.ringsCollectedFlight = 0
 	-- FLIGHT DEBUG: snapshot coins + tank at launch (after this flight's food was bought).
@@ -2959,8 +3171,21 @@ end
 
 player.CharacterAdded:Connect(function(char)
 	isFlying = false; _G.isFlying = false
+	stopFlightLoop() -- respawn/reset bypasses stopFlying, so the loop would otherwise play forever
 	if bodyVel then bodyVel:Destroy(); bodyVel = nil end
+	if glideVel then glideVel:Destroy(); glideVel = nil end -- a glide left on the OLD hrp would follow nothing; start clean
 	currentPower = 0; gasMeter = 0; hasBoughtFood = false; _G.hasLanded = true
+	-- LADDERS MUST ALWAYS WORK, on every island and at any height. Climbing is a humanoid STATE, and a single
+	-- SetStateEnabled(Climbing, false) anywhere -- including a baked-in script in the place that isn't in this
+	-- repo -- silently makes every truss in the game unclimbable with no error to trace. Re-assert it on every
+	-- spawn: it is idempotent, costs nothing, and means a stray disable can never outlive a respawn.
+	task.spawn(function()
+		local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 10)
+		if not hum then return end
+		-- (Humanoid has NO ClimbSpeed property -- climb rate is derived from WalkSpeed by the engine. Reading it
+		-- throws, so there is nothing to restore here; enabling the state is the whole fix.)
+		pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, true) end)
+	end)
 	-- ===== RESTORE METER on RESPAWN (two distinct rules, decided in Humanoid.Died below) =====
 	-- Every death sets _G.respawnMeterPending + _G.respawnMeterSnapshot, so restore that snapshot
 	-- instead of the default reset-to-0:
@@ -3093,17 +3318,45 @@ RunService.Heartbeat:Connect(function(dt)
 				local ppos = p.Position
 				table.remove(_G.activeGasPockets, i)
 				if _G.popGasPocket then _G.popGasPocket(p) end   -- VISUAL pop
-				-- GAS BUBBLE BOOST. The meter is 0-100 and currentPower = (gasMeter / maxGasMeter) * stomachMax,
-				-- so at the base Tiny Gut (100 max power) 1 meter point IS 1 fart power -- this grants exactly
-				-- +2 fart power there, and stays 2% of the tank on bigger guts so a bubble does not become
-				-- worthless the moment you upgrade. For a flat +2 power at EVERY tier instead, this would have to
-				-- be (2 / stomachMax) * 100 -- which pays 0.06 of a meter point on an Iron Gut, i.e. nothing.
-				-- Fires whether the player is RISING or FALLING (this loop runs OUTSIDE the isFlying block).
-				local BUBBLE_GAS_BOOST = 2
+				-- GAS BUBBLE BOOST -- SCALED BY GUT TIER. The meter is 0-100 and currentPower =
+				-- (gasMeter / maxGasMeter) * stomachMax, so a meter point is always a fixed FRACTION of the
+				-- tank -- the old flat +2 was 2% at every tier, which never became worthless but also never
+				-- felt like anything once the climbs got long. The boost now steps UP with the gut: 3% of the
+				-- tank on a Tiny Gut rising to 6% on the biggest -- upgrading your gut makes every bubble
+				-- worth visibly more raw power AND a bigger slice of the meter, so they stay rewarding to
+				-- chase all game. Still bounded (a bubble is never more than 6% of a tank, respawn is 45s),
+				-- so they cannot replace eating. Fires whether the player is RISING or FALLING (this loop
+				-- runs OUTSIDE the isFlying block).
+				local sm = stomachMax
+				-- ===== THESE THRESHOLDS WERE A WHOLE TIER OUT OF DATE =====
+				-- They used to read 40 / 96 / 282 / 603 / 1425 / 2639 -- the gut maxPowers from an OLD
+				-- balance pass. The live tiers are 100 / 182 / 520 / 1075 / 2146 / 3218 (see stomachTiers
+				-- in PlayerStats, which is the authority), and because every real tier landed in the NEXT
+				-- stale bracket, EVERY gut was quietly being paid one step too much:
+				--     Tiny 100  -> fell in "<=282"  -> got 4    (intended 3)
+				--     Small 182 -> fell in "<=282"  -> got 4    (intended 3.5)
+				--     Medium 520-> fell in "<=603"  -> got 4.5  (intended 4)
+				--     Large 1075-> fell in "<=1425" -> got 5    (intended 4.5)
+				--     XL 2146   -> fell in "<=2639" -> got 5.5  (intended 5)
+				--     Iron 3218 -> fell through     -> got 6    (intended 5.5)
+				-- Only the Infinite Gut was ever correct, by accident. Worse, Tiny and Small had collapsed
+				-- into the SAME bracket, so the first upgrade bought no bubble improvement at all -- which
+				-- is exactly the progression this table exists to create.
+				--
+				-- Written as an explicit ordered list keyed to the real tiers, so the next balance change
+				-- shows up here as a name that no longer matches rather than as numbers that silently drift.
+				local BUBBLE_GAS_BOOST =
+					   (sm <= 100  and 3)     -- Tiny Gut
+					or (sm <= 182  and 3.5)   -- Small Gut
+					or (sm <= 520  and 4)     -- Medium Gut
+					or (sm <= 1075 and 4.5)   -- Large Gut
+					or (sm <= 2146 and 5)     -- XL Gut
+					or (sm <= 3218 and 5.5)   -- Iron Gut
+					or 6                      -- Infinite Gut (9999)
 				local gasBefore = gasMeter
 				gasMeter = math.min(maxGasMeter, gasMeter + BUBBLE_GAS_BOOST)
 				updateMeter()
-				print(string.format("[BUBBLE] popped - gas before=%.1f, +%d, gas after=%.1f", gasBefore, BUBBLE_GAS_BOOST, gasMeter))
+				print(string.format("[BUBBLE] popped - gas before=%.1f, +%.1f (gut %d), gas after=%.1f", gasBefore, BUBBLE_GAS_BOOST, sm, gasMeter))
 				showFloatingText("+\xF0\x9F\x92\xA8 GAS BOOST!", Color3.fromRGB(0, 255, 100))
 				task.delay(45, function() if _G.spawnGasPocket then _G.spawnGasPocket(ppos) end end)
 			end
@@ -3125,7 +3378,7 @@ RunService.Heartbeat:Connect(function(dt)
 				_G.ringsCollectedFlight = _G.ringsCollectedFlight + 1
 				_G.ringBonusFlight = (_G.ringBonusFlight or 0) + bonus -- track ring-bonus coins for FLIGHT DEBUG
 				if CoinEvent then pcall(function() CoinEvent:FireServer(bonus) end) end
-				showFloatingText("+" .. bonus .. " \xF0\x9F\xAA\x99 x" .. string.format("%.1f", ringMultiplier), Color3.fromRGB(255, 215, 0))
+				showFloatingText("+" .. bonus .. " \xF0\x9F\x92\xB0 x" .. string.format("%.1f", ringMultiplier), Color3.fromRGB(255, 215, 0))
 				task.delay(30, function() if _G.spawnRing then _G.spawnRing(rpos, rcol, ridx, rdir) end end)
 			end
 		else table.remove(_G.activeRings, i) end
@@ -3172,7 +3425,7 @@ RunService.Heartbeat:Connect(function(dt)
 
 		updateMeter()
 		if hrp.Position.Y > _G.peakHeight then _G.peakHeight = hrp.Position.Y end
-		checkPeakUnlock(hrp.Position.Y) -- unlock islands by how high we actually fly
+		checkPeakUnlock(hrp.Position.Y) -- no-op now: islands unlock on physical landing (server-side)
 
 		_G.gui.flightStatsFrame.Visible = true
 		_G.gui.fsHeight.Text = "\xF0\x9F\x93\x8F Height: " .. math.floor(hrp.Position.Y)
@@ -3216,25 +3469,50 @@ RunService.Heartbeat:Connect(function(dt)
 		if isFlying then stopFlying() end
 		if bodyVel then bodyVel:Destroy(); bodyVel = nil end
 
-		-- Horizontal-only WASD air control while falling with no fuel. MaxForce.Y = 0, so
-		-- this never adds or holds vertical velocity — gravity always does the falling.
-		if hum.FloorMaterial == Enum.Material.Air and currentPower <= 0 then
+		-- ===== AIR CONTROL (also covers every ORDINARY JUMP, so it must not fight the jump) =====
+		-- This block runs on any airborne frame with no fuel -- falling from a flight AND hopping up a step --
+		-- so how it's written IS how jumping feels.
+		--
+		-- IT USED TO HARD-SET horizontal velocity to (keyboard direction * 27), which broke jumping two ways:
+		--   1. NO INPUT -> it set velocity to (0,0,0) with real force behind it, so leaving the ground SLAMMED
+		--      your horizontal momentum to zero. A running jump stopped dead and dropped straight down.
+		--   2. It polled RAW KEYBOARD KEYS (W/A/S/D + arrows). On MOBILE there are no keys, so the direction was
+		--      permanently zero -> every jump on a phone was a dead-stop vertical hop with no steering at all.
+		--
+		-- Now: read hum.MoveDirection (already camera-relative and identical for keyboard, mobile joystick and
+		-- gamepad -- the flight branch above uses the same source), and steer by ACCELERATING THE VELOCITY YOU
+		-- ALREADY HAVE rather than replacing it. No input = target equals current momentum = the BodyVelocity
+		-- holds your speed instead of braking it, so a running jump carries forward. Input nudges the vector by
+		-- AIR_ACCEL per second, which is enough to adjust a jump mid-flight but not enough to turn on a dime.
+		-- The speed cap is max(momentum you launched with, AIR_STEER_SPEED): it never slows a fast fall-through,
+		-- and a standing player can still steer up to the old 27 while dropping. MaxForce.Y stays 0, so gravity
+		-- is still the only thing moving you vertically.
+		-- A LADDER COUNTS AS "AIR". Humanoid.FloorMaterial is Air the whole time you are on a truss, so this
+		-- block used to run for every frame of every climb -- and it pushes on X/Z with real force. You hold
+		-- forward to climb, MoveDirection points into the ladder, and the glide accelerated you horizontally up
+		-- to the steer cap: you got shoved off the rungs and dropped, at any height and on any island. Climbing
+		-- and sitting are humanoid-owned movement; leave them alone entirely and the climb behaves normally.
+		local hstate = hum:GetState()
+		local climbingOrSeated = (hstate == Enum.HumanoidStateType.Climbing)
+			or (hstate == Enum.HumanoidStateType.Seated) or hum.Sit or hum.PlatformStand
+		if hum.FloorMaterial == Enum.Material.Air and currentPower <= 0 and not climbingOrSeated then
 			if not glideVel or not glideVel.Parent then
 				glideVel = Instance.new("BodyVelocity"); glideVel.Name = "GlideVelocity"
-				glideVel.Velocity = Vector3.new(0, 0, 0)
+				-- seed with the momentum we launched with, so the very first airborne frame preserves it
+				local v0 = hrp.AssemblyLinearVelocity
+				glideVel.Velocity = Vector3.new(v0.X, 0, v0.Z)
 				glideVel.Parent = hrp
 			end
 			glideVel.MaxForce = Vector3.new(10000, 0, 10000)
-			local camCF = workspace.CurrentCamera.CFrame
-			local fwd = Vector3.new(camCF.LookVector.X, 0, camCF.LookVector.Z); if fwd.Magnitude > 0 then fwd = fwd.Unit end
-			local rgt = Vector3.new(camCF.RightVector.X, 0, camCF.RightVector.Z); if rgt.Magnitude > 0 then rgt = rgt.Unit end
-			local md = Vector3.new(0, 0, 0)
-			if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Up) then md = md + fwd end
-			if UserInputService:IsKeyDown(Enum.KeyCode.S) or UserInputService:IsKeyDown(Enum.KeyCode.Down) then md = md - fwd end
-			if UserInputService:IsKeyDown(Enum.KeyCode.A) or UserInputService:IsKeyDown(Enum.KeyCode.Left) then md = md - rgt end
-			if UserInputService:IsKeyDown(Enum.KeyCode.D) or UserInputService:IsKeyDown(Enum.KeyCode.Right) then md = md + rgt end
-			if md.Magnitude > 0 then md = md.Unit end
-			glideVel.Velocity = Vector3.new(md.X * 27, 0, md.Z * 27)
+			local AIR_ACCEL       = 60 -- studs/s^2 of steering authority while airborne
+			local AIR_STEER_SPEED = 27 -- floor for the cap: steer up to this even from a standstill (the old value)
+			local v = hrp.AssemblyLinearVelocity
+			local cur = Vector3.new(v.X, 0, v.Z)
+			local md = hum.MoveDirection -- camera-relative; works on PC, mobile joystick AND gamepad
+			local target = cur + Vector3.new(md.X, 0, md.Z) * AIR_ACCEL * dt
+			local cap = math.max(cur.Magnitude, AIR_STEER_SPEED)
+			if target.Magnitude > cap then target = target.Unit * cap end
+			glideVel.Velocity = Vector3.new(target.X, 0, target.Z)
 		else
 			if glideVel then glideVel:Destroy(); glideVel = nil end
 		end
@@ -3481,11 +3759,13 @@ end)()
 	shS.Color = Color3.fromRGB(30,120,30); shS.Thickness = 3; shS.Parent = shopSideFrame
 
 	-- PETS BUTTON  (variable kept as inviteSideFrame; was WORMHOLE, which moved into MORE+)
-	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70) -- pets green, matching the paw button
+	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(140,70,210) -- PETS purple (see the build site: it
+	-- breaks up the three-green sidebar row). This restyle pass runs AFTER the build, so it has to carry
+	-- the same colour or it stamps the old green straight back over it.
 	local inC = inviteSideFrame:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
 	inC.CornerRadius = UDim.new(0,16); inC.Parent = inviteSideFrame
 	local inS = inviteSideFrame:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
-	inS.Color = Color3.fromRGB(40,110,40); inS.Thickness = 3; inS.Parent = inviteSideFrame
+	inS.Color = Color3.fromRGB(88,36,148); inS.Thickness = 3; inS.Parent = inviteSideFrame
 
 	-- PETS BUTTON  (variable kept as dailySideFrame; repurposed paw button)
 	dailySideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70)
@@ -3578,7 +3858,7 @@ end)()
 		ColorSequenceKeypoint.new(1,   Color3.fromRGB(0,255,80)),
 	}) end
 	shopSideFrame.BackgroundColor3 = Color3.fromRGB(50,220,50)
-	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70) -- PETS button (Wormhole moved into MORE+)
+	inviteSideFrame.BackgroundColor3 = Color3.fromRGB(140,70,210) -- PETS button: purple, matching the build site
 	dailySideFrame.BackgroundColor3 = Color3.fromRGB(80,170,70)
 	shopSideFrame.Size = UDim2.new(0,95,0,95)
 	inviteSideFrame.Size = UDim2.new(0,95,0,95)

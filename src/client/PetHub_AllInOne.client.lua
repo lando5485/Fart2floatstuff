@@ -29,6 +29,10 @@
 
 local Players           = game:GetService("Players")
 local RS                = game:GetService("ReplicatedStorage")
+
+-- The PERMANENT rarity axis (Common..Gold) and the fusion cost ladder. Separate from the pet's AGE tier, which
+-- petTier() below derives from level -- a pet's rarity never moves, its age always does.
+local PetRarity = require(RS:WaitForChild("Shared"):WaitForChild("PetRarity"))
 local RunService        = game:GetService("RunService")
 local MarketplaceService= game:GetService("MarketplaceService")
 
@@ -43,6 +47,8 @@ local function remote(name) return RS:FindFirstChild(name) end
 local PetEquipEvent      = remote("PetEquipEvent")
 local PetInventoryEvent  = remote("PetInventoryEvent")
 local PetPendingUpgrade  = remote("PetPendingUpgradeEvent")
+local PetFuseEvent       = remote("PetFuseEvent")       -- c->s: (storageKey) burn N duplicates -> next rarity
+local PetFuseResult      = remote("PetFuseResultEvent") -- s->c: (ok, info) fusion outcome
 local PetProgressEvent   = remote("PetProgressEvent")
 -- STAGE 3 TRADE remotes (client sends intents only)
 local PetTradeRequest = remote("PetTradeRequestEvent")
@@ -407,6 +413,23 @@ local function buildPetCard(key, p, order)
 		uicorner(tag, 5)
 		local ts = Instance.new("UIStroke"); ts.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; ts.Color = Color3.fromRGB(255,255,255); ts.Thickness = 1; ts.Transparency = 0.2; ts.Parent = tag
 	end
+	-- ---- RARITY PILL: the axis that never moves --------------------------------------------------------
+	-- Sits BOTTOM-left of the picture, deliberately far from the age tag (top-right) and the xN count
+	-- (top-left). Three badges that all look alike in one corner is how a player learns to read none of them.
+	-- Common gets no pill at all: it is the default, and a badge on every single card stops being a signal.
+	local rarityBand = p.rarity or PetRarity.DEFAULT
+	if rarityBand ~= PetRarity.DEFAULT then
+		local rc = PetRarity.Color[rarityBand] or Color3.fromRGB(200,200,200)
+		local rp = Instance.new("TextLabel"); rp.Name = "RarityPill"
+		rp.AutomaticSize = Enum.AutomaticSize.X; rp.Size = UDim2.new(0,0,0,17)
+		rp.AnchorPoint = Vector2.new(0,1); rp.Position = UDim2.new(0,6,0.55,-4)
+		rp.BackgroundColor3 = rc; rp.Font = Enum.Font.GothamBold; rp.TextSize = 11
+		rp.TextColor3 = Color3.new(1,1,1); rp.Text = rarityBand:upper(); rp.Parent = card
+		local rpad = Instance.new("UIPadding", rp); rpad.PaddingLeft = UDim.new(0,6); rpad.PaddingRight = UDim.new(0,6)
+		uicorner(rp, 5)
+		local rs = Instance.new("UIStroke"); rs.Color = Color3.fromRGB(0,0,0); rs.Thickness = 1; rs.Transparency = 0.35; rs.Parent = rp
+	end
+
 	if (p.count or 1) > 1 then
 		local cnt = Instance.new("TextLabel"); cnt.AutomaticSize = Enum.AutomaticSize.X; cnt.Size = UDim2.new(0,0,0,18); cnt.Position = UDim2.new(0,6,0,8)
 		cnt.BackgroundColor3 = Color3.fromRGB(255,170,40); cnt.Font = Enum.Font.GothamBold; cnt.TextSize = 12; cnt.TextColor3 = Color3.new(1,1,1); cnt.Text = "x" .. (p.count or 1); cnt.Parent = card
@@ -442,7 +465,16 @@ local function buildPetCard(key, p, order)
 	ms.BackgroundTransparency = 1; ms.Font = Enum.Font.Gotham; ms.TextColor3 = Color3.fromRGB(185,212,255)
 	ms.Text = "\xE2\x9C\xA8 " .. (p.milestone or ""); ms.Parent = body
 	fitText(ms, 11)
-	local eq = Instance.new("TextButton"); eq.Size = UDim2.new(0.49,0,1,0); eq.LayoutOrder = 1
+	-- ---- FUSION SLOT ------------------------------------------------------------------------------------
+	-- The button appears as soon as you hold a SECOND copy, not only once you can afford the fuse -- seeing
+	-- "FUSE 2/5" is how a player finds out duplicates are worth keeping. Before that the row stays two
+	-- buttons wide, so a card with nothing to fuse looks exactly as it always did.
+	-- p.fuseCost is nil at Gold (top of the ladder): nothing to fuse into, so no slot at all.
+	local dupes    = p.count or 1
+	local showFuse = (p.fuseCost ~= nil) and dupes > 1
+	local btnW     = showFuse and 0.32 or 0.49 -- three across, or the original two
+
+	local eq = Instance.new("TextButton"); eq.Size = UDim2.new(btnW,0,1,0); eq.LayoutOrder = 1
 	eq.Font = Enum.Font.GothamBold; eq.TextColor3 = Color3.new(1,1,1)
 	eq.BackgroundColor3 = p.equipped and Color3.fromRGB(120,120,120) or Color3.fromRGB(50,200,50)
 	eq.Text = p.equipped and "UNEQUIP" or "EQUIP"; eq.Parent = btnRow
@@ -454,7 +486,30 @@ local function buildPetCard(key, p, order)
 		end
 	end)
 	-- 'Skip to Legendary R$599' is the longest string on the card, hence the tighter cap here
-	local sk = Instance.new("TextButton"); sk.Size = UDim2.new(0.49,0,1,0); sk.LayoutOrder = 2
+	if showFuse then
+		local canFuse = p.canFuse == true
+		local into    = p.fuseInto or "?"
+		local fz = Instance.new("TextButton"); fz.Name = "Fuse"; fz.Size = UDim2.new(btnW,0,1,0); fz.LayoutOrder = 3
+		fz.Font = Enum.Font.GothamBold; fz.TextColor3 = Color3.new(1,1,1); fz.Parent = btnRow
+		uicorner(fz, 8); fitText(fz, 12)
+		if canFuse then
+			-- tinted with the band you are fusing INTO, so the button previews its own reward
+			fz.BackgroundColor3 = PetRarity.Color[into] or Color3.fromRGB(180,90,235)
+			fz.Text = "FUSE \xE2\x86\x92 " .. into
+			uistroke(fz, Color3.new(1,1,1), 2)
+			fz.MouseButton1Click:Connect(function()
+				if PetFuseEvent then pcall(function() PetFuseEvent:FireServer(key) end) end
+			end)
+		else
+			-- Not enough yet: show the goal, not a dead button. AutoButtonColor off so it does not
+			-- flash like something that should work.
+			fz.BackgroundColor3 = Color3.fromRGB(90,90,90); fz.AutoButtonColor = false
+			fz.Text = string.format("FUSE %d/%d", dupes, p.fuseCost)
+			uistroke(fz, Color3.new(0,0,0), 1)
+		end
+	end
+
+	local sk = Instance.new("TextButton"); sk.Size = UDim2.new(btnW,0,1,0); sk.LayoutOrder = 2
 	sk.Font = Enum.Font.GothamBold; sk.TextColor3 = Color3.new(1,1,1); sk.Parent = btnRow; uicorner(sk, 8); fitText(sk, 12)
 	local skipStep = (p.level <= 5 and PET_SKIP_PRODUCTS[1]) or (p.level <= 10 and PET_SKIP_PRODUCTS[2])
 		or (p.level <= 15 and PET_SKIP_PRODUCTS[3]) or (p.level <= 20 and PET_SKIP_PRODUCTS[4]) or nil

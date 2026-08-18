@@ -5,6 +5,9 @@
 --   2) FRIEND BOOST : +25% earned coins while a Roblox friend shares the server (recomputed on join/leave).
 --   3) GROUP PERK   : +10% earned coins for MLR Studios group members (checked on join). STACKS with the
 --                     friend boost. Both feed _G.coinBonusMult[player], which PlayerStats applies to flight coins.
+--   4) VIP PERK     : +25% earned coins for VIP gamepass owners. Folded in HERE rather than multiplied on
+--                     somewhere else, because _G.coinBonusMult is a SUM of perks and a second writer would
+--                     stomp this one -- pushState is the only thing allowed to set it.
 --
 -- Client UI lives in RewardsClient.client.lua. All coin grants happen here on the server.
 -- ============================================================================
@@ -23,6 +26,10 @@ local GROUP_ID  = 758781978                                                   --
 local GROUP_URL = "https://www.roblox.com/communities/758781978/MLR-Studios"  -- shown in-game so non-members can join
 local FRIEND_BOOST = 0.25  -- +25% coins when at least one Roblox friend is in the server
 local GROUP_PERK   = 0.10  -- +10% coins for group members (stacks with the friend boost)
+-- VIP's share lives in the shared Gamepasses module with the rest of the pass tuning, so the pass's value is
+-- described in one place rather than half here and half there.
+local Gamepasses = require(RS:WaitForChild("Shared"):WaitForChild("Gamepasses"))
+local VIP_PERK   = Gamepasses.VIP_COIN_PERK  -- +25% coins for VIP owners (stacks with friend + group)
 -- ============================================================================
 
 -- --- remotes (created at runtime so no project.json edit is needed) ---
@@ -83,8 +90,12 @@ local function pushState(p)
 	local mult = 1
 	if friendActive[p] then mult = mult + FRIEND_BOOST end
 	if groupMember[p]  then mult = mult + GROUP_PERK  end
+	-- VIP is read straight off the replicated attribute PlayerStats sets on join/purchase -- no cached table to
+	-- go stale, so buying VIP mid-session takes effect on the next pushState with no rejoin.
+	local vip = Gamepasses.owns(p, "VIP")
+	if vip then mult = mult + VIP_PERK end
 	_G.coinBonusMult[p] = mult
-	pcall(function() CoinBoostState:FireClient(p, { friend = friendActive[p] == true, group = groupMember[p] == true, mult = mult }) end)
+	pcall(function() CoinBoostState:FireClient(p, { friend = friendActive[p] == true, group = groupMember[p] == true, vip = vip, mult = mult }) end)
 	pcall(function() GroupInfo:FireClient(p, { isMember = groupMember[p] == true, groupId = GROUP_ID, url = GROUP_URL }) end)
 end
 
@@ -115,6 +126,12 @@ local function onPlayerAdded(p)
 		if groupMember[p] then print(("[Rewards] %s is an MLR group member -> +%d%% coin perk"):format(p.Name, GROUP_PERK * 100)) end
 		pushState(p)
 	end)
+	-- VIP can be bought mid-session. PlayerStats sets HasVIP the moment the purchase completes, so watch the
+	-- attribute and recompute -- otherwise the perk would not apply until the player rejoined, which is a
+	-- terrible first impression for something they just paid for.
+	p:GetAttributeChangedSignal(Gamepasses.ATTR.VIP):Connect(function()
+		if p.Parent then pushState(p) end
+	end)
 	refreshFriends() -- this player joining may now give OTHERS a friend in the server
 	-- Re-send state a couple times so the client (whose handlers may connect slightly later) reliably receives it.
 	task.delay(4,  function() if p.Parent then pushState(p) end end)
@@ -131,5 +148,7 @@ Players.PlayerRemoving:Connect(function(p)
 	task.defer(refreshFriends) -- someone leaving may remove the last friend for others
 end)
 
-print(("[Rewards] service ready (codes=%d, GROUP_ID=%d, friend +%d%% / group +%d%%)"):format(
-	(function() local n = 0 for _ in pairs(CODES) do n = n + 1 end return n end)(), GROUP_ID, FRIEND_BOOST * 100, GROUP_PERK * 100))
+print(("[Rewards] service ready (codes=%d, GROUP_ID=%d, friend +%d%% / group +%d%% / VIP +%d%%%s)"):format(
+	(function() local n = 0 for _ in pairs(CODES) do n = n + 1 end return n end)(), GROUP_ID,
+	FRIEND_BOOST * 100, GROUP_PERK * 100, VIP_PERK * 100,
+	Gamepasses.isConfigured("VIP") and "" or " -- VIP id NOT SET, perk inert"))

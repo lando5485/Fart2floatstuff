@@ -156,15 +156,45 @@ local function buildBurritoWorld(positions)
 	st.digProps = {}
 
 	local pgui = player:WaitForChild("PlayerGui")
-	-- ===== HUD: a status pill for dig-result messages =====
-	local hud = Instance.new("ScreenGui"); hud.Name = "BurritoDigHUD"; hud.ResetOnSpawn = false; hud.DisplayOrder = 88; hud.Parent = pgui
-	local status = Instance.new("Frame"); status.AnchorPoint = Vector2.new(0.5,0); status.Position = UDim2.new(0.5,0,0.12,0); status.Size = UDim2.new(0,470,0,40)
-	status.BackgroundColor3 = Color3.fromRGB(150,96,40); status.BackgroundTransparency = 0.12; status.BorderSizePixel = 0; status.Visible = false; status.Parent = hud
-	Instance.new("UICorner", status).CornerRadius = UDim.new(0,10); local sstk = Instance.new("UIStroke", status); sstk.Color = Color3.fromRGB(255,225,150); sstk.Thickness = 2
-	local statusText = Instance.new("TextLabel"); statusText.Size = UDim2.new(1,0,1,0); statusText.BackgroundTransparency = 1
-	statusText.Font = Enum.Font.GothamBold; statusText.TextSize = 20; statusText.TextColor3 = Color3.new(1,1,1); statusText.Text = ""; statusText.Parent = status
-	local function setStatus(t) statusText.Text = t; status.Visible = true end
-	local function hideStatus() status.Visible = false end
+	-- ===== DIG RESULTS ARE BANNERS NOW -- the status pill is deleted =====
+	-- This was a 470x40 pill at y 0.12 in its own ScreenGui ("BurritoDigHUD"), shown by flipping Visible
+	-- and hidden by a bare `task.delay(2.6, hideStatus)` at each call site with NO token guard -- so two
+	-- digs finishing within 2.6s of each other had the older timer hide the newer message.
+	--
+	-- Unlike the FISHING status pill (which is a live, several-times-a-second minigame readout and stays
+	-- where it is), these two messages are RESULTS: they fire once, at the end, and say what you got. That
+	-- is exactly what the hero lane is for, so they join every other result in the game -- same card, same
+	-- size, same place, same priority order -- and NotifyCenter owns the hide, which removes the race.
+	--
+	-- setStatus/hideStatus keep their names and signatures so the call sites below are unchanged.
+	local DIG_AMBER = Color3.fromRGB(190, 130, 55)
+	local function setStatus(t, seconds)
+		local NC = _G.NotifyCenter
+		if NC and NC.push then
+			pcall(NC.push, {
+				text     = t,
+				color    = DIG_AMBER,
+				priority = (NC.PRIORITY and NC.PRIORITY.EVENT) or 80,
+				duration = seconds or 2.6,
+			})
+			return
+		end
+		warn("[Dig][HUD] " .. t .. "  (NotifyCenter unavailable -- not shown on screen)")
+	end
+	-- The banner retires itself, so there is nothing left to hide. Kept as a no-op rather than removed so
+	-- the existing `task.delay(2.6, hideStatus)` call sites stay valid and obvious.
+	local function hideStatus() end
+	-- SWEEP THE OLD PILL: one built by a stale baked-in copy of this script has nothing left to clear it.
+	task.spawn(function()
+		for _ = 1, 5 do
+			local old = pgui:FindFirstChild("BurritoDigHUD")
+			if old then
+				old:Destroy()
+				print("[Dig][HUD] removed a leftover BurritoDigHUD pill -- dig results are banners now")
+			end
+			task.wait(2)
+		end
+	end)
 	-- desert junk items (the in-world reveal that RISES out of a decoy hole uses these emoji)
 	local DIG_JUNK = { "an old boot", "a cattle skull", "a rusty can", "a prickly cactus", "a horseshoe", "a coyote bone", "a tumbleweed" }
 	local DIG_JUNK_EMOJI = { ["an old boot"]="\xF0\x9F\xA5\xBE", ["a cattle skull"]="\xF0\x9F\x92\x80", ["a rusty can"]="\xF0\x9F\xA5\xAB", ["a prickly cactus"]="\xF0\x9F\x8C\xB5", ["a horseshoe"]="\xF0\x9F\xA7\xB2", ["a coyote bone"]="\xF0\x9F\xA6\xB4", ["a tumbleweed"]="\xF0\x9F\x8C\xBE" }
@@ -184,8 +214,8 @@ local function buildBurritoWorld(positions)
 			p.CFrame = cf; return p
 		end
 		local root = rp("Root", Enum.PartType.Ball, Vector3.new(0.2,0.2,0.2), SH_WOOD, CFrame.new()); root.Transparency = 1; m.PrimaryPart = root
-		rp("Handle", Enum.PartType.Cylinder, Vector3.new(SH_LEN,0.26,0.26), SH_WOOD, CFrame.new(SH_LEN/2,0,0), Enum.Material.Wood)        -- shaft along +X
-		rp("Grip",   Enum.PartType.Cylinder, Vector3.new(1.3,0.24,0.24), SH_WOOD, CFrame.new(-0.1,0,0) * CFrame.Angles(0,math.rad(90),0), Enum.Material.Wood) -- T grip cross-bar
+		rp("Handle", Enum.PartType.Cylinder, Vector3.new(SH_LEN,0.26,0.26), SH_WOOD, CFrame.new(SH_LEN/2,0,0), Enum.Material.SmoothPlastic)        -- shaft along +X
+		rp("Grip",   Enum.PartType.Cylinder, Vector3.new(1.3,0.24,0.24), SH_WOOD, CFrame.new(-0.1,0,0) * CFrame.Angles(0,math.rad(90),0), Enum.Material.SmoothPlastic) -- T grip cross-bar
 		rp("Socket", Enum.PartType.Cylinder, Vector3.new(0.6,0.34,0.34), SH_BLADE, CFrame.new(SH_LEN+0.1,0,0), Enum.Material.Metal)        -- shaft->blade collar
 		rp("Blade",  Enum.PartType.Block,    Vector3.new(0.45,1.4,1.2), SH_BLADE, CFrame.new(SH_LEN+0.85,0,0), Enum.Material.Metal)        -- flat metal scoop
 		m.Parent = Workspace
@@ -221,12 +251,12 @@ local function buildBurritoWorld(positions)
 	if typeof(shovelPos) == "Vector3" then
 		local stand = Instance.new("Model"); stand.Name = petId.."ShovelStand"
 		local cyc = function(y) return CFrame.new(shovelPos + Vector3.new(0,y,0)) * CFrame.Angles(0,0,math.rad(90)) end
-		local body = newPart(stand, "Barrel", Enum.PartType.Cylinder, Vector3.new(3.4,2.4,2.4), SH_WOOD, cyc(1.7), Enum.Material.Wood)
+		local body = newPart(stand, "Barrel", Enum.PartType.Cylinder, Vector3.new(3.4,2.4,2.4), SH_WOOD, cyc(1.7), Enum.Material.SmoothPlastic)
 		stand.PrimaryPart = body
-		newPart(stand, "Bulge", Enum.PartType.Cylinder, Vector3.new(1.5,2.85,2.85), SH_WOOD, cyc(1.7), Enum.Material.Wood)
-		newPart(stand, "RimBot", Enum.PartType.Cylinder, Vector3.new(0.5,2.55,2.55), SH_WOOD_D, cyc(0.45), Enum.Material.Wood)
-		newPart(stand, "RimTop", Enum.PartType.Cylinder, Vector3.new(0.5,2.55,2.55), SH_WOOD_D, cyc(2.95), Enum.Material.Wood)
-		newPart(stand, "Inside", Enum.PartType.Cylinder, Vector3.new(0.4,2.0,2.0), Color3.fromRGB(46,30,16), cyc(3.05), Enum.Material.Wood)
+		newPart(stand, "Bulge", Enum.PartType.Cylinder, Vector3.new(1.5,2.85,2.85), SH_WOOD, cyc(1.7), Enum.Material.SmoothPlastic)
+		newPart(stand, "RimBot", Enum.PartType.Cylinder, Vector3.new(0.5,2.55,2.55), SH_WOOD_D, cyc(0.45), Enum.Material.SmoothPlastic)
+		newPart(stand, "RimTop", Enum.PartType.Cylinder, Vector3.new(0.5,2.55,2.55), SH_WOOD_D, cyc(2.95), Enum.Material.SmoothPlastic)
+		newPart(stand, "Inside", Enum.PartType.Cylinder, Vector3.new(0.4,2.0,2.0), Color3.fromRGB(46,30,16), cyc(3.05), Enum.Material.SmoothPlastic)
 		for _, oy in ipairs({1.0, 2.4}) do newPart(stand, "Hoop", Enum.PartType.Cylinder, Vector3.new(0.32,2.75,2.75), SH_HOOP, cyc(oy), Enum.Material.Metal) end
 		stand.Parent = Workspace; st.digProps[#st.digProps+1] = stand
 		-- SHOVELS sticking up out of the barrel (grip + handle poke UP/out, blade down inside)

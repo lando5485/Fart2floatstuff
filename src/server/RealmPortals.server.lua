@@ -33,13 +33,21 @@ local TeleportService   = game:GetService("TeleportService")
 local DataStoreService  = game:GetService("DataStoreService")
 local Workspace         = game:GetService("Workspace")
 
--- DUPLICATE GUARD: if an old copy of this script got saved into the place file, Rojo adds a SECOND one
--- beside it and both run -- they fight over the Realm attributes and double-fire the remote. Bail loudly.
-if _G.__RealmPortalsServer then
-	warn("[RealmPortals] a second copy of RealmPortals.server is running -- this one is bailing out. " ..
-		"Delete the stale Script in ServerScriptService and re-sync Rojo.")
-	return
-end
+-- ===== NAMED 'RealmPortalsHub' IN THE PROJECT, NOT 'RealmPortals' =====
+-- Same story as the client. An old copy of this file is baked into the place under the name 'RealmPortals',
+-- and both copies ran the same first-come-wins guard -- whoever booted first destroyed the other by name.
+-- Roblox does not promise a boot order, so which version of the game you got was a coin flip. When the
+-- stale one won, the teleport ran on ITS timings (the old 1.2s wait) and cut the client's outro off part
+-- way through, which is one of the ways the transition "sometimes" did not happen.
+--
+-- Renaming the Rojo instance to 'RealmPortalsHub' makes this copy invisible to the old copy's name-matched
+-- sweep, while the legacy-name list below still lets us shut IT down. The race is removed, not improved.
+--
+-- ⚠ Still delete the old 'RealmPortals' Script in Studio's ServerScriptService and republish.
+local LEGACY_NAMES = { RealmPortals = true, RealmPortalsHub = true }
+
+-- NOT a bail-out, on purpose: bailing here is how the current version used to lose. Take over instead.
+local legacyWonTheRace = _G.__RealmPortalsServer == true
 _G.__RealmPortalsServer = true
 
 -- NEUTRALIZE STALE DUPLICATES: an OLD copy of this script baked into the place still runs alongside us. It
@@ -53,7 +61,7 @@ local function nukeStaleServerCopies()
 		local ok, svc = pcall(function() return game:GetService(svcName) end)
 		if ok and svc then
 			for _, inst in ipairs(svc:GetDescendants()) do
-				if inst ~= script and inst:IsA("Script") and inst.Name == script.Name then
+				if inst ~= script and inst:IsA("Script") and LEGACY_NAMES[inst.Name] then
 					pcall(function() inst.Disabled = true; inst:Destroy() end)
 					removed = removed + 1
 				end
@@ -66,6 +74,15 @@ local function nukeStaleServerCopies()
 end
 nukeStaleServerCopies()
 task.delay(1, nukeStaleServerCopies); task.delay(4, nukeStaleServerCopies); task.delay(9, nukeStaleServerCopies)
+
+if legacyWonTheRace then
+	warn("[RealmPortals] the STALE baked-in server copy booted BEFORE this one and has now been shut down. " ..
+		"Delete the old 'RealmPortals' Script in Studio to stop this happening at all.")
+end
+
+-- THE PROOF LINE. If a crossing ever misbehaves again, look for this first: no line = the copy that booted
+-- is not this file, and none of the timings below (including the 4.2s that the outro is cut to fit) applied.
+print("[RealmPortals] SERVER BUILD 10 ACTIVE -- this is the Rojo copy (4.2s outro hold + enter receipts)")
 
 -- Space Realm's save (universe-scoped, shared across places). These strings MUST match Space Realm's
 -- Constants -- they're the same ones PlanetSelectService.server.lua reads.
@@ -397,11 +414,67 @@ local function buildTransferPayload(player, realmKey)
 	}
 end
 
+--------------------------------------------------------------------
+-- LAND THEM WITH THEIR FRIENDS.
+--------------------------------------------------------------------
+-- A portal that drops you into a random empty server has technically worked and has actually failed: the
+-- reason two kids walk through together is to still be together on the other side. Roblox will not do this
+-- on its own -- TeleportAsync picks whatever instance it likes -- so the sending place has to look up where
+-- the friends already are and name the instance explicitly.
+--
+-- BEST EFFORT, ALWAYS. Every part of this can fail for reasons that are nobody's fault: the friend list is a
+-- web call, GetPlayerPlaceInstanceAsync respects the other player's join-privacy setting, and the server it
+-- finds may fill in the seconds before the teleport lands. So it is wrapped end to end, capped, and every
+-- failure path falls through to the ordinary teleport rather than blocking the trip. Nobody is ever stuck at
+-- a portal because a friend lookup timed out.
+local FRIEND_SCAN_CAP  = 24    -- friends to check at most; a 200-friend list is not worth 200 web calls
+local FRIEND_TIME_CAP  = 1.5   -- seconds; past this the player is just standing at a portal waiting
+
+local function friendInstanceIn(player, placeId)
+	local deadline = os.clock() + FRIEND_TIME_CAP
+	local found, checked = nil, 0
+
+	local ok = pcall(function()
+		local page = Players:GetFriendsAsync(player.UserId)
+		while true do
+			for _, f in ipairs(page:GetCurrentPage()) do
+				if found or checked >= FRIEND_SCAN_CAP or os.clock() > deadline then return end
+				checked = checked + 1
+				-- Returns (success, errorMessage, placeId, instanceId). It is only allowed to answer for
+				-- players whose privacy permits it, so a `false` here is a normal outcome, not an error.
+				local callOk, success, _, pid, iid =
+					pcall(TeleportService.GetPlayerPlaceInstanceAsync, TeleportService, f.Id)
+				if callOk and success and pid == placeId and iid then
+					found = iid
+					return
+				end
+			end
+			if page.IsFinished then break end
+			page:AdvanceToNextPageAsync()
+		end
+	end)
+
+	if not ok then return nil end
+	return found
+end
+
 enterEvent.OnServerEvent:Connect(function(player, key)
+	-- FIRST LINE, BEFORE EVERY GUARD. The three early returns below are all silent, so a request that dies
+	-- on one of them looks identical to a request that never arrived -- and that ambiguity is exactly what
+	-- made this hard to pin down: the client logged "portal entered", the server logged nothing at all, and
+	-- there was no way to tell "the remote never landed" from "it landed and was dropped without a word".
+	-- This line is the arrival receipt. If you see it, the message got here and the fault is below;
+	-- if you DON'T see it after a client-side "portal entered", the message never made it off the client.
+	print(("[RealmPortals] RECEIVED enter from %s key=%s (teleporting=%s)")
+		:format(tostring(player and player.Name), tostring(key), tostring(teleporting[player] ~= nil)))
+
 	if not player or teleporting[player] then return end
 
 	local realm = type(key) == "string" and REALMS[key] -- VALIDATE: one of these three keys, never a raw placeId
-	if not realm then return end
+	if not realm then
+		print("[RealmPortals] DROPPED -- key " .. tostring(key) .. " is not one of space/dino/candy")
+		return
+	end
 
 	if not atPortal(player, key) then
 		print("[RealmPortals] " .. player.Name .. " asked for " .. realm.name .. " but isn't at that portal -- ignored")
@@ -424,8 +497,16 @@ enterEvent.OnServerEvent:Connect(function(player, key)
 
 	teleporting[player] = true
 	pcall(function() enterEvent:FireClient(player, "status", key, "traveling") end)
-	task.wait(1.2) -- brief deliberate pause so the transition reads as intentional, THEN teleport
+	-- MUST match PORTAL_CINEMATIC_SECONDS in RealmPortals.client.luau. The client's outro hides the HUD,
+	-- peels it off screen, opens the portal iris and ends holding on a black title card -- the teleport
+	-- happens under that black, which is what hides the place boundary. Teleporting early (this was 1.2s)
+	-- cuts the shot off mid-crossing.
+	task.wait(4.2)
 	if not player.Parent then teleporting[player] = nil; return end -- they left during the pause
+
+	-- Looked up BEFORE the options are built and outside the teleport pcall, so a slow or refused lookup
+	-- can never turn into a failed teleport -- worst case it returns nil and they travel normally.
+	local friendInstance = friendInstanceIn(player, realm.placeId)
 
 	local ok, err = pcall(function()
 		-- Carry state across. Read on the far side via player:GetJoinData().TeleportData -- the receivers
@@ -433,8 +514,13 @@ enterEvent.OnServerEvent:Connect(function(player, key)
 		-- arrival from someone who opened that place directly.
 		local options = Instance.new("TeleportOptions")
 		options:SetTeleportData(buildTransferPayload(player, key))
+		if friendInstance then options.ServerInstanceId = friendInstance end
 		TeleportService:TeleportAsync(realm.placeId, { player }, options)
 	end)
+
+	if friendInstance then
+		print(("[RealmPortals] %s routed into a friend's %s server"):format(player.Name, realm.name))
+	end
 
 	print(("[RealmPortals] teleport %s -> %s (placeId %d): %s")
 		:format(player.Name, realm.name, realm.placeId, ok and "ok" or ("err: " .. tostring(err))))

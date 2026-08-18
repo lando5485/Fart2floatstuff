@@ -147,6 +147,9 @@ local function findGumballs()
 	return out
 end
 
+-- Marker HIDING is not done here -- HideMarkers.client.lua owns it for the whole realm (every 'gumball' brick
+-- and every *spot anchor, including ones that stream in later). This file only reads their positions.
+
 local collectSound
 if COLLECT_SOUND_ID ~= "" then
 	collectSound = Instance.new("Sound"); collectSound.SoundId = COLLECT_SOUND_ID; collectSound.Volume = 0.6; collectSound.Parent = SoundService
@@ -488,22 +491,28 @@ local function shockwave(center, delay, color)
 	end)
 end
 
+-- ⚠ ANNOUNCEMENTS GO THROUGH THE ONE REALM BANNER -- NEVER A ScreenGui OF THEIR OWN.
+-- This is realm 1's rule (see its CoreClient, and NotifyCenter.luau here: push/pin is the whole
+-- API). It used to build its own card in the middle of the screen, which meant a quest win could
+-- land on top of the objective banner, an island arrival or a live event -- several cards in the
+-- same band, none of them aware of the others. NotifyCenter already ranks, queues and preempts,
+-- so a win is one more push and takes its turn like everything else.
+--
+-- EVENT priority, deliberately: finishing a quest has to outrank the objective banner that is
+-- pinned underneath it (REWARD), but must not talk over a real Robux purchase (PURCHASE).
 local function winBanner(text)
-	local g = Instance.new("ScreenGui"); g.Name = "CandyWin"; g.ResetOnSpawn = false; g.DisplayOrder = 20; g.IgnoreGuiInset = true; g.Parent = PlayerGui
-	local f = Instance.new("Frame"); f.AnchorPoint = Vector2.new(0.5, 0.5); f.Position = UDim2.new(0.5, 0, 0.42, 0)
-	f.Size = UDim2.new(0, 0, 0, 90); f.BackgroundColor3 = FILL; f.Parent = g
-	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 18); c.Parent = f
-	local s = Instance.new("UIStroke"); s.Color = STROKE; s.Thickness = 4; s.Parent = f
-	local l = Instance.new("TextLabel"); l.BackgroundTransparency = 1; l.Size = UDim2.fromScale(1, 1); l.Font = Enum.Font.FredokaOne
-	l.TextColor3 = TEXTC; l.TextScaled = true; l.Text = text; l.Parent = f
-	local pad = Instance.new("UIPadding"); pad.PaddingLeft = UDim.new(0, 24); pad.PaddingRight = UDim.new(0, 24); pad.Parent = l
-	local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 34; sz.Parent = l
-	TweenService:Create(f, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = UDim2.new(0, 640, 0, 90) }):Play()
-	task.delay(5, function()
-		TweenService:Create(f, TweenInfo.new(0.4), { BackgroundTransparency = 1 }):Play()
-		TweenService:Create(l, TweenInfo.new(0.4), { TextTransparency = 1 }):Play()
-		task.delay(0.5, function() g:Destroy() end)
-	end)
+	local msg = text
+	if _G.NotifyCenter and _G.NotifyCenter.push then
+		pcall(function() _G.NotifyCenter.push({
+			top      = "â¨ QUEST COMPLETE",
+			text     = msg,
+			color    = STROKE,
+			priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT or nil,
+			duration = 5,
+		}) end)
+	else
+		print("[CandyQuest] " .. tostring(msg))
+	end
 end
 
 -- ============================================================================
@@ -778,6 +787,11 @@ local function openRattle(orbModel, onDone)
 	panel.Size = UDim2.fromOffset(420, 292); panel.Position = UDim2.fromScale(0.5, 0.5)
 	panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.BackgroundColor3 = Color3.fromRGB(25, 90, 185); panel.BorderSizePixel = 0; panel.Parent = gui
+	-- HOUSE PANEL: every task HUD is the Pet Hub's 700x520 card in the Pet Hub's spot, and the
+	-- bottom buttons hide while it is up. The panel keeps its own size and every child keeps its
+	-- own pixel coordinates -- it is centred in the house shell and scaled to fit, so nothing
+	-- inside it moves. One call does both jobs -- see HousePanel.client.luau.
+	pcall(_G.housePanel, panel)   -- island1 gumball chute rattle
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 14)
 	local ps = Instance.new("UIStroke", panel); ps.Color = Color3.new(1, 1, 1); ps.Thickness = 3
 
@@ -1057,6 +1071,9 @@ task.spawn(function()
 	--   1. keep polling until we have TOTAL of them, holding on to the BIGGEST set seen
 	--   2. if we still time out short, TOTAL becomes what actually spawned, so whatever
 	--      the world gives us is always finishable
+	-- The target the quest was DESIGNED around, before the streaming fallbacks below move TOTAL about.
+	-- The late-arrival sweep is allowed to climb back to this, never past it.
+	local designedTotal = TOTAL
 	local bricks = {}
 	do
 		local t0 = os.clock()
@@ -1077,25 +1094,58 @@ task.spawn(function()
 			TOTAL = #bricks
 		elseif #bricks > TOTAL then
 			-- more bricks in the world than the quest asks for: take the first TOTAL and
-			-- leave the rest hidden, so the count in the banner is the count you can find
+			-- HIDE the rest, so the count in the banner is the count you can find.
+			--
+			-- The surplus used to be dropped from the list and nothing else -- the comment here claimed they
+			-- were "left hidden", but only the bricks that reached spawnOrb ever got hidden. Every surplus
+			-- brick therefore stayed a fully visible, solid marker sitting exactly where a gumball should be.
+			-- Trimming the list is not the same as hiding the object, so do both.
 			warn(("[CandyQuest] found %d 'gumball' bricks, only %d needed -- using the first %d")
 				:format(#bricks, TOTAL, TOTAL))
-			while #bricks > TOTAL do table.remove(bricks) end
+			local hidden = 0
+			while #bricks > TOTAL do
+				local extra = table.remove(bricks)
+				if extra then
+					-- CLAIM IT, even if it has since streamed out (no .Parent check on this line): the
+					-- late-arrival sweep below re-scans the world every 3s and spawns an orb on any brick
+					-- missing from wiredBricks. Without claiming the surplus here, it found these four again
+					-- moments later and walked the target 4 -> 5 -> 6 -> 7 -> 8, putting live gumballs on the
+					-- very markers this branch had just hidden. Trimming the list is not claiming the brick.
+					wiredBricks[extra] = true
+					if extra.Parent then
+						-- same treatment spawnOrb gives a used brick: an invisible, intangible position anchor.
+						-- CanQuery off too, or the marker still swallows mouse/prompt raycasts while invisible.
+						extra.Transparency = 1
+						extra.CanCollide   = false
+						extra.CanQuery     = false
+						hidden += 1
+					end
+				end
+			end
+			print(("[CandyQuest] hid %d surplus 'gumball' marker(s) (invisible + no collision)"):format(hidden))
 		end
 		for i, b in ipairs(bricks) do spawnOrb(b, i) end
 	end
 
-	-- LATE ARRIVALS: island1 hands the rest of itself over as you walk around it, so a brick
-	-- that shows up after the window still becomes a real gumball (and raises the target).
+	-- LATE ARRIVALS: island1 hands the rest of itself over as you walk around it, so a brick that shows up
+	-- after the window still becomes a real gumball.
+	--
+	-- IT MAY ONLY CLIMB BACK TO designedTotal. This exists to repair the "timed out short" case above (TOTAL
+	-- was cut to 3 because only 3 had streamed in; the 4th arrives late and the quest should be 4 again). It
+	-- is NOT a licence to grow the quest past what it was designed to be -- an island with spare markers
+	-- would otherwise walk a 4-gumball hunt up to 8, one brick at a time, while the player was playing it.
 	task.spawn(function()
 		while #orbs > 0 and collected < TOTAL do
 			task.wait(3)
-			for _, b in ipairs(findGumballs()) do
-				if not wiredBricks[b] then
-					spawnOrb(b, #orbs + 1)
-					TOTAL += 1
-					print(("[CandyQuest] a late gumball streamed in -- target is now %d"):format(TOTAL))
-					updateObjective()
+			if TOTAL < designedTotal then
+				for _, b in ipairs(findGumballs()) do
+					if not wiredBricks[b] and TOTAL < designedTotal then
+						spawnOrb(b, #orbs + 1)
+						TOTAL += 1
+						print(("[CandyQuest] a late gumball streamed in -- target is now %d of %d")
+							:format(TOTAL, designedTotal))
+						updateObjective()
+					end
 				end
 			end
 		end
@@ -1104,6 +1154,11 @@ task.spawn(function()
 	updateObjective()
 	print(("[CandyQuest] ready -- Candy Npc %s, %d gumball orb(s) spawned, target %d")
 		:format(npcHead and "wired" or "MISSING", #orbs, TOTAL))
+	-- RETAINER SIGNAL: the quest reached the end of its build with its world objects up. QuestRetainer
+	-- watches this flag; anything still false once its island has streamed in gets force-streamed and
+	-- re-run. It is set HERE, at the ready print, not at the top of the file -- a quest that bailed
+	-- early on a missing marker must NOT look built. See QuestRetainer.client.luau.
+	_G.questBuilt_candy = true
 end)
 
 -- ============================================================================

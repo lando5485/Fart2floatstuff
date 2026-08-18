@@ -37,6 +37,7 @@ print("[CrateService] CrateRemotes ready (ClaimCrate, CrateResult, GetOwnedPets)
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
+local Gamepasses = require(Shared:WaitForChild("Gamepasses"))
 local PlayerState = require(ServerScriptService:WaitForChild("PlayerState"))
 
 local CRATE = Constants.CRATE
@@ -66,9 +67,13 @@ local function hasUnmaxedPet(player)
 end
 
 -- ===== rarity roll (weights summed defensively) =====
-local function rollRarity()
-	local weights = CRATE.RARITY_WEIGHTS
+-- `luck` (optional) multiplies every band above the commonest one and the sum below renormalises, exactly as
+-- SkinCrates.liveRarities does -- one luck rule for every crate in the realm rather than two that drift.
+-- Omitted / 1 leaves the weights untouched, so the daily crate rolls identically for a player with no rebirths
+-- and no Lucky Pass.
+local function rollRarity(luck)
 	local order = CRATE.RARITY_ORDER
+	local weights = Gamepasses.applyLuck(CRATE.RARITY_WEIGHTS, order, luck or 1)
 	local total = 0
 	for _, k in ipairs(order) do
 		total = total + (weights[k] or 0)
@@ -152,7 +157,7 @@ local function performClaim(player, chosenPetId, isDev)
 		rarity, levels = pend.rarity, pend.levels
 		pendingRoll[player] = nil
 	else
-		rarity = rollRarity()
+		rarity = rollRarity(Gamepasses.luckFor(player))
 		levels = CRATE.RARITY_LEVELS[rarity] or 1
 	end
 
@@ -200,7 +205,9 @@ PreviewRoll.OnServerInvoke = function(player)
 	end
 	if #listOwnedPets(player) == 0 then return { ok = false, reason = "no_pets" } end
 	if not hasUnmaxedPet(player) then return { ok = true, kind = "coins" } end -- all maxed -> coins on claim
-	local rarity = rollRarity()
+	-- The PREVIEW is the roll that actually gets granted (performClaim reuses pendingRoll), so luck must be
+	-- applied HERE too -- otherwise a Lucky Pass owner would preview at boosted odds and be granted at base.
+	local rarity = rollRarity(Gamepasses.luckFor(player))
 	local levels = CRATE.RARITY_LEVELS[rarity] or 1
 	pendingRoll[player] = { rarity = rarity, levels = levels }
 	return { ok = true, rarity = rarity, levelsAdded = levels }

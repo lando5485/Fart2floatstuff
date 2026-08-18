@@ -60,8 +60,17 @@ local STUN_TIME     = 4            -- seconds it's stunned after you shove it
 local SHOVES_PER_CHUNK = 2         -- shoves before it coughs up a chocolate chunk
 
 -- audio (owned ids only; "" silent)
-local SOUND_ROAR   = ""
+local SOUND_ROAR   = "rbxassetid://135109687089247"
 local SOUND_STOMP  = ""
+
+-- PROXIMITY ROAR. Walk inside ROAR_RANGE and it roars at you -- hunting or not, quest started or not, which is
+-- the point: the monster is on the island from the moment you land, and the roar is what tells a kid it is
+-- alive before it has any reason to chase them.
+local ROAR_RANGE    = 60    -- studs. Comfortably inside AGGRO_RANGE (90) so the roar lands BEFORE the chase.
+local ROAR_REARM    = 1.25  -- must get this far back out (x ROAR_RANGE) to arm the next one -- hysteresis, so
+                            -- standing on the boundary does not machine-gun roars as you drift in and out.
+local ROAR_MIN_GAP  = 2.5   -- hard floor between ANY two roars. The aggro roar and the proximity roar can
+                            -- legitimately land on the same beat; two copies of one clip just sounds broken.
 
 local CHOC   = Color3.fromRGB(82, 46, 23)     -- rich milk-chocolate
 local CHOC_HI = Color3.fromRGB(132, 84, 46)   -- glossy highlight chocolate
@@ -109,7 +118,17 @@ end
 -- ============================================================================
 local islandPos, homePos
 local monster, monBody           -- the model + its main part
-local state = "sleep"            -- sleep | hunt | stunned | strollhome
+local state = "sleep"            -- sleep | hunt | stunned | strollhome | remote
+-- ===== SHARING HIM (see MonsterSync.server.lua) =====
+-- Every client builds its own chocolate monster and ambles it independently, so three kids on
+-- island3 are each looking at him in a different place. Whoever hosts him streams his body
+-- CFrame; everyone else drops into state "remote" and puts their own copy there. The pancake
+-- monster on island18 does exactly this through the same relay -- if you change one, read both.
+--   on   -- true if OUR monster is being driven by somebody else's client
+--   cf   -- the last body CFrame received; the render loop eases toward it
+--   ev   -- the RemoteEvent, nil until it turns up
+--   last -- clock of the last message, so a host that vanishes does not freeze him forever
+local REM = { on = false, cf = nil, ev = nil, last = 0, huntUntil = 0 }
 local chaseT = 0
 local stunUntil = 0
 local shoveCount = 0
@@ -359,8 +378,30 @@ warnEdge.Parent = warnGui
 local wStroke = Instance.new("UIStroke"); wStroke.Color = Color3.fromRGB(90, 40, 20); wStroke.Thickness = 14; wStroke.Transparency = 1; wStroke.Parent = warnEdge
 local wGrad = Instance.new("UIGradient"); wGrad.Parent = wStroke
 
+-- The roar plays FROM THE MONSTER, not through SoundService like the other stings. A Sound parented to a
+-- BasePart is 3D: it swells as you close in, drops off behind you when you run, and comes from the right
+-- direction when it is off-screen -- which is the entire value of a proximity roar. If the body is not built
+-- yet it falls back to a flat 2D play rather than going silent.
+local lastRoarAt = -math.huge
+local function roarSound()
+	if SOUND_ROAR == "" then return end
+	if os.clock() - lastRoarAt < ROAR_MIN_GAP then return end
+	lastRoarAt = os.clock()
+	if not (monBody and monBody.Parent) then playSound(SOUND_ROAR, 0.9); return end
+	local s = Instance.new("Sound")
+	s.Name = "MonsterRoar"
+	s.SoundId = SOUND_ROAR
+	s.Volume = 1
+	s.RollOffMode = Enum.RollOffMode.InverseTapered
+	s.RollOffMinDistance = 14   -- full volume out to here, then it falls away
+	s.RollOffMaxDistance = 240  -- audible from well beyond ROAR_RANGE, so you hear it before you see it
+	s.Parent = monBody
+	s:Play()
+	Debris:AddItem(s, 8)
+end
+
 local function roar()
-	playSound(SOUND_ROAR, 0.9)
+	roarSound()
 	-- eyes flare, jaw drops
 	if eyeL then
 		TweenService:Create(eyeL, TweenInfo.new(0.15), { Color = Color3.fromRGB(255, 90, 40) }):Play()
@@ -986,13 +1027,66 @@ RunService.RenderStepped:Connect(function(dt)
 		return
 	end
 
+	-- ===== SOMEBODY ELSE'S MONSTER =====
+	-- Their client did the thinking; ours only puts the body where they say and swings the
+	-- limbs. Eased on a TIME constant rather than snapped, so 12 messages a second against 60
+	-- frames looks the same on a slow tablet as on a fast monitor.
+	if state == "remote" then
+		if REM.cf then monBody.CFrame = monBody.CFrame:Lerp(REM.cf, 1 - math.exp(-dt * 14)) end
+		poseSwing = 0.35
+		poseMonster()
+		-- OUR OWN HUNT OUTRANKS WATCHING SOMEBODY ELSE'S. The aggro check lives in the sleep
+		-- branch, which never runs while we are remote -- without this, a player following the
+		-- shared monster could never be hunted themselves and their quest would stall for good.
+		local near = huntAllowed() and pickTarget(false) or nil
+		if near then
+			local hrp = hrpFor(near)
+			if hrp and (hrp.Position - here).Magnitude <= AGGRO_RANGE then
+				REM.on, REM.cf = false, nil
+				targetPlayer = near; retargetAt = now + 6
+				state = "hunt"; chaseT = now; roar()
+				return
+			end
+		end
+		-- the host went quiet: left, fell, or walked off island3. Hand him back to our own
+		-- state machine rather than leaving him frozen mid-stride in the middle of the island.
+		if now - REM.last > 6 then
+			REM.on, REM.cf = false, nil
+			state = "sleep"
+			print("[ChocMonster] the shared monster's host went quiet -- ours is local again")
+		end
+		return
+	end
+
 	if state == "sleep" then
 		-- NOT A STATUE. Even off-duty he ambles his patch of the island -- pacing,
 		-- sniffing, stamping melty footprints. A monster frozen mid-island reads
 		-- as broken scenery, and he's the first thing you see landing on island 3
 		-- now that he no longer waits for the quest to exist.
 		monBody.Size = BODY_BASE * (1 + math.sin(now * 1.5) * 0.035)   -- slow breathing
-		if now >= idleNext then
+
+		-- ===== HE PACES WHENEVER ANYONE IS ON THE ISLAND, AND SLEEPS WHEN IT IS EMPTY =====
+		-- ⚠ DELIBERATELY NOT THE SAME TEST AS ISLAND 18'S MONSTER, and the difference is the
+		-- point. That one stays buried until somebody who has BEATEN it turns up, because it is
+		-- hidden under the pancake and a monster already strolling about would give the whole
+		-- quest away before a new player poured a drop. This one has nothing to give away -- he
+		-- is the first thing you see landing on island 3 and always has been. Gating him on
+		-- finishers would leave a brand-new player looking at a monster standing perfectly
+		-- still, which reads as broken scenery, which is the exact thing this amble was written
+		-- to fix. So: anyone on the island and he is up; island empty and he lies down.
+		--
+		-- He still never attacks from this state. Hostility is gated on huntAllowed() at the
+		-- bottom of this branch and that test is untouched -- the quest, not this, decides it.
+		local paces = false
+		if homePos then
+			for _, pl in ipairs(Players:GetPlayers()) do
+				local h = hrpFor(pl)
+				if h and (h.Position - homePos).Magnitude <= ISLAND_RANGE then paces = true; break end
+			end
+		end
+		if not paces then
+			idleTarget = homePos          -- home, then stand and breathe (the else-branch below)
+		elseif now >= idleNext then
 			-- clock-derived stroll spot around home; no math.random anywhere else here
 			local a = (now * 0.61) % (math.pi * 2)
 			local r = 10 + (now * 7.7) % 30
@@ -1196,6 +1290,34 @@ task.spawn(function()
 	end
 end)
 
+-- ============================================================================
+-- PROXIMITY ROAR -- get close and it roars at you
+-- ============================================================================
+-- ONE roar per approach, not a loop: it fires when you cross INTO ROAR_RANGE and only re-arms once you have
+-- backed out past ROAR_RANGE * ROAR_REARM. Standing next to the monster is therefore one roar, not a roar
+-- every few seconds -- while it is actually hunting you, the chase logic's own roar() calls carry the drama.
+--
+-- Deliberately NOT gated on state or on the cookie quest. The monster is on island 3 from the moment you
+-- arrive, and this is what makes walking up to it feel dangerous before it has any reason to chase you.
+task.spawn(function()
+	local armed = true
+	while true do
+		task.wait(0.2)
+		local hrp = hrpOf()
+		if hrp and monBody and monBody.Parent then
+			local d = (hrp.Position - monBody.Position).Magnitude
+			if d <= ROAR_RANGE then
+				if armed then
+					armed = false
+					roar()
+				end
+			elseif d > ROAR_RANGE * ROAR_REARM then
+				armed = true
+			end
+		end
+	end
+end)
+
 -- a spray of chocolate crumbs from the mouth as it chomps down on someone
 local function chompBurst()
 	if not (monBody and monBody.Parent) then return end
@@ -1324,4 +1446,106 @@ task.spawn(function()
 	end)
 	print(("[ChocMonster] awake at %s (%.0f,%.0f,%.0f) -- hunts within %d studs"):format(
 		spawnPart and "'monsterspawn'" or "island centre", homePos.X, homePos.Y, homePos.Z, AGGRO_RANGE))
+end)
+
+-- ============================================================================
+-- SHARING HIM -- the network half (see MonsterSync.server.lua)
+-- ============================================================================
+-- Both halves live here because the monster this drives is this file's: the sender posts our
+-- body's CFrame while WE own him, and the receiver drives our body while somebody else does.
+-- They are never both live -- REM.on decides which. Island18's pancake monster runs the same
+-- pattern through the same relay; changing one usually means changing both.
+task.spawn(function()
+	local ev = ReplicatedStorage:WaitForChild("MonsterSyncEvent", 30)
+	if not ev then
+		warn("[ChocMonster] no MonsterSyncEvent -- MonsterSync.server.lua is not running; every "
+			.. "player will see him wandering somewhere different")
+		return
+	end
+	REM.ev = ev
+
+	ev.OnClientEvent:Connect(function(who, kind, id, cf, mode)
+		-- OUR OWN MESSAGES COME BACK TO US and must be ignored: we are the client that computed
+		-- that CFrame, and following it would be a feedback loop fighting our own state machine.
+		if who == player then return end
+		if id ~= "choc" then return end     -- the relay also carries island18's pancake monster
+
+		if kind == "melt" then
+			if not REM.on then return end   -- only meaningful if we were watching THEIRS
+			REM.on, REM.cf = false, nil
+			state = "sleep"
+			return
+		end
+
+		if kind ~= "mon" or typeof(cf) ~= "CFrame" then return end
+		local now = os.clock()
+
+		-- A HUNT OUTRANKS THE AMBLE. Two clients can legitimately be streaming at once: whoever
+		-- is hosting the off-duty pacing, and whoever he is actually chasing. The chase is the
+		-- one that matters, so it claims the next three seconds and amble packets are dropped
+		-- for that long -- otherwise the two would fight frame by frame and he would judder
+		-- between two places.
+		if mode == "hunt" then
+			REM.huntUntil = now + 3
+		elseif now < (REM.huntUntil or 0) then
+			return
+		end
+
+		-- STICK WITH ONE HOST. Two kids can be chased at once -- each client streams its own
+		-- hunt -- and a third watching would see him snap between the two of them twelve times
+		-- a second. So the first host heard keeps him until it goes quiet for two seconds. The
+		-- one exception is a hunt arriving while a WANDER host has him: being chased outranks
+		-- pacing, so that one is allowed to take over immediately.
+		local fresh = (now - REM.last) < 2
+		if REM.host and REM.host ~= who and fresh
+			and not (mode == "hunt" and REM.hostMode ~= "hunt") then
+			return
+		end
+		REM.host, REM.hostMode = who, mode
+
+		-- WE ONLY FOLLOW IF HE IS NOT ALREADY BUSY WITH US. Sleep is the only state that can be
+		-- taken over: mid-hunt, mid-stun or mid-gulp he is doing something to THIS player, and
+		-- another client's stream must not yank him off it.
+		if state == "sleep" and monster then
+			state = "remote"
+			REM.on = true
+			if monBody then monBody.Size = BODY_BASE end     -- the sleep breath scales it
+			print("[ChocMonster] following " .. who.Name .. "'s monster -- ours is network-driven")
+		end
+		if state ~= "remote" then return end
+		REM.cf, REM.last = cf, now
+	end)
+
+	-- WHO HOSTS THE AMBLE. Nobody negotiates: every client works it out from the same facts and
+	-- gets the same answer -- the lowest UserId among the players standing on island3. Somebody
+	-- far away is never picked, because at that distance the island's parts are streamed out for
+	-- them, their ground raycasts miss, and they would broadcast a monster sinking through the
+	-- floor. During a handover two clients may both send for a moment; receivers take the newer
+	-- packet, so it costs a frame, not a bug.
+	local function iHostTheAmble()
+		if not homePos then return false end
+		local best
+		for _, pl in ipairs(Players:GetPlayers()) do
+			local c = pl.Character
+			local h = c and c:FindFirstChild("HumanoidRootPart")
+			if h and (h.Position - homePos).Magnitude <= ISLAND_RANGE then
+				if not best or pl.UserId < best.UserId then best = pl end
+			end
+		end
+		return best == player
+	end
+
+	-- THE STREAM. 12 a second. "sleep" covers both his standing-and-breathing and his pacing;
+	-- sending it either way is what keeps every screen agreeing on where he is standing, and it
+	-- is two dozen bytes.
+	while true do
+		task.wait(1 / 12)
+		if REM.ev and not REM.on and monBody and monBody.Parent then
+			if state == "hunt" or state == "stunned" or state == "strollhome" then
+				pcall(function() REM.ev:FireServer("mon", "choc", monBody.CFrame, "hunt") end)
+			elseif state == "sleep" and iHostTheAmble() then
+				pcall(function() REM.ev:FireServer("mon", "choc", monBody.CFrame, "roam") end)
+			end
+		end
+	end
 end)

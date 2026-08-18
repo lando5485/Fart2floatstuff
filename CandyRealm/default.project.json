@@ -3,6 +3,14 @@
   "tree": {
     "$className": "DataModel",
 
+    "Workspace": {
+      "$className": "Workspace",
+      "$properties": {
+        "StreamingMinRadius": 768,
+        "StreamingTargetRadius": 2048
+      }
+    },
+
     "ServerScriptService": {
       "$className": "ServerScriptService",
       "$path": "src/server"

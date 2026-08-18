@@ -38,6 +38,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TextChatService  = game:GetService("TextChatService")
 local Lighting         = game:GetService("Lighting")
 
+-- DECLARED FALSE AT BOOT, not left nil. Every reader today uses `not _G.tunnelQuestComplete`,
+-- and nil is falsy, so this changes no behaviour -- but a later `== false` test would
+-- silently never match on a flag that was never declared, and this states up front that
+-- island11 Tunnel Blast -- the FOOD STAND is locked on this owns it.
+_G.tunnelQuestComplete = false
+
 local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
 
@@ -49,6 +55,18 @@ local BLAST_NAMES    = { "blastzone", "blast", "tunnelblast" }
 local TNT_NAMES      = { "tnt" }
 local NPC_NAMES      = { "minernpc", "candynpc" }
 local ISLAND_RANGE   = 900          -- how near island11 the blast zone can be
+
+-- The blast itself. islandQuake already argues that blowing a hole in a mountain has to be felt
+-- across the whole island rather than at the wall you were stood at -- the shake, the debris and
+-- the dust all reach for that. The detonation had NO SOUND AT ALL, which is the one channel that
+-- sells scale for free: rolloff is what makes a noise read as "over there and enormous".
+local BLAST_SOUND_ID = "rbxassetid://139810215781954"
+local BLAST_ROLLOFF  = 1200         -- studs. The island is ~350 across, so this carries well past it.
+-- A planted charge is LIT. The fuse hisses from the moment it lands on the X until the blast, which
+-- is what turns three fetch trips into mounting pressure instead of three identical prop placements
+-- -- by the third crate you can hear the first two still burning behind you.
+local FUSE_SOUND_ID  = "rbxassetid://17834390538"
+local FUSE_ROLLOFF   = 90           -- studs. Close-range: a fuse is a detail at the wall, not an island event.
 
 local CRATES_NEEDED  = 3            -- dynamite crates to plant on the X
 local NODES_NEEDED   = 10           -- diamond ore nodes to mine
@@ -202,24 +220,17 @@ local hud = Instance.new("ScreenGui")
 hud.Name = "TunnelBlastHUD"; hud.ResetOnSpawn = false; hud.IgnoreGuiInset = true
 hud.DisplayOrder = 14; hud.Enabled = false; hud.Parent = PlayerGui
 
-local objFrame = Instance.new("Frame")
-objFrame.AnchorPoint = Vector2.new(0.5, 0); objFrame.Position = UDim2.new(0.5, 0, 0, 96)
-objFrame.Size = UDim2.new(0, 520, 0, 44); objFrame.BackgroundColor3 = Color3.fromRGB(30, 24, 16)
-objFrame.BorderSizePixel = 0; objFrame.Parent = hud
-do
-	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 12); c.Parent = objFrame
-	local s = Instance.new("UIStroke"); s.Color = GOLD; s.Thickness = 2; s.Parent = objFrame
-	local g = Instance.new("UIGradient"); g.Rotation = 90
-	g.Color = ColorSequence.new(Color3.fromRGB(44, 34, 20), Color3.fromRGB(24, 18, 12)); g.Parent = objFrame
-end
-local objLbl = Instance.new("TextLabel")
-objLbl.BackgroundTransparency = 1; objLbl.Size = UDim2.fromScale(1, 1)
-objLbl.Font = Enum.Font.FredokaOne; objLbl.TextColor3 = Color3.fromRGB(255, 240, 205)
-objLbl.TextScaled = true; objLbl.Parent = objFrame
-do
-	local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 19; sz.Parent = objLbl
-	local pad = Instance.new("UIPadding"); pad.PaddingLeft = UDim.new(0, 14); pad.PaddingRight = UDim.new(0, 14); pad.Parent = objLbl
-end
+-- ⚠ THE OBJECTIVE PILL IS GONE. It was a 520x44 box at y=96 with its own gradient, stroke and
+-- corner radius -- a second banner floating under the realm banner, unaware of it, of island
+-- arrival cards, or of the freeze meter island 4 used to draw at y=70 and y=104.
+--
+-- Its text is a PINNED banner now (see updateObjective). A pin holds the hero slot, repaints in
+-- place as the counter moves -- 0/3 -> 1/3 with no re-slide -- and steps aside for anything
+-- louder, then takes the slot back. Live progress, no GUI of our own, one lane.
+--
+-- ⚠ `hud` ITSELF STAYS, and is not an empty frame: it is the host for the "Back to Surface"
+-- BUTTON below. A button is a control you press, not an announcement -- it belongs on screen
+-- where your thumb is, not in a banner.
 
 -- "Back to Surface" button (bottom-centre). Cart full -> finishes the quest; otherwise it just
 -- climbs you out, keeping your progress + cave so you can re-enter the shaft. Assigned below.
@@ -237,22 +248,46 @@ do
 end
 surfaceBtn.Activated:Connect(function() if leaveMine then leaveMine() end end)
 
+-- The directions ride the realm banner as a PINNED card at QUEST priority (200) -- the top rung,
+-- because they are instructions you are actively following rather than news. Safe to call as
+-- often as the counters move: re-pinning the same id repaints in place, so 0/3 -> 1/3 does not
+-- re-slide the card, and the pin releases the moment anything louder is queued behind it.
+local TUNNEL_PIN = "tunnelObjective"
+local pinnedTunnel = false
+
 local function updateObjective()
-	hud.Enabled = (phase ~= "idle" and phase ~= "done")
+	-- `hud` now carries only the Back to Surface button, so it is enabled for exactly the phases
+	-- that button belongs to rather than for "any phase with an objective".
 	surfaceBtn.Visible = (phase == "mine" or phase == "return")
+	hud.Enabled = surfaceBtn.Visible
+
+	local text
 	if phase == "blast" then
-		objLbl.Text = ("💥 Plant Dynamite on the X:   %d / %d crates"):format(placedCrates, CRATES_NEEDED)
+		text = ("💥 Plant Dynamite on the X:   %d / %d crates"):format(placedCrates, CRATES_NEEDED)
 	elseif phase == "descend" then
-		objLbl.Text = "🕳️ Enter the mine shaft!"
+		text = "🕳️ Enter the mine shaft!"
 	elseif phase == "mine" then
 		if minedNodes < NODES_NEEDED then
-			objLbl.Text = ("⛏️ Mine Diamond Ore:   %d / %d   (carrying %d)"):format(minedNodes, NODES_NEEDED, carriedDiam)
+			text = ("⛏️ Mine Diamond Ore:   %d / %d   (carrying %d)"):format(minedNodes, NODES_NEEDED, carriedDiam)
 		else
-			objLbl.Text = ("💎 Take the diamonds to the Mine Cart:   %d / %d in cart"):format(cartCount, NODES_NEEDED)
+			text = ("💎 Take the diamonds to the Mine Cart:   %d / %d in cart"):format(cartCount, NODES_NEEDED)
 		end
 	elseif phase == "return" then
-		objLbl.Text = "🪜 Return to the surface!"
+		text = "🪜 Return to the surface!"
 	end
+
+	local NC = _G.NotifyCenter
+	if not (NC and NC.pin) then return end
+	if not text then
+		if pinnedTunnel then pcall(NC.unpin, TUNNEL_PIN); pinnedTunnel = false end
+		return
+	end
+	pcall(NC.pin, TUNNEL_PIN, {
+		text     = text,
+		color    = GOLD,
+		priority = (NC.PRIORITY and NC.PRIORITY.QUEST) or 200,
+	})
+	pinnedTunnel = true
 end
 
 -- centre BOOM / countdown card
@@ -380,38 +415,44 @@ local function biggestPartOf(inst)
 	return best
 end
 
+-- THE MINER CARRIES A DRILL, NOT A PICKAXE. The job down here is the hold-to-drill minigame --
+-- a bit sunk into the rock face with a heat gauge -- so a pickaxe in the hand was telling the
+-- player they were about to swing at something. This is built in code rather than cloned from a
+-- world model: there is no "Drill" in Studio to clone, and the shape has to line up with the tool
+-- the mini-game is already about.
+local function buildHeldDrill()
+	local m = Instance.new("Model"); m.Name = "HeldDrill"
+	local function part(name, size, cf, col, mat)
+		local pt = mk({ Name = name, Size = size, Color = col, Material = mat or Enum.Material.Metal })
+		pt.CFrame = cf; pt.Parent = m
+		return pt
+	end
+	-- -Y is "down the shaft" here so the grip lands in the hand and the bit points away, matching
+	-- the pickaxe hold angle this replaces -- the weld offset below is unchanged.
+	local body = part("Body", Vector3.new(0.62, 1.15, 0.85), CFrame.new(0, 0.55, 0), Color3.fromRGB(224, 168, 44))
+	part("Motor",   Vector3.new(0.5, 0.62, 0.5),   CFrame.new(0, 0.55, -0.6), Color3.fromRGB(56, 60, 68))
+	part("Grip",    Vector3.new(0.3, 0.9, 0.3),    CFrame.new(0, -0.2, 0),    Color3.fromRGB(38, 38, 42), Enum.Material.SmoothPlastic)
+	part("Trigger", Vector3.new(0.16, 0.3, 0.22),  CFrame.new(0, 0.05, 0.28), Color3.fromRGB(28, 28, 32), Enum.Material.SmoothPlastic)
+	part("Chuck",   Vector3.new(0.34, 0.34, 0.34), CFrame.new(0, 1.25, 0),    Color3.fromRGB(150, 152, 158))
+	part("Bit",     Vector3.new(0.18, 1.5, 0.18),  CFrame.new(0, 2.0, 0),     Color3.fromRGB(196, 198, 204))
+	part("Tip",     Vector3.new(0.24, 0.28, 0.24), CFrame.new(0, 2.75, 0),    Color3.fromRGB(120, 122, 128))
+	m.PrimaryPart = body
+	m.WorldPivot = CFrame.new(0, -0.2, 0)   -- pivot at the grip, so it sits IN the hand
+	return m
+end
+
 local function givePickaxe()
 	if heldPick and heldPick.Parent then return end
-	local src = worldPickaxe
-	if not (src and src.Parent) then return end
-	local wasArch = src.Archivable
-	src.Archivable = true
-	local c = src:Clone()
-	src.Archivable = wasArch
-	if not c then return end
-	for _, d in ipairs(c:GetDescendants()) do
-		if d:IsA("LuaSourceContainer") or d:IsA("ProximityPrompt") or d:IsA("ClickDetector") then
-			d:Destroy()
-		end
-	end
-	local wrap = c
-	if c:IsA("BasePart") then wrap = Instance.new("Model"); c.Parent = wrap end
-	wrap.Name = "HeldPickaxe"
-	local root = biggestPartOf(wrap)
-	if not root then wrap:Destroy(); return end
-	wrap.PrimaryPart = root
-	local _, len = pickaxeGrip(wrap)
-	local s = math.clamp(4.0 / math.max(len, 0.5), 0.05, 20)
-	if math.abs(s - 1) > 0.1 then pcall(function() wrap:ScaleTo(s) end) end
-	-- pivot AT the grip point, -Z up the shaft: weldToHand pivots the model by
-	-- this frame, so the hold angle below reads exactly like the Smores axe
-	wrap.WorldPivot = pickaxeGrip(wrap)
+	-- built, not cloned: this no longer depends on a world "Pickaxe" existing at all
+	local wrap = buildHeldDrill()
 	heldPick = wrap
 	weldToHand(wrap, CFrame.new(0, -0.35, 0) * CFrame.Angles(math.rad(-110), 0, math.rad(-10)))
+	pcall(_G.CarrySay, "drill")   -- other players see the same drill; see CarryView's `drill` kind
 end
 
 local function takePickaxe()
 	if heldPick then heldPick:Destroy(); heldPick = nil end
+	pcall(_G.CarrySay, nil)
 end
 
 -- ============================================================================
@@ -453,23 +494,16 @@ local function buildDynamiteCrate()
 	return m
 end
 
--- a small held diamond (shown while carrying diamonds)
-local function buildHeldGem()
-	local m = Instance.new("Model"); m.Name = "HeldDiamond"
-	local g = mk({ Name = "Gem", Shape = Enum.PartType.Ball, Size = Vector3.new(1.1, 1.5, 1.1),
-		Color = DIAMOND, Material = Enum.Material.Neon, Reflectance = 0.3 })
-	g.Parent = m; m.PrimaryPart = g
-	local pl = Instance.new("PointLight"); pl.Color = DIAMOND; pl.Brightness = 2; pl.Range = 8; pl.Parent = g
-	return m
-end
-
+-- DIAMONDS GO IN THE PACK, NOT THE FIST. Carrying ten of them used to weld a glowing gem to the
+-- left hand -- one prop for any number of stones, so it read as "holding a diamond" no matter how
+-- many you had, and it lit your character up while you were trying to see the rock face.
+--
+-- The count is not lost: the objective line already reads "Take the diamonds to the Mine Cart:
+-- n / 10", which is the honest readout, and `carriedDiam` still drives the cart deposit exactly as
+-- before. This just stops drawing them. Kept as a function rather than deleted at the call sites
+-- because it is still the one place that clears the prop on phase change and on reset.
 local function refreshHeldGem()
 	if heldGem then heldGem:Destroy(); heldGem = nil end
-	if carriedDiam > 0 and phase == "mine" then
-		heldGem = buildHeldGem()
-		-- LEFT hand: the right one is carrying the pickaxe all mine phase
-		weldToHand(heldGem, CFrame.new(-0.2, -1.6, -0.4), "Left")
-	end
 end
 
 -- ============================================================================
@@ -528,6 +562,31 @@ local function buildBlastZone()
 	blastWall = m
 end
 
+-- Every lit fuse, so the blast can silence them all on the frame it goes off. They are parented to
+-- their crate (a child of blastWall) and so WOULD die on their own when the wall is destroyed -- but
+-- that happens 0.35s AFTER the bang, and a fuse still hissing for a third of a second after the
+-- explosion it caused is the kind of small wrongness you hear without being able to name.
+local fuseSounds = {}
+local function lightFuse(crate)
+	local part = crate.PrimaryPart or crate:FindFirstChildWhichIsA("BasePart", true)
+	if not part then return end
+	local f = Instance.new("Sound")
+	f.Name = "Fuse"
+	f.SoundId = FUSE_SOUND_ID
+	f.Looped = true            -- it burns until the charge blows, however long you take fetching the rest
+	f.Volume = 0.7
+	f.RollOffMaxDistance = FUSE_ROLLOFF
+	f.Parent = part
+	f:Play()
+	fuseSounds[#fuseSounds + 1] = f
+end
+local function killFuses()
+	for _, f in ipairs(fuseSounds) do
+		if f.Parent then f:Stop(); f:Destroy() end
+	end
+	fuseSounds = {}
+end
+
 -- a static crate snapped onto the next free X slot
 local function snapCrateToSlot(fromPos)
 	for _, slot in ipairs(crateSlots) do
@@ -549,10 +608,12 @@ local function snapCrateToSlot(fromPos)
 					end
 					crate:PivotTo(slot.cf)
 					screenShake(0.5, 0.15)
+					lightFuse(crate)   -- lit on LANDING, not on throw: the arc is still in the air
 				end)
 			else
 				crate:PivotTo(slot.cf)
 				screenShake(0.4, 0.15)
+				lightFuse(crate)
 			end
 			return
 		end
@@ -566,6 +627,18 @@ local function openShaft()
 	local pos, look, up = blastCF.Position, blastCF.LookVector, Vector3.new(0, 1, 0)
 	local right = blastCF.RightVector
 	local m = Instance.new("Model"); m.Name = "MineShaft"; m.Parent = Workspace
+	-- WHICH WAY THE ENTRANCE FACES, published for the reveal camera.
+	--
+	-- This has to be stated rather than worked out. The whole portal is built in code from blastCF,
+	-- and none of its parts carry that orientation: the sign, the pillars and the rails are all
+	-- placed with CFrame.new(position), which has IDENTITY rotation -- so a camera deriving "the
+	-- front" from any part's LookVector would be told +Z regardless of which way the mine actually
+	-- points, and would frame the hillside next to it.
+	--
+	-- The throat recedes along -look (see the tslab calls below), so +look is out of the mouth: the
+	-- direction you stand in to look INTO the mine, which is the shot. Flattened to horizontal --
+	-- you walk in on the level, you do not approach a doorway from above.
+	m:SetAttribute("RevealFacing", Vector3.new(look.X, 0, look.Z).Unit)
 
 	-- find the ground at the wall so the whole entrance sits flat (no floating frame/steps)
 	local groundY = pos.Y - 7
@@ -873,6 +946,29 @@ local function detonate()
 	end
 	showCard("💥 BOOM! 💥", 1.4)
 
+	-- THE BANG, on the same frame as the flash. Positional rather than 2D: it belongs to the wall,
+	-- so it should arrive from the wall and fall off as you walk away from the hole afterwards.
+	--
+	-- It gets its OWN anchored emitter instead of riding blastWall, because blastWall is DESTROYED
+	-- a third of a second from here (see below) and a Sound dies with its parent -- which would cut
+	-- the bang off mid-boom, at exactly the moment it is supposed to be rolling out across the island.
+	do
+		local emit = Instance.new("Part")
+		emit.Anchored = true; emit.CanCollide = false; emit.CanQuery = false; emit.CastShadow = false
+		emit.Transparency = 1; emit.Size = Vector3.new(0.2, 0.2, 0.2)
+		emit.CFrame = CFrame.new(pos)
+		emit.Parent = Workspace
+		local bang = Instance.new("Sound")
+		bang.SoundId = BLAST_SOUND_ID
+		bang.Volume = 1
+		bang.RollOffMaxDistance = BLAST_ROLLOFF
+		bang.RollOffMode = Enum.RollOffMode.InverseTapered   -- stays loud up close, carries a long way out
+		bang.Parent = emit
+		bang:Play()
+		Debris:AddItem(emit, 12)   -- outlives the tail; nothing accumulates
+	end
+	killFuses()   -- the fuses have done their job; they stop ON the bang, not after it
+
 	-- flash
 	local flash = Instance.new("ScreenGui"); flash.IgnoreGuiInset = true; flash.DisplayOrder = 25; flash.Parent = PlayerGui
 	local ff = Instance.new("Frame"); ff.Size = UDim2.fromScale(1, 1); ff.BackgroundColor3 = Color3.fromRGB(255, 240, 210)
@@ -904,6 +1000,12 @@ local function detonate()
 	task.wait(0.35)
 	if blastWall then blastWall:Destroy(); blastWall = nil end
 	openShaft()
+
+	-- CINEMATIC PAYOFF. This island already had the best half of a reveal -- islandQuake's shake, the
+	-- debris and the lens punch -- but the camera never actually LOOKED at the hole. You blow a shaft
+	-- into a mountain while facing a wall of dust, and by the time it clears you have already turned
+	-- away. Held until after the dust, so there is something to see when it arrives.
+	task.delay(2.2, function() pcall(_G.revealIsland, 11) end)
 
 	phase = "descend"
 	busy = false
@@ -1186,13 +1288,28 @@ do
 
 	-- HOME is stored because the panel gets shoved around: it rumbles while the bit is in the
 	-- rock and jerks when it seizes, and both need somewhere to return to.
-	DRILL.home = UDim2.new(0.5, -300, 0.7, 0)
+	--
+	-- ⚠ IT MUST BE THE SHELL'S CENTRE, NOT A HAND-PLACED SPOT. _G.housePanel below re-parents this
+	-- panel into a 700x520 shell and centres it there. The old home -- (0.5,-300),(0.7,0), measured
+	-- against the whole screen -- then meant "300px left of centre, 70% down" INSIDE that shell, so
+	-- the first frame of the minigame threw the card off its own house position and part of it off
+	-- screen. Nothing about the drill looks wrong in the code; the panel just leaves.
+	--
+	-- Every rumble and tween below is an OFFSET off home, so they all keep working unchanged once
+	-- home is the centre. (Same trap TaffyStorm's MG.home fell into -- see HousePanel's header.)
+	DRILL.home = UDim2.fromScale(0.5, 0.5)
 
 	local panel = Instance.new("Frame")
 	panel.Size = UDim2.new(0, 600, 0, 214)
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.Position = DRILL.home
 	panel.BackgroundColor3 = Color3.fromRGB(14, 18, 24); panel.BackgroundTransparency = 0.06
 	panel.BorderSizePixel = 0; panel.ZIndex = 2; panel.Parent = gui
+	-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+	-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
+	-- The panel keeps its own size and every child keeps its own pixel coordinates;
+	-- it is centred in the house shell and scaled to fit, so nothing inside moves.
+	pcall(_G.housePanel, panel)   -- island11 mine drill
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 16)
 	DRILL.panel = panel
 
@@ -1298,6 +1415,37 @@ end
 
 -- Drill one node. onBite fires each time you cut through another slice, so the rock out in the
 -- world shakes and throws chips in step with the bar rather than only at the end.
+-- ===== DRILL SOUND =====
+-- The SAME asset Neptune's ice drill uses (SpaceRealmStuff/src/client/NeptuneDrillClient), and the
+-- same treatment, because it is the same thing: a full-screen hold-to-drill minigame. One drill
+-- noise across both realms is what makes them read as one game rather than two sets of foley.
+--
+-- 2D on SoundService, not positional: the mini-game is on your screen, so the drill is not anywhere
+-- in the world to hear it from -- and the ore node you are actually cutting is behind the panel.
+--
+-- Driven by "the bit is CUTTING", not by "the button is down". That distinction is the whole point:
+-- a seized bit is jammed in the rock and is not cutting, so it must not go on grinding. The silence
+-- is what tells the player their bit is stuck without them having to read the SEIZED label.
+local DRILL_SOUND_ID = "rbxassetid://9125450626"
+local drillSound = Instance.new("Sound")
+drillSound.Name = "TunnelOreDrill"
+drillSound.SoundId = DRILL_SOUND_ID
+drillSound.Volume = 0.55
+drillSound.Looped = true   -- held for as long as the bit is actually cutting, however long that takes
+drillSound.Parent = SoundService
+
+-- Start/stop only on CHANGE. Calling :Play() every frame while holding would restart the loop sixty
+-- times a second and the sound would never get past its own first millisecond -- it would read as a
+-- click, not a drill.
+local drillAudible = false
+local function setDrillSound(on)
+	if on == drillAudible then return end
+	drillAudible = on
+	pcall(function()
+		if on then drillSound:Play() else drillSound:Stop() end
+	end)
+end
+
 local function playDrill(bites, onBite)
 	if drillBusy then return false end
 	drillBusy = true
@@ -1348,6 +1496,9 @@ local function playDrill(bites, onBite)
 			DRILL.stroke.Color = DIAMOND
 		end
 
+		-- CUTTING = holding AND not seized. Exactly the condition the sound is tied to.
+		setDrillSound(down and seized <= 0)
+
 		-- the bit: speed IS the readout, and the hub glows with the heat
 		spin += rpm * dt
 		DRILL.bit.Rotation = spin
@@ -1377,6 +1528,8 @@ local function playDrill(bites, onBite)
 		end
 	end
 
+	setDrillSound(false)   -- through the rock: the bit is out, so the loop stops here and not on the
+	                       -- next frame that happens to notice. Every exit from the loop passes here.
 	DRILL.state.Text = "THROUGH"
 	DRILL.pct.Text = "100%"
 	DRILL.panel.Position = DRILL.home
@@ -2317,21 +2470,28 @@ function completeQuest()
 	showCard(("✅ QUEST COMPLETE!\n+%d Coins   +%d XP   +%d Gems"):format(COIN_REWARD, XP_REWARD, GEM_REWARD), 4.5)
 	notify(("🏆 Tunnel cleared! +%d Coins, +%d XP, +%d Gems"):format(COIN_REWARD, XP_REWARD, GEM_REWARD), GOLD)
 
-	-- reseal after a bit so the player can run it again
+	-- ===== THE MINE STAYS OPEN =====
+	-- ⚠ DO NOT PUT buildBlastZone() BACK HERE. Six seconds after you finished, this used to
+	-- destroy the cave and the mine shaft and build the rock wall again -- so the one thing you
+	-- had just spent the whole quest opening sealed itself while you were still standing in it,
+	-- and the island went back to looking exactly as it had before you arrived. You blew it open;
+	-- it is open.
+	--
+	-- Only the LITTER is cleared: a crate still in your hands, crates left on the ground, the
+	-- dynamite you never planted. The cave, the shaft, the ore and the cart all stay, so the
+	-- tunnel is somewhere you can walk back into afterwards rather than a set piece that resets.
+	--
+	-- The quest itself does not re-arm -- no enableStart(), phase stays "done". It pays out once
+	-- (IslandTaskTokens keeps that ledger) and _G.tunnelQuestComplete is what the island-11 stand
+	-- reads, so re-running it could only ever hand back a reward that is already spent.
 	task.delay(6, function()
-		if caveModel then caveModel:Destroy(); caveModel = nil end
-		if mineShaft then mineShaft:Destroy(); mineShaft = nil end
 		if heldCrate then heldCrate:Destroy(); heldCrate = nil end
 		for _, c in ipairs(groundCrates) do if c and c.Parent then c:Destroy() end end
 		groundCrates = {}
-		oreNodes = {}; cartFillParts = {}; mineCart = nil; exitPrompt = nil
-		placedCrates = 0; minedNodes = 0; carriedDiam = 0; cartCount = 0
-		carryingCrate = false; started = false; phase = "idle"
-		if blastWall then blastWall:Destroy(); blastWall = nil end
-		buildBlastZone()          -- wall back up, ready to blast again (crates spawn when re-taken)
-		enableStart()
+		carryingCrate = false
+		pcall(_G.CarrySay, nil)   -- empty hands on everyone else's screen too
 		updateObjective()
-		notify("⛏️ The tunnel sealed back up -- take the quest again anytime!", ROCK_LT)
+		notify("\xE2\x9B\x8F\xEF\xB8\x8F The tunnel is yours -- the mine stays open.", ROCK_LT)
 	end)
 end
 
@@ -2360,6 +2520,7 @@ local function spawnCrateAt(pos)
 		m:Destroy()   -- consumed -> you're now holding it
 		heldCrate = buildDynamiteCrate()
 		weldToHand(heldCrate, CFrame.new(0, -2.4, -0.4))
+		pcall(_G.CarrySay, "dynamite")   -- so the others can see who is holding the explosives
 		if placePrompt then placePrompt.Enabled = true end
 		pointTo(blastCF.Position)
 		notify("💥 Carry it to the Blast Zone X and plant it!", DYN_RED)
@@ -2385,6 +2546,7 @@ local function wirePlacePrompt()
 		local fromPos = heldCrate and heldCrate.PrimaryPart and heldCrate.PrimaryPart.Position
 		carryingCrate = false
 		if heldCrate then heldCrate:Destroy(); heldCrate = nil end
+		pcall(_G.CarrySay, nil)
 		placePrompt.Enabled = false
 		snapCrateToSlot(fromPos)   -- arcs the TNT onto the X
 		placedCrates = placedCrates + 1
@@ -2461,6 +2623,7 @@ local function wireTntSource()
 			carryingCrate = true
 			heldCrate = buildDynamiteCrate()
 			weldToHand(heldCrate, CFrame.new(0, -2.4, -0.4))
+		pcall(_G.CarrySay, "dynamite")   -- so the others can see who is holding the explosives
 			if placePrompt then placePrompt.Enabled = true end
 			pointTo(blastCF.Position)
 			notify("🧨 Carry the dynamite to the X and throw it on!", DYN_RED)
@@ -2629,6 +2792,11 @@ task.spawn(function()
 	print(("[TunnelQuest] ready on island11 -- blast zone at %.0f,%.0f,%.0f (%s); tnt=%s, npc=%s"):format(
 		blastCF.Position.X, blastCF.Position.Y, blastCF.Position.Z, marker and "marker" or "fallback",
 		tntBrick and "found" or "none", npc and "found" or "none"))
+	-- RETAINER SIGNAL: the quest reached the end of its build with its world objects up. QuestRetainer
+	-- watches this flag; anything still false once its island has streamed in gets force-streamed and
+	-- re-run. It is set HERE, at the ready print, not at the top of the file -- a quest that bailed
+	-- early on a missing marker must NOT look built. See QuestRetainer.client.luau.
+	_G.questBuilt_tunnel = true
 end)
 
 -- ============================================================================

@@ -134,6 +134,7 @@ local function destroyAll() for _, nd in ipairs(pool) do pcall(function() nd:Des
 -- ============================================================================
 local started   = false
 local stage     = 1
+local airborneSince = nil -- os.clock() the player left the ground (nil while grounded); see the airborne gate
 local override  = nil    -- Vector3 set by _G.guideTrailTo(); nil = fall back to the tutorial route
 local flownOnce = false  -- LATCH: true forever once the player first fart-flies. Ends the TUTORIAL route only.
 
@@ -159,36 +160,50 @@ local function publishStep()
 end
 publishStep()
 
--- ===== THE ARROWS WAIT FOR THE STARTER-PET CARD =====
--- GardenIntro calls this the instant the cinematic finishes or is skipped -- and that is the SAME moment
--- PetFollow's "YOUR FIRST PET!" welcome card is waiting for, because it is gated on the intro too. So both
--- landed together: the card announcing the free Bean Buddy, and a line of green chevrons already pulling
--- the player's eye across the floor toward the Gardener. The two instructions arrived at once and competed.
+-- ===== WATERING COMPLETES THE GARDENER LEG =====
+-- The gardener leg used to end ONLY by proximity: step within STOP_DIST (7 studs) of the gardener's pivot.
+-- But the actual interaction happens at prompt range and then over at the plots -- take the can, walk to the
+-- field, water it -- so a player can finish the whole gardener step without ever tripping the 7-stud check
+-- (and the arrival guard below deliberately refuses to advance while an NPC target is live). Result: they
+-- watered the garden and the arrows still pointed back at the gardener.
 --
--- The arrows now hold until the card has gone. _G.starterWelcome is PetFollow's handshake -- "pending" from
--- the moment the grant lands, "showing" while the card is up, "done" once it has faded. This is the same
--- gate ObjectiveHUD's directions card uses, so the words and the arrows still appear together as a pair;
--- they just appear after the pet, not on top of it.
+-- The server publishes HasWateredGarden on the first successful water (CommunityGarden.server.lua) -- that IS
+-- "the gardener interaction is complete", stated by the authority. The moment it lands, re-route to the stand.
+-- Checked once on load too, for a player who watered before this script (or the trail) started.
+local function gardenerLegDone()
+	if stage == 1 then
+		stage = 2
+		publishStep()
+		print("[GardenGuideTrail] garden watered -> gardener leg complete, re-routing to the FOOD STAND")
+	end
+end
+if player:GetAttribute("HasWateredGarden") == true then gardenerLegDone() end
+player:GetAttributeChangedSignal("HasWateredGarden"):Connect(function()
+	if player:GetAttribute("HasWateredGarden") == true then gardenerLegDone() end
+end)
+
+-- ===== THE ARROWS GO UP IMMEDIATELY =====
+-- GardenIntro calls this the instant the cinematic finishes or is skipped. They now appear right then --
+-- first thing, with nothing to wait for.
 --
--- EVERY caller is a first-timer by construction (the intro only plays for a player who has not seen it), so
--- there is no returning-player branch to write here -- unlike ObjectiveHUD, which is built on every join.
--- The 8s grace covers a first-timer whose grant failed or never arrived; the 45s ceiling means a welcome
--- that never resolves delays the arrows rather than cancelling them.
+-- THEY USED TO WAIT FOR THE STARTER-PET CARD. PetFollow's "YOUR FIRST PET!" welcome is gated on the same
+-- moment, so both used to land together -- a card announcing the free Bean Buddy, and a line of chevrons
+-- already pulling the eye across the floor -- and the two instructions competed. Holding the arrows until
+-- the card had gone fixed the clash, but it cost ~7 seconds (6.5s of card, and up to 8s more when the grant
+-- was slow), and for those seconds a brand-new player is stood in a garden with no idea where to go. That
+-- silence is a worse problem than the overlap: the arrows ARE the tutorial, and a tutorial that starts after
+-- you have already wandered off has missed its moment.
+--
+-- The overlap is survivable because the two live in different places -- the card is a GUI panel, the arrows
+-- are chevrons on the floor -- so they read as "here is your pet" plus "go this way" rather than as two
+-- captions fighting for the same corner of the screen. `_G.starterWelcome` is left alone: ObjectiveHUD still
+-- uses it to time its wording, and nothing here needs to know about it any more.
 local starting = false
 _G.startGardenGuide = function()
 	if started or starting then return end
 	starting = true
-	task.spawn(function()
-		local waited = 0
-		while _G.starterWelcome == nil and waited < 8 do task.wait(0.25); waited = waited + 0.25 end
-		while (_G.starterWelcome == "pending" or _G.starterWelcome == "showing") and waited < 45 do
-			task.wait(0.25); waited = waited + 0.25
-		end
-		if started then return end
-		started = true; publishStep()
-		print(("[GardenGuideTrail] started -> guiding to the Gardener (waited %.1fs for the starter-pet card: %s)")
-			:format(waited, tostring(_G.starterWelcome)))
-	end)
+	started = true; publishStep()
+	print("[GardenGuideTrail] started -> guiding to the Gardener (immediately, no wait)")
 end
 
 -- Point the trail at ANY world position. Meant to be called every frame by whoever owns the target: it is cheap,
@@ -200,7 +215,7 @@ _G.guideTrailClear = function()
 	override = nil
 end
 -- REMOVED: the low-priority "island quest NPC" slot. Landing on an island no longer lays a chevron
--- trail to its quest giver -- the bouncing ▼ over that NPC's head (NpcWaypointArrow) is the only
+-- trail to its quest giver -- the bouncing green ▼ over that NPC's head (NpcWaypointArrow) is the only
 -- pointer now, which is enough to find them without a line of arrows dragging your eye across the floor.
 --
 -- The function is KEPT as a deliberate no-op rather than deleted: NpcGuideArrow still exists (it drives
@@ -235,6 +250,19 @@ conn = RunService.RenderStepped:Connect(function()
 
 	-- Mid-flight there is no ground to lay chevrons on. HIDE, do not destroy -- we want the egg trail back on landing.
 	if _G.isFlying then hideFrom(1); return end
+
+	-- AIRBORNE WITHOUT FLYING = ALSO NO GROUND ARROWS. Falling after a fart (isFlying already false),
+	-- getting knocked off an edge, drifting down under glide -- in all of those the ground rays below
+	-- find nothing and fell back to "chevron at body height", which drew a line of arrows FLOATING in
+	-- open sky that followed the player down. Ground guidance only means anything when there is ground.
+	-- The 0.35s grace keeps ordinary hops from blinking the trail off.
+	local humA = char:FindFirstChildOfClass("Humanoid")
+	if humA and humA.FloorMaterial == Enum.Material.Air then
+		airborneSince = airborneSince or os.clock()
+		if os.clock() - airborneSince > 0.35 then hideFrom(1); return end
+	else
+		airborneSince = nil
+	end
 
 	-- PRIORITY: a hatchable egg (override) > the tutorial route. With neither, the trail idles.
 	-- (The island quest NPC used to sit below both; it no longer draws a trail at all.)

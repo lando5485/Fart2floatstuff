@@ -154,7 +154,8 @@ local function ensureReelUI()
 	if reelUI then return reelUI end
 	local pgui = player:WaitForChild("PlayerGui")
 	local g = Instance.new("ScreenGui"); g.Name = "FishReelGui"; g.ResetOnSpawn = false; g.DisplayOrder = 90; g.Enabled = false; g.Parent = pgui
-	local dim = Instance.new("Frame"); dim.Size = UDim2.new(1,0,1,0); dim.BackgroundColor3 = Color3.new(0,0,0); dim.BackgroundTransparency = 0.5; dim.Active = true; dim.Parent = g
+	-- click-catcher only, no dim: quest popups draw with no darkening of the world behind them
+	local dim = Instance.new("Frame"); dim.Size = UDim2.new(1,0,1,0); dim.BackgroundTransparency = 1; dim.Active = true; dim.Parent = g
 	local panel = Instance.new("Frame"); panel.Size = UDim2.new(0,300,0,360); panel.Position = UDim2.new(0.5,0,0.5,0); panel.AnchorPoint = Vector2.new(0.5,0.5)
 	panel.BackgroundColor3 = Color3.fromRGB(25,90,185); panel.Parent = g
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0,16); local ps = Instance.new("UIStroke", panel); ps.Color = Color3.new(1,1,1); ps.Thickness = 3
@@ -259,7 +260,7 @@ local function buildFishingWorld(lakePos, lakeSize, barrelPos)
 			local p = Instance.new("Part"); p.Name = name; p.Shape = shape; p.Size = size; p.Color = color
 			p.Material = mat or Enum.Material.SmoothPlastic; p.Anchored = true; p.CanCollide = false; p.CanQuery = false; p.CastShadow = false; p.Parent = rod; return p
 		end
-		local shaft = rp("Shaft", Enum.PartType.Cylinder, Vector3.new(6,0.16,0.16), Color3.fromRGB(110,70,40), Enum.Material.Wood)
+		local shaft = rp("Shaft", Enum.PartType.Cylinder, Vector3.new(6,0.16,0.16), Color3.fromRGB(110,70,40), Enum.Material.SmoothPlastic)
 		local grip  = rp("Grip",  Enum.PartType.Cylinder, Vector3.new(1.1,0.26,0.26), Color3.fromRGB(35,30,28))
 		local reel  = rp("Reel",  Enum.PartType.Cylinder, Vector3.new(0.3,0.7,0.7), Color3.fromRGB(40,40,46), Enum.Material.Metal)
 		rodTip = rp("Tip", Enum.PartType.Ball, Vector3.new(0.16,0.16,0.16), Color3.fromRGB(235,235,235)); rodTip.Transparency = 1
@@ -310,11 +311,11 @@ local function buildFishingWorld(lakePos, lakeSize, barrelPos)
 	-- ===== ROD BARREL + "Grab Fishing Rod" prompt =====
 	if typeof(barrelPos) == "Vector3" then
 		local barrel = Instance.new("Model"); barrel.Name = prefix.."RodBarrel"
-		local body = newPart(barrel, "Barrel", Enum.PartType.Cylinder, Vector3.new(3.4,3.0,3.0), Color3.fromRGB(124,82,44), CFrame.new(barrelPos + Vector3.new(0,1.7,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.Wood)
+		local body = newPart(barrel, "Barrel", Enum.PartType.Cylinder, Vector3.new(3.4,3.0,3.0), Color3.fromRGB(124,82,44), CFrame.new(barrelPos + Vector3.new(0,1.7,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.SmoothPlastic)
 		barrel.PrimaryPart = body
-		newPart(barrel, "Lip", Enum.PartType.Cylinder, Vector3.new(0.5,3.2,3.2), Color3.fromRGB(96,62,32), CFrame.new(barrelPos + Vector3.new(0,3.35,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.Wood)
-		newPart(barrel, "Inside", Enum.PartType.Cylinder, Vector3.new(0.4,2.5,2.5), Color3.fromRGB(48,32,18), CFrame.new(barrelPos + Vector3.new(0,3.3,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.Wood)
-		for _, oy in ipairs({0.7, 1.8, 2.9}) do newPart(barrel, "Band", Enum.PartType.Cylinder, Vector3.new(0.28,3.5,3.5), Color3.fromRGB(58,40,24), CFrame.new(barrelPos + Vector3.new(0,oy,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.Wood) end
+		newPart(barrel, "Lip", Enum.PartType.Cylinder, Vector3.new(0.5,3.2,3.2), Color3.fromRGB(96,62,32), CFrame.new(barrelPos + Vector3.new(0,3.35,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.SmoothPlastic)
+		newPart(barrel, "Inside", Enum.PartType.Cylinder, Vector3.new(0.4,2.5,2.5), Color3.fromRGB(48,32,18), CFrame.new(barrelPos + Vector3.new(0,3.3,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.SmoothPlastic)
+		for _, oy in ipairs({0.7, 1.8, 2.9}) do newPart(barrel, "Band", Enum.PartType.Cylinder, Vector3.new(0.28,3.5,3.5), Color3.fromRGB(58,40,24), CFrame.new(barrelPos + Vector3.new(0,oy,0)) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.SmoothPlastic) end
 		local rimY = barrelPos + Vector3.new(0, 3.0, 0)
 		local NRODS = 4
 		for i = 0, NRODS - 1 do
@@ -325,7 +326,7 @@ local function buildFishingWorld(lakePos, lakeSize, barrelPos)
 			local axis = (outward * out + Vector3.new(0, up, 0)).Unit
 			local center = rimY + outward * 0.7 + axis * (rodLen/2)
 			local cf = CFrame.lookAt(center, center + axis) * CFrame.Angles(0, math.rad(90), 0)
-			newPart(barrel, "Rod", Enum.PartType.Cylinder, Vector3.new(rodLen,0.16,0.16), Color3.fromRGB(110,70,40), cf, Enum.Material.Wood)
+			newPart(barrel, "Rod", Enum.PartType.Cylinder, Vector3.new(rodLen,0.16,0.16), Color3.fromRGB(110,70,40), cf, Enum.Material.SmoothPlastic)
 			newPart(barrel, "RodReel", Enum.PartType.Cylinder, Vector3.new(0.28,0.6,0.6), Color3.fromRGB(38,38,44), cf * CFrame.new(-rodLen/2 + 0.9, -0.32, 0) * CFrame.Angles(0,0,math.rad(90)), Enum.Material.Metal)
 			newPart(barrel, "RodTip", Enum.PartType.Ball, Vector3.new(0.22,0.22,0.22), Color3.fromRGB(235,235,235), cf * CFrame.new(rodLen/2, 0, 0))
 		end
@@ -352,8 +353,58 @@ local function buildFishingWorld(lakePos, lakeSize, barrelPos)
 	Instance.new("UICorner", status).CornerRadius = UDim.new(0,10); local sstk = Instance.new("UIStroke", status); sstk.Color = Color3.fromRGB(255,215,0); sstk.Thickness = 2
 	local statusText = Instance.new("TextLabel"); statusText.Size = UDim2.new(1,0,1,0); statusText.BackgroundTransparency = 1
 	statusText.Font = Enum.Font.GothamBold; statusText.TextSize = 20; statusText.TextColor3 = Color3.new(1,1,1); statusText.Text = ""; statusText.Parent = status
-	local function setStatus(txt) statusText.Text = txt; status.Visible = true end
-	local function hideStatus() status.Visible = false end
+	--======================================================================
+	-- THE STATUS PILL CANNOT STRAND ITSELF ANY MORE
+	--======================================================================
+	-- This is a live minigame status, not a banner -- "Waiting for a bite...", "Reel it in!" -- so it stays
+	-- here rather than moving to NotifyCenter's hero lane: it changes several times a second during a cast
+	-- and would monopolise a lane that is meant for one message at a time.
+	--
+	-- What it DID have wrong is the thing that strands text on screen. `hideStatus()` was reached from
+	-- exactly ONE place: the bottom of the fishing coroutine, after its `while` loop fell through normally.
+	-- Several branches inside that loop are not pcall-wrapped, and the ScreenGui is ResetOnSpawn = false --
+	-- so one error, one early break, or dying mid-cast left the last message ("Reel it in!") on screen
+	-- FOREVER, because nothing else in the game had any reason to clear it.
+	--
+	-- The fix is a self-healing deadline rather than another call site to remember. Every setStatus arms a
+	-- token-guarded auto-hide; the next setStatus re-arms it, so a normal cast never sees the timeout, and
+	-- an abandoned one clears itself. STATUS_MAX_SHOW is deliberately generous -- longer than the slowest
+	-- legitimate step (the 1-4s wait for a bite plus the reel minigame) -- because this is a safety net,
+	-- not a display timer. It must never cut a message short that the flow is still using.
+	-- It is PINNED at RANK.STATUS (30): a standing readout that repaints in place as the cast progresses, so
+	-- the words follow one continuous card instead of a stream of banners. The rank sits BELOW every push
+	-- priority, so unlike the tutorial and watering pins it holds nothing shut -- any real banner preempts
+	-- it, plays, and the commentary steps back in mid-cast. Kept in step with PetFollow.client.lua.
+	local STATUS_PIN = "Fishing"
+	local STATUS_MAX_SHOW = 25
+	local statusTok = 0
+	local function hideStatus()
+		statusTok += 1
+		status.Visible = false -- the old pill, in case a stale duplicate of this script still shows one
+		local NC = _G.NotifyCenter
+		if NC and NC.unpin then pcall(NC.unpin, STATUS_PIN) end
+	end
+	local function setStatus(txt)
+		local NC = _G.NotifyCenter
+		if NC and NC.pin then
+			pcall(NC.pin, STATUS_PIN, {
+				rank  = (NC.RANK and NC.RANK.STATUS) or 30,
+				top   = "\xF0\x9F\x8E\xA3 FISHING",
+				text  = txt,
+				color = Color3.fromRGB(25, 90, 185), -- the pill's own blue, so the feature keeps its colour
+			})
+		else
+			status.Visible = true; statusText.Text = txt -- no banner system: fall back to the old pill
+		end
+		statusTok += 1
+		local mine = statusTok
+		task.delay(STATUS_MAX_SHOW, function()
+			if statusTok ~= mine then return end -- a newer message owns it; its own timer will handle it
+			hideStatus()
+			warn("[Fish][HUD] status banner auto-cleared after " .. STATUS_MAX_SHOW .. "s -- the fishing flow " ..
+				"ended without releasing it (error, early break, or the player left mid-cast). Last text: " .. tostring(txt))
+		end)
+	end
 	local JUNK_EMOJI = {
 		["an old boot"]="\xF0\x9F\xA5\xBE", ["a butter blob"]="\xF0\x9F\xA7\x88", ["a rubber duck"]="\xF0\x9F\xA6\x86",
 		["a soggy sock"]="\xF0\x9F\xA7\xA6", ["a rusty tin can"]="\xF0\x9F\xA5\xAB", ["a clump of swamp weed"]="\xF0\x9F\x8C\xBF",
@@ -365,16 +416,55 @@ local function buildFishingWorld(lakePos, lakeSize, barrelPos)
 		TS:Create(pop, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.new(0,120,0,120), TextTransparency = 0}):Play()
 		task.delay(1.2, function() TS:Create(pop, TweenInfo.new(0.4), {TextTransparency = 1}):Play(); task.delay(0.45, function() pop:Destroy() end) end)
 	end
+	-- ===== "TAP TO HOOK!" HOLDS FOR A FULL SECOND =====
+	-- The label used to die with the catcher on the frame the tap landed, so a player with quick reflexes --
+	-- exactly the player doing it right -- saw the words for two or three frames and was straight back to
+	-- fishing. It read as a flicker rather than a moment, and on a fast hook you could not tell whether you
+	-- had caught it or missed it.
+	--
+	-- The two jobs are separated (they were only fused because both lived on the same instance):
+	--   THE CATCHER (orange wash + full-screen button) ends the INSTANT the tap lands -- it blocks input, so
+	--     holding it would put a second of lag between the tap and the reel minigame.
+	--   THE LABEL moves to the HUD and stays until it has been up a full second. It is only text by then:
+	--     not tinting, not blocking, purely the confirmation that you hooked it.
+	-- A miss is unaffected: the window is 1.3s, so the label has already outlived the minimum.
+	-- Kept in step with the identical guard in PetFollow.client.lua, which owns a second copy of this HUD.
+	local HOOK_MIN_SHOW = 1.0
 	local function waitForTap(timeout)
 		local tapped = false
+		local shownAt = os.clock()
 		local catcher = Instance.new("TextButton"); catcher.Size = UDim2.new(1,0,1,0); catcher.BackgroundColor3 = Color3.fromRGB(255,120,40)
-		catcher.BackgroundTransparency = 0.8; catcher.AutoButtonColor = false; catcher.Text = ""; catcher.Parent = hud
+		catcher.BackgroundTransparency = 0.8; catcher.AutoButtonColor = false; catcher.Text = ""
+		-- MenuBackdropGuard hunts full-screen tinted input sinks and hides them as orphaned menu backdrops.
+		-- This one is deliberate -- you tap ANYWHERE to hook -- and the guard was killing it a quarter of a
+		-- second into the window, turning every cast into a guaranteed miss. Stamped here as well as
+		-- exempted by gui name over there, because a stale baked-in copy of the guard will not have the
+		-- name list but WILL read this attribute.
+		catcher:SetAttribute("NoBackdropGuard", true)
+		catcher.Parent = hud
 		local big = Instance.new("TextLabel"); big.AnchorPoint = Vector2.new(0.5,0.5); big.Position = UDim2.new(0.5,0,0.5,0); big.Size = UDim2.new(0,320,0,120)
 		big.BackgroundTransparency = 1; big.Font = Enum.Font.FredokaOne; big.TextSize = 60; big.TextColor3 = Color3.fromRGB(255,240,120); big.Text = "TAP TO HOOK!"; big.Parent = catcher
 		Instance.new("UIStroke", big).Thickness = 3
+		-- TouchTap as well as MouseButton1Click: on a phone the click event is not guaranteed on a button
+		-- this large, and a missed tap reads to the player as the hook window being broken.
 		local c = catcher.MouseButton1Click:Connect(function() tapped = true end)
+		local c2 = catcher.TouchTap:Connect(function() tapped = true end)
 		local t = 0; while t < timeout and not tapped do t = t + task.wait() end
-		c:Disconnect(); catcher:Destroy()
+		c:Disconnect(); c2:Disconnect()
+
+		-- Both are full-screen and `big` is centre-anchored, so moving it from the catcher to the HUD does
+		-- not shift it by a pixel -- it just outlives the thing that was tinting the screen.
+		big.Parent = hud
+		catcher:Destroy()
+
+		local remain = HOOK_MIN_SHOW - (os.clock() - shownAt)
+		if remain > 0 then
+			-- task.delay, NOT a wait: this must return the moment the tap is known, or the whole fishing
+			-- sequence stalls for a second before the reel minigame opens.
+			task.delay(remain, function() if big.Parent then big:Destroy() end end)
+		else
+			big:Destroy()
+		end
 		return tapped
 	end
 

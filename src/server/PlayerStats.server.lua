@@ -25,6 +25,10 @@ local ServerEventNotify = getOrCreate(RS, "RemoteEvent", "ServerEventNotify")
 local StomachFullEvent  = getOrCreate(RS, "RemoteEvent", "StomachFullEvent")
 local BuyStomachEvent   = getOrCreate(RS, "RemoteEvent", "BuyStomachEvent")
 local StomachUpdateEvent= getOrCreate(RS, "RemoteEvent", "StomachUpdateEvent")
+-- s->c: (tierName, islandNeeded) -- the gut you tried to buy is locked until you reach that island.
+-- Separate from StomachFullEvent so the shop can say WHY rather than failing silently, which is what
+-- a rejected purchase looks like from the player's side.
+local StomachLockedEvent= getOrCreate(RS, "RemoteEvent", "StomachLockedEvent")
 local LandingEvent      = getOrCreate(RS, "RemoteEvent", "LandingEvent")
 local ReturnToIslandEvent = getOrCreate(RS, "RemoteEvent", "ReturnToIslandEvent")
 local WelcomeEvent      = getOrCreate(RS, "RemoteEvent", "WelcomeEvent") -- personal "You reached [Island]!" to the lander only
@@ -102,14 +106,35 @@ end
 
 -- getMaxHeight(maxPower) = 50 + maxPower*14. Iron is the top of the free path and
 -- reaches island 14; Infinite is a Robux-only premium gut that flies the whole map.
+-- `island` = the island you must have REACHED (landed on) before this gut can be bought.
+--
+-- The rule: a gut unlocks on the island where the PREVIOUS gut runs out -- the island you are
+-- standing on when you cannot climb any further, which is the moment the next gut is the thing
+-- you actually want. Derived from the numbers rather than picked: a gut's ceiling is
+-- 50 + maxPower*14, and the highest island under that ceiling is where its owner gets stuck.
+--
+--   Tiny   ceiling  1,450 -> tops out on island 2  -> Small  unlocks at 2
+--   Small  ceiling  2,598 -> tops out on island 4  -> Medium unlocks at 4
+--   Medium ceiling  7,330 -> tops out on island 7  -> Large  unlocks at 7
+--   Large  ceiling 15,100 -> tops out on island 11 -> XL     unlocks at 11
+--   XL     ceiling 30,094 -> clears island 14      -> Iron   unlocks at 14
+--
+-- NOTE Iron lands on 14 because XL's ceiling already clears the whole stack; there is nothing
+-- above 14 to need it for. Move it down if Iron should have a job before the top.
+--
+-- Infinite Gut is deliberately island = 1: it is the Robux tier, and refusing a real-money
+-- purchase to a new player is worse than letting them skip ahead.
+--
+-- The COST still gates as it always did; this is a second, separate lock, so banked coins alone
+-- can no longer buy a gut for a stretch of the game the player has not seen.
 local stomachTiers = {
-	{name="Tiny Gut",     maxPower=100,  cost=0,      robux=false},
-	{name="Small Gut",    maxPower=182,  cost=1600,   robux=false},
-	{name="Medium Gut",   maxPower=520,  cost=3000,   robux=false},
-	{name="Large Gut",    maxPower=1075, cost=5200,   robux=false},
-	{name="XL Gut",       maxPower=2146, cost=8000,   robux=false},
-	{name="Iron Gut",     maxPower=3218, cost=11000,  robux=false},
-	{name="Infinite Gut", maxPower=9999, cost=499,    robux=true},
+	{name="Tiny Gut",     maxPower=100,  cost=0,      robux=false, island=1},
+	{name="Small Gut",    maxPower=182,  cost=1600,   robux=false, island=2},
+	{name="Medium Gut",   maxPower=520,  cost=3000,   robux=false, island=4},
+	{name="Large Gut",    maxPower=1075, cost=5200,   robux=false, island=7},
+	{name="XL Gut",       maxPower=2146, cost=8000,   robux=false, island=11},
+	{name="Iron Gut",     maxPower=3218, cost=11000,  robux=false, island=14},
+	{name="Infinite Gut", maxPower=9999, cost=499,    robux=true,  island=1},
 }
 
 local ISLAND_NAMES = {
@@ -141,7 +166,15 @@ local ISLAND_ROTATIONS = {
 	[7] = -90,   -- Pasta Peak: 90 CLOCKWISE around Y (top-down "3 -> 6 on a clock")
 }
 
-local GAMEPASS_IDS = {TwoXForever=1862015450, GlitterTrail=1859714979, InfiniteGut=1860686821}
+-- GAMEPASS IDS now come from the SHARED module (ReplicatedStorage.Shared.Gamepasses) instead of a seventh
+-- hand-copied table. Same shape as the literal that used to sit here, so every use below reads unchanged --
+-- but adding a pass is now a one-line edit in ONE file rather than a six-file sweep that has already drifted
+-- (the three client copies of this table are still missing InfiniteGut).
+--
+-- Passes with id 0 are NOT YET CREATED and are skipped by the `id ~= 0` guard in the ownership loop below, so
+-- an unconfigured pass is never sent to Roblox and can never be owned.
+local Gamepasses = require(RS:WaitForChild("Shared"):WaitForChild("Gamepasses"))
+local GAMEPASS_IDS = Gamepasses.IDS
 
 -- [STOMACH RESET] \xE2\x9A\xA0 TEMPORARY: while TRUE, EVERY player is forced to the BASE starting gut -- ALL gut/stomach
 -- upgrades read as UN-OWNED: Infinite Gut never auto-applies on join OR purchase (applyInfiniteGut no-ops), a stored
@@ -199,14 +232,38 @@ _G.devGrantInfiniteGut = function(player)
 end
 
 local PRODUCT_IDS  = {TwoXOneHour=3600302990, MidAirRecharge=3600303163, SkipIsland=3600303265, BirdNuke=3600303082}
+
+-- COIN PACKS: productId -> coins granted.
+--
+-- The AMOUNT LIVES HERE, on the server, and nowhere else that matters. ShopClient has its own copy of this
+-- list, but only for what to draw on the card -- if the two ever disagree the client is simply wrong about
+-- the label and the player still gets exactly what this table says. A coin amount read from the client is
+-- an amount the client can choose.
+--
+-- Until this file knew about them, these packs had ids on the buy button and NO branch in ProcessReceipt:
+-- the prompt would open, Roblox would take the Robux, the receipt would fall through to NotProcessedYet,
+-- and the player would get nothing while Roblox retried the same dead receipt on every future join. An
+-- unhandled product id is not an inert placeholder -- it is a charge with no delivery.
+local COIN_PACKS = {
+	[3699050724] = 1000,      -- Small     49 R$
+	[3699055852] = 5500,      -- Medium    99 R$
+	[3699059563] = 12000,     -- Large     199 R$
+	[3699065394] = 30000,     -- Giant     399 R$
+	[3699081248] = 70000,     -- Mega      799 R$
+	[3699076690] = 180000,    -- Ultimate  1499 R$
+}
 -- 2x Fart Power pass/product: with it active, each food is worth this multiple of its power as
 -- REAL flight fuel, and the effective stomach tank grows by the same multiple. (Client mirrors
 -- this constant in CoreClient.client.lua for the gas-meter / flight math.)
-local POWER_PASS_MULT = 1.4
+-- 2.0, because the thing is called "2x Fart Power" on the button a player pays for. It was 1.4 -- a 40%
+-- boost sold as a doubling, which is the kind of gap that gets a game reported rather than refunded.
+local POWER_PASS_MULT = 2.0
 -- [TESTING] Flip back to false to re-enable the 2x boost in Studio. When true AND running in Studio,
 -- the has2x check is forced false so food gives normal 1x power (ignores HasTwoXForever / TwoXHourExpiry).
 -- The LIVE game is unaffected (IsStudio() is false there).
-local DISABLE_2X = true
+-- OFF too, so the boost can actually be verified in Studio. With this true, testing the thing you just
+-- paid to fix silently does nothing and looks like the fix failed.
+local DISABLE_2X = false
 -- ============================================================================================
 -- [BALANCE TESTING] MASTER NO-PERKS SWITCH. While TRUE, the game ignores ALL gamepass/product
 -- perks even if the player owns them, so the playthrough reflects a brand-new player with no perks:
@@ -223,7 +280,10 @@ local DISABLE_PERKS_FOR_BALANCE = false
 -- reads as NOT owned for EVERY player regardless of saved data / actual ownership: the join ownership check is forced
 -- false, HasTwoXForever is cleared, a fresh purchase won't grant it, and the has2x effect is forced off -- so NO player
 -- gets the 2x power boost for now. (Targets ONLY the 2x pass; Glitter/Skip/Infinite Gut are untouched.) Set FALSE to restore.
-local FORCE_NO_2X = true
+-- OFF. While this was true the 2x pass and the 1-hour product were BOTH inert for every player: ownership
+-- read false on join, HasTwoXForever was cleared, a fresh purchase granted nothing, and has2x was forced
+-- false at the point of use. Anybody who bought either one got exactly nothing for their Robux.
+local FORCE_NO_2X = false
 if FORCE_NO_2X then print("[NOSAVE TEST] 2xFart forced un-owned.") end
 -- [BALANCE TESTING] While TRUE, NO random server-wide events fire (FART_STORM, COIN_RUSH, LOW_GRAVITY,
 -- POWER_SURGE, RING_FEVER, THUNDERSTORM, WINDSTORM). Set to false to re-enable random events later.
@@ -232,6 +292,15 @@ if FORCE_NO_2X then print("[NOSAVE TEST] 2xFart forced un-owned.") end
 local DISABLE_EVENTS = false
 -- (Daily Rewards feature removed entirely -- reward tables, claim logic, and the DailyRewards_v1 store deleted.)
 local playerCoinAccum = {}
+-- CoinEvent anti-exploit budget. [player] = { t = window start (os.clock), spent = coins, calls = n }.
+-- Sized against the real worst cases in the CoinEvent handler -- read the comment there before retuning,
+-- because the flat allowance exists to cover ring bonuses and cutting it will silently rob players.
+local coinWindow       = {}
+local COIN_WINDOW      = 5      -- seconds per budget window
+local COIN_MAX_CALLS   = 60     -- calls per window. Legit is ~10-15 (2/s flight + ring bursts).
+local COIN_MAX_SINGLE  = 3000   -- no single grant may exceed this. Worst legit ring bonus is ~1,650.
+local COIN_FLAT_BUDGET = 5000   -- coins per window allowed at ANY altitude (this is the ring allowance)
+local COIN_PER_HEIGHT  = 0.12   -- plus this per stud of current altitude, per window
 local GamepassEvent = nil
 task.spawn(function() GamepassEvent = RS:WaitForChild("GamepassEvent", 10) end)
 local BirdNukeEvent = nil
@@ -294,14 +363,27 @@ _G.isAllowedTestUser = isAllowedTestUser -- \xE2\x9A\xA0 TEST: shared with PetSy
 --   disk -- because saving is DISABLED for this user in fresh mode, the real save is never overwritten, so
 --   the full record (including these fields) survives intact. RESTORE = just set FRESH_PLAYER_TEST = false.
 -- =====================================================================================================
-local FRESH_PLAYER_TEST = true          -- \xE2\x9A\xA0 TEST: forces Broskie310111 to load as a fresh new player + void gamepasses. SET false / REMOVE BEFORE LAUNCH.
+-- \xE2\x9A\xA0\xE2\x9A\xA0 THE THREE FLAGS BELOW ARE DEAD CODE. READ THIS BEFORE TRUSTING THE COMMENTS ABOVE THEM.
+--
+-- FRESH_PLAYER_TEST, SPAWN_AT_PIZZA_PALMS_TEST and FRESH_PLAYER_USERID are DECLARED HERE AND NEVER READ
+-- ANYWHERE IN THIS FILE. Every "fresh start" this game has been doing came from DISABLE_SAVE_FOR_TESTING
+-- further down, which applied to EVERY player, not to one account.
+--
+-- That matters because the block above promises "Saving stays DISABLED for this user (real data
+-- preserved)". It does not, and it never did -- there is no per-user save gate. With save/load now back ON,
+-- anyone reading that promise would believe Broskie310111's record is protected while it is being written
+-- to normally like everybody else's.
+--
+-- Left in place rather than deleted so the restore notes above stay findable, but they change NOTHING at
+-- runtime. If you want a single account to load fresh, it has to be written -- flipping these does nothing.
+local FRESH_PLAYER_TEST = true          -- DEAD: never read. See the warning above.
 local FRESH_PLAYER_USERID = 1418148401  -- Broskie310111 (DataStore PlayerData_v1 key)
 -- \xE2\x9A\xA0 SPAWN-AT-PIZZA-PALMS TEST (Broskie310111) -- TEMPORARY. SET false / REMOVE BEFORE LAUNCH.
 -- When true, this SUPERSEDES FRESH_PLAYER_TEST for Broskie's account: instead of loading island-1 fresh
 -- defaults, they load with Island 14 (Pizza Palms) unlocked + huge test gas/stomach so they can fly up
 -- to the black hole. Saving stays DISABLED for this user (real data preserved), exactly like fresh mode.
 -- To revert: set this false (back to fresh mode) or set BOTH test flags false (back to real state).
-local SPAWN_AT_PIZZA_PALMS_TEST = true  -- \xE2\x9A\xA0 TEST: spawns Broskie310111 on Island 14 to view the black hole. SET false / REMOVE BEFORE LAUNCH.
+local SPAWN_AT_PIZZA_PALMS_TEST = true  -- DEAD: never read. See the warning above FRESH_PLAYER_TEST.
 -- FART-METER PERSISTENCE: lastMeter = the player's last-known live meter (snapshotted on meter changes,
 -- so a respawn/cleanup that zeros CurrentPower can't make us SAVE a stale 0). joinRestoreMeter = the
 -- saved meter to re-apply AFTER the player's first spawn settles (the spawn's onLand zeros CurrentPower,
@@ -360,8 +442,26 @@ local dataLoaded = {}             -- [player] = true once load succeeded & appli
 -- join starts as a brand-NEW player (forced 25 coins, island 1, Tiny Gut 100, fart power 0/100, highestIslandReached 1)
 -- and NOTHING is ever written to the DataStore -- the join load is skipped, and the autosave / PlayerRemoving /
 -- BindToClose saves are all skipped (they route through savePlayerData). Flip to false to restore normal save/load.
-local DISABLE_SAVE_FOR_TESTING = true -- \xE2\x9A\xA0 NOSAVE TEST: forced fresh 25-coin start + no persistence. REMOVE BEFORE LAUNCH.
-if DISABLE_SAVE_FOR_TESTING then print("[NOSAVE TEST] saving disabled, forced 25 coins on join — REMOVE BEFORE LAUNCH") end
+--======================================================================
+-- \xE2\x9A\xA0\xE2\x9A\xA0  THE ONE SWITCH THAT MUST BE FLIPPED BEFORE LAUNCH  \xE2\x9A\xA0\xE2\x9A\xA0
+--======================================================================
+-- KEPT ON DELIBERATELY. Every join starts as a brand-new player (25 coins, island 1, Tiny Gut) and NOTHING
+-- is written to the DataStore, which is what you want while testing the opening minutes over and over.
+--
+-- It is also the single most destructive thing that can ship. Live, this means every player's progress is
+-- silently thrown away the moment they leave -- they come back to 25 coins, having lost everything, forever.
+-- There is no recovery from a session of that, because nothing was ever written to recover.
+--
+-- SET THIS TO false BEFORE PUBLISHING. It is one word, and it is the difference between a game that keeps
+-- progress and a game that does not.
+local DISABLE_SAVE_FOR_TESTING = true
+if DISABLE_SAVE_FOR_TESTING then
+	warn("==================================================================")
+	warn("[NOSAVE] SAVING IS DISABLED FOR EVERY PLAYER -- progress is thrown")
+	warn("[NOSAVE] away on leave. This is a TESTING mode. Set")
+	warn("[NOSAVE] DISABLE_SAVE_FOR_TESTING = false before you publish.")
+	warn("==================================================================")
+end
 -- [TEST — ONE-TIME FULL DATA CAPTURE] While TRUE: the player joins with ~unlimited coins (9,999,999)
 -- and can buy/switch to ANY stomach tier (Tiny..Iron) from the shop for FREE (cost/coins ignored), so
 -- every tier's full-tank reach can be sampled in a single run with no grinding. This ONLY removes the
@@ -1113,12 +1213,26 @@ Players.PlayerAdded:Connect(function(player)
 	end
 	-- Gamepass ownership is read LIVE each join (never saved).
 	task.spawn(function()
-		local gpData = {twoXForever=false, glitterTrail=false}
+		local gpData = {twoXForever=false, glitterTrail=false, luckyPass=false, vip=false, coinMagnet=false}
 		for name, id in pairs(GAMEPASS_IDS) do
 			if id ~= 0 then
+				-- Check the current id AND any superseded one that grants the same perk (Gamepasses.LEGACY_IDS --
+				-- Space Realm's original Lucky Crates / VIP). The realms share one experience, so a pass bought
+				-- in Space is owned here too, and dropping those buyers on the floor is not an option.
 				local ok, owns = pcall(function()
-					return MarketplaceService:UserOwnsGamePassAsync(player.UserId, id)
+					for _, passId in ipairs(Gamepasses.allIdsFor(name)) do
+						if MarketplaceService:UserOwnsGamePassAsync(player.UserId, passId) then return true end
+					end
+					return false
 				end)
+				-- [TESTING] Gamepasses.FORCE_UNOWNED forces ALL SIX passes to read un-owned, including the three
+				-- legacy ones that don't go through Gamepasses.owns(). Needed because Roblox reports the CREATOR
+				-- of a pass as owning it, so on the dev account every pass is owned and none of the buy flows can
+				-- be tested. Set it false in Shared/Gamepasses before publishing.
+				if Gamepasses.FORCE_UNOWNED then
+					owns = false
+					pcall(function() player:SetAttribute(Gamepasses.ATTR[name], false) end)
+				end
 				-- [RESET] gamepass-voiding test hooks removed: ownership is whatever Roblox reports (owned-only) for EVERY player.
 				-- [STOMACH RESET] the GUT gamepass is forced un-owned while FORCE_BASE_STOMACH is on, so Infinite Gut never applies.
 				if name == "InfiniteGut" and FORCE_BASE_STOMACH then owns = false end
@@ -1128,6 +1242,14 @@ Players.PlayerAdded:Connect(function(player)
 					if name == "TwoXForever" then gpData.twoXForever = true; player:SetAttribute("HasTwoXForever", true)
 					elseif name == "GlitterTrail" then gpData.glitterTrail = true; player:SetAttribute("HasGlitterTrail", true)
 					elseif name == "InfiniteGut" then applyInfiniteGut(player) -- forever pass: re-apply the Infinite Gut tier on join (effect is the StomachMax, not a client gpData flag)
+					-- The three newer passes are all ATTRIBUTE-DRIVEN and need no work here beyond the flag:
+					--   LuckyPass  -> Gamepasses.luckFor() reads it at roll time (SkinCrateService / CrateService)
+					--   VIP        -> VipService watches the attribute for the coin perk + stipend; TitleTags draws the tag
+					--   CoinMagnet -> CoinMagnet.client reads it to start pulling pickups
+					-- gpData mirrors each one to the client purely so shop buttons can show OWNED instead of a price.
+					elseif name == "LuckyPass"  then gpData.luckyPass  = true; player:SetAttribute("HasLuckyPass",  true)
+					elseif name == "VIP"        then gpData.vip        = true; player:SetAttribute("HasVIP",        true)
+					elseif name == "CoinMagnet" then gpData.coinMagnet = true; player:SetAttribute("HasCoinMagnet", true)
 					end
 				elseif name == "InfiniteGut" and (FORCE_BASE_STOMACH or ok) then
 					-- [STOMACH RESET] forced un-owned, OR the ownership check SUCCEEDED as not-owned (never clamp on a failed
@@ -1191,6 +1313,7 @@ Players.PlayerRemoving:Connect(function(player)
 	print("PlayerRemoving FIRED for "..player.Name)
 	savePlayerData(player, "PlayerRemoving") -- gated by dataLoaded + pcall'd inside; saves coins/gut/island/home base (reads lastMeter)
 	playerCoinAccum[player] = nil
+	coinWindow[player] = nil      -- the anti-exploit budget window; a stale entry would leak per rejoin
 	dataLoaded[player] = nil
 	gamepassState[player] = nil
 	gamepassReady[player] = nil
@@ -1206,6 +1329,12 @@ Players.PlayerRemoving:Connect(function(player)
 end)
 
 -- (Daily Rewards join-handshake removed.)
+
+-- FORWARD DECLARATION. islandUnderCharacter is defined further down (it needs standData, which is
+-- built below this point), but the food purchase above needs it. Declaring the local HERE puts it in
+-- scope for the closures between here and there; the definition below assigns into this same local
+-- rather than creating a second one. Without this the handler would resolve it as a global and get nil.
+local islandUnderCharacter
 
 BuyFoodEvent.OnServerEvent:Connect(function(player, foodName)
 	print("SERVER RECEIVED BUY:", player.Name, foodName)
@@ -1253,6 +1382,28 @@ BuyFoodEvent.OnServerEvent:Connect(function(player, foodName)
 	if foodIsland > reachedIsland then
 		print("FOOD LOCKED:", player.Name, food.name, "needs island", foodIsland, "reached", reachedIsland)
 		pcall(function() StomachFullEvent:FireClient(player, "food_locked", food.name, foodIsland) end)
+		return
+	end
+	-- FAILURE CHECK 0b (NO SHOPPING BELOW YOUR FEET): you cannot buy food from an island BELOW the one
+	-- you are standing on. The ceiling above is "have you earned this rung"; this is the floor.
+	--
+	-- WHY: the early foods are the best coins-per-power in the game, so the optimal play on island 13 was
+	-- to keep buying BEANS rather than the food actually sold there -- the whole price ladder was
+	-- decorative, and every island's own food was a trap. A floor at your current island makes the local
+	-- food the cheapest thing you can actually buy, which is what the ladder was designed around.
+	--
+	-- The floor is WHERE YOU ARE STANDING, not the highest island you have reached: on island 1 nothing is
+	-- blocked (you may still buy island 13's food if you have unlocked it), and the restriction tightens
+	-- only as you climb. Physical position, so it is the same authority the landing detection uses.
+	--
+	-- Unknown position (mid-air, character still loading) does NOT block: islandUnderCharacter returns nil
+	-- there, and refusing a purchase because a raycast missed would be a random unexplained failure. You
+	-- cannot reach a stand mid-flight anyway, so there is nothing to exploit in letting nil through.
+	local charNow    = player.Character
+	local standingOn = charNow and islandUnderCharacter and islandUnderCharacter(charNow) or nil
+	if standingOn and foodIsland < standingOn then
+		print("FOOD TOO LOW:", player.Name, food.name, "is island", foodIsland, "but standing on", standingOn)
+		pcall(function() StomachFullEvent:FireClient(player, "food_below_island", food.name, standingOn) end)
 		return
 	end
 	-- FAILURE CHECK 1 (COINS FIRST — the common blocker): not enough coins -> "not_enough_coins".
@@ -1305,7 +1456,68 @@ CoinEvent.OnServerEvent:Connect(function(player, amount)
 	local coins = ls:FindFirstChild("Coins")
 	local tce   = ls:FindFirstChild("TotalCoinsEarned")
 	if not coins or not tce then return end
-	local amt = tonumber(amount) or 0; if amt <= 0 then return end
+	local amt = tonumber(amount) or 0
+	--======================================================================
+	-- COIN VALIDATION -- this remote used to accept ANY number the client sent
+	--======================================================================
+	-- CoinEvent:FireServer(1e9) banked a billion coins instantly. There was no cap, no rate limit and no
+	-- check that the sender was even flying; SecurityGuard does not help here, it only removes injected
+	-- SCRIPTS and has nothing to say about a legitimate remote being called with a silly number.
+	--
+	-- ===== WHY THIS IS A BUDGET AND NOT AN EXACT RECOMPUTE =====
+	-- The honest fix is for the server to work out flight coins itself and stop trusting the client for the
+	-- figure at all. That is a real refactor: the formula, the per-flight cap, the peak-height ceiling and
+	-- the 0.70 payout scalar all live in CoreClient and are tuned there, so moving them is an economy change
+	-- as much as a security one. This bounds the hole hard without touching balance -- see the note at the
+	-- bottom of this handler for what is still open.
+	--
+	-- ===== THE NUMBERS ARE SIZED OFF REAL WORST CASES, NOT GUESSED =====
+	-- Two very different legitimate sources arrive on this same remote:
+	--   * FLIGHT TICKS, twice a second: height * 0.0044 * serverEventCoinMult * 0.70. serverEventCoinMult
+	--     peaks at 2 (COIN_RUSH), so at Pizza Palms altitude (~24,000) that is ~148 per call.
+	--   * RING BONUSES, bursty: floor(15 * (1 + ringStreak * 0.2) * serverEventRingMult). ringStreak resets
+	--     on landing, but serverEventRingMult reaches 10 during a ring event -- so a long streak in that
+	--     event legitimately pays ~1,650 in ONE call, at ANY altitude.
+	-- That second case is why this cannot be a purely height-derived cap: a ring bonus down at the farm
+	-- would be rejected and the player would silently lose coins they earned. The flat allowance exists
+	-- specifically to cover it.
+	if amt ~= amt or amt == math.huge or amt == -math.huge then return end -- NaN / inf
+	if amt <= 0 then return end
+	if amt > COIN_MAX_SINGLE then
+		warn(("[SECURITY] %s sent a single coin grant of %.0f (cap %d) -- rejected")
+			:format(player.Name, amt, COIN_MAX_SINGLE))
+		return
+	end
+
+	do
+		local now = os.clock()
+		local w = coinWindow[player]
+		if not w or (now - w.t) >= COIN_WINDOW then
+			w = { t = now, spent = 0, calls = 0 }
+			coinWindow[player] = w
+		end
+		w.calls = w.calls + 1
+		-- CALL-RATE. Legitimate traffic is 2 flight ticks a second plus the odd ring; this allows an order
+		-- of magnitude more before it complains, so it only ever catches a script hammering the remote.
+		if w.calls > COIN_MAX_CALLS then
+			if w.calls == COIN_MAX_CALLS + 1 then
+				warn(("[SECURITY] %s is calling CoinEvent %d times in %ds -- throttling")
+					:format(player.Name, w.calls, COIN_WINDOW))
+			end
+			return
+		end
+		-- BUDGET. Altitude is the one input the server can verify for itself, so the ceiling grows with it:
+		-- a player genuinely up at Pizza Palms is allowed to earn far more per second than one on the farm.
+		local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		local height = math.max(0, hrp and hrp.Position.Y or 0)
+		local budget = COIN_FLAT_BUDGET + height * COIN_PER_HEIGHT
+		if (w.spent + amt) > budget then
+			warn(("[SECURITY] %s exceeded the coin budget (%.0f + %.0f > %.0f at height %.0f) -- rejected")
+				:format(player.Name, w.spent, amt, budget, height))
+			return
+		end
+		w.spent = w.spent + amt
+	end
 	-- FRIEND/GROUP COIN BOOST: scale earned FLIGHT coins by this player's bonus multiplier (1 = none). Set by
 	-- RewardsService (friend-in-server +25%, MLR group +10%, stackable). Flat rewards (codes) are granted directly, unaffected.
 	amt = amt * ((_G.coinBonusMult and _G.coinBonusMult[player]) or 1)
@@ -1330,10 +1542,25 @@ CoinEvent.OnServerEvent:Connect(function(player, amount)
 end)
 
 
+-- LEGACY / UNTRUSTED. The client used to fire this the moment its PEAK HEIGHT cleared an island,
+-- which unlocked islands the player had only flown PAST. Unlocking is now driven solely by the
+-- physical-landing detection further down (islandUnderCharacter), which raises the Island
+-- leaderstat itself.
+--
+-- This handler is kept and CLAMPED rather than removed, because it cannot simply be deleted:
+-- stale baked-in copies of CoreClient in StarterPlayerScripts still fire the old peak-height
+-- event, and a client can fire it with any number it likes. So it now refuses to unlock anything
+-- the player has not physically reached -- it can never grant progression, only re-assert what
+-- landing already earned (useful if the leaderstat and highestIslandReached ever drift).
 UnlockIslandEvent.OnServerEvent:Connect(function(player, islandNum)
 	local ls = player:FindFirstChild("leaderstats"); if not ls then return end
 	local island = ls:FindFirstChild("Island"); if not island then return end
 	local n = tonumber(islandNum) or 0
+	local reached = highestIslandReached[player] or 1
+	if n > reached then
+		-- flown past, or a spoofed number: not an unlock
+		return
+	end
 	if n > island.Value and n <= 14 then
 		island.Value = n
 		print("ISLAND "..n.." UNLOCKED by "..player.Name)
@@ -1369,7 +1596,7 @@ local EXACT_SPAWN_OFFSET_Y = 4    -- when spawning ON a SpawnLocation, lift the 
 local LAND_RAY      = 14   -- studs to ray downward (start slightly above HRP) — covers thick/offset stands
 local STAND_NEAR_XZ = 45   -- fallback: horizontal radius around a Stand position to count as "on it"
 local STAND_NEAR_Y  = 30   -- fallback: vertical tolerance around a Stand position
-local function islandUnderCharacter(char)
+function islandUnderCharacter(char)
 	local hrp = char:FindFirstChild("HumanoidRootPart")
 	if not hrp then return nil end
 	-- Method A: ray down from just above the HRP and walk up to an Island_N_ ancestor. Starting
@@ -1775,10 +2002,27 @@ RunService.Heartbeat:Connect(function(dt)
 			-- broadcast both fire from here, never from peak-height/unlock.
 			if doDetect and hum.FloorMaterial ~= Enum.Material.Air then
 				local n = islandUnderCharacter(char)
+				-- WHERE THEY ARE STANDING RIGHT NOW, every detection -- not just on a new personal best.
+				-- The food shop's floor rule ("no buying below your feet") needs the CURRENT island, and
+				-- the branch below only fires when n beats the record, which would leave this stale the
+				-- moment a player flew back down. Published as an attribute so the client can grey the
+				-- cells out; the server still re-checks the real position on purchase.
+				if n then pcall(function() plr:SetAttribute("CurrentIsland", n) end) end
 				if n and n > hi then
 					highestIslandReached[plr] = n
 					hi = n
 					plr:SetAttribute("HighestIsland", n)
+					-- THE UNLOCK ITSELF, and the only place it happens. The Island leaderstat is what
+					-- gates the food shop, so raising it HERE -- inside the check that requires the
+					-- player to be physically standing on island n -- is what makes "you must land on
+					-- it" true. Peak height no longer unlocks anything (see UnlockIslandEvent above).
+					local lsU = plr:FindFirstChild("leaderstats")
+					local islU = lsU and lsU:FindFirstChild("Island")
+					if islU and n > islU.Value then
+						islU.Value = n
+						print("ISLAND "..n.." UNLOCKED by "..plr.Name.." (landed on it)")
+						if _G.petOnIsland then _G.petOnIsland(plr) end -- PET XP: reaching a NEW island
+					end
 					-- Stamp the cumulative playtime at which this island fell. This is what the FASTEST CLIMB board
 					-- ranks on, so it is recorded HERE -- at the one authoritative arrival trigger -- and nowhere
 					-- else. It always describes the player's CURRENT highest island, which is what the board wants:
@@ -2024,6 +2268,28 @@ MarketplaceService.ProcessReceipt = function(info)
 		triggerBirdNuke(player)
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
+
+	-- COIN PACKS. Credited to Coins only, deliberately NOT to TotalCoinsEarned: that value is the record of
+	-- what a player FLEW for, and it is what the leaderboard and the coin badges read. Letting Robux write
+	-- to it would put paying players at the top of a board that is supposed to measure climbing.
+	local packCoins = COIN_PACKS[info.ProductId]
+	if packCoins then
+		local ls = player:FindFirstChild("leaderstats")
+		local c  = ls and ls:FindFirstChild("Coins")
+		if not c then
+			-- No leaderstats yet means the join load has not finished. Returning NotProcessedYet asks Roblox
+			-- to hand us the same receipt again shortly -- which is exactly right, and is why the coins
+			-- cannot be lost by buying during a slow join.
+			return Enum.ProductPurchaseDecision.NotProcessedYet
+		end
+		c.Value = c.Value + packCoins
+		-- Bank it immediately. A pack is real money, and the gap between granting and the next autosave is
+		-- the one window where a server crash would take it back.
+		pcall(function() savePlayerData(player, "coinpack") end)
+		fireProductAnnouncement(player, info.ProductId)
+		print(("[Shop] %s bought %d coins (product %d)"):format(player.Name, packCoins, info.ProductId))
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
 	-- GARDEN DONATION Developer Product (tip jar, cosmetic-only): CommunityGarden handles it -- thank-you + banner
 	-- ONLY, no stat/coin/pet/garden change. Checked before the pet handler; each owns a disjoint set of product IDs.
 	if _G.gardenHandleDonationReceipt then
@@ -2058,11 +2324,25 @@ MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, passI
 		player:SetAttribute("HasGlitterTrail", true); gpData.glitterTrail = true
 	elseif passId == GAMEPASS_IDS.InfiniteGut then
 		applyInfiniteGut(player) -- gut becomes UNLIMITED immediately; effect is the StomachMax (+StomachUpdateEvent), so no gpData client flag is needed
+	-- The `> 0` guard matters: an unconfigured pass has id 0, and without it a 0 id would sit in this chain
+	-- ready to match on any falsy/zero passId. Every new pass takes effect the instant the attribute is set --
+	-- luck is read at roll time, VipService watches the attribute, and the magnet is a client-side reader.
+	elseif GAMEPASS_IDS.LuckyPass > 0 and passId == GAMEPASS_IDS.LuckyPass then
+		player:SetAttribute("HasLuckyPass", true); gpData.luckyPass = true
+	elseif GAMEPASS_IDS.VIP > 0 and passId == GAMEPASS_IDS.VIP then
+		player:SetAttribute("HasVIP", true); gpData.vip = true
+	elseif GAMEPASS_IDS.CoinMagnet > 0 and passId == GAMEPASS_IDS.CoinMagnet then
+		player:SetAttribute("HasCoinMagnet", true); gpData.coinMagnet = true
 	end
 	if GamepassEvent and next(gpData) then
 		pcall(function() GamepassEvent:FireClient(player, gpData) end)
 	end
-	local passNames = {[GAMEPASS_IDS.TwoXForever]="2x Fart Power Forever",[GAMEPASS_IDS.GlitterTrail]="Glitter Fart Trail",[GAMEPASS_IDS.InfiniteGut]="Infinite Gut"}
+	-- Built from the shared NAMES table so a renamed pass renames itself in the server-wide purchase banner too.
+	-- Unset (0) passes are filtered out so they can't collide on the key 0.
+	local passNames = {}
+	for key, id in pairs(GAMEPASS_IDS) do
+		if id > 0 then passNames[id] = Gamepasses.NAMES[key] or key end
+	end
 	local passName = passNames[passId] or "a gamepass"
 	local PAE = RS:FindFirstChild("PurchaseAnnouncementEvent")
 	if PAE then pcall(function() PAE:FireAllClients(player.Name, passName, true) end) end
@@ -2071,14 +2351,18 @@ end)
 -- ===== SERVER-WIDE EVENT LOOP =====
 local eventPool = {
 	{name="FART_STORM",   dispName="\xF0\x9F\x92\xA8 FART STORM",   weight=15, dur=7, msg="\xF0\x9F\x92\xA8 FART STORM! Everyone flies faster for 7 seconds!",       r=100,g=200,b=255},
-	{name="COIN_RUSH",    dispName="\xF0\x9F\xAA\x99 COIN RUSH",    weight=15, dur=7, msg="\xF0\x9F\xAA\x99 COIN RUSH! Double coins for 7 seconds!",                  r=255,g=200,b=0},
+	{name="COIN_RUSH",    dispName="\xF0\x9F\x92\xB0 COIN RUSH",    weight=15, dur=7, msg="\xF0\x9F\x92\xB0 COIN RUSH! Double coins for 7 seconds!",                  r=255,g=200,b=0},
 	-- DISPLAY-NAME-ONLY rename: shown to players as "HIGH GRAVITY". The internal key
 	-- stays "LOW_GRAVITY" so the client handler (EventClient ~938) and all mechanics
 	-- (speed/gas-drain multipliers, weight, 10s duration) are completely unchanged.
 	{name="LOW_GRAVITY",  dispName="\xF0\x9F\x8C\x99 HIGH GRAVITY",  weight=15, dur=10, msg="\xF0\x9F\x8C\x99 HIGH GRAVITY! Float like a cloud for 10 seconds!",        r=150,g=100,b=255},
 	{name="POWER_SURGE",  dispName="\xE2\x9A\xA1 POWER SURGE",      weight=15, dur=20, msg="\xE2\x9A\xA1 POWER SURGE! Fly higher than ever for 20 seconds!",          r=255,g=255,b=0},
 	{name="RING_FEVER",   dispName="\xF0\x9F\x8E\xAF RING FEVER",   weight=15, dur=30, msg="\xF0\x9F\x8E\xAF RING FEVER! Massive ring bonuses for 30 seconds!",       r=255,g=100,b=200},
-	{name="THUNDERSTORM", dispName="\xe2\x9b\x88 THUNDERSTORM",     weight=15, dur=20, msg="\xe2\x9b\x88\xef\xb8\x8f THUNDERSTORM! Hard to see!",                    r=50, g=50, b=80},
+	-- 60s (was 25). This is the ONE authority for the length: the server broadcasts `dur` alongside the event
+	-- name and EventClient's startThunderstorm(dur) uses whatever arrives -- its own `or 25` is only a
+	-- fallback for a broadcast that somehow carries no duration, so it does NOT need changing to match.
+	-- Campfires stay doused for the whole storm plus their 10s dry-out, so they are now out for ~70s.
+	{name="THUNDERSTORM", dispName="\xe2\x9b\x88 THUNDERSTORM",     weight=15, dur=60, msg="\xe2\x9b\x88\xef\xb8\x8f THUNDERSTORM! Hard to see!",                    r=50, g=50, b=80},
 	{name="WINDSTORM",    dispName="\xF0\x9F\x92\xA8 WIND STORM",   weight=10, dur=20, msg="\xF0\x9F\x92\xA8 WIND STORM! Fighting the wind!",                        r=100,g=150,b=200},
 }
 
@@ -2155,7 +2439,20 @@ end
 -- route into the SAME code. REMOVE BEFORE LAUNCH.
 local function handleTestChat(player, msg)
 		local cmd = string.lower(tostring(msg or "")):match("^%s*(.-)%s*$") -- trim + lowercase
-		if cmd == "/thunderstorm" then
+		if cmd == "/birdnuke" then
+			-- BIRD NUKE COMMAND -- its OWN allow-list, DELIBERATELY TIGHTER than ALLOWED_TEST_USERS:
+			-- exclusively lando5485 and Broskie310111 may fire it. The shared test list also carries the
+			-- itsmaddmax accounts, and they must NOT have this -- a nuke hits every player on the server.
+			-- Routes through triggerBirdNuke, the same path a real purchase takes, so the effect/announce/
+			-- knockdown behave identically to a paid nuke.
+			local nm = string.lower(player.Name)
+			if nm ~= "lando5485" and nm ~= "broskie310111" then
+				print("[BirdNuke] DENIED /birdnuke for '" .. player.Name .. "' -- owner-only command.")
+				return
+			end
+			print("[BirdNuke] /birdnuke fired by " .. player.Name .. " (owner command)")
+			triggerBirdNuke(player)
+		elseif cmd == "/thunderstorm" then
 			if not isAllowedTestUser(player) then return end -- shared test-user allow-list (lando5485 + the two test accounts)
 			print("[TEST] /thunderstorm command used by " .. player.Name .. " - firing thunderstorm event. REMOVE BEFORE LAUNCH.")
 			fireThunderstormNow()
@@ -2248,6 +2545,7 @@ do
 			end)
 		end
 		reg("TestPetsCommand",       "/allpets",      "/rarepets")
+		reg("BirdNukeCommand",       "/birdnuke") -- owner-only inside handleTestChat (lando5485 + Broskie310111 ONLY)
 		reg("TestCollectionCommand", "/10pets",       "/thunderstorm")
 		reg("TestOfflineCommand",    "/offline",      "/goisland")
 		reg("TestGutCommand1",       "/gettinygut",   "/getsmallgut")
@@ -2352,12 +2650,24 @@ BuyStomachEvent.OnServerEvent:Connect(function(player, newMax, cost)
 	end
 	if costN <= 0 or newMaxN <= 0 then return end
 	local valid = false
+	local wantTier = nil
 	for _, tier in ipairs(stomachTiers) do
 		if tier.maxPower == newMaxN and tier.cost == costN and not tier.robux then
-			valid = true; break
+			valid = true; wantTier = tier; break
 		end
 	end
 	if not valid then return end
+	-- ISLAND LOCK. A gut cannot be bought before the player has physically REACHED the island it
+	-- unlocks on. Checked against highestIslandReached (the landing-detection value), NOT the Island
+	-- leaderstat, so it means "you got there", and enforced HERE because the client's shop is only a
+	-- display: it can be a stale baked-in copy, or simply lied to, and the coins move on this line.
+	local reachedNow = highestIslandReached[player] or 1
+	if wantTier.island and reachedNow < wantTier.island then
+		print(("STOMACH LOCKED: %s tried to buy %s (needs island %d, reached %d)")
+			:format(player.Name, wantTier.name, wantTier.island, reachedNow))
+		pcall(function() StomachLockedEvent:FireClient(player, wantTier.name, wantTier.island) end)
+		return
+	end
 	-- MUST BE AN UPGRADE. The loop above only proves the (maxPower, cost) pair is a REAL tier — it never checked
 	-- the tier is bigger than the one already owned, so a player could re-buy their current gut, or even a
 	-- SMALLER one, and the server would happily take the coins and shrink StomachMax.

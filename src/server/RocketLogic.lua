@@ -60,8 +60,18 @@ local C_RIVET  = Color3.fromRGB(70, 72, 80)      -- dark grey rivet dots
 local C_FLAME  = Color3.fromRGB(255, 170, 60)    -- glowing yellow-orange flame
 
 --------------------------------------------------------------------
--- Helper: create a CanCollide=false, Massless part welded to primary.
+-- Helper: create a SOLID, Massless part welded to primary.
 --------------------------------------------------------------------
+-- THE ROCKET IS SOLID. You cannot walk through it -- it is a real object standing on the island, and a
+-- twelve-storey rocket you can stroll straight through reads as a hologram, not a build.
+--
+-- This is safe for the same reason the cow, the pig and the whole garden are solid: every part here is welded
+-- to an ANCHORED PrimaryPart and is Massless, so the assembly is static geometry that the physics engine never
+-- tries to move. Turning collision on adds a wall to stand against; it adds no forces and no mass.
+--
+-- CanQuery goes on with it, so raycasts (the landing/ground checks, the NPC pathing rays) see the rocket as
+-- something in the world rather than passing through it. CanTouch stays OFF: nothing here has a Touched
+-- handler, and leaving it off keeps the touch-event cost at zero on a build this size.
 local function makePart(name, size, color, material)
 	local p = Instance.new("Part")
 	p.Name = name
@@ -69,10 +79,10 @@ local function makePart(name, size, color, material)
 	p.Color = color or Color3.fromRGB(220, 220, 220)
 	p.Material = material or Enum.Material.Metal
 	p.Anchored = false       -- welded to primary instead of anchored
-	p.CanCollide = false     -- CRITICAL: never collides with players
-	p.Massless = true        -- no physics influence
+	p.CanCollide = true      -- SOLID: the rocket blocks players like any other build
+	p.Massless = true        -- no physics influence (welded to the anchored core)
 	p.CanTouch = false
-	p.CanQuery = false
+	p.CanQuery = true        -- rays/ground checks must see it
 	return p
 end
 
@@ -443,6 +453,20 @@ end
 --======================================================================
 function RocketLogic.getPrimaryPart()
 	return primaryPart
+end
+
+--======================================================================
+-- getModel() / getScale(): everything RocketRide needs to weld a cabin
+-- into the SAME rig this module drives, without duplicating any of the
+-- geometry constants (a cabin sized off a stale copy of ROCKET_SIZE
+-- would float outside the hull the first time the rocket is resized).
+--======================================================================
+function RocketLogic.getModel()
+	return rocketModel
+end
+
+function RocketLogic.getScale()
+	return ROCKET_SIZE
 end
 
 --======================================================================

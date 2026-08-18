@@ -238,50 +238,62 @@ end)
 -- ============================================================================
 -- FREEZE METER (bar) + objective banner
 -- ============================================================================
-local hud = Instance.new("ScreenGui")
-hud.Name = "FreezeHUD"; hud.ResetOnSpawn = false; hud.DisplayOrder = 9; hud.Parent = PlayerGui
+-- ⚠ THE "FreezeHUD" SCREENGUI IS GONE -- BOTH PILLS OF IT.
+-- It was two floating boxes stacked at the top of the screen: a 380x26 FREEZING bar at y=70 and a
+-- 460x40 objective pill at y=104, each with its own paint, its own corner radius, its own Visible
+-- flag, and no idea that the realm banner or an island arrival card existed. Three things could
+-- occupy the top of the screen at once and none of them knew about the others.
+--
+-- Both are ONE PINNED BANNER now. A pin is NotifyCenter's standing instruction: it holds the hero
+-- slot, repaints in place when the text changes (no re-slide, so a ticking percentage does not
+-- flicker), and steps aside for anything louder -- then comes back. That is exactly what a live
+-- meter wants, and it costs no GUI of our own.
+--
+-- ONE CARD, NOT TWO. The meter and the objective are the same quest talking, so they share a
+-- card: the freeze reading is the `top` line and the materials list is the body. Two pins would
+-- just be the two pills again with extra steps -- a pin owns the slot, so the second would never
+-- show at all.
+--
+-- QUEST priority (200): these are directions you are actively following, the top rung in the
+-- ladder. An island arrival or an event still preempts the card, and the pin takes the slot back
+-- the moment they finish.
+local FREEZE_PIN = "campfireFreeze"
+local lastPct = -1          -- last whole percent painted, so a 10 Hz tick is not 10 repaints/sec
+local pinnedFreeze = false
 
-local barBg = Instance.new("Frame")
-barBg.AnchorPoint = Vector2.new(0.5, 0); barBg.Position = UDim2.new(0.5, 0, 0, 70)
-barBg.Size = UDim2.new(0, 380, 0, 26); barBg.BackgroundColor3 = Color3.fromRGB(20, 28, 38)
-barBg.Visible = false; barBg.Parent = hud
-do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 13); c.Parent = barBg
-   local s = Instance.new("UIStroke"); s.Color = ICE; s.Thickness = 2; s.Parent = barBg end
-local barFill = Instance.new("Frame")
-barFill.AnchorPoint = Vector2.new(0, 0.5); barFill.Position = UDim2.new(0, 3, 0.5, 0)
-barFill.Size = UDim2.new(0, 0, 1, -6); barFill.BackgroundColor3 = ICE; barFill.Parent = barBg
-do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 11); c.Parent = barFill end
-local barLbl = Instance.new("TextLabel")
-barLbl.BackgroundTransparency = 1; barLbl.Size = UDim2.fromScale(1, 1); barLbl.Font = Enum.Font.FredokaOne
-barLbl.TextColor3 = Color3.new(1, 1, 1); barLbl.TextScaled = true; barLbl.Text = "FREEZING"; barLbl.Parent = barBg
-do local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 15; sz.Parent = barLbl end
-
-local objFrame = Instance.new("Frame")
-objFrame.AnchorPoint = Vector2.new(0.5, 0); objFrame.Position = UDim2.new(0.5, 0, 0, 104)
-objFrame.Size = UDim2.new(0, 460, 0, 40); objFrame.BackgroundColor3 = Color3.fromRGB(20, 28, 38)
-objFrame.Visible = false; objFrame.Parent = hud
-do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 12); c.Parent = objFrame
-   local s = Instance.new("UIStroke"); s.Color = FIREC; s.Thickness = 2; s.Parent = objFrame end
-local objLbl = Instance.new("TextLabel")
-objLbl.BackgroundTransparency = 1; objLbl.Size = UDim2.fromScale(1, 1); objLbl.Font = Enum.Font.FredokaOne
-objLbl.TextColor3 = Color3.fromRGB(255, 235, 210); objLbl.TextScaled = true; objLbl.Parent = objFrame
-do local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 17; sz.Parent = objLbl
-   local pad = Instance.new("UIPadding"); pad.PaddingLeft = UDim.new(0, 12); pad.PaddingRight = UDim.new(0, 12); pad.Parent = objLbl end
-
-local function refreshObjective()
-	objFrame.Visible = active and not built
-	if not objFrame.Visible then return end
+local function freezeCard()
 	local parts = {}
 	for _, k in ipairs(MAT_ORDER) do
 		parts[#parts + 1] = ("%s %d/%d"):format(MAT_ICON[k], placed[k], NEED[k])
 	end
-	-- Directive banner: when empty-handed it tells the player to go GRAB materials; when carrying
-	-- something it tells them to take it to the fire pit -- so the next step is always spelled out.
+	-- when empty-handed it says go GRAB materials; when carrying, it says take it to the fire pit
+	local body
 	if carrying then
-		objLbl.Text = ("\xF0\x9F\x94\xA5 Take the %s to the fire pit!   "):format(MAT_LABEL[carrying]) .. table.concat(parts, "   ")
+		body = ("\xF0\x9F\x94\xA5 Take the %s to the fire pit!   "):format(MAT_LABEL[carrying]) .. table.concat(parts, "   ")
 	else
-		objLbl.Text = "\xF0\x9F\x94\xA5 Grab logs/stones/kindling from the snow:   " .. table.concat(parts, "   ")
+		body = "\xF0\x9F\x94\xA5 Grab logs/stones/kindling from the snow:   " .. table.concat(parts, "   ")
 	end
+	-- the meter, as text: the bar's own fill colour warmed to cold as it climbed, so the card's
+	-- colour does the same job
+	return ("\xE2\x9D\x84 FREEZING  %d%%"):format(math.floor(freeze * 100)), body,
+		Color3.fromRGB(150, 205, 245):Lerp(Color3.fromRGB(90, 150, 220), freeze)
+end
+
+local function refreshObjective()
+	local NC = _G.NotifyCenter
+	if not (NC and NC.pin) then return end
+	if not (active and not built) then
+		if pinnedFreeze then pcall(NC.unpin, FREEZE_PIN); pinnedFreeze = false end
+		return
+	end
+	local top, body, col = freezeCard()
+	pcall(NC.pin, FREEZE_PIN, {
+		top      = top,
+		text     = body,
+		color    = col,
+		priority = (NC.PRIORITY and NC.PRIORITY.QUEST) or 200,
+	})
+	pinnedFreeze = true
 end
 
 -- ============================================================================
@@ -496,12 +508,9 @@ local function igniteFire()
 		frostGui.Enabled = false
 		coldTint.Enabled = false; coldBlur.Size = 0
 	end)
-	barBg.Visible = false
+	-- built: refreshObjective drops the pin, and the "you survived" line goes out as the
+	-- ordinary banner push just below. The old pill was saying it twice, in two places.
 	refreshObjective()
-
-	objFrame.Visible = true
-	objLbl.Text = "\xF0\x9F\x94\xA5 The campfire is lit -- you survived the cold!"
-	task.delay(6, function() if built then objFrame.Visible = false end end)
 
 	if _G.NotifyCenter then
 		pcall(function() _G.NotifyCenter.push({ text = "\xF0\x9F\x94\xA5 Campfire built -- you beat the cold!", color = FIREC }) end)
@@ -715,11 +724,21 @@ end
 -- ============================================================================
 -- OBJECTIVE FLASH
 -- ============================================================================
+-- A short interruption to the directions ("you can't carry two!"). Because the card is
+-- PINNED, this repaints that same card in place and then restores it -- it never becomes a
+-- second pill, and it cannot be left showing if the quest moves on underneath it.
 local flashTok = 0
 function flash(text)
 	flashTok += 1; local mine = flashTok
-	objFrame.Visible = true
-	objLbl.Text = text
+	local NC = _G.NotifyCenter
+	if NC and NC.pin and active and not built then
+		local top, _, col = freezeCard()
+		pcall(NC.pin, FREEZE_PIN, {
+			top = top, text = text, color = col,
+			priority = (NC.PRIORITY and NC.PRIORITY.QUEST) or 200,
+		})
+		pinnedFreeze = true
+	end
 	task.delay(2.4, function() if mine == flashTok then refreshObjective() end end)
 end
 
@@ -746,7 +765,6 @@ local function startFreeze()
 	active = true
 	freeze = 0
 	clearBuild()
-	barBg.Visible = true
 	frostGui.Enabled = true
 	refreshObjective()
 	renderFreeze()
@@ -814,9 +832,11 @@ task.spawn(function()
 				hum.WalkSpeed = BASE_WALKSPEED * slow
 			end
 
-			barFill.Size = UDim2.new(freeze, -6, 1, -6)
-			barFill.BackgroundColor3 = Color3.fromRGB(150, 205, 245):Lerp(Color3.fromRGB(90, 150, 220), freeze)
-			barLbl.Text = ("FREEZING  %d%%"):format(math.floor(freeze * 100))
+			-- the meter lives in the banner now. Repaint only when the WHOLE PERCENT changes:
+			-- this loop runs at 10 Hz and the card only ever shows an integer, so nine ticks in
+			-- ten would be a repaint that changes nothing on screen.
+			local pct = math.floor(freeze * 100)
+			if pct ~= lastPct then lastPct = pct; refreshObjective() end
 			renderFreeze()
 
 			-- heartbeat past 50%
@@ -966,6 +986,11 @@ task.spawn(function()
 
 	print(("[Campfire] ready -- campfire %s, start %s, NPC %s"):format(
 		campfirePart and "found" or "MISSING", startPos and "set" or "MISSING", npcHead and "wired" or "none"))
+	-- RETAINER SIGNAL: the quest reached the end of its build with its world objects up. QuestRetainer
+	-- watches this flag; anything still false once its island has streamed in gets force-streamed and
+	-- re-run. It is set HERE, at the ready print, not at the top of the file -- a quest that bailed
+	-- early on a missing marker must NOT look built. See QuestRetainer.client.luau.
+	_G.questBuilt_campfire = true
 end)
 
 -- NPC -- paged speech bubble that gives the quest, same pattern as island1's Candy Npc

@@ -61,17 +61,17 @@ local REPORT_AFTER = 20   -- seconds. Long enough for the intro, the loading scr
 -- whenever you add or remove a client script.
 local EXPECTED = {
 	"AmbientSmoke", "AmbientWildlife", "BellyPuff", "BlackBarKiller", "ButtonTextStyle", "Campfire",
-	"CommunityGarden", "CoreClient", "CrateClient", "DailyTasks", "EventClient",
+	"CoinMagnet", "CommunityGarden", "CoreClient", "CrateClient", "DailyTasks", "EventClient",
 	"EventSoundPreload", "FarmerTutorial", "FlightFeedback", "FoodRealmHud", "GardenChestClient",
 	"GardenDonationClient", "GardenGuideTrail", "GardenIntro", "GardenerChat", "GardenerLife",
 	"GutSkinClient", "HeldItemSync", "LandingImpact", "MenuBackButton", "MenuBackdropGuard",
 	"MeteorImpactSound", "MeteorUI", "MusicClient", "MusicDucking", "NotifyCenter", "NotifyOptIn",
 	"NpcGuideArrow", "NpcLife", "NpcWaypointArrow", "ObjectiveHUD", "OfflineEarnings", "PetFollow",
-	"PetSkinLook", "RailGuard", "RainbowBeamUI", "RealmPortals", "RebirthClient", "RebirthTag",
+	"PetSkinLook", "RailGuard", "RainbowBeamUI", "RealmPortalsHub", "RebirthClient", "RebirthTag",
 	"RemotePets", "RewardsClient", "RewardsHub", "RocketBuildPreload", "RocketSounds", "RocketUI",
 	"SeasonPass", "SeasonalPetsChest", "SecretCave", "SettingsMenu", "ShopClient",
 	"SkinCrateClient", "SkyByAltitude", "SocialRewards", "TitleTags", "TokenHud", "TopCenterStack",
-	"WarpEffect", "WorldClient", "WormholeClient",
+	"VipClient", "WarpEffect", "WorldClient", "WormholeClient",
 }
 
 -- THE ARTIFACTS: things that must EXIST once the scripts have run. This is the half that catches a script
@@ -81,7 +81,12 @@ local ARTIFACTS = {
 	{ "gui", "BottomStackGui",  "the gas meter + fart button (CoreClient)" },
 	{ "gui", "CoinGui",         "the coin counter (CoreClient)" },
 	{ "gui", "PetQuestUI",      "quest tracker + starter-pet card (PetFollow)" },
-	{ "gui", "ObjectiveHUD",    "the directions card" },
+	-- ObjectiveHUD REMOVED FROM THIS LIST ON PURPOSE. The new-player directions no longer build a ScreenGui
+	-- of their own -- they are a pinned banner in NotifyCenter's hero lane -- so "ObjectiveHUD (gui) built
+	-- nothing" was a permanent FALSE ALARM in every boot log, and a check that always fails is a check
+	-- everyone learns to skip. NotifyHero below is the artifact that now proves the directions have a
+	-- surface to render on.
+	{ "gui", "NotifyHero",      "the hero banner lane -- arrivals, tutorial directions, milestones" },
 	{ "gui", "SettingsGui",     "the gear button" },
 	{ "rem", "CoinEvent",       "coin payouts -- flight earns nothing without it" },
 	{ "rem", "BuyFoodEvent",    "the food shop cannot buy" },

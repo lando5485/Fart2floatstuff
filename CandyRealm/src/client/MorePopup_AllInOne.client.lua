@@ -203,6 +203,13 @@ local MORE_ENTRIES = {
 	-- gains one; until then the daily CRATE when it's claimable, else the daily TASKS list --
 	-- the door always opens whichever thing needs attention, which is also what the two "!"
 	-- dots on this card are polling.
+	-- SEND A GIFT -- give another player some of your Crate Tokens (Gifting.client publishes
+	-- _G.openGiftPanel). The handshake emoji, NOT the gift box: the Rewards card below already wears the gift
+	-- box, and two identical icons in one small menu read as the same door twice.
+	{ label = "Send a Gift", desc = "Give another player some of your Crate Tokens.", tint = Color3.fromRGB(80, 200, 120), order = 4,
+	emoji = "\xF0\x9F\xA4\x9D", action = function()
+		if _G.openGiftPanel then _G.openGiftPanel() else print("[MorePopup] _G.openGiftPanel missing") end
+	end },
 	{ label = "Rewards", desc = "Daily crate and today's task checklist.", tint = Color3.fromRGB(255, 175, 45), order = 3,
 	emoji = "\xF0\x9F\x8E\x81", readyDot = true, tasksDot = true, action = function()
 		if _G.toggleRewardsHub then

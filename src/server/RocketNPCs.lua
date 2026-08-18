@@ -131,7 +131,17 @@ local WORKER_LOOKS = {
 		shoulderRest = 4,
 		gestureDelay = 0.0,
 	},
-	{ -- worker 2: yellow-vest guy, medium-tan skin tone
+	{ -- worker 2: THE FOREMAN -- yellow vest, white hat, medium-tan skin tone
+		--
+		-- ===== THE CREW IS NOW THREE JOBS, NOT ONE JOB x3 =====
+		-- With worker 1 hammering and worker 3 welding, the third silhouette should not be a second hammer.
+		-- The white hat was already calling him the foreman in this table; he just wasn't behaving like one.
+		--
+		-- A foreman reads by STILLNESS. The other two are in constant motion, so the man who mostly stands
+		-- there and occasionally points is instantly legible as the one supervising rather than building --
+		-- and the contrast is what makes the other two look busy. Give him a hammer and you have three
+		-- workers; give him a clipboard and you have a site.
+		role   = "foreman",
 		skin   = Color3.fromRGB(222, 172, 138),  -- medium human skin
 		shirt  = Color3.fromRGB(150, 70, 65),    -- maroon work shirt
 		pants  = Color3.fromRGB(72, 66, 54),      -- khaki/olive trousers
@@ -144,7 +154,19 @@ local WORKER_LOOKS = {
 		shoulderRest = 0,
 		gestureDelay = 0.4,
 	},
-	{ -- worker 3: green-vest guy, deep brown skin tone
+	{ -- worker 3: THE WELDER -- green vest, deep brown skin tone
+		--
+		-- ===== WHY ONE OF THE THREE IS A WELDER =====
+		-- Three identical silhouettes swinging three identical hammers reads as one animation played three
+		-- times, which is exactly what it is. The site only starts to look like a CREW when the workers are
+		-- doing different jobs -- and a welder is the job that carries at distance, because the arc throws
+		-- light. From across island 1 you cannot make out a hammer, but you can see a corner of the pad
+		-- flickering blue, and that is what tells you something is being BUILT over there.
+		--
+		-- `role` drives two things and nothing else: what gets welded into the right hand (torch instead of
+		-- hammer) and which motion build() runs. Everything else -- walking in, planting, idle gestures, the
+		-- wave, cleanup -- is shared, so the welder is not a special case anywhere it does not have to be.
+		role   = "welder",
 		skin   = Color3.fromRGB(140, 96, 66),    -- deep human skin
 		shirt  = Color3.fromRGB(55, 75, 110),    -- steel-blue work shirt
 		pants  = Color3.fromRGB(48, 52, 58),      -- slate trousers
@@ -158,6 +180,10 @@ local WORKER_LOOKS = {
 		gestureDelay = 0.8,
 	},
 }
+
+-- The welding arc: a hot blue-white that reads as an ARC rather than as a lamp. Shared by the spark
+-- particles, the torch-tip glow and the flicker light so all three agree on one colour.
+local ARC_BLUE = Color3.fromRGB(178, 216, 255)
 
 -- Reflective-stripe colour shared by all vests: a bright silvery white with a
 -- slight glow read. Used for the 2 horizontal hi-vis bands + shoulder straps.
@@ -459,15 +485,107 @@ local function makeWorker(index, spawnPos)
 			CFrame.new(0, 0.45, 0))
 	end
 
-	-- 3f) HAMMER: wooden handle + dark metal head, welded into the RIGHT HAND so
-	-- it follows the arm when the RightShoulder Motor6D swings. The hammer head
-	-- points forward (-Z) so a raise->strike pitch drives it down/forward.
-	weldDetail(model, rightHand, "HammerHandle",
-		Vector3.new(0.25, 1.7, 0.25), Color3.fromRGB(140, 95, 55), Enum.Material.Wood,
-		CFrame.new(0, -0.6, -0.2))
-	weldDetail(model, rightHand, "HammerHead",
-		Vector3.new(0.5, 0.5, 1.05), Color3.fromRGB(70, 72, 80), Enum.Material.Metal,
-		CFrame.new(0, -1.35, -0.2), { reflectance = 0.08 })
+	-- 3f) THE TOOL IN THE RIGHT HAND -- hammer for most, a welding torch for the welder.
+	-- Either way it is welded into the RIGHT HAND so it follows the arm when the RightShoulder Motor6D moves.
+	local torchTip = nil   -- welder only: the part the sparks and the arc light hang off
+	if look.role == "welder" then
+		-- VISOR. A flip-down welding mask, welded to the HEAD so it turns with the neck gesture like the hat
+		-- does. Sat DOWN over the face rather than flipped up, because the down position is the one that
+		-- reads as "working" in silhouette -- and it also hides that we are not animating a face.
+		-- Guarded: weldDetail dereferences the carrier, and makeWorker runs inside a pcall at the call site --
+		-- so an unguarded nil here would not error loudly, it would silently cost the event a whole worker.
+		if head then
+			weldDetail(model, head, "WelderVisor",
+				Vector3.new(1.25, 1.0, 0.18), Color3.fromRGB(28, 30, 36), Enum.Material.SmoothPlastic,
+				CFrame.new(0, -0.05, -0.62), { reflectance = 0.12 })
+			-- The dark glass slit. Two parts instead of one is what makes it a mask rather than a board.
+			weldDetail(model, head, "WelderVisorSlit",
+				Vector3.new(0.85, 0.22, 0.06), Color3.fromRGB(52, 96, 78), Enum.Material.Glass,
+				CFrame.new(0, 0.08, -0.72), { reflectance = 0.25 })
+		end
+
+		-- TORCH: a short handle with a tapered nozzle, pointing forward (-Z) out of the fist, plus a gas
+		-- hose loop back to the belt so it looks connected to something instead of self-powered.
+		weldDetail(model, rightHand, "TorchGrip",
+			Vector3.new(0.22, 0.9, 0.22), Color3.fromRGB(38, 40, 48), Enum.Material.Metal,
+			CFrame.new(0, -0.35, -0.15))
+		weldDetail(model, rightHand, "TorchNozzle",
+			Vector3.new(0.14, 0.5, 0.14), Color3.fromRGB(150, 120, 60), Enum.Material.Metal,
+			CFrame.new(0, -0.9, -0.32) * CFrame.Angles(math.rad(35), 0, 0), { reflectance = 0.1 })
+		if lowerTorso then
+			weldDetail(model, lowerTorso, "TorchHose",
+				Vector3.new(0.16, 0.16, 0.9), Color3.fromRGB(24, 26, 30), Enum.Material.SmoothPlastic,
+				CFrame.new(0.5, 0.1, 0.35))
+		end
+
+		-- THE ARC ITSELF. A tiny invisible part at the nozzle mouth carries the sparks and the light, so both
+		-- travel with the hand automatically and neither has to be repositioned per frame.
+		--
+		-- Everything here starts OFF (Rate 0, Brightness 0). A worker walking in across the pad with his
+		-- torch already blazing looks like a bug; build() lights it only once he is planted and working.
+		torchTip = weldDetail(model, rightHand, "TorchTip",
+			Vector3.new(0.1, 0.1, 0.1), ARC_BLUE, Enum.Material.Neon,
+			CFrame.new(0, -1.15, -0.42), { transparency = 1 })
+		if torchTip then
+			local sp = Instance.new("ParticleEmitter")
+			sp.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+			sp.Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, ARC_BLUE),
+				ColorSequenceKeypoint.new(0.4, Color3.fromRGB(255, 214, 140)),
+				ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 120, 40)) })  -- white-hot -> cooling orange
+			sp.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.1), NumberSequenceKeypoint.new(1, 1) })
+			sp.Size = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.28), NumberSequenceKeypoint.new(1, 0.04) })
+			sp.Lifetime = NumberRange.new(0.35, 0.8)
+			sp.Speed = NumberRange.new(7, 15)
+			sp.SpreadAngle = Vector2.new(38, 38)
+			-- Sparks ARC and fall. Gravity on the emitter is what separates welding from a sparkler.
+			sp.Acceleration = Vector3.new(0, -42, 0)
+			sp.Rate = 0
+			sp.Drag = 2.5
+			sp.Parent = torchTip
+			local gl = Instance.new("PointLight")
+			gl.Color = ARC_BLUE; gl.Brightness = 0; gl.Range = 22; gl.Shadows = false
+			gl.Parent = torchTip
+		end
+	elseif look.role == "foreman" then
+		-- CLIPBOARD in the LEFT hand, PEN in the right.
+		--
+		-- The split matters: the left hand is the one we never animate, so the board stays rock-steady at
+		-- his side while the right arm does all the work. Putting the board in the animated hand would wave
+		-- it around every time he points, which is the opposite of what a clipboard is for.
+		--
+		-- And because the pen rides the pointing hand, he points WITH the pen -- the single most foreman
+		-- gesture there is, for the cost of one extra welded part.
+		-- Guarded for the same reason as the visor above: a nil carrier costs the event this worker entirely.
+		if leftHand then
+			weldDetail(model, leftHand, "ClipboardBoard",
+				Vector3.new(1.15, 1.5, 0.08), Color3.fromRGB(190, 150, 92), Enum.Material.WoodPlanks,
+				CFrame.new(-0.15, -0.75, -0.35) * CFrame.Angles(math.rad(-72), 0, 0))
+			-- The clip: a small metal bar across the top. It is what turns a rectangle into a clipboard at a
+			-- glance -- without it this is a plank.
+			weldDetail(model, leftHand, "ClipboardClip",
+				Vector3.new(0.5, 0.12, 0.12), Color3.fromRGB(196, 200, 210), Enum.Material.Metal,
+				CFrame.new(-0.15, -0.73, -0.98), { reflectance = 0.2 })
+			-- The paper, sitting proud of the board so it catches light separately.
+			weldDetail(model, leftHand, "ClipboardPaper",
+				Vector3.new(0.95, 1.2, 0.04), Color3.fromRGB(246, 246, 240), Enum.Material.SmoothPlastic,
+				CFrame.new(-0.15, -0.79, -0.36) * CFrame.Angles(math.rad(-72), 0, 0))
+		end
+		weldDetail(model, rightHand, "ForemanPen",
+			Vector3.new(0.09, 0.62, 0.09), Color3.fromRGB(38, 44, 60), Enum.Material.SmoothPlastic,
+			CFrame.new(0, -0.42, -0.12) * CFrame.Angles(math.rad(20), 0, 0))
+	else
+		-- HAMMER: wooden handle + dark metal head. The head points forward (-Z) so a raise->strike pitch
+		-- drives it down/forward.
+		weldDetail(model, rightHand, "HammerHandle",
+			Vector3.new(0.25, 1.7, 0.25), Color3.fromRGB(140, 95, 55), Enum.Material.SmoothPlastic,
+			CFrame.new(0, -0.6, -0.2))
+		weldDetail(model, rightHand, "HammerHead",
+			Vector3.new(0.5, 0.5, 1.05), Color3.fromRGB(70, 72, 80), Enum.Material.Metal,
+			CFrame.new(0, -1.35, -0.2), { reflectance = 0.08 })
+	end
 
 	-- 4) Cache the two Motor6Ds we hand-animate, plus their REST C0s so the
 	-- animation code can lerp from a known neutral pose.
@@ -499,6 +617,10 @@ local function makeWorker(index, spawnPos)
 		humanoid = humanoid,
 		root = root,
 		head = head,
+		-- role/torchTip are welder-only and nil for everyone else, so build() can branch on them without a
+		-- second lookup back into WORKER_LOOKS.
+		role = look.role,
+		torchTip = torchTip,
 		shoulderMotor = shoulderMotor,
 		shoulderRestC0 = shoulderRestC0,
 		neckMotor = neckMotor,
@@ -548,10 +670,13 @@ local function plantWorker(worker)
 		end
 		worker.root.Anchored = true
 	end
-	-- Non-colliding everywhere (welded dressing was already CanCollide=false).
+	-- SOLID once planted. The worker is now ANCHORED and CFrame-driven, so collision cannot shove it, push it
+	-- off its mark or hand it to the physics solver -- exactly the arrangement the garden's cow and pig use
+	-- ("anchored + CFrame-driven, movement unaffected"). A worker you walk through is a ghost standing next to
+	-- a solid rocket, which reads worse than either choice made consistently.
 	for _, d in ipairs(model:GetDescendants()) do
 		if d:IsA("BasePart") then
-			d.CanCollide = false
+			d.CanCollide = true
 		end
 	end
 
@@ -628,9 +753,12 @@ end
 -- Folder ("RocketSiteDressing") in workspace — NEVER into the rocket model
 -- (that model lifts off and explodes). cleanup() destroys this folder.
 --
--- Everything here is Anchored (it just sits on the ground), CanCollide=false
--- and Massless so it can never block, trap or knock a player. We place items
--- as a loose ring around the pad, well clear of where the workers stand.
+-- Everything here is Anchored (it just sits on the ground), SOLID and Massless.
+-- It is scenery you can lean on, not scenery you walk through -- crates and
+-- barrels a player passes straight through look like a texture on the floor.
+-- Anchored + Massless means collision costs nothing: nothing here can be
+-- pushed, and it is placed as a loose ring around the pad, well clear of
+-- where the workers stand, so it cannot trap anyone against the rocket.
 --------------------------------------------------------------------
 local function buildSiteDressing(site)
 	-- STREAMING FIX: a MODEL (not a Folder) so it can be marked Persistent (ModelStreamingMode is a
@@ -642,7 +770,7 @@ local function buildSiteDressing(site)
 	dressingFolder.ModelStreamingMode = Enum.ModelStreamingMode.Persistent
 	dressingFolder.Parent = workspace
 
-	-- Local helper: an anchored, non-colliding dressing part placed by a CFrame
+	-- Local helper: an anchored, SOLID dressing part placed by a CFrame
 	-- offset relative to the site (which sits roughly at ground level). The
 	-- offset is applied in world space so Y is always "up off the ground".
 	local function dress(name, size, color, mat, offsetCF)
@@ -652,10 +780,10 @@ local function buildSiteDressing(site)
 		p.Color = color
 		p.Material = mat or Enum.Material.SmoothPlastic
 		p.Anchored = true        -- sits on the ground; never driven/jointed
-		p.CanCollide = false      -- CRITICAL: never blocks a player
+		p.CanCollide = true       -- SOLID: real scenery, not something to walk through
 		p.Massless = true
 		p.CanTouch = false
-		p.CanQuery = false
+		p.CanQuery = true         -- rays/ground checks must see it
 		-- Translate the site by the offset's position, then apply its rotation.
 		p.CFrame = CFrame.new(site + offsetCF.Position) * (offsetCF - offsetCF.Position)
 		p.Parent = dressingFolder
@@ -666,7 +794,7 @@ local function buildSiteDressing(site)
 	local TUBE   = Color3.fromRGB(150, 152, 160)  -- metal-grey scaffold tube
 	local PLANK  = Color3.fromRGB(168, 124, 72)   -- wooden walkway plank
 	local TUBE_M = Enum.Material.Metal
-	local WOOD_M = Enum.Material.Wood
+	local WOOD_M = Enum.Material.SmoothPlastic
 
 	-- ======================================================================
 	-- SCAFFOLDING TOWER (launch gantry) — stands well to one SIDE of the
@@ -777,9 +905,9 @@ local function buildSiteDressing(site)
 
 	-- ---- CRATES: a couple of scattered wooden crates ----
 	dress("Crate", Vector3.new(3, 3, 3), Color3.fromRGB(150, 110, 65),
-		Enum.Material.WoodPlanks, CFrame.new(17, 1.5, -14) * CFrame.Angles(0, math.rad(15), 0))
+		Enum.Material.SmoothPlastic, CFrame.new(17, 1.5, -14) * CFrame.Angles(0, math.rad(15), 0))
 	dress("Crate", Vector3.new(2.6, 2.6, 2.6), Color3.fromRGB(135, 98, 58),
-		Enum.Material.WoodPlanks, CFrame.new(18, 1.3, -16) * CFrame.Angles(0, math.rad(-20), 0))
+		Enum.Material.SmoothPlastic, CFrame.new(18, 1.3, -16) * CFrame.Angles(0, math.rad(-20), 0))
 
 	-- ---- BARREL: an upright cylinder drum with a darker rim ----
 	local barrel = dress("Barrel", Vector3.new(3.2, 2.6, 2.6), Color3.fromRGB(60, 130, 175),
@@ -879,6 +1007,39 @@ function RocketNPCs.build()
 			-- forward/down toward the rocket.
 			local raisedAngle = math.rad(-70) -- back/up (ready)
 			local strikeAngle = math.rad(25)  -- forward/down (the hit)
+
+			-- ===== THE WELDER MOVES COMPLETELY DIFFERENTLY =====
+			-- A hammer is a big two-position swing. A weld is the opposite: the arm barely moves at all, and
+			-- what sells it is the LIGHT, not the motion. Reusing the hammer arc for the torch would look
+			-- like he is trying to beat the rocket to death with a blowtorch.
+			--
+			-- So the welder gets a narrow band (-18deg..-4deg) travelled slowly -- the hand creeping along a
+			-- seam -- with a fast tremor laid on top for the buzz of the arc.
+			local isWelder  = (worker.role == "welder")
+			local weldNear  = math.rad(-18)
+			local weldFar   = math.rad(-4)
+
+			-- ===== THE FOREMAN HOLDS POSES; HE DOES NOT OSCILLATE =====
+			-- The hammer and the arc are both continuous cycles, because that is what those jobs are. A
+			-- foreman is the opposite: long stillness, punctuated. So this is not a sine at all -- it is a
+			-- two-state machine on a slow clock, easing between "checking the board" and "pointing at the
+			-- rocket", and SITTING in each one long enough to read as a decision rather than a wobble.
+			--
+			-- Angles follow the same convention as the hammer above: negative pitches the arm back/UP,
+			-- positive swings it forward/down. He is planted facing the rocket (see plantWorker), so a raised
+			-- arm points straight at the thing being built.
+			local isForeman   = (worker.role == "foreman")
+			local consultPose = math.rad(-10)   -- arm down at the clipboard, pen over the paper
+			local pointPose   = math.rad(-88)   -- arm out level, pen aimed at the rocket
+			local CONSULT_FOR = 4.2             -- seconds spent reading before he looks up
+			local POINT_FOR   = 2.6             -- seconds spent holding the point
+			local BLEND_FOR   = 0.55            -- how long the arm takes to travel between the two
+			local CYCLE       = CONSULT_FOR + BLEND_FOR + POINT_FOR + BLEND_FOR
+			local torchTip  = worker.torchTip
+			local sparks    = torchTip and torchTip:FindFirstChildOfClass("ParticleEmitter") or nil
+			local arcLight  = torchTip and torchTip:FindFirstChildOfClass("PointLight") or nil
+			-- Each welder gets its own flicker clock so an arc never pulses in time with anything else.
+			local flickerPhase = math.random() * math.pi * 2
 			local conn
 			conn = RunService.Heartbeat:Connect(function()
 				-- Stop if the worker is gone, has fallen, or is paused (idle()).
@@ -888,16 +1049,68 @@ function RocketNPCs.build()
 					if not worker.alive or worker.fallen or not motor.Parent then
 						if conn then conn:Disconnect() end
 					end
+					-- ARC OFF whenever the welder is not actually welding -- paused for an idle gesture,
+					-- still walking in, fallen over on the launch. A torch that keeps throwing sparks while
+					-- its owner is wiping his forehead is the detail that breaks the whole illusion.
+					if sparks then sparks.Rate = 0 end
+					if arcLight then arcLight.Brightness = 0 end
 					return
 				end
-				-- 0..1 sine drives the blend between raised and strike each cycle.
-				local s = (math.sin(os.clock() * 6 + phase) + 1) * 0.5
-				-- EASE the blend so the swing accelerates into the strike and eases
-				-- out of the raise (smootherstep) instead of a linear/robotic lerp.
-				local e = s * s * s * (s * (s * 6 - 15) + 10)
-				local pitch = raisedAngle + (strikeAngle - raisedAngle) * e
-				-- Apply ONLY to this joint's C0 — rotate about local X (pitch).
-				motor.C0 = restC0 * CFrame.Angles(pitch, 0, 0)
+
+				if isWelder then
+					local now = os.clock()
+					-- Slow creep along the seam, plus a fast small tremor: the buzz you can see in a real arc.
+					local s = (math.sin(now * 1.6 + phase) + 1) * 0.5
+					local pitch = weldNear + (weldFar - weldNear) * s
+						+ math.sin(now * 26 + phase) * math.rad(1.2)
+					motor.C0 = restC0 * CFrame.Angles(pitch, 0, 0)
+
+					-- THE FLICKER. Two sine waves of different speeds multiplied together, so the arc never
+					-- settles into a countable rhythm -- a single sine reads as a pulsing lamp, and an arc
+					-- has to look unstable. Floored at 0.35 so it never fully drops out mid-weld.
+					local f = 0.35 + 0.65 * math.abs(math.sin(now * 17 + flickerPhase) * math.sin(now * 6.3))
+					if sparks then sparks.Rate = 26 * f end
+					if arcLight then arcLight.Brightness = 5.5 * f end
+
+				elseif isForeman then
+					-- Walk the clock around the cycle. `phase` is already per-worker random, so if a second
+					-- foreman is ever added the two will not point in unison.
+					local c = (os.clock() * 1.0 + phase) % CYCLE
+					local pitch, tapping
+					if c < CONSULT_FOR then
+						pitch, tapping = consultPose, true                 -- reading
+					elseif c < CONSULT_FOR + BLEND_FOR then
+						-- Raising. Smootherstep so the arm accelerates out of rest and settles into the
+						-- point instead of snapping between two positions.
+						local b = (c - CONSULT_FOR) / BLEND_FOR
+						local e = b * b * b * (b * (b * 6 - 15) + 10)
+						pitch, tapping = consultPose + (pointPose - consultPose) * e, false
+					elseif c < CONSULT_FOR + BLEND_FOR + POINT_FOR then
+						-- HELD. A dead-still arm looks like a mannequin, so there is a tiny sway on top --
+						-- just enough that the pose is being maintained by a person rather than frozen.
+						pitch, tapping = pointPose + math.sin(os.clock() * 2.1 + phase) * math.rad(1.6), false
+					else
+						local b = (c - CONSULT_FOR - BLEND_FOR - POINT_FOR) / BLEND_FOR
+						local e = b * b * b * (b * (b * 6 - 15) + 10)
+						pitch, tapping = pointPose + (consultPose - pointPose) * e, false
+					end
+					-- While reading, the pen taps the paper: a small fast bob on the same joint. It is the
+					-- detail that says he is WORKING through the board rather than just holding it.
+					if tapping then
+						pitch = pitch + math.abs(math.sin(os.clock() * 3.4 + phase)) * math.rad(4.5)
+					end
+					motor.C0 = restC0 * CFrame.Angles(pitch, 0, 0)
+
+				else
+					-- 0..1 sine drives the blend between raised and strike each cycle.
+					local s = (math.sin(os.clock() * 6 + phase) + 1) * 0.5
+					-- EASE the blend so the swing accelerates into the strike and eases
+					-- out of the raise (smootherstep) instead of a linear/robotic lerp.
+					local e = s * s * s * (s * (s * 6 - 15) + 10)
+					local pitch = raisedAngle + (strikeAngle - raisedAngle) * e
+					-- Apply ONLY to this joint's C0 — rotate about local X (pitch).
+					motor.C0 = restC0 * CFrame.Angles(pitch, 0, 0)
+				end
 			end)
 			table.insert(actionLoops, conn)
 		end

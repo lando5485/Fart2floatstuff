@@ -54,7 +54,26 @@ local HUD_GUIS = {
 	StomachGui = true, CoinGui = true, RightPanelGui = true, SettingsGui = true,
 	ReturnIslandGui = true, ObjectiveHUD = true, NavGui = true, LoadingScreen = true,
 	CampfireHud = true, PetQuestUI = true, HudNoticeGui = true,
+	-- ===== THE FISHING HUDS -- THIS GUARD WAS BREAKING THE MINIGAME =====
+	-- "TAP TO HOOK!" is a DELIBERATE full-screen input sink: a transparency-0.8 TextButton covering the
+	-- screen, because the whole point is that you can tap anywhere to hook. To this guard that is
+	-- indistinguishable from an orphaned menu backdrop -- full-screen, tinted, sinks input, and its
+	-- ScreenGui has no "open panel" to vouch for it -- so it hid it.
+	--
+	-- The Studio log caught it exactly: bite at 15:55:44.621, guard fires at 15:55:44.877, missed the hook
+	-- at 15:55:45.941 -- the tap target was killed 0.25 SECONDS into its 1.3s window, twelve casts in a row,
+	-- every one a miss. That is the "the part you press only shows for a split second" bug, and it made the
+	-- butter-lake quest impossible to finish rather than merely annoying.
+	ButterFishingHUD = true,  -- PetFollow's copy
+	FishingHUD       = true,  -- FishingQuest_AllInOne's copy
+	BurritoDigHUD    = true,  -- same shape, same trap, before it bites there too
 }
+
+-- PER-ELEMENT OPT-OUT. HUD_GUIS exempts a whole ScreenGui by name, which is blunt: a genuine stuck backdrop
+-- inside an exempted gui is now invisible to this guard forever. This attribute is the precise version --
+-- put `NoBackdropGuard = true` on the ONE element that is legitimately a full-screen input sink and the rest
+-- of its gui is still swept. New full-screen tap-catchers should use this rather than growing the list above.
+local OPT_OUT_ATTR = "NoBackdropGuard"
 
 -- THE VIEWPORT MUST BE REAL BEFORE ANY OF THIS MEANS ANYTHING.
 --
@@ -89,6 +108,7 @@ end
 -- Transparency is deliberately NOT considered: a 0.45 dim blocks input exactly as hard as an invisible one.
 local function isBackdrop(d, vp)
 	if not d:IsA("GuiObject") then return false end
+	if d:GetAttribute(OPT_OUT_ATTR) then return false end           -- a DELIBERATE full-screen tap target
 	if not (d:IsA("GuiButton") or d.Active) then return false end   -- doesn't sink input -> can't be the blocker
 	if not effectivelyVisible(d) then return false end              -- not rendered -> not blocking anything
 	local s = d.AbsoluteSize

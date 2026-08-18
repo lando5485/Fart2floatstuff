@@ -45,8 +45,13 @@ local pg     = player:WaitForChild("PlayerGui")
 -- REMOTES -- looked up if they exist (no WaitForChild block); nil-safe so the
 -- whole file runs standalone. Live data flows in automatically once present.
 -- ============================================================================
+-- The PERMANENT rarity axis (Common..Gold) and the fusion cost ladder. Separate from the pet's AGE tier,
+-- which petTier() derives from level -- a pet's rarity never moves, its age always does.
+local PetRarity = require(RS:WaitForChild("Shared"):WaitForChild("PetRarity"))
+
 local function remote(name) return RS:FindFirstChild(name) end
 local PetEquipEvent      = remote("PetEquipEvent")
+local PetFuseEvent       = remote("PetFuseEvent") -- c->s: (storageKey) burn N duplicates -> next rarity
 local PetInventoryEvent  = remote("PetInventoryEvent")
 local PetPendingUpgrade  = remote("PetPendingUpgradeEvent")
 local PetProgressEvent   = remote("PetProgressEvent")
@@ -79,7 +84,7 @@ local function petTier(level, isRare, petId)
 	end
 	if level <= 5      then return "Baby",  Color3.fromRGB(175,180,190), false, false
 	elseif level <= 10 then return "Kid",   Color3.fromRGB(90,210,90),   false, false
-	elseif level <= 15 then return "Teen",  Color3.fromRGB(70,140,255),  false, false
+	elseif level <= 15 then return "Teen",  Color3.fromRGB(255, 70, 171),  false, false
 	elseif level <= 20 then return "Adult", Color3.fromRGB(180,90,235),  false, false
 	else                    return "Elder", Color3.fromRGB(255,170,40),  false, false end
 end
@@ -179,11 +184,11 @@ dim.BackgroundTransparency = 1; dim.Visible = false; dim.Active = false; dim.Par
 
 local panel = Instance.new("Frame"); panel.Name = "Panel"
 panel.Size = UDim2.new(0,700,0,520); panel.Position = UDim2.new(0.5,0,0.5,-45); panel.AnchorPoint = Vector2.new(0.5,0.5)
-panel.BackgroundColor3 = Color3.fromRGB(25,90,185); panel.ClipsDescendants = true; panel.Visible = false; panel.Active = true; panel.Parent = invGui
+panel.BackgroundColor3 = Color3.fromRGB(185, 25, 117); panel.ClipsDescendants = true; panel.Visible = false; panel.Active = true; panel.Parent = invGui
 uicorner(panel, 18); uistroke(panel, Color3.new(1,1,1), 3)
 
 -- HEADER
-local header = Instance.new("Frame"); header.Size = UDim2.new(1,0,0,60); header.BackgroundColor3 = Color3.fromRGB(15,60,140); header.Parent = panel
+local header = Instance.new("Frame"); header.Size = UDim2.new(1,0,0,60); header.BackgroundColor3 = Color3.fromRGB(140, 15, 81); header.Parent = panel
 uicorner(header, 18)
 local title = Instance.new("TextLabel"); title.BackgroundTransparency = 1; title.Font = Enum.Font.GothamBold; title.TextSize = 26
 title.TextColor3 = Color3.fromRGB(255,215,0); title.Text = "\xF0\x9F\x90\xBE PET HUB"; title.TextXAlignment = Enum.TextXAlignment.Left
@@ -201,7 +206,7 @@ subtitle.Name = "HubProgress"
 do
 	local tokChip = Instance.new("Frame"); tokChip.Name = "HubTokens"
 	tokChip.Size = UDim2.new(0,126,0,28); tokChip.Position = UDim2.new(1,-182,0,16)
-	tokChip.BackgroundColor3 = Color3.fromRGB(12,44,104); tokChip.Parent = header
+	tokChip.BackgroundColor3 = Color3.fromRGB(104, 12, 59); tokChip.Parent = header
 	uicorner(tokChip, 8); uistroke(tokChip, Color3.fromRGB(255,215,0), 1.5)
 	local tl = Instance.new("TextLabel"); tl.Name = "Value"; tl.BackgroundTransparency = 1
 	tl.Size = UDim2.new(1,-10,1,0); tl.Position = UDim2.new(0,5,0,0)
@@ -222,6 +227,20 @@ uicorner(closeBtn, 8); uistroke(closeBtn, Color3.new(0,0,0), 2)
 _G.PetHub = _G.PetHub or {}
 do
 	_G.PetHub.navButtons = {}
+	-- Pages built by OTHER scripts, keyed by tab id -> setVisible(bool). CrossRealmPets registers
+	-- "food" and "dino" here. Declared before the bar is built so a page script that loads first
+	-- can register without racing this block.
+	_G.PetHub.extraPages = _G.PetHub.extraPages or {}
+	_G.PetHub.registerPage = function(id, setVisible)
+		if type(id) == "string" and type(setVisible) == "function" then
+			_G.PetHub.extraPages[id] = setVisible
+		end
+	end
+	-- Where a registered page should parent itself, and the geometry it should match. Handing these
+	-- out means the page scripts never hard-code the panel's name or its content band -- if the hub
+	-- is re-laid-out, they follow it instead of silently sitting in the wrong place.
+	_G.PetHub.panel = panel
+	_G.PetHub.contentInset = { x = 10, y = 108, w = -20, h = -118 } -- below the 66+38 nav bar
 	-- HEADER READOUTS, defined HERE and not down with the router: the pet grid calls
 	-- setProgress while the script is still LOADING, long before the router block runs.
 	_G.PetHub.setProgress = function(owned, total)
@@ -241,16 +260,34 @@ do
 	bar.BackgroundTransparency = 1; bar.Parent = panel
 	local ll = Instance.new("UIListLayout"); ll.FillDirection = Enum.FillDirection.Horizontal
 	ll.Padding = UDim.new(0,8); ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Parent = bar
+	-- FIVE tabs: TWO pets tabs (Dino first, Food second -- both realm collections, rendered read-only
+	-- by CrossRealmPets.client.luau from the pets your teleport carried in) plus crates/trade/quests.
+	--
+	-- THE OLD 🐾 CANDY PETS TAB IS GONE, on purpose. Candy has no pet server of its own -- that tab
+	-- only ever showed the hub's hard-coded DEMO inventory ("[PetHub] no server remotes found ->
+	-- showing DEMO inventory" on every boot), which is a page of fake pets pretending to be owned.
+	-- Two real collections beat one real page and one lie. If Candy ever grows its own pets, put the
+	-- tab back and re-run the width maths below.
+	--
+	-- WIDTH: (676 - 4 gaps x 8) / 5 = 128.8 -> 128. Change the tab count, change this, or the row
+	-- stops filling the panel.
 	for i, t in ipairs({
-		{ id = "pets",   label = "\xF0\x9F\x90\xBE PETS"   },
+		-- NAMED BY REALM, not three tabs all reading "PETS". Told apart only by a small emoji they were a
+		-- coin-flip for anyone not looking closely; the word does the work now and the emoji just decorates.
+		{ id = "dino",   label = "\xF0\x9F\xA6\x95 DINO"   }, -- 🦕 Dino Realm collection  -- FIRST pets tab
+		{ id = "food",   label = "\xF0\x9F\x8D\x94 FOOD"   }, -- 🍔 first-realm (Food) collection -- SECOND
 		{ id = "crates", label = "\xF0\x9F\x93\xA6 CRATES" },
 		{ id = "trade",  label = "\xF0\x9F\x94\x84 TRADE"  },
 		{ id = "quests", label = "\xF0\x9F\x93\x9C QUESTS" },
 	}) do
 		local b = Instance.new("TextButton")
-		b.Size = UDim2.new(0,163,1,0); b.LayoutOrder = i
-		b.BackgroundColor3 = Color3.fromRGB(18,66,150); b.Text = t.label
+		b.Size = UDim2.new(0,128,1,0); b.LayoutOrder = i
+		b.BackgroundColor3 = Color3.fromRGB(150, 18, 88); b.Text = t.label
 		b.Font = Enum.Font.FredokaOne; b.TextSize = 15; b.TextScaled = true
+		-- ⚠ ONE LINE, ALWAYS. TextWrapped defaults TRUE, so "🦕 PETS" breaks after the emoji and both lines
+		-- are drawn into a 38px-tall button -- which reads as the glyphs colliding, not as a wrap. Off,
+		-- TextScaled shrinks the FONT to fit the width instead, which is what should happen.
+		b.TextWrapped = false
 		b.TextColor3 = Color3.fromRGB(255,215,0); b.Parent = bar
 		uicorner(b, 10); uistroke(b, Color3.new(1,1,1), 1.5)
 		do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 15; c.Parent = b end
@@ -267,8 +304,8 @@ end
 -- PETS section (fills the panel width: 2 big cards/row)
 local function makeSection(x, w, titleText)
 	local sec = Instance.new("Frame"); sec.Size = UDim2.new(0,w,1,-74); sec.Position = UDim2.new(0,x,0,68)
-	sec.BackgroundColor3 = Color3.fromRGB(18,66,150); sec.BackgroundTransparency = 0.25; sec.Parent = panel
-	uicorner(sec, 12); uistroke(sec, Color3.fromRGB(10,40,100), 2)
+	sec.BackgroundColor3 = Color3.fromRGB(150, 18, 88); sec.BackgroundTransparency = 0.25; sec.Parent = panel
+	uicorner(sec, 12); uistroke(sec, Color3.fromRGB(100, 10, 55), 2)
 	local t = Instance.new("TextLabel"); t.Size = UDim2.new(1,-12,0,22); t.Position = UDim2.new(0,8,0,6)
 	t.BackgroundTransparency = 1; t.Font = Enum.Font.GothamBold; t.TextSize = 16; t.TextColor3 = Color3.fromRGB(255,215,0)
 	t.TextXAlignment = Enum.TextXAlignment.Left; t.Text = titleText; t.Parent = sec
@@ -278,8 +315,13 @@ local function makeSection(x, w, titleText)
 	return sec, sc
 end
 local petsSection, petsScroll = makeSection(12, 676, "\xF0\x9F\x90\xBe PETS")
--- y=110, not 68: the four-tab nav bar owns 66..104 directly under the header.
+-- y=110, not 68: the nav bar owns 66..104 directly under the header.
 petsSection.Size = UDim2.new(1, -24, 1, -116); petsSection.Position = UDim2.new(0, 12, 0, 110)
+-- PERMANENTLY HIDDEN along with its tab: this grid only ever showed the DEMO inventory (Candy has no pet
+-- server), and its tab is gone -- the Dino and Food collection pages own the content band now. The section
+-- is built rather than deleted because the grid-refresh code below still writes into petsScroll; writing
+-- into an invisible frame is free, deleting it would mean touching every one of those call sites.
+petsSection.Visible = false
 local petsGrid = Instance.new("UIGridLayout"); petsGrid.CellSize = UDim2.new(0,322,0,252); petsGrid.CellPadding = UDim2.new(0,10,0,12)
 petsGrid.HorizontalAlignment = Enum.HorizontalAlignment.Center; petsGrid.Parent = petsScroll
 do
@@ -290,7 +332,7 @@ end
 
 -- QUESTS overlay
 local questsOverlay = Instance.new("Frame"); questsOverlay.Name = "QuestsOverlay"; questsOverlay.Size = UDim2.new(1,-24,1,-116); questsOverlay.Position = UDim2.new(0,12,0,110)
-questsOverlay.BackgroundColor3 = Color3.fromRGB(16,60,140); questsOverlay.Visible = false; questsOverlay.Parent = panel; uicorner(questsOverlay, 12); uistroke(questsOverlay, Color3.fromRGB(10,40,100), 2)
+questsOverlay.BackgroundColor3 = Color3.fromRGB(140, 16, 81); questsOverlay.Visible = false; questsOverlay.Parent = panel; uicorner(questsOverlay, 12); uistroke(questsOverlay, Color3.fromRGB(100, 10, 55), 2)
 local qoTitle = Instance.new("TextLabel"); qoTitle.Size = UDim2.new(1,-120,0,28); qoTitle.Position = UDim2.new(0,12,0,8); qoTitle.BackgroundTransparency = 1
 qoTitle.Font = Enum.Font.GothamBold; qoTitle.TextSize = 18; qoTitle.TextColor3 = Color3.fromRGB(255,215,0); qoTitle.TextXAlignment = Enum.TextXAlignment.Left; qoTitle.Text = "\xF0\x9F\x97\xBA Pet Quests"; qoTitle.Parent = questsOverlay
 local qoBack = Instance.new("TextButton"); qoBack.Size = UDim2.new(0,100,0,28); qoBack.Position = UDim2.new(1,-108,0,8); qoBack.BackgroundColor3 = Color3.fromRGB(120,120,120)
@@ -300,7 +342,7 @@ questsScroll.ScrollBarThickness = 6; questsScroll.ScrollBarImageColor3 = Color3.
 local questsList = Instance.new("UIListLayout"); questsList.Padding = UDim.new(0,8); questsList.SortOrder = Enum.SortOrder.LayoutOrder; questsList.Parent = questsScroll
 local questsEmpty = Instance.new("TextLabel"); questsEmpty.Size = UDim2.new(1,-24,0,70); questsEmpty.Position = UDim2.new(0,12,0,46)
 questsEmpty.BackgroundTransparency = 1; questsEmpty.Font = Enum.Font.Gotham; questsEmpty.TextSize = 14; questsEmpty.TextWrapped = true
-questsEmpty.TextColor3 = Color3.fromRGB(200,220,255); questsEmpty.Text = "Land on islands to discover pet quests!"; questsEmpty.Visible = false; questsEmpty.Parent = questsOverlay
+questsEmpty.TextColor3 = Color3.fromRGB(255, 200, 229); questsEmpty.Text = "Land on islands to discover pet quests!"; questsEmpty.Visible = false; questsEmpty.Parent = questsOverlay
 
 -- ===== MAIN-MENU MUTUAL EXCLUSIVITY (shared manager via _G) =====
 if not _G.MainMenuManager then
@@ -336,10 +378,15 @@ local function openPanel(open)
 			-- a fresh open lands on the pet cards, not a stuck sub-tab
 			pcall(function() questsOverlay.Visible = false end)
 			pcall(function() local t = panel:FindFirstChild("TradeOverlay"); if t then t.Visible = false end end)
-			-- A fresh open always lands on PETS, and the nav has to SAY so. Without this the
-			-- bar keeps whatever tab was lit when you last closed, while the panel actually
-			-- shows the pet grid -- the exact drift the router exists to prevent.
-			pcall(function() _G.PetHub.activePage = "pets"; _G.PetHub.syncNav() end)
+			-- A fresh open always lands on the FIRST pets tab (the Dino collection), and the nav
+			-- has to SAY so. Without this the bar keeps whatever tab was lit when you last closed,
+			-- while the panel shows something else -- the exact drift the router exists to prevent.
+			-- Routed through showPage (which exists by click time) so the collection page actually
+			-- SHOWS; setting activePage alone would light the tab over an empty content band.
+			pcall(function()
+				if _G.PetHub.showPage then _G.PetHub.showPage("dino")
+				else _G.PetHub.activePage = "dino"; _G.PetHub.syncNav() end
+			end)
 			-- header token chip: show the balance the crate panel last had from the server
 			pcall(function() _G.PetHub.setTokens(_G.crateTokenBalance or 0) end)
 			_G.MainMenuManager.notifyOpened("PetInv")
@@ -462,12 +509,12 @@ end
 local function makeViewportIcon(card, petId, level, isRare, sizeU, posU, anchorV)
 	local vp = Instance.new("ViewportFrame"); vp.Name = "Icon3D"
 	vp.AnchorPoint = anchorV or Vector2.new(0.5,0); vp.Size = sizeU or UDim2.new(0,54,0,34); vp.Position = posU or UDim2.new(0.5,0,0,2)
-	vp.BackgroundColor3 = Color3.fromRGB(12,34,78); vp.BackgroundTransparency = 0.15; vp.Parent = card
+	vp.BackgroundColor3 = Color3.fromRGB(78, 12, 45); vp.BackgroundTransparency = 0.15; vp.Parent = card
 	uicorner(vp, 8)
 	vp.Ambient = Color3.fromRGB(185,185,195); vp.LightColor = Color3.fromRGB(255,255,255); vp.LightDirection = Vector3.new(-0.4,-1,-0.5)
 	local cam = Instance.new("Camera"); cam.FieldOfView = 50; cam.Parent = vp; vp.CurrentCamera = cam
 	local ph = Instance.new("TextLabel"); ph.Name = "IconPlaceholder"; ph.Size = UDim2.new(1,0,1,0); ph.BackgroundTransparency = 1
-	ph.Font = Enum.Font.FredokaOne; ph.TextScaled = true; ph.TextColor3 = Color3.fromRGB(150,180,235); ph.Text = "\xF0\x9F\x90\xBE"; ph.Parent = vp
+	ph.Font = Enum.Font.FredokaOne; ph.TextScaled = true; ph.TextColor3 = Color3.fromRGB(235, 150, 194); ph.Text = "\xF0\x9F\x90\xBE"; ph.Parent = vp
 	iconQueue[#iconQueue + 1] = { vp = vp, cam = cam, ph = ph, petId = petId, level = level, isRare = isRare }
 	startIconWorker()
 	return vp
@@ -490,10 +537,10 @@ end
 local function buildPetCard(key, p, order)
 	local petId = p.petId or key
 	local card = Instance.new("Frame"); card.Name = key; card.LayoutOrder = order
-	card.BackgroundColor3 = p.rare and Color3.fromRGB(46,28,86) or Color3.fromRGB(20,70,160); card.Parent = petsScroll
+	card.BackgroundColor3 = p.rare and Color3.fromRGB(46,28,86) or Color3.fromRGB(160, 20, 93); card.Parent = petsScroll
 	uicorner(card, 12)
 	local tierName, tierColor, isVariant = petTier(p.level, p.rare, petId)
-	uistroke(card, isVariant and tierColor or (p.equipped and Color3.fromRGB(255,215,0) or Color3.fromRGB(10,40,100)), (isVariant or p.equipped) and 3 or 1)
+	uistroke(card, isVariant and tierColor or (p.equipped and Color3.fromRGB(255,215,0) or Color3.fromRGB(100, 10, 55)), (isVariant or p.equipped) and 3 or 1)
 	makeViewportIcon(card, petId, p.level, p.rare, UDim2.new(0,310,0,140), UDim2.new(0.5,0,0,6), Vector2.new(0.5,0))
 	local nm = Instance.new("TextLabel"); nm.Size = UDim2.new(1,-16,0,18); nm.Position = UDim2.new(0,8,0,150)
 	nm.BackgroundTransparency = 1; nm.Font = Enum.Font.GothamBold; nm.TextSize = 16
@@ -506,6 +553,23 @@ local function buildPetCard(key, p, order)
 		uicorner(tag, 5)
 		local ts = Instance.new("UIStroke"); ts.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; ts.Color = Color3.fromRGB(255,255,255); ts.Thickness = 1; ts.Transparency = 0.2; ts.Parent = tag
 	end
+	-- ---- RARITY PILL: the axis that never moves --------------------------------------------------------
+	-- Bottom-left of the picture, deliberately away from the age tag (top-right) and the xN count (top-left):
+	-- three badges that look alike in one corner is how a player learns to read none of them.
+	-- Common gets no pill at all -- it is the default, and a badge on every card stops being a signal.
+	local rarityBand = p.rarity or PetRarity.DEFAULT
+	if rarityBand ~= PetRarity.DEFAULT then
+		local rc = PetRarity.Color[rarityBand] or Color3.fromRGB(200,200,200)
+		local rp = Instance.new("TextLabel"); rp.Name = "RarityPill"
+		rp.AutomaticSize = Enum.AutomaticSize.X; rp.Size = UDim2.new(0,0,0,17)
+		rp.AnchorPoint = Vector2.new(0,1); rp.Position = UDim2.new(0,8,0,142) -- art is 140 tall from y=6
+		rp.BackgroundColor3 = rc; rp.Font = Enum.Font.GothamBold; rp.TextSize = 11
+		rp.TextColor3 = Color3.new(1,1,1); rp.Text = rarityBand:upper(); rp.Parent = card
+		local rpad = Instance.new("UIPadding", rp); rpad.PaddingLeft = UDim.new(0,6); rpad.PaddingRight = UDim.new(0,6)
+		uicorner(rp, 5)
+		local rs = Instance.new("UIStroke"); rs.Color = Color3.fromRGB(0,0,0); rs.Thickness = 1; rs.Transparency = 0.35; rs.Parent = rp
+	end
+
 	if (p.count or 1) > 1 then
 		local cnt = Instance.new("TextLabel"); cnt.AutomaticSize = Enum.AutomaticSize.X; cnt.Size = UDim2.new(0,0,0,18); cnt.Position = UDim2.new(0,6,0,8)
 		cnt.BackgroundColor3 = Color3.fromRGB(255,170,40); cnt.Font = Enum.Font.GothamBold; cnt.TextSize = 12; cnt.TextColor3 = Color3.new(1,1,1); cnt.Text = "x" .. (p.count or 1); cnt.Parent = card
@@ -520,7 +584,7 @@ local function buildPetCard(key, p, order)
 	lv.Text = (isVariant and tierName or (tierName .. "  Lv " .. p.level)) .. (p.equipped and "  \xE2\x80\xA2 EQUIPPED" or ""); lv.Parent = card
 	lv.TextColor3 = tierColor
 	local barBG = Instance.new("Frame"); barBG.Size = UDim2.new(1,-16,0,14); barBG.Position = UDim2.new(0,8,0,188)
-	barBG.BackgroundColor3 = Color3.fromRGB(12,40,90); barBG.BorderSizePixel = 0; barBG.Parent = card; uicorner(barBG, 7); uistroke(barBG, Color3.fromRGB(8,26,64), 1)
+	barBG.BackgroundColor3 = Color3.fromRGB(90, 12, 53); barBG.BorderSizePixel = 0; barBG.Parent = card; uicorner(barBG, 7); uistroke(barBG, Color3.fromRGB(64, 8, 35), 1)
 	local frac = maxed and 1 or math.clamp((p.xp or 0) / math.max(1, p.xpNeed or 1), 0, 1)
 	local fill = Instance.new("Frame"); fill.Size = UDim2.new(frac, 0, 1, 0); fill.BorderSizePixel = 0
 	fill.BackgroundColor3 = maxed and Color3.fromRGB(255,200,40) or Color3.fromRGB(80,220,120); fill.Parent = barBG; uicorner(fill, 7)
@@ -528,9 +592,21 @@ local function buildPetCard(key, p, order)
 	xpTxt.Font = Enum.Font.GothamBold; xpTxt.TextSize = 10; xpTxt.TextColor3 = Color3.new(1,1,1); xpTxt.Parent = barBG
 	xpTxt.Text = maxed and "MAX" or ((p.xp or 0) .. " / " .. (p.xpNeed or 0) .. " XP")
 	local ms = Instance.new("TextLabel"); ms.Size = UDim2.new(1,-16,0,14); ms.Position = UDim2.new(0,8,0,236)
-	ms.BackgroundTransparency = 1; ms.Font = Enum.Font.Gotham; ms.TextSize = 11; ms.TextColor3 = Color3.fromRGB(185,212,255)
+	ms.BackgroundTransparency = 1; ms.Font = Enum.Font.Gotham; ms.TextSize = 11; ms.TextColor3 = Color3.fromRGB(255, 185, 224)
 	ms.Text = "\xE2\x9C\xA8 " .. (p.milestone or ""); ms.Parent = card
-	local eq = Instance.new("TextButton"); eq.Size = UDim2.new(0,149,0,26); eq.Position = UDim2.new(0,8,0,208)
+	-- ---- BUTTON ROW: two across, or three when this stack can fuse ---------------------------------------
+	-- This card lays out in fixed pixels, so the widths are computed rather than left to a layout: 310 usable
+	-- (8px margins on a ~326 card), minus two 6px gaps, split three ways = 99 each at x = 8 / 113 / 218.
+	-- With no fuse slot the original two 149s at 8 / 165 are kept exactly, so a card with nothing to fuse
+	-- looks untouched.
+	-- The slot appears as soon as you hold a SECOND copy, not only once you can afford it -- seeing "FUSE 2/5"
+	-- is how a player finds out duplicates are worth keeping. p.fuseCost is nil at Gold: nothing to fuse into.
+	local dupes    = p.count or 1
+	local showFuse = (p.fuseCost ~= nil) and dupes > 1
+	local bw       = showFuse and 99 or 149
+	local x2       = showFuse and 113 or 165
+
+	local eq = Instance.new("TextButton"); eq.Size = UDim2.new(0,bw,0,26); eq.Position = UDim2.new(0,8,0,208)
 	eq.Font = Enum.Font.GothamBold; eq.TextSize = 13; eq.TextColor3 = Color3.new(1,1,1)
 	eq.BackgroundColor3 = p.equipped and Color3.fromRGB(120,120,120) or Color3.fromRGB(50,200,50)
 	eq.Text = p.equipped and "UNEQUIP" or "EQUIP"; eq.Parent = card
@@ -541,7 +617,31 @@ local function buildPetCard(key, p, order)
 			else pcall(function() PetEquipEvent:FireServer(key) end) end
 		end
 	end)
-	local sk = Instance.new("TextButton"); sk.Size = UDim2.new(0,149,0,26); sk.Position = UDim2.new(0,165,0,208)
+	if showFuse then
+		local canFuse = p.canFuse == true
+		local into    = p.fuseInto or "?"
+		local fz = Instance.new("TextButton"); fz.Name = "Fuse"
+		fz.Size = UDim2.new(0,bw,0,26); fz.Position = UDim2.new(0,218,0,208)
+		fz.Font = Enum.Font.GothamBold; fz.TextSize = 12; fz.TextColor3 = Color3.new(1,1,1); fz.Parent = card
+		uicorner(fz, 8)
+		if canFuse then
+			-- tinted with the band you are fusing INTO, so the button previews its own reward
+			fz.BackgroundColor3 = PetRarity.Color[into] or Color3.fromRGB(180,90,235)
+			fz.Text = "FUSE \xE2\x86\x92 " .. into
+			uistroke(fz, Color3.new(1,1,1), 2)
+			fz.MouseButton1Click:Connect(function()
+				if PetFuseEvent then pcall(function() PetFuseEvent:FireServer(key) end) end
+			end)
+		else
+			-- Not enough yet: show the goal, not a dead button. AutoButtonColor off so it does not flash
+			-- like something that should work.
+			fz.BackgroundColor3 = Color3.fromRGB(90,90,90); fz.AutoButtonColor = false
+			fz.Text = string.format("FUSE %d/%d", dupes, p.fuseCost)
+			uistroke(fz, Color3.new(0,0,0), 1)
+		end
+	end
+
+	local sk = Instance.new("TextButton"); sk.Size = UDim2.new(0,bw,0,26); sk.Position = UDim2.new(0,x2,0,208)
 	sk.Font = Enum.Font.GothamBold; sk.TextSize = 12; sk.TextColor3 = Color3.new(1,1,1); sk.Parent = card; uicorner(sk, 8)
 	local skipStep = (p.level <= 5 and PET_SKIP_PRODUCTS[1]) or (p.level <= 10 and PET_SKIP_PRODUCTS[2])
 		or (p.level <= 15 and PET_SKIP_PRODUCTS[3]) or (p.level <= 20 and PET_SKIP_PRODUCTS[4]) or nil
@@ -558,25 +658,25 @@ local function buildPetCard(key, p, order)
 end
 
 local function buildLockedSlot(order)
-	local slot = Instance.new("Frame"); slot.Name = "Locked"; slot.LayoutOrder = order; slot.BackgroundColor3 = Color3.fromRGB(14,46,104); slot.Parent = petsScroll
-	uicorner(slot, 10); uistroke(slot, Color3.fromRGB(10,30,80), 1)
-	local q = Instance.new("TextLabel"); q.Size = UDim2.new(1,0,1,-22); q.BackgroundTransparency = 1; q.Font = Enum.Font.GothamBold; q.TextSize = 46; q.TextColor3 = Color3.fromRGB(70,100,170); q.Text = "?"; q.Parent = slot
-	local lk = Instance.new("TextLabel"); lk.Size = UDim2.new(1,-8,0,18); lk.Position = UDim2.new(0,4,1,-22); lk.BackgroundTransparency = 1; lk.Font = Enum.Font.Gotham; lk.TextSize = 12; lk.TextColor3 = Color3.fromRGB(130,160,220); lk.Text = "\xF0\x9F\x94\x92 Locked"; lk.Parent = slot
+	local slot = Instance.new("Frame"); slot.Name = "Locked"; slot.LayoutOrder = order; slot.BackgroundColor3 = Color3.fromRGB(104, 14, 61); slot.Parent = petsScroll
+	uicorner(slot, 10); uistroke(slot, Color3.fromRGB(80, 10, 42), 1)
+	local q = Instance.new("TextLabel"); q.Size = UDim2.new(1,0,1,-22); q.BackgroundTransparency = 1; q.Font = Enum.Font.GothamBold; q.TextSize = 46; q.TextColor3 = Color3.fromRGB(170, 70, 117); q.Text = "?"; q.Parent = slot
+	local lk = Instance.new("TextLabel"); lk.Size = UDim2.new(1,-8,0,18); lk.Position = UDim2.new(0,4,1,-22); lk.BackgroundTransparency = 1; lk.Font = Enum.Font.Gotham; lk.TextSize = 12; lk.TextColor3 = Color3.fromRGB(220, 130, 175); lk.Text = "\xF0\x9F\x94\x92 Locked"; lk.Parent = slot
 end
 
 local function buildQuestEntry(q, order)
-	local qf = Instance.new("Frame"); qf.Name = "Quest"; qf.LayoutOrder = order; qf.Size = UDim2.new(1,-4,0,92); qf.BackgroundColor3 = Color3.fromRGB(20,70,160); qf.Parent = questsScroll
-	uicorner(qf, 8); uistroke(qf, Color3.fromRGB(10,40,100), 1)
+	local qf = Instance.new("Frame"); qf.Name = "Quest"; qf.LayoutOrder = order; qf.Size = UDim2.new(1,-4,0,92); qf.BackgroundColor3 = Color3.fromRGB(160, 20, 93); qf.Parent = questsScroll
+	uicorner(qf, 8); uistroke(qf, Color3.fromRGB(100, 10, 55), 1)
 	local qn = Instance.new("TextLabel"); qn.Size = UDim2.new(1,-10,0,18); qn.Position = UDim2.new(0,6,0,4)
 	qn.BackgroundTransparency = 1; qn.Font = Enum.Font.GothamBold; qn.TextSize = 14; qn.TextColor3 = Color3.new(1,1,1); qn.TextXAlignment = Enum.TextXAlignment.Left; qn.Text = q.islandName or "?"; qn.Parent = qf
-	local statusCol = (q.status == "done") and Color3.fromRGB(120,255,120) or (q.status == "inprogress") and Color3.fromRGB(255,205,90) or Color3.fromRGB(180,220,255)
+	local statusCol = (q.status == "done") and Color3.fromRGB(120,255,120) or (q.status == "inprogress") and Color3.fromRGB(255,205,90) or Color3.fromRGB(255, 180, 232)
 	local statusTxt = (q.status == "done") and "Done \xE2\x9C\x94"
 		or (q.status == "inprogress") and ("In Progress  "..(q.found or 0).."/"..(q.total or 0).." "..(q.unit or ""))
 		or "Available"
 	local qs = Instance.new("TextLabel"); qs.Size = UDim2.new(1,-10,0,14); qs.Position = UDim2.new(0,6,0,22)
 	qs.BackgroundTransparency = 1; qs.Font = Enum.Font.GothamBold; qs.TextSize = 11; qs.TextColor3 = statusCol; qs.TextXAlignment = Enum.TextXAlignment.Left; qs.Text = statusTxt; qs.Parent = qf
 	local qd = Instance.new("TextLabel"); qd.Size = UDim2.new(1,-12,0,46); qd.Position = UDim2.new(0,6,0,38)
-	qd.BackgroundTransparency = 1; qd.Font = Enum.Font.Gotham; qd.TextSize = 11; qd.TextColor3 = Color3.fromRGB(205,222,255); qd.TextWrapped = true
+	qd.BackgroundTransparency = 1; qd.Font = Enum.Font.Gotham; qd.TextSize = 11; qd.TextColor3 = Color3.fromRGB(255, 205, 230); qd.TextWrapped = true
 	qd.TextXAlignment = Enum.TextXAlignment.Left; qd.TextYAlignment = Enum.TextYAlignment.Top; qd.Text = q.desc or ""; qd.Parent = qf
 end
 
@@ -604,7 +704,7 @@ local function rebuildInventory(payload)
 		end
 		if ownedCount == 0 then
 			local em = Instance.new("Frame"); em.Name = "PetsEmpty"; em.Size = UDim2.new(1,-20,0,90); em.Position = UDim2.new(0,10,0,8); em.BackgroundTransparency = 1; em.Parent = petsScroll
-			local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1,0,1,0); lbl.BackgroundTransparency = 1; lbl.Font = Enum.Font.GothamBold; lbl.TextSize = 20; lbl.TextWrapped = true; lbl.TextColor3 = Color3.fromRGB(190,210,255); lbl.Text = "No Pets Unlocked\nComplete pet quests on the islands to hatch your first pet!"; lbl.Parent = em
+			local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1,0,1,0); lbl.BackgroundTransparency = 1; lbl.Font = Enum.Font.GothamBold; lbl.TextSize = 20; lbl.TextWrapped = true; lbl.TextColor3 = Color3.fromRGB(255, 190, 221); lbl.Text = "No Pets Unlocked\nComplete pet quests on the islands to hatch your first pet!"; lbl.Parent = em
 		end
 		-- header readout: "X / Y pets unlocked" (Y = the catalog size the server reports)
 		pcall(function() _G.PetHub.setProgress(ownedCount, latestInv.totalPets or 0) end)
@@ -626,7 +726,7 @@ local tradeState = nil
 
 local function makeOfferRow(parent, brief, order, onClick)
 	local row = Instance.new(onClick and "TextButton" or "TextLabel"); row.Size = UDim2.new(1,-6,0,26); row.LayoutOrder = order
-	row.BackgroundColor3 = Color3.fromRGB(20,70,160); row.Text = ""; row.Parent = parent; uicorner(row, 6)
+	row.BackgroundColor3 = Color3.fromRGB(160, 20, 93); row.Text = ""; row.Parent = parent; uicorner(row, 6)
 	if onClick then row.AutoButtonColor = true end
 	local tname, tcol = petTier(brief.level, brief.rare, brief.petId)
 	local nm = Instance.new("TextLabel"); nm.Size = UDim2.new(1,-10,1,0); nm.Position = UDim2.new(0,6,0,0); nm.BackgroundTransparency = 1
@@ -639,10 +739,10 @@ end
 local function makeOfferCard(parent, brief, order, onClick)
 	local card = Instance.new(onClick and "TextButton" or "TextLabel")
 	card.Size = UDim2.new(1,-6,0,76); card.LayoutOrder = order
-	card.BackgroundColor3 = brief.rare and Color3.fromRGB(46,28,86) or Color3.fromRGB(20,70,160)
+	card.BackgroundColor3 = brief.rare and Color3.fromRGB(46,28,86) or Color3.fromRGB(160, 20, 93)
 	card.Text = ""; if onClick then card.AutoButtonColor = true end; card.Parent = parent; uicorner(card, 8)
 	local tname, tcol, isVariant = petTier(brief.level, brief.rare, brief.petId)
-	uistroke(card, isVariant and tcol or Color3.fromRGB(10,40,100), isVariant and 2 or 1)
+	uistroke(card, isVariant and tcol or Color3.fromRGB(100, 10, 55), isVariant and 2 or 1)
 	makeViewportIcon(card, brief.petId, brief.level, brief.rare, UDim2.new(0,96,0,68), UDim2.new(0,4,0,4), Vector2.new(0,0))
 	local nm = Instance.new("TextLabel"); nm.BackgroundTransparency = 1; nm.Font = Enum.Font.GothamBold; nm.TextSize = 14
 	nm.TextColor3 = isVariant and tcol or Color3.new(1,1,1); nm.TextXAlignment = Enum.TextXAlignment.Left
@@ -662,8 +762,13 @@ end
 -- (the old header "TRADE" chip is gone -- TRADE is a tab in the HubNav bar now, exactly like
 --  the main game; its open logic lives in the showPage router below)
 
-local tradeOverlay = Instance.new("Frame"); tradeOverlay.Name = "TradeOverlay"; tradeOverlay.Size = UDim2.new(1,-24,1,-116); tradeOverlay.Position = UDim2.new(0,12,0,110)
-tradeOverlay.BackgroundColor3 = Color3.fromRGB(16,60,140); tradeOverlay.Visible = false; tradeOverlay.Parent = panel; uicorner(tradeOverlay, 12); uistroke(tradeOverlay, Color3.fromRGB(10,40,100), 2)
+-- ⚠ RENAMED "TradeOverlayLegacy": this built-in trade UI is RETIRED. PetTradeClient.client.luau (realm 1's
+-- trade window, the same file Space runs) now owns the TRADE tab -- it creates the panel's one true
+-- "TradeOverlay" and intercepts showPage("trade") before this file's router sees it. The rename matters
+-- beyond tidiness: TradeRequests.client.luau attaches its FRIENDS tab to Panel:FindFirstChild("TradeOverlay"),
+-- and two children with that name would make which one it finds a race.
+local tradeOverlay = Instance.new("Frame"); tradeOverlay.Name = "TradeOverlayLegacy"; tradeOverlay.Size = UDim2.new(1,-24,1,-116); tradeOverlay.Position = UDim2.new(0,12,0,110)
+tradeOverlay.BackgroundColor3 = Color3.fromRGB(140, 16, 81); tradeOverlay.Visible = false; tradeOverlay.Parent = panel; uicorner(tradeOverlay, 12); uistroke(tradeOverlay, Color3.fromRGB(100, 10, 55), 2)
 local ovTitle = Instance.new("TextLabel"); ovTitle.Size = UDim2.new(1,-120,0,28); ovTitle.Position = UDim2.new(0,12,0,8); ovTitle.BackgroundTransparency = 1
 ovTitle.Font = Enum.Font.GothamBold; ovTitle.TextSize = 18; ovTitle.TextColor3 = Color3.fromRGB(255,215,0); ovTitle.TextXAlignment = Enum.TextXAlignment.Left; ovTitle.Text = "Trade"; ovTitle.Parent = tradeOverlay
 local ovBack = Instance.new("TextButton"); ovBack.Size = UDim2.new(0,100,0,28); ovBack.Position = UDim2.new(1,-108,0,8); ovBack.BackgroundColor3 = Color3.fromRGB(120,120,120)
@@ -676,7 +781,7 @@ local pickerLayout = Instance.new("UIListLayout"); pickerLayout.Padding = UDim.n
 
 local windowView = Instance.new("Frame"); windowView.Size = UDim2.new(1,-16,1,-46); windowView.Position = UDim2.new(0,8,0,42); windowView.BackgroundTransparency = 1; windowView.Visible = false; windowView.Parent = tradeOverlay
 local function colTitle(text, x) local l = Instance.new("TextLabel"); l.Size = UDim2.new(0,310,0,18); l.Position = UDim2.new(0,x,0,0); l.BackgroundTransparency = 1; l.Font = Enum.Font.GothamBold; l.TextSize = 14; l.TextColor3 = Color3.fromRGB(255,215,0); l.TextXAlignment = Enum.TextXAlignment.Left; l.Text = text; l.Parent = windowView; return l end
-local function colScroll(x, y, h) local s = Instance.new("ScrollingFrame"); s.Size = UDim2.new(0,310,0,h); s.Position = UDim2.new(0,x,0,y); s.BackgroundColor3 = Color3.fromRGB(12,44,104); s.BorderSizePixel = 0; s.ScrollBarThickness = 5; s.CanvasSize = UDim2.new(0,0,0,0); s.Parent = windowView; uicorner(s,8); local ll = Instance.new("UIListLayout"); ll.Padding = UDim.new(0,4); ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Parent = s; return s end
+local function colScroll(x, y, h) local s = Instance.new("ScrollingFrame"); s.Size = UDim2.new(0,310,0,h); s.Position = UDim2.new(0,x,0,y); s.BackgroundColor3 = Color3.fromRGB(104, 12, 59); s.BorderSizePixel = 0; s.ScrollBarThickness = 5; s.CanvasSize = UDim2.new(0,0,0,0); s.Parent = windowView; uicorner(s,8); local ll = Instance.new("UIListLayout"); ll.Padding = UDim.new(0,4); ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Parent = s; return s end
 colTitle("YOUR OFFER (click to remove)", 0)
 local yourOfferScroll = colScroll(0, 20, 150)
 local addTitleLbl = colTitle("YOUR PETS (click to add)", 0); addTitleLbl.Position = UDim2.new(0,0,0,176)
@@ -697,7 +802,7 @@ local function refreshPicker()
 	for _, pl in ipairs(Players:GetPlayers()) do
 		if pl ~= player then
 			n = n + 1; order = order + 1
-			local row = Instance.new("Frame"); row.Size = UDim2.new(1,-6,0,30); row.LayoutOrder = order; row.BackgroundColor3 = Color3.fromRGB(20,70,160); row.Parent = pickerScroll; uicorner(row,6)
+			local row = Instance.new("Frame"); row.Size = UDim2.new(1,-6,0,30); row.LayoutOrder = order; row.BackgroundColor3 = Color3.fromRGB(160, 20, 93); row.Parent = pickerScroll; uicorner(row,6)
 			local nm = Instance.new("TextLabel"); nm.Size = UDim2.new(1,-94,1,0); nm.Position = UDim2.new(0,8,0,0); nm.BackgroundTransparency = 1; nm.Font = Enum.Font.GothamBold; nm.TextSize = 13; nm.TextColor3 = Color3.new(1,1,1); nm.TextXAlignment = Enum.TextXAlignment.Left; nm.Text = pl.DisplayName .. " (@" .. pl.Name .. ")"; nm.Parent = row
 			local req = Instance.new("TextButton"); req.Size = UDim2.new(0,82,0,24); req.Position = UDim2.new(1,-86,0,3); req.BackgroundColor3 = Color3.fromRGB(50,200,50); req.Font = Enum.Font.GothamBold; req.TextSize = 12; req.TextColor3 = Color3.new(1,1,1); req.Text = "REQUEST"; req.Parent = row; uicorner(req,6)
 			local uid = pl.UserId
@@ -705,7 +810,7 @@ local function refreshPicker()
 		end
 	end
 	if n == 0 then
-		local e = Instance.new("TextLabel"); e.Size = UDim2.new(1,-6,0,40); e.BackgroundTransparency = 1; e.Font = Enum.Font.Gotham; e.TextSize = 13; e.TextColor3 = Color3.fromRGB(200,220,255); e.TextWrapped = true; e.Text = "No other players in the server to trade with."; e.Parent = pickerScroll
+		local e = Instance.new("TextLabel"); e.Size = UDim2.new(1,-6,0,40); e.BackgroundTransparency = 1; e.Font = Enum.Font.Gotham; e.TextSize = 13; e.TextColor3 = Color3.fromRGB(255, 200, 229); e.TextWrapped = true; e.Text = "No other players in the server to trade with."; e.Parent = pickerScroll
 	end
 	pickerScroll.CanvasSize = UDim2.new(0,0,0, n*36 + 8)
 end
@@ -742,14 +847,14 @@ confirmBtn.MouseButton1Click:Connect(function() if PetTradeConfirm then pcall(fu
 -- Every page is mutually exclusive: the old header chips TOGGLED, which let you end up with
 -- the pet grid showing while the nav claimed you were on Quests. A router that SETS state
 -- instead of flipping it cannot drift out of step with the highlighted tab.
-_G.PetHub.activePage = "pets"
+_G.PetHub.activePage = "dino" -- the first pets tab; "pets" itself no longer exists as a page
 
 _G.PetHub.syncNav = function()
-	local cur = _G.PetHub.activePage or "pets"
+	local cur = _G.PetHub.activePage or "dino"
 	for id, b in pairs(_G.PetHub.navButtons or {}) do
 		local on = (id == cur)
 		-- selected = dark-on-gold, unselected = gold-on-blue. Same two states the crate panel uses.
-		b.BackgroundColor3 = on and Color3.fromRGB(255,215,0) or Color3.fromRGB(18,66,150)
+		b.BackgroundColor3 = on and Color3.fromRGB(255,215,0) or Color3.fromRGB(150, 18, 88)
 		b.TextColor3 = on and Color3.fromRGB(92,58,8) or Color3.fromRGB(255,215,0)
 		local st = b:FindFirstChildOfClass("UIStroke")
 		if st then
@@ -761,6 +866,11 @@ end
 
 _G.PetHub.showPage = function(id)
 	id = id or "pets"
+	-- "pets" NO LONGER HAS A PAGE (the demo-inventory tab is removed) but plenty of callers still say it:
+	-- the quests/trade Back buttons, the PetTradeState close path, and any external opener written before
+	-- the change. Mapping it here, at the single entry point, retargets every one of them at once to the
+	-- first pets tab -- the Dino collection -- instead of leaving them pointing at a hidden grid.
+	if id == "pets" then id = "dino" end
 	-- CRATES (and TOKENS, a page inside it) belong to the crate panel. Hand off rather than
 	-- rebuild: that panel already owns the roll, the reveal and the token purchase, and a
 	-- second copy of any of those is a second thing that can disagree with the server.
@@ -781,7 +891,17 @@ _G.PetHub.showPage = function(id)
 		return
 	end
 	questsOverlay.Visible = (id == "quests")
-	tradeOverlay.Visible  = (id == "trade")
+	-- NEVER shown any more: PetTradeClient intercepts "trade" before this line can run with that id, and
+	-- pinning it false covers the boot window before its wrap installs -- a click in that window would
+	-- otherwise show the retired UI once, talking to remotes with the same names as the real one.
+	tradeOverlay.Visible  = false
+	-- EXTRA PAGES owned by other scripts (the FOOD and DINO realm collections). Registered through
+	-- _G.PetHub.registerPage so this file does not have to know how they are built -- it only has to
+	-- tell every one of them whether it is the page being shown, which is what keeps the lit tab and
+	-- the visible page from drifting apart the way independent toggles always eventually do.
+	for pageId, page in pairs(_G.PetHub.extraPages) do
+		if type(page) == "function" then pcall(page, id == pageId) end
+	end
 	if id == "trade" then
 		-- a live session shows the trade window; otherwise the picker
 		if tradeState and tradeState.active then renderTradeWindow(tradeState) else showPicker() end
@@ -808,7 +928,7 @@ end) end
 
 -- incoming-request popup (shows even if the Hub is closed)
 local reqPopup = Instance.new("Frame"); reqPopup.Name = "TradeRequestPopup"; reqPopup.AnchorPoint = Vector2.new(0.5,0.5); reqPopup.Position = UDim2.new(0.5,0,0.4,0); reqPopup.Size = UDim2.new(0,320,0,130)
-reqPopup.BackgroundColor3 = Color3.fromRGB(25,90,185); reqPopup.Visible = false; reqPopup.ZIndex = 50; reqPopup.Parent = invGui; uicorner(reqPopup, 12); uistroke(reqPopup, Color3.fromRGB(255,215,0), 3)
+reqPopup.BackgroundColor3 = Color3.fromRGB(185, 25, 117); reqPopup.Visible = false; reqPopup.ZIndex = 50; reqPopup.Parent = invGui; uicorner(reqPopup, 12); uistroke(reqPopup, Color3.fromRGB(255,215,0), 3)
 local reqLbl = Instance.new("TextLabel"); reqLbl.Size = UDim2.new(1,-20,0,60); reqLbl.Position = UDim2.new(0,10,0,10); reqLbl.BackgroundTransparency = 1; reqLbl.ZIndex = 51; reqLbl.Font = Enum.Font.GothamBold; reqLbl.TextSize = 16; reqLbl.TextColor3 = Color3.new(1,1,1); reqLbl.TextWrapped = true; reqLbl.Text = ""; reqLbl.Parent = reqPopup
 local reqAccept = Instance.new("TextButton"); reqAccept.Size = UDim2.new(0,140,0,38); reqAccept.Position = UDim2.new(0,12,1,-46); reqAccept.BackgroundColor3 = Color3.fromRGB(50,200,50); reqAccept.ZIndex = 51; reqAccept.Font = Enum.Font.GothamBold; reqAccept.TextSize = 15; reqAccept.TextColor3 = Color3.new(1,1,1); reqAccept.Text = "ACCEPT"; reqAccept.Parent = reqPopup; uicorner(reqAccept,8)
 local reqDecline = Instance.new("TextButton"); reqDecline.Size = UDim2.new(0,140,0,38); reqDecline.Position = UDim2.new(1,-152,1,-46); reqDecline.BackgroundColor3 = Color3.fromRGB(220,60,60); reqDecline.ZIndex = 51; reqDecline.Font = Enum.Font.GothamBold; reqDecline.TextSize = 15; reqDecline.TextColor3 = Color3.new(1,1,1); reqDecline.Text = "DECLINE"; reqDecline.Parent = reqPopup; uicorner(reqDecline,8)

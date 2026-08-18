@@ -14,11 +14,8 @@
 -- view up the island stack 2..14, ending bottom-up on the black hole) -> return the
 -- camera to the player, restore everything. Any NPC/island that can't be found is
 -- skipped gracefully; existing garden/NPC behaviour is left intact afterwards.
--- SKIPPABLE: a SKIP button sits bottom-right the whole time. Normal players must watch
--- SKIP_WAIT (10s) first -- the button counts down ("SKIP in 8") and only then goes live.
--- DEVS (see DEV_IDS/DEV_NAMES) get an instantly-clickable SKIP so they aren't stuck
--- re-watching the cinematic every test join. Pressing it cancels the cinematic
--- immediately (restores camera/controls/HUD and notifies the server).
+-- SKIPPABLE: a SKIP button fades in a few seconds in (SKIP_AFTER) and cancels the
+-- cinematic immediately when pressed (restores camera/controls/HUD and notifies the server).
 -- ============================================================================
 
 local Players          = game:GetService("Players")
@@ -27,23 +24,13 @@ local RunService       = game:GetService("RunService")
 local TweenService     = game:GetService("TweenService")
 local StarterGui       = game:GetService("StarterGui")
 local Workspace        = game:GetService("Workspace")
+local SoundService     = game:GetService("SoundService")
 
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 local GardenIntroEvent     = ReplicatedStorage:WaitForChild("GardenIntroEvent", 30)
 local GardenIntroDoneEvent = ReplicatedStorage:WaitForChild("GardenIntroDoneEvent", 30)
-
--- ---- SKIP GATE ------------------------------------------------------------
--- Everyone waits SKIP_WAIT seconds before the SKIP button goes live (so a first-time
--- player actually sees the opening), EXCEPT devs, who can skip on frame one.
--- Same allow-list as the realm-teleport testers (BlackHoleTeleport / RealmPortals).
--- Names are LOWER-CASE keys and the lookup lower-cases too -- matching on raw
--- plr.Name is how a dev ends up locked out over a single capital letter.
-local SKIP_WAIT = 10
-local DEV_IDS   = { [1086836724] = true, [1418148401] = true, [3911540303] = true } -- lando5485, Broskie310111, Itsmaddmax1
-local DEV_NAMES = { ["lando5485"] = true, ["broskie310111"] = true, ["itsmaddmax1"] = true, ["itsmaddmax2"] = true }
-local IS_DEV = DEV_IDS[player.UserId] == true or DEV_NAMES[string.lower(player.Name)] == true
 
 -- ---- DIALOGUE -------------------------------------------------------------
 -- INTRO ONLY: short, fast-reading lines. Farmer/Cow/Pig all have the SAME number of slides (4) -- keep them
@@ -255,7 +242,7 @@ local function playIntro()
 	coverGui.Name = "GardenIntroCover"
 	coverGui.IgnoreGuiInset = true
 	coverGui.ResetOnSpawn = false
-	coverGui.DisplayOrder = 1500000 -- above the letterbox + title card (the skip button at 2000000 sits above this)
+	coverGui.DisplayOrder = 1500000 -- above the letterbox + title card (skip button at 2000000 sits above, fades in at SKIP_AFTER)
 	coverGui.Parent = playerGui
 	local coverBlack = Instance.new("Frame")
 	coverBlack.Size = UDim2.fromScale(1, 1)
@@ -265,6 +252,87 @@ local function playIntro()
 	coverBlack.BorderSizePixel = 0
 	coverBlack.ZIndex = 10
 	coverBlack.Parent = coverGui
+
+	-- ===================== FLASH PROBE (diagnostic; set FLASH_PROBE=false to silence) =====================
+	-- The boot log can tell us WHEN things happen but not WHAT THE RENDERER ACTUALLY DREW, which is the one
+	-- thing that matters for "a split second of the island right after PLAY". So sample it per frame: is an
+	-- opaque, full-screen GuiObject actually present this frame, and where is the camera pointing?
+	--
+	-- An UNCOVERED frame is a frame the player could have seen the world through. If the report says 0 of them,
+	-- the leak is NOT a missing cover and the camera columns say whether we were still framed on the spawn.
+	local FLASH_PROBE = true
+	local probeStop   -- forward-declared; doSegment calls this when the farmer scene actually takes over
+	if FLASH_PROBE then
+		local cam        = workspace.CurrentCamera
+		local t0         = os.clock()
+		local frames, uncovered = 0, 0
+		local samples    = {}          -- up to 8 uncovered frames, recorded for the report
+		local firstBad, lastBad        -- seconds since PLAY
+
+		-- Cheap depth-limited sweep: a full-screen blackout is always a direct child or grandchild of a
+		-- ScreenGui, never buried deeper, so this stays affordable at 60fps (a full GetDescendants() of
+		-- PlayerGui every frame would itself cause the stutter we are trying to measure).
+		local function screenIsCovered()
+			local vp = cam.ViewportSize
+			for _, sg in ipairs(playerGui:GetChildren()) do
+				if sg:IsA("ScreenGui") and sg.Enabled then
+					for _, a in ipairs(sg:GetChildren()) do
+						if a:IsA("GuiObject") and a.Visible then
+							if a.BackgroundTransparency <= 0.02
+								and a.AbsoluteSize.X >= vp.X * 0.9 and a.AbsoluteSize.Y >= vp.Y * 0.9 then
+								return true, sg.Name .. "." .. a.Name
+							end
+							for _, b in ipairs(a:GetChildren()) do
+								if b:IsA("GuiObject") and b.Visible and b.BackgroundTransparency <= 0.02
+									and b.AbsoluteSize.X >= vp.X * 0.9 and b.AbsoluteSize.Y >= vp.Y * 0.9 then
+									return true, sg.Name .. "." .. a.Name .. "." .. b.Name
+								end
+							end
+						end
+					end
+				end
+			end
+			return false, nil
+		end
+
+		local conn
+		conn = RunService.RenderStepped:Connect(function()
+			frames = frames + 1
+			local t = os.clock() - t0
+			local covered = screenIsCovered()
+			if not covered then
+				uncovered = uncovered + 1
+				firstBad = firstBad or t
+				lastBad = t
+				if #samples < 8 then
+					local p = cam.CFrame.Position
+					samples[#samples + 1] = ("      t=%.3fs  camType=%s  camPos=(%d, %d, %d)")
+						:format(t, tostring(cam.CameraType):gsub("Enum.CameraType.", ""), p.X, p.Y, p.Z)
+				end
+			end
+		end)
+
+		probeStop = function(reason)
+			if not conn then return end
+			conn:Disconnect(); conn = nil
+			local total = os.clock() - t0
+			print("========== [GARDEN INTRO] FLASH PROBE ==========")
+			print(("  window: PLAY -> %s   (%.2fs, %d frames)"):format(reason, total, frames))
+			if uncovered == 0 then
+				print("  UNCOVERED FRAMES: 0 -- an opaque full-screen cover was present EVERY frame.")
+				print("  => the flash is NOT the world showing through a gap. Look at what the fade reveals instead")
+				print("     (camera framing, or a HUD element drawn over the cinematic).")
+			else
+				print(("  UNCOVERED FRAMES: %d of %d  (%.0f%%)  first=%.3fs  last=%.3fs  ~%.0fms of visible world")
+					:format(uncovered, frames, uncovered / math.max(1, frames) * 100,
+						firstBad or 0, lastBad or 0, ((lastBad or 0) - (firstBad or 0)) * 1000))
+				print("  the camera during those frames (Custom = default player camera = you saw the spawn):")
+				for _, s in ipairs(samples) do print(s) end
+			end
+			print("===============================================")
+		end
+	end
+	-- =================== END FLASH PROBE ===================
 
 	-- wait for the character (blocks BEHIND the black; selecting island 1 spawns it server-side)
 	local char = player.Character or player.CharacterAdded:Wait()
@@ -395,6 +463,12 @@ local function playIntro()
 	local function restoreWorld()
 		if worldRestored then return end
 		worldRestored = true
+		-- MUSIC BACK UP. MusicDucking owns the BackgroundMusic group's volume, so we hand it straight back
+		-- to that script rather than writing a number ourselves -- it knows whether an event duck or the
+		-- settings-menu mute is currently in force, and we do not.
+		pcall(function()
+			if _G.refreshMusicVolume then _G.refreshMusicVolume() end
+		end)
 		if hudConn then hudConn:Disconnect(); hudConn = nil end -- stop hiding newly-added HUD
 		restorePlayers() -- make every player character fully visible again
 		-- un-hide every island we hid during the flyover (LocalTransparencyModifier is client-only -> just zero it)
@@ -459,6 +533,9 @@ local function playIntro()
 	local function cleanup()
 		if cleaned then return end
 		cleaned = true
+		-- Safety stop for the probe: if the farmer is never found, or the player SKIPs before the first segment,
+		-- doSegment never runs and the RenderStepped sampler would otherwise stay connected for the session.
+		if probeStop then probeStop("cleanup (skipped / no segment reached)"); probeStop = nil end
 		restoreWorld()
 		if titleGui then titleGui:Destroy(); titleGui = nil end -- never leave the player stuck on a black screen
 		if coverGui then coverGui:Destroy(); coverGui = nil end -- opening black transition overlay
@@ -489,24 +566,23 @@ local function playIntro()
 	skipBtn.Modal = true
 	skipBtn.Active = true
 	skipBtn.Selectable = true
-	-- Devs start on the live green "SKIP ➜"; everyone else starts on the dim grey countdown.
-	skipBtn.BackgroundColor3 = IS_DEV and Color3.fromRGB(54, 116, 50) or Color3.fromRGB(58, 62, 58)
+	skipBtn.BackgroundColor3 = Color3.fromRGB(54, 116, 50)  -- bright ready green (skip is live immediately)
 	skipBtn.Font = Enum.Font.FredokaOne                     -- game's bold rounded font
-	skipBtn.Text = IS_DEV and "SKIP  \xE2\x9E\x9C" or ("SKIP in " .. SKIP_WAIT)
+	skipBtn.Text = "SKIP  \xE2\x9E\x9C"                     -- "SKIP ➜" -- clickable from the very first frame (no countdown)
 	skipBtn.TextColor3 = Color3.fromRGB(255, 247, 230)      -- cream
 	skipBtn.TextScaled = true
-	skipBtn.BackgroundTransparency = IS_DEV and 0.05 or 0.35 -- dimmed while it's still counting down
-	skipBtn.TextTransparency = IS_DEV and 0 or 0.25
+	skipBtn.BackgroundTransparency = 0.05                   -- fully visible (skip is active right away)
+	skipBtn.TextTransparency = 0
 	skipBtn.ZIndex = 2
 	skipBtn.Parent = skipGui
-	print("[GARDEN INTRO] SKIP button shown (" .. (IS_DEV and "DEV -> active immediately" or ("locked for " .. SKIP_WAIT .. "s")) .. ")")
+	print("[GARDEN INTRO] SKIP button shown (active immediately)")
 	local skCorner = Instance.new("UICorner"); skCorner.CornerRadius = UDim.new(0, 12); skCorner.Parent = skipBtn
 	local skBorder = Instance.new("UIStroke"); skBorder.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	skBorder.Color = Color3.fromRGB(255, 247, 230); skBorder.Thickness = 2.5; skBorder.Transparency = 0.35; skBorder.Parent = skipBtn
 	local skPad = Instance.new("UIPadding")
 	skPad.PaddingTop = UDim.new(0, 8); skPad.PaddingBottom = UDim.new(0, 8)
 	skPad.PaddingLeft = UDim.new(0, 14); skPad.PaddingRight = UDim.new(0, 14); skPad.Parent = skipBtn
-	local skipReady = IS_DEV -- devs: live on frame one. Everyone else: unlocked by the countdown below.
+	local skipReady = true -- skip is available IMMEDIATELY (no countdown gate)
 	local function doSkip()
 		print("[GARDEN INTRO] SKIP button CLICKED (skipReady=" .. tostring(skipReady) .. ", skipped=" .. tostring(skipped) .. ")")
 		if not skipReady then return end -- still counting down ("SKIP in N") -> not clickable yet
@@ -520,35 +596,9 @@ local function playIntro()
 	skipBtn.Activated:Connect(doSkip)
 	skipBtn.MouseButton1Click:Connect(doSkip)
 	skipBtn.TouchTap:Connect(doSkip)
-	-- COUNTDOWN: devs are already live (styled ready above, skipReady true), so nothing to do. For everyone else
-	-- tick "SKIP in N" down once a second, then flip the button to the ready green and set skipReady. Runs in its
-	-- own thread so the cinematic keeps playing; it bails early if the intro ends first (skipGui destroyed in
-	-- cleanup) so it can never touch a dead instance.
-	local function makeSkipReady()
-		skipReady = true
-		pcall(function()
-			skipBtn.Text = "SKIP  \xE2\x9E\x9C"
-			skipBtn.BackgroundColor3 = Color3.fromRGB(54, 116, 50)
-			skipBtn.BackgroundTransparency = 0.05
-			skipBtn.TextTransparency = 0
-			skBorder.Transparency = 0
-		end)
-		print("[GARDEN INTRO] SKIP now available")
-	end
-	if IS_DEV then
-		makeSkipReady()
-	else
-		task.spawn(function()
-			for remaining = SKIP_WAIT - 1, 1, -1 do
-				task.wait(1)
-				if skipped or not skipGui or not skipGui.Parent then return end
-				pcall(function() skipBtn.Text = "SKIP in " .. remaining end)
-			end
-			task.wait(1)
-			if skipped or not skipGui or not skipGui.Parent then return end
-			makeSkipReady()
-		end)
-	end
+	-- SKIP is available IMMEDIATELY -- the button is styled ready above and skipReady starts true, so a player can
+	-- bail out of the intro the instant they join (no countdown). skBorder brightened up front to match.
+	pcall(function() skBorder.Transparency = 0 end)
 
 	-- ---- one subject segment: pan in, auto-advance ALL the NPC's lines across `window` seconds total ----
 	-- `window` (seconds) is divided EVENLY across this NPC's lines, so the whole set fills the 8-10s window
@@ -569,10 +619,29 @@ local function playIntro()
 		end
 
 		-- keep the (possibly wandering) subject centred while it speaks
+		--
+		-- HANDHELD SWAY ONLY -- the framing DISTANCE is fixed, and must stay fixed.
+		--
+		-- A slow push-in was tried here and removed. It looked correct on paper and wrong on screen, for a
+		-- reason worth writing down so nobody re-adds it: frameCFrame() recomputes the shot from the NPC's
+		-- CURRENT position every frame, and that position arrives by REPLICATION, not per-frame. With a
+		-- constant distance the lerp converges and the camera sits still, so the stepping is invisible. Feed
+		-- it a distance that is also shrinking and every replication update lands as a small forward nudge:
+		-- the camera visibly INCHES toward whoever is speaking instead of gliding. Any dolly move here has to
+		-- come from a separately smoothed subject position, not from varying `dist` against a live target.
+		--
+		-- The sway survives because it is pure ROTATION applied to the final CFrame -- it adds no positional
+		-- motion at all, so it cannot inch. A few thousandths of a radian on two axes at deliberately
+		-- mismatched speeds, so the drift never visibly repeats: the difference between a camera someone is
+		-- holding and a CFrame. Keep it tiny; crank these and it reads as a wobble.
+		local SWAY_YAW  = 0.006  -- radians
+		local SWAY_PIT  = 0.004
 		local following = true
 		local conn = RunService.RenderStepped:Connect(function()
 			if not following or not model.Parent then return end
-			camera.CFrame = camera.CFrame:Lerp(frameCFrame(model, dist), 0.06)
+			local t = os.clock()
+			local sway = CFrame.Angles(math.sin(t * 0.73) * SWAY_PIT, math.sin(t * 0.51) * SWAY_YAW, 0)
+			camera.CFrame = camera.CFrame:Lerp(frameCFrame(model, dist) * sway, 0.06)
 		end)
 
 		-- split the window evenly across the lines (each line = clear + show, summing to ~per)
@@ -604,6 +673,9 @@ local function playIntro()
 			return false
 		end
 		print("[GARDEN INTRO] segment: " .. label)
+		-- The probe's window closes here: from this point doSegment owns the camera, so anything after is the
+		-- cinematic proper, not the handoff we are measuring. Only the FIRST segment ends it.
+		if probeStop then probeStop("segment:" .. label); probeStop = nil end
 
 		-- The NPC WAVES as the camera settles on him. Without this he stands stone-still through the one scene that
 		-- is entirely about him -- his proximity wave cannot fire, because the player's character is still back at
@@ -627,6 +699,18 @@ local function playIntro()
 	end
 
 	-- ---- RUN THE CINEMATIC (guarded so cleanup ALWAYS happens; SKIP bails any step early) ----
+	-- DUCK THE MUSIC UNDER THE CINEMATIC. The NPCs "speak" in silent text bubbles, so the soundtrack is the
+	-- only thing competing with them -- pulling it down for the shot is the difference between lines you
+	-- read and lines you notice. Tweened, not snapped, so the drop is not itself an event.
+	-- restoreWorld() hands control back to MusicDucking; this only borrows the group for the shot.
+	pcall(function()
+		local grp = SoundService:FindFirstChild("BackgroundMusic")
+		if grp and grp:IsA("SoundGroup") then
+			local normal = grp:GetAttribute("NormalVolume") or grp.Volume
+			TweenService:Create(grp, TweenInfo.new(0.6), { Volume = normal * 0.35 }):Play()
+		end
+	end)
+
 	local ok, err = pcall(function()
 		camera.CameraType = Enum.CameraType.Scriptable
 		-- BEHIND THE BLACK: frame the FARMER (the first speaker) so the reveal shows him already in place (no pan/jump).
@@ -640,9 +724,49 @@ local function playIntro()
 		-- the menu close + camera move), then a QUICK ~0.25s fade -- so the intro appears almost immediately after PLAY
 		-- instead of the old 0.5s-hold + 0.5s-fade (~1s) pause.
 		if sleep(math.max(0, 0.1 - (os.clock() - blackStart))) then return end
+
+		-- HOLD THE FRAMING ACROSS THE FADE.
+		-- CameraType was set to Scriptable further up, and the CFrame above frames the farmer -- but BOTH of those
+		-- happen before the server has finished spawning the character. Selecting the island respawns it, and a
+		-- fresh character makes the engine reset CameraType to Custom and repoint CameraSubject at the new
+		-- Humanoid. The camera therefore snaps back onto the player somewhere in this gap, and the fade below then
+		-- reveals ordinary gameplay instead of the farmer for a beat -- the boot log measured 0.29s of it, from
+		-- "fading up" to "segment: FARMER" (which is where doSegment's own lerp finally retakes the camera).
+		--
+		-- Re-assert immediately, then keep re-asserting every rendered frame until the segment takes over, so it
+		-- does not matter WHEN the respawn lands inside this window.
+		local function holdFrame()
+			camera.CameraType = Enum.CameraType.Scriptable
+			if revealModel then camera.CFrame = frameCFrame(revealModel, 9) end
+		end
+		-- Same reasoning for the HUD. CoreClient hides every game ScreenGui at build time and re-enables them all
+		-- on CharacterAdded ("HUD REVEALED"), which lands INSIDE the cinematic -- the boot log has it at .936
+		-- with this fade at .069, 0.13s later. The Enabled watcher in hideGui does catch that and slap them back
+		-- off, but only on the frame the property changes, and only for GUIs that were guarded at intro start.
+		-- Re-sweep here so what the fade uncovers is guaranteed to be the farmer and nothing else.
+		for _, g in ipairs(playerGui:GetChildren()) do
+			hideGui(g)                                              -- guards anything that appeared since the start
+			if guardedSet[g] and g.Enabled then g.Enabled = false end -- and force off anything re-enabled since
+		end
+
+		holdFrame()
+		local holdConn = RunService.RenderStepped:Connect(holdFrame)
+
+		-- DRAW THE FARMER FRAMING BEHIND THE BLACK BEFORE LIFTING IT.
+		-- holdFrame() only ASSIGNS the CFrame; the engine does not composite it until the next render. Starting
+		-- the tween on this same frame therefore lets the first fade frames come out of the renderer still using
+		-- the OLD camera -- which, this early, is the default player camera looking at the spawn: plain world.
+		-- That is the "quick glimpse of the game right after PLAY, before the farmer" being reported. Give the
+		-- new camera two real rendered frames under the still-opaque black, so the very first non-black pixel
+		-- the player ever sees is already the farmer.
+		RunService.RenderStepped:Wait()
+		RunService.RenderStepped:Wait()
+
 		print("[GARDEN INTRO] black hold done -> fading up to reveal the farmer")
 		TweenService:Create(coverBlack, TweenInfo.new(0.25, Enum.EasingStyle.Quad), {BackgroundTransparency = 1}):Play()
-		if sleep(0.25) then return end
+		local bailed = sleep(0.25)
+		holdConn:Disconnect()   -- doSegment drives the camera from here; releasing avoids fighting its lerp
+		if bailed then return end
 		if coverGui then coverGui:Destroy(); coverGui = nil end
 
 		-- FARMER FIRST: already framed by the reveal -> straight into his welcome lines (no pan). Then the garden
@@ -725,12 +849,21 @@ local function playIntro()
 		titleGui.DisplayOrder = 1000000
 		titleGui.Parent = playerGui
 
+		-- ---- the card itself: black backdrop, the game's name, the studio credit ----
+		-- Same two labels and the same timing this always had. Only the COLOURS changed, to the ones the rest of
+		-- the realm is built from: the gold the crate reveal, the shop headers and the growth dial all use, over a
+		-- navy-black rather than a flat #000 -- flat black is the one colour nothing else in this game uses, which
+		-- is exactly what made a white-on-black card feel like it belonged to some other game.
+		local GOLD  = Color3.fromRGB(255, 210, 74)  -- #ffd24a, the house gold
+		local NAVY   = Color3.fromRGB(6, 26, 80)     -- the house shadow colour; never black
+		local CREAM = Color3.fromRGB(238, 244, 255)
+
 		local black = Instance.new("Frame")
 		black.Name = "Black"
 		black.Size = UDim2.fromScale(1, 1)
 		black.Position = UDim2.fromScale(0, 0)
-		black.BackgroundColor3 = Color3.new(0, 0, 0)
-		black.BackgroundTransparency = 1 -- fades 1 -> 0 (fully black)
+		black.BackgroundColor3 = Color3.fromRGB(6, 10, 26) -- near-black, faintly navy
+		black.BackgroundTransparency = 1 -- fades 1 -> 0 (fully opaque)
 		black.BorderSizePixel = 0
 		black.ZIndex = 1
 		black.Parent = titleGui
@@ -743,47 +876,89 @@ local function playIntro()
 		title.BackgroundTransparency = 1
 		title.Font = Enum.Font.FredokaOne -- game's bold rounded font
 		title.Text = "Welcome To Fart To Float"
-		title.TextColor3 = Color3.fromRGB(255, 255, 255)
+		title.TextColor3 = GOLD
 		title.TextScaled = true
 		title.TextTransparency = 1 -- fades in just after the screen goes black
 		title.ZIndex = 2
 		title.Parent = titleGui
+		-- A navy outline, the same one every panel and label in the game wears. It is what stops gold text from
+		-- washing out, and it is most of why this reads as the game's own lettering.
+		--
+		-- KEPT IN A VARIABLE, and it starts invisible. A UIStroke has its OWN Transparency that
+		-- TextTransparency does not touch, so a stroke left at 0 while the label fades leaves the hollow
+		-- outline of the name hanging on screen after the letters themselves have gone. Every fade below
+		-- drives this alongside the label.
+		local titleStroke = Instance.new("UIStroke")
+		titleStroke.Thickness = 3
+		titleStroke.Color = NAVY
+		titleStroke.Transparency = 1
+		titleStroke.Parent = title
+
+		-- A hairline of house gold between the name and the credit. One thin rule is the whole reason a
+		-- two-line card reads as SET rather than as two sentences that happen to be near each other -- it
+		-- groups them and gives the credit something to hang from. Static, centred, no animation of its own.
+		local rule = Instance.new("Frame")
+		rule.Name = "Rule"
+		rule.AnchorPoint = Vector2.new(0.5, 0.5)
+		rule.Position = UDim2.fromScale(0.5, 0.525)
+		rule.Size = UDim2.fromScale(0.20, 0.004)
+		rule.BackgroundColor3 = GOLD
+		rule.BackgroundTransparency = 1
+		rule.BorderSizePixel = 0
+		rule.ZIndex = 2
+		rule.Parent = titleGui
+		do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(1, 0); c.Parent = rule end
 
 		local credit = Instance.new("TextLabel")
 		credit.Name = "Credit"
 		credit.AnchorPoint = Vector2.new(0.5, 0)
-		credit.Position = UDim2.fromScale(0.5, 0.535) -- tucked right under the title (small gap)
-		credit.Size = UDim2.fromScale(0.5, 0.05)
+		credit.Position = UDim2.fromScale(0.5, 0.555) -- under the rule, with the same small gap as before
+		credit.Size = UDim2.fromScale(0.5, 0.045)
 		credit.BackgroundTransparency = 1
 		credit.Font = Enum.Font.FredokaOne
 		credit.Text = "By: M.L.R. Studios"
-		credit.TextColor3 = Color3.fromRGB(255, 255, 255)
+		credit.TextColor3 = CREAM
 		credit.TextScaled = true
 		credit.TextTransparency = 1
 		credit.ZIndex = 2
 		credit.Parent = titleGui
 
-		-- 1) fade the whole screen to FULLY black (~1s)
+		-- ===== FADES, WITH THE STROKE DRIVEN ALONGSIDE THE TEXT =====
+		-- One helper for both directions, so the card can never go out by a different route than it came
+		-- in. `a` is 0 (visible) or 1 (gone); the stroke and the rule ride the same tween as the labels --
+		-- which is the whole point of it existing, because a stroke left behind is exactly how the outline
+		-- of the name ended up hanging over live gameplay.
+		local function fadeCard(a, dur)
+			local info = TweenInfo.new(dur)
+			TweenService:Create(title,       info, {TextTransparency = a}):Play()
+			TweenService:Create(titleStroke, info, {Transparency = a}):Play()
+			TweenService:Create(credit,      info, {TextTransparency = a}):Play()
+			TweenService:Create(rule,        info, {BackgroundTransparency = (a >= 1) and 1 or 0.25}):Play()
+		end
+
+		-- 1) fade the whole screen down (~1s)
 		TweenService:Create(black, TweenInfo.new(1, Enum.EasingStyle.Quad), {BackgroundTransparency = 0}):Play()
 		if sleep(1) then return end
-		-- 2) title + credit fade in just after black (~0.6s)
-		print("[GARDEN INTRO] segment: TITLE CARD (\"Welcome To Fart To Float\" / By: M.L.R. Studios)")
-		TweenService:Create(title,  TweenInfo.new(0.6), {TextTransparency = 0}):Play()
-		TweenService:Create(credit, TweenInfo.new(0.6), {TextTransparency = 0}):Play()
-		-- 3) hold the title card on black (~3s)
+
+		-- 2) the card fades in over the black (~0.6s)
+		print('[GARDEN INTRO] segment: TITLE CARD ("Welcome To Fart To Float" / By: M.L.R. Studios)')
+		fadeCard(0, 0.6)
+
+		-- 3) hold (~3s)
 		if sleep(3) then return end
 
-		-- 4) behind the black card, hand the world back (default camera on the player, controls + HUD restored,
-		-- letterbox gone) so that when the black fades out, NORMAL GAMEPLAY is revealed.
+		-- 4) behind the still-opaque black, hand the world back (default camera on the player, controls +
+		-- HUD restored, letterbox gone) so that when the black lifts, NORMAL GAMEPLAY is revealed.
 		print("[GARDEN INTRO] segment: RETURN TO PLAYER (behind title card)")
 		restoreWorld()
 
-		-- fade the black + text back out (~1s) -> reveal gameplay
+		-- 5) card out first (0.6s), then the screen up (1.2s, Sine). The black lifting is what brings the
+		-- whole picture back -- world and HUD together -- so it is left slower than the text.
 		print("[GARDEN INTRO] segment: TITLE CARD (fade out -> gameplay)")
-		TweenService:Create(title,  TweenInfo.new(0.6), {TextTransparency = 1}):Play()
-		TweenService:Create(credit, TweenInfo.new(0.6), {TextTransparency = 1}):Play()
-		TweenService:Create(black,  TweenInfo.new(1, Enum.EasingStyle.Quad), {BackgroundTransparency = 1}):Play()
-		if sleep(1) then return end
+		fadeCard(1, 0.6)
+		TweenService:Create(black, TweenInfo.new(1.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+			{BackgroundTransparency = 1}):Play()
+		if sleep(1.25) then return end
 		if titleGui then titleGui:Destroy(); titleGui = nil end
 	end)
 
@@ -793,15 +968,23 @@ local function playIntro()
 		if activeTween then pcall(function() activeTween:Cancel() end) end
 		if skipGui then pcall(function() TweenService:Create(skipBtn, TweenInfo.new(0.2), {BackgroundTransparency = 1, TextTransparency = 1}):Play() end) end
 		if titleGui then
-			-- title card is up: restore the world BEHIND the opaque black, then fade the card out -> reveals gameplay
+			-- Title card is up: restore the world BEHIND the opaque black, then fade the card out -> gameplay.
+			--
+			-- GetDESCENDANTS, and UIStroke is in the list. This used to walk GetChildren() and tween only
+			-- TextTransparency / BackgroundTransparency -- but a UIStroke is a child OF the label, not of
+			-- the ScreenGui, and it carries its own Transparency that TextTransparency does not touch. So
+			-- the black went, the credit went, the gold fill of the name went, and the navy outline of
+			-- "Welcome To Fart To Float" stayed fully opaque -- a hollow shell of the title hanging over
+			-- live gameplay for the rest of the fade. Everything now goes out on the same 0.5s.
 			restoreWorld()
-			for _, c in ipairs(titleGui:GetChildren()) do
+			for _, d in ipairs(titleGui:GetDescendants()) do
 				pcall(function()
-					if c:IsA("Frame")     then TweenService:Create(c, TweenInfo.new(0.4), {BackgroundTransparency = 1}):Play() end
-					if c:IsA("TextLabel") then TweenService:Create(c, TweenInfo.new(0.4), {TextTransparency = 1}):Play() end
+					if d:IsA("TextLabel") then TweenService:Create(d, TweenInfo.new(0.5), {TextTransparency = 1}):Play() end
+					if d:IsA("Frame")     then TweenService:Create(d, TweenInfo.new(0.5), {BackgroundTransparency = 1}):Play() end
+					if d:IsA("UIStroke")  then TweenService:Create(d, TweenInfo.new(0.5), {Transparency = 1}):Play() end
 				end)
 			end
-			task.wait(0.45)
+			task.wait(0.55)
 		else
 			-- no title card up: brief beat, then restore (camera returns to the player, HUD comes back)
 			task.wait(0.2)

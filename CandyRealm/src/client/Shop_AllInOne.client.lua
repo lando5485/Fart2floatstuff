@@ -18,13 +18,31 @@ local COIN_IMAGE = "rbxassetid://106760789458573"
 local shopOpen = false
 local playerClosedShop = false
 local nearIslandNumber = 1
-local unlockedIslands = {[1]=true, [2]=true, [3]=true, [5]=true} -- islands 2 (Ice Cream), 3 (Cookies), 5 (Taffy) stands unlocked
+local unlockedIslands = {[1]=true} -- island 1's stand is always open; the rest unlock by REACHING them
 local stands = {}
 local lastAwayTime = 0
 local STAND_TRIGGER_RADIUS = 12 -- studs: how close (horizontally) the player must walk to a stand before its shop opens (was 15 original -> 9 reduced -> 12 midpoint)
 
+-- the shared tower: model number <-> climb slot, and the slot-ordered food list
+local IslandOrder = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("IslandOrder"))
+
+-- A FOOD UNLOCKS BY REACHING ITS ISLAND. This used to be a hard-coded set ({1,2,3,5}),
+-- which is wrong in both directions: it opened three stands the player hasn't climbed to
+-- and locked the rest forever. The server gates the real purchase on the HighestSlot
+-- attribute (BuyFood -> "food_locked"); this mirrors that rule so the UI can't offer a
+-- buy the server will refuse.
+--
+-- COMPARE SLOTS, NOT MODEL NUMBERS. The tower scrambles the two, so `islandNum <= reached`
+-- would unlock island1..island7 the moment you reached slot 7 -- which is islands 1, 7, 3,
+-- 9, 5, 11 and 2, a completely different set.
 local function isUnlocked(islandNum)
 	if unlockedIslands[islandNum] then
+		return true
+	end
+	local reached = math.max(1, math.floor(tonumber(player:GetAttribute("HighestSlot")) or 1))
+	local slot = IslandOrder.ISLAND_TO_SLOT[islandNum]
+	if slot and slot <= reached then
+		unlockedIslands[islandNum] = true
 		return true
 	end
 	if _G.unlockedIslands and _G.unlockedIslands[islandNum] then
@@ -34,18 +52,44 @@ local function isUnlocked(islandNum)
 	return false
 end
 
+-- the food sold on a given island MODEL (the shop is handed a model number by the
+-- stand-proximity code, but _G.foods is ordered by SLOT)
+local function foodForIsland(islandNum)
+	local slot = IslandOrder.ISLAND_TO_SLOT[islandNum]
+	if slot and _G.foods and _G.foods[slot] then return _G.foods[slot] end
+	-- ===== ISLANDS THAT ARE NOT IN THE TOWER STILL NEED A STOCKED STAND =====
+	-- island16/18/19 are built and playable but have no slot in IslandOrder, so ISLAND_TO_SLOT
+	-- returns nil for them and this used to hand back nil -- the prompt appeared, the panel
+	-- opened, and there was nothing in it. They sit past the end of the ladder, so the top-tier
+	-- food is the honest stock: anything cheaper would be a downgrade for a player who got there.
+	if _G.foods and #_G.foods > 0 then
+		return _G.foods[#_G.foods]
+	end
+	return nil
+end
+
 local function mkCorner(p,r) local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,r); c.Parent=p; return c end
 local function mkStroke(p,col,t) local s=Instance.new("UIStroke"); s.Color=col; s.Thickness=t; s.Parent=p; return s end
 local function mkLabel(p,props) local l=Instance.new("TextLabel"); l.BackgroundTransparency=1; for k,v in pairs(props) do l[k]=v end; l.Parent=p; return l end
 local function mkFrame(p,props) local f=Instance.new("Frame"); for k,v in pairs(props) do f[k]=v end; f.Parent=p; return f end
 local function mkButton(p,props) local b=Instance.new("TextButton"); for k,v in pairs(props) do b[k]=v end; b.Parent=p; return b end
 
+-- one per CandyData.FOODS row, in climb order (slot 1 -> 13). Keys must match the
+-- food NAMES in the shared module -- a miss just falls back to the default glyph.
 local foodEmojis = {
-	["Candy Canes"]="\xF0\x9F\x8D\xAD", ["Ice Cream"]="\xF0\x9F\x8D\xA6", ["Cookies"]="\xF0\x9F\x8D\xAA", -- 🍭 isl1, 🍦 isl2, 🍪 isl3
-	Turnips="\xF0\x9F\x8C\xBF", Coconuts="\xF0\x9F\xA5\xA5", Taffy="\xF0\x9F\x8D\xAC", Bread="\xF0\x9F\x8D\x9E", -- 🍬 isl5 taffy
-	Pasta="\xF0\x9F\x8D\x9D", Popcorn="\xF0\x9F\x8D\xBF", Milk="\xF0\x9F\xA5\x9B",
-	Butter="\xF0\x9F\xA7\x88", IceCream="\xF0\x9F\x8D\xA6", Burger="\xF0\x9F\x8D\x94",
-	Burrito="\xF0\x9F\x8C\xAF", Pizza="\xF0\x9F\x8D\x95"
+	["Candy Canes"]="\xF0\x9F\x8D\xAD",     -- 🍭 slot 1
+	["Gumdrops"]="\xF0\x9F\x8D\xAC",        -- 🍬 slot 2
+	["Cookies"]="\xF0\x9F\x8D\xAA",         -- 🍪 slot 3
+	["Jelly Beans"]="\xF0\x9F\xAB\x98",     -- 🫘 slot 4
+	["Taffy"]="\xF0\x9F\x8D\xAC",           -- 🍬 slot 5
+	["Gummy Bears"]="\xF0\x9F\xA7\xB8",     -- 🧸 slot 6
+	["Chocolate Bars"]="\xF0\x9F\x8D\xAB",  -- 🍫 slot 7
+	["Rock Candy"]="\xF0\x9F\x92\x8E",      -- 💎 slot 8
+	["Marshmallows"]="\xE2\x98\x81\xEF\xB8\x8F", -- ☁️ slot 9
+	["Caramel Apples"]="\xF0\x9F\x8D\x8E",  -- 🍎 slot 10
+	["Fudge"]="\xF0\x9F\x8D\xAB",           -- 🍫 slot 11
+	["Licorice"]="\xF0\x9F\x8C\x80",        -- 🌀 slot 12
+	["Sundaes"]="\xF0\x9F\x8D\xA8",         -- 🍨 slot 13
 }
 
 -- REAL uploaded image icons (override the emoji placeholder). For any food NOT in this table the
@@ -283,10 +327,12 @@ local card5=mkShopCard(productRow,2)
 cardIcon(card5,"\xF0\x9F\x8F\x9D\xEF\xB8\x8F"); cardTitles(card5,"Skip Island","ONE USE",Color3.fromRGB(255,200,100)); cardPrice(card5,"69 R$"); cardDesc(card5,"Jump to next island!")
 cardBuyBtn(card5,Color3.fromRGB(255,140,0),"BUY NOW",function() pcall(function() MPS:PromptProductPurchase(player,PRODUCT_IDS.SkipIsland) end) end)
 
--- Card 6: Bird Nuke
+-- Card 6: Sour Rain (was Bird Nuke -- same product id)
 local card6=mkShopCard(productRow,3)
-cardIcon(card6,"\xF0\x9F\x92\xA5"); cardTitles(card6,"Bird Nuke","CHAOS MODE",Color3.fromRGB(255,100,100)); cardPrice(card6,"79 R$"); cardDesc(card6,"Unleash 30 birds on everyone!")
-cardBuyBtn(card6,Color3.fromRGB(220,50,50),"BUY NOW",function() pcall(function() MPS:PromptProductPurchase(player,PRODUCT_IDS.BirdNuke) end) end)
+-- SOUR RAIN, same product id: the birds were a Food-realm leftover with no server behind them in
+-- this realm. See SourRain.server.luau.
+cardIcon(card6,"\xE2\x98\xA0\xEF\xB8\x8F"); cardTitles(card6,"Sour Rain","DISASTER",Color3.fromRGB(150,240,90)); cardPrice(card6,"79 R$"); cardDesc(card6,"Acid rain on the whole realm -- everyone outside melts. You don't.")
+cardBuyBtn(card6,Color3.fromRGB(110,190,50),"BUY NOW",function() pcall(function() MPS:PromptProductPurchase(player,PRODUCT_IDS.BirdNuke) end) end)
 
 mkLabel(premPanel,{Text="Purchases support the game! Thank you! \xF0\x9F\x99\x8F",Font=Enum.Font.Gotham,TextSize=12,TextColor3=Color3.fromRGB(150,180,255),Size=UDim2.new(1,-20,0,18),Position=UDim2.new(0,10,1,-22),TextXAlignment=Enum.TextXAlignment.Center,BackgroundTransparency=1})
 
@@ -319,7 +365,7 @@ local featuredFood
 
 local function updateFoodShop(islandNum)
 	nearIslandNumber=islandNum
-	if not featuredFood then featuredFood = _G.foods[islandNum] end  -- safety net; shop OPEN resets to the main food
+	if not featuredFood then featuredFood = foodForIsland(islandNum) end  -- safety net; shop OPEN resets to the main food
 	foodTitle.Text="\xF0\x9F\x8D\xAD ISLAND "..islandNum.." CANDY STAND"
 
 	-- ===== BIG FEATURED DISPLAY =====
@@ -875,7 +921,11 @@ foodBuyMaxBtn.MouseButton1Click:Connect(function()
 	local remaining = stomMax - curPower
 	local coinsLeft = coins
 	local totalPower = 0
-	for i = feat.island, 1, -1 do  -- fill from the FEATURED food downward (its max), biggest power first
+	-- fill from the FEATURED food downward (its max), biggest power first. Iterate SLOTS:
+	-- _G.foods is slot-ordered, so descending slot is descending power. feat.island is a
+	-- MODEL number and indexing the list with it would walk an arbitrary set of foods.
+	local featSlot = IslandOrder.ISLAND_TO_SLOT[feat.island] or 1
+	for i = featSlot, 1, -1 do
 		local f = _G.foods[i]
 		if f and isUnlocked(f.island) then
 			local qty = math.min(math.floor(remaining / f.power), math.floor(coinsLeft / f.price))
@@ -1073,9 +1123,9 @@ task.spawn(function()
 			if nearStand then
 				lastAwayTime = 0
 				-- only auto-open if no OTHER main menu is open (proximity yields to a deliberately-opened menu)
-				if not shopOpen and not playerClosedShop and not _G.MainMenuManager.isOtherOpen("FoodShop") and not (foundIsland == 1 and not _G.candyQuestComplete) and not (foundIsland == 3 and not _G.cookieQuestComplete) and not (foundIsland == 9 and not _G.cleanupQuestComplete) and not (foundIsland == 4 and not _G.campfireQuestComplete) and not (foundIsland == 11 and not _G.tunnelQuestComplete) then
+				if not shopOpen and not playerClosedShop and not _G.MainMenuManager.isOtherOpen("FoodShop") and not (foundIsland == 1 and not _G.candyQuestComplete) and not (foundIsland == 3 and not _G.cookieQuestComplete) and not (foundIsland == 9 and not _G.cleanupQuestComplete) and not (foundIsland == 4 and not _G.campfireQuestComplete) and not (foundIsland == 11 and not _G.tunnelQuestComplete) and not (foundIsland == 19 and not _G.tractorQuestComplete) then
 					nearIslandNumber = foundIsland
-					featuredFood = _G.foods[foundIsland]  -- big display defaults to the island's MAIN food on open
+					featuredFood = foodForIsland(foundIsland)  -- big display defaults to the island's MAIN food on open
 					updateFoodShop(foundIsland)
 					_G.MainMenuManager.notifyOpened("FoodShop") -- becomes the one open main menu
 					FoodShopGui.Enabled = true
@@ -1128,8 +1178,13 @@ _G.OpenFoodShop = function(islandNum)
 		if _G.tunnelQuestNudge then _G.tunnelQuestNudge() end
 		return
 	end
+	-- island-19 stand is LOCKED until the harvest reaches the farm house (Broken Tractor)
+	if islandNum == 19 and not _G.tractorQuestComplete then
+		if _G.tractorQuestNudge then _G.tractorQuestNudge() end
+		return
+	end
 	nearIslandNumber = islandNum
-	if _G.foods then featuredFood = _G.foods[islandNum] end
+	if _G.foods then featuredFood = foodForIsland(islandNum) end
 	updateFoodShop(islandNum)
 	if _G.MainMenuManager then _G.MainMenuManager.notifyOpened("FoodShop") end
 	FoodShopGui.Enabled = true
@@ -1143,6 +1198,16 @@ task.spawn(function()
 		for _, d in ipairs(workspace:GetDescendants()) do
 			if isStandName(d.Name) then
 				local part = d:IsA("BasePart") and d or d:FindFirstChildWhichIsA("BasePart", true)
+				if not part and not seen[d] then
+					-- A NAME MATCH WITH NOTHING TO ATTACH TO. This used to fall through in total
+					-- silence, which is indistinguishable from the stand not existing at all --
+					-- the usual cause is an EMPTY Model named "stand" (a group whose contents were
+					-- deleted, or a placeholder never filled in). Say so once, by full path.
+					seen[d] = true
+					warn(("[FoodStand] '%s' (%s) matches a stand name but contains no BasePart -- "
+						.. "no prompt can be attached. Put a Part inside it, or name an actual Part.")
+						:format(d:GetFullName(), d.ClassName))
+				end
 				if part then
 					n += 1
 					if not seen[part] then

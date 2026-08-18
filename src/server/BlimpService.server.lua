@@ -17,14 +17,44 @@ local DataStoreService    = game:GetService("DataStoreService")
 local RunService          = game:GetService("RunService")
 local Players             = game:GetService("Players")
 local Workspace           = game:GetService("Workspace")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+--======================================================================
+-- ONE BLIMP ONLY. A stale copy of this script is baked into the place, so BOTH run and BOTH build an
+-- airship -- the Output shows two "[Blimp] airborne" lines from two different line numbers, at two
+-- different heights, and you see two blimps lapping the island slightly apart.
+--
+-- Killing the duplicate SCRIPT is not enough on its own: by the time we get here it may already be
+-- mid-build, and a Script that has started keeps running for a while after it's destroyed. So this does
+-- both -- retire the rival script, then repeatedly sweep Workspace for any DonationBlimp that isn't the
+-- one WE built (ours carries the BuiltByLiveScript attribute). The sweep repeats because the stale copy
+-- waits ~6s for the islands to settle before parenting its blimp, so a single pass at startup misses it.
+--======================================================================
+do
+	local removed = 0
+	for _, inst in ipairs(ServerScriptService:GetDescendants()) do
+		if inst ~= script and inst:IsA("Script") and inst.Name == script.Name then
+			pcall(function() inst.Disabled = true; inst:Destroy() end)
+			removed += 1
+		end
+	end
+	if removed > 0 then
+		warn(("[Blimp] retired %d STALE duplicate BlimpService script(s) -- they were flying a SECOND blimp. "
+			.. "Delete them in Studio for good."):format(removed))
+	end
+end
 
 -- ============================================================================
 -- CONFIG
 -- ============================================================================
 
 local LAP_RADIUS    = 150    -- studs from the island centre
-local LAP_ALTITUDE  = 3      -- studs above the island's top surface (110 -> 55 -> 38 -> 28 -> 16 -> 8 -> 3; flown even lower)
+local LAP_ALTITUDE  = -5     -- studs above the island's top surface (110 -> ... -> 3 -> -5; it orbits OFF the island's
+                             -- edge at radius 150, so sitting below the island's top line is safe and much easier to notice)
 local LAP_SECONDS   = 75     -- one full circuit
+local BLIMP_SCALE   = 1.35   -- whole-ship scale-up (applied via Model:ScaleTo after the build): bigger hull,
+                             -- bigger boards, bigger sign text on screen -- readable from the ground
+local PAGE_SECONDS  = 18     -- how long the starboard board holds each page before rotating to the next
 local BOB_HEIGHT    = 4      -- gentle vertical bob, studs
 local BOB_SECONDS   = 9
 local TOP_BUYERS_N  = 8      -- players listed on the MOST PURCHASES board
@@ -140,7 +170,15 @@ local function part(parent, name, shape, size, color, cf, material)
 	p.CFrame       = cf
 	p.Material     = material or Enum.Material.SmoothPlastic
 	p.Anchored     = true   -- the whole blimp is CFrame-driven; physics would fight the flight path
-	p.CanCollide   = false  -- players fly THROUGH this airspace; a solid blimp would swat them out of the sky
+	-- SOLID, so you can land on it and ride. It used to be CanCollide=false so a flying player couldn't be
+	-- swatted out of the sky by it; that trade is now the other way round -- a blimp you can stand on is worth
+	-- the occasional bump, and it laps at 150 studs out where nobody is climbing anyway.
+	--
+	-- CARRYING passengers takes two things on top of this, because an anchored CFrame-driven part moves THROUGH
+	-- the world instead of pushing what rests on it: the DECK SEATS below (a Seat welds its rider to the hull,
+	-- so sitting is carried perfectly and for free), and BlimpRide.client.luau, which walks the local player
+	-- along with the ship each frame while they stand on the deck.
+	p.CanCollide   = true
 	p.CanQuery     = false
 	p.TopSurface   = Enum.SurfaceType.Smooth
 	p.BottomSurface= Enum.SurfaceType.Smooth
@@ -148,31 +186,44 @@ local function part(parent, name, shape, size, color, cf, material)
 	return p
 end
 
--- One board: a thin panel with a SurfaceGui. Returns the frame we rewrite each refresh.
--- A board is a real hanging sign: a bezel frame, an accent header bar, and a stack of styled rows -- not one
--- blob of text on a dark rectangle. Returns the row container; the render functions rebuild rows into it.
+-- ===== ONE BIG SCREEN, FACING INWARD, TILTED DOWN AT THE GROUND =====
+-- The blimp used to carry TWO boards, one on each flank. From the island you always saw the far one edge-on
+-- (or its blank back) behind the near one, which is the "old display behind the new one" -- and both hung
+-- dead vertical, so from directly below you were reading a sign side-on at 60+ studs.
+--
+-- WHICH SIDE FACES INWARD: the flight loop does CFrame.lookAt(pos, pos + tangent) with tangent =
+-- (-sin a, 0, cos a) and pos = (cos a, y, sin a) * R. Working the basis through, the CFrame's X axis comes
+-- out as (-cos a, 0, -sin a) -- pointing straight at the island centre. So +X (STARBOARD) is the inward
+-- side, and that is the only side that gets a screen now.
+--
+-- TILT: rotating about the blimp's forward (Z) axis by a negative angle swings that +X face downward, so
+-- the screen leans out over the island like a stadium scoreboard instead of standing vertical.
+local BOARD_TILT = math.rad(-28)
 local function board(model, name, offsetCF, title, accent)
-	local isPort = (name == "PortBoard")
+	-- everything is built in a TILTED frame, so the bezel, arms and panel all lean together
+	local cf = offsetCF * CFrame.Angles(0, 0, BOARD_TILT)
 
 	-- Bezel: a slightly larger, darker slab behind the screen so the panel has a visible frame + depth.
-	part(model, name .. "Bezel", Enum.PartType.Block, Vector3.new(0.35, 17.4, 35.4),
-		Color3.fromRGB(24, 26, 33), offsetCF * CFrame.new(isPort and 0.28 or -0.28, 0, 0))
+	part(model, name .. "Bezel", Enum.PartType.Block, Vector3.new(0.5, 27.4, 57.4),
+		Color3.fromRGB(24, 26, 33), cf * CFrame.new(-0.35, 0, 0))
 	-- Standoff arms, so the sign reads as MOUNTED to the hull rather than floating beside it.
-	for _, dz in ipairs({ -11, 11 }) do
-		part(model, "BoardArm", Enum.PartType.Cylinder, Vector3.new(2.2, 0.5, 0.5),
-			Color3.fromRGB(38, 41, 50), offsetCF * CFrame.new(isPort and 1.5 or -1.5, 4.5, dz))
+	for _, dz in ipairs({ -18, 18 }) do
+		part(model, "BoardArm", Enum.PartType.Cylinder, Vector3.new(3.4, 0.6, 0.6),
+			Color3.fromRGB(38, 41, 50), cf * CFrame.new(-2.2, 7.5, dz))
 	end
 
-	local panel = part(model, name, Enum.PartType.Block, Vector3.new(0.4, 16, 34),
-		Color3.fromRGB(16, 18, 24), offsetCF)
+	-- MUCH BIGGER: 26 x 56 studs, up from 16 x 34 -- roughly 2.7x the area, which is what actually decides
+	-- whether any of this is legible from the ground.
+	local panel = part(model, name, Enum.PartType.Block, Vector3.new(0.5, 26, 56),
+		Color3.fromRGB(16, 18, 24), cf)
 
 	local gui = Instance.new("SurfaceGui")
 	gui.Name           = "Board"
-	gui.Face           = isPort and Enum.NormalId.Left or Enum.NormalId.Right
-	gui.CanvasSize     = Vector2.new(1020, 480) -- 3x the old canvas -> text stays crisp instead of pixel-mushy
+	gui.Face           = Enum.NormalId.Right    -- +X: the inward face (see the note above)
+	gui.CanvasSize     = Vector2.new(1120, 520)
 	gui.LightInfluence = 0                      -- the sign is lit, not shaded by the world -- keeps it readable at dusk
 	gui.AlwaysOnTop    = false
-	gui.MaxDistance    = 900
+	gui.MaxDistance    = 1200                   -- it is bigger now; let it stay readable from further out
 	gui.Parent         = panel
 
 	local bg = Instance.new("Frame")
@@ -191,9 +242,10 @@ local function board(model, name, offsetCF, title, accent)
 	stroke.Transparency = 0.35
 	stroke.Parent    = bg
 
-	-- Header bar, filled with the accent colour so each board is identifiable at a glance from a distance.
+	-- Header bar. Taller and heavier than before -- from the ground the header is often the ONLY thing a
+	-- player actually resolves, so it carries the studio name and the page title.
 	local head = Instance.new("Frame")
-	head.Size             = UDim2.new(1, 0, 0, 96)
+	head.Size             = UDim2.new(1, 0, 0, 132)
 	head.BackgroundColor3 = accent
 	head.BorderSizePixel  = 0
 	head.Parent           = bg
@@ -212,75 +264,75 @@ local function board(model, name, offsetCF, title, accent)
 	htxt.Font                   = Enum.Font.GothamBlack
 	htxt.Text                   = title
 	htxt.TextColor3             = Color3.fromRGB(14, 16, 22) -- dark ink on the bright bar: max contrast
-	htxt.TextSize               = 54
+	htxt.TextSize               = 96                          -- ground-legible, not desk-legible
 	htxt.ZIndex                 = 2
 	htxt.Parent                 = head
 
 	-- Row container
 	local rows = Instance.new("Frame")
 	rows.Name                   = "Rows"
-	rows.Position               = UDim2.new(0, 22, 0, 112)
-	rows.Size                   = UDim2.new(1, -44, 1, -134)
+	rows.Position               = UDim2.new(0, 26, 0, 150)
+	rows.Size                   = UDim2.new(1, -52, 1, -176)
 	rows.BackgroundTransparency = 1
 	rows.Parent                 = bg
 
 	local layout = Instance.new("UIListLayout")
-	layout.Padding   = UDim.new(0, 8)
+	layout.Padding   = UDim.new(0, 10)
 	layout.SortOrder = Enum.SortOrder.LayoutOrder
 	layout.Parent    = rows
 
-	return rows, accent
+	return rows, accent, htxt -- htxt so a rotating board can retitle itself per page
 end
 
 -- One row on a board: an optional coloured rank badge, a name, and a right-aligned value.
 local function addRow(rows, order, badgeText, badgeColor, leftText, rightText)
 	local row = Instance.new("Frame")
 	row.LayoutOrder            = order
-	row.Size                   = UDim2.new(1, 0, 0, 52)
+	row.Size                   = UDim2.new(1, 0, 0, 74) -- taller rows: fewer, bigger lines beat more, smaller ones
 	row.BackgroundColor3       = Color3.fromRGB(28, 31, 41)
 	row.BackgroundTransparency = (order % 2 == 0) and 0.45 or 0.15 -- zebra striping: much easier to scan
 	row.BorderSizePixel        = 0
 	row.Parent                 = rows
 	local rc = Instance.new("UICorner"); rc.CornerRadius = UDim.new(0, 8); rc.Parent = row
 
-	local x = 12
+	local x = 14
 	if badgeText then
 		local badge = Instance.new("TextLabel")
-		badge.Position         = UDim2.new(0, x, 0.5, -18)
-		badge.Size             = UDim2.new(0, 36, 0, 36)
+		badge.Position         = UDim2.new(0, x, 0.5, -26)
+		badge.Size             = UDim2.new(0, 52, 0, 52)
 		badge.BackgroundColor3 = badgeColor
 		badge.Font             = Enum.Font.GothamBlack
 		badge.Text             = badgeText
 		badge.TextColor3       = Color3.fromRGB(16, 18, 24)
-		badge.TextSize         = 24
+		badge.TextSize         = 34
 		badge.BorderSizePixel  = 0
 		badge.Parent           = row
 		local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(1, 0); bc.Parent = badge
-		x = x + 48
+		x = x + 68
 	end
 
 	local nm = Instance.new("TextLabel")
 	nm.Position               = UDim2.new(0, x, 0, 0)
 	-- Reserve the value column only when there IS one, else let the text run the full width.
-	nm.Size                   = UDim2.new(1, -x - (rightText and 200 or 12), 1, 0)
+	nm.Size                   = UDim2.new(1, -x - (rightText and 240 or 14), 1, 0)
 	nm.BackgroundTransparency = 1
 	nm.Font                   = Enum.Font.GothamBold
 	nm.Text                   = leftText
 	nm.TextColor3             = Color3.fromRGB(238, 241, 248)
-	nm.TextSize               = 30
+	nm.TextSize               = 48
 	nm.TextXAlignment         = Enum.TextXAlignment.Left
 	nm.TextTruncate           = Enum.TextTruncate.AtEnd -- long usernames must not shove the value off the sign
 	nm.Parent                 = row
 
 	if rightText then
 		local val = Instance.new("TextLabel")
-		val.Position               = UDim2.new(1, -190, 0, 0)
-		val.Size                   = UDim2.new(0, 178, 1, 0)
+		val.Position               = UDim2.new(1, -230, 0, 0)
+		val.Size                   = UDim2.new(0, 216, 1, 0)
 		val.BackgroundTransparency = 1
 		val.Font                   = Enum.Font.GothamBlack
 		val.Text                   = rightText
 		val.TextColor3             = Color3.fromRGB(255, 214, 92)
-		val.TextSize               = 30
+		val.TextSize               = 48
 		val.TextXAlignment         = Enum.TextXAlignment.Right
 		val.Parent                 = row
 	end
@@ -303,7 +355,7 @@ local function emptyNote(rows, text)
 	lbl.Font                   = Enum.Font.GothamMedium
 	lbl.Text                   = text
 	lbl.TextColor3             = Color3.fromRGB(120, 128, 145)
-	lbl.TextSize               = 28
+	lbl.TextSize               = 32
 	lbl.TextWrapped            = true
 	lbl.Parent                 = rows
 end
@@ -330,7 +382,13 @@ task.wait(6) -- let PlayerStats finish its "Positioned Island_1_BeanFarm at Y=..
 
 local originCF, islandSize = island:GetBoundingBox()
 local centre = originCF.Position
-local flyY   = centre.Y + islandSize.Y / 2 + LAP_ALTITUDE
+-- HEIGHT_SCALE brings the whole lap down by a percentage of how high it rides above the island's centre.
+-- Scaling the computed height rather than LAP_ALTITUDE is deliberate: LAP_ALTITUDE is a small offset from the
+-- island's top line (-5), so taking 10% off THAT would move the blimp half a stud. The number that actually
+-- decides how high it looks is (islandSize.Y / 2 + LAP_ALTITUDE) -- about 132 studs over Bean Farm -- so that
+-- is what gets scaled: 0.90 drops the lap ~13 studs, Y 373 -> ~360.
+local HEIGHT_SCALE = 0.90
+local flyY   = centre.Y + (islandSize.Y / 2 + LAP_ALTITUDE) * HEIGHT_SCALE
 
 local blimp = Instance.new("Model")
 blimp.Name = "DonationBlimp"
@@ -418,6 +476,38 @@ part(blimp, "GondolaBelly", Enum.PartType.Cylinder, Vector3.new(15, 4.6, 4.6), S
 part(blimp, "GondolaNose",  Enum.PartType.Ball, Vector3.new(4.6, 4.0, 4.6), SHELL, CFrame.new(0, gY, -6.6))
 part(blimp, "GondolaRoof",  Enum.PartType.Block, Vector3.new(5.4, 0.5, 16), TRIM,  CFrame.new(0, gY + 1.7, 1))
 
+--======================================================================
+-- PASSENGER DECK: the gondola roof, with a rail so you don't walk straight off it, and four seats.
+--======================================================================
+-- SEATS ARE THE RELIABLE HALF OF "carry me". A Seat welds its occupant to itself, and a character welded to
+-- an anchored part becomes part of that anchored assembly -- so it follows the blimp EXACTLY, with no
+-- per-frame work, no network-ownership fight, and no drift. Standing passengers are handled separately by
+-- BlimpRide.client.luau; sitting works on its own the moment you touch a seat.
+do
+	local RAIL = Color3.fromRGB(214, 218, 228)
+	local deckY = gY + 1.95   -- just above the roof's top face
+	-- Rails down both long sides + one across the tail. The nose end is left open as the way on.
+	part(blimp, "DeckRailL", Enum.PartType.Block, Vector3.new(0.25, 1.6, 16), RAIL, CFrame.new(-2.6, deckY + 0.8, 1))
+	part(blimp, "DeckRailR", Enum.PartType.Block, Vector3.new(0.25, 1.6, 16), RAIL, CFrame.new( 2.6, deckY + 0.8, 1))
+	part(blimp, "DeckRailB", Enum.PartType.Block, Vector3.new(5.4, 1.6, 0.25), RAIL, CFrame.new(0, deckY + 0.8, 9))
+
+	for i, z in ipairs({ -4.5, -1.0, 2.5, 6.0 }) do
+		local s = Instance.new("Seat")
+		s.Name = "DeckSeat" .. i
+		s.Size = Vector3.new(2.2, 0.4, 2.2)
+		s.CFrame = CFrame.new(0, deckY + 0.2, z)
+		s.Color = Color3.fromRGB(96, 104, 122)
+		s.Material = Enum.Material.SmoothPlastic
+		s.Anchored = true
+		s.CanCollide = true
+		s.CanTouch = true    -- a Seat seats you on TOUCH, so unlike the hull this one must stay touchable
+		s.CanQuery = false
+		s.TopSurface = Enum.SurfaceType.Smooth
+		s.BottomSurface = Enum.SurfaceType.Smooth
+		s.Parent = blimp
+	end
+end
+
 -- Cockpit + cabin windows. FLAT bright colour, NOT Material.Glass: real glass with reflectance reads as a
 -- glossy sim asset and clashes with everything else here. A solid pale-blue block is the low-poly convention
 -- for a window, and it stays readable from 60 studs up, which actual glass would not.
@@ -476,15 +566,89 @@ beaconLight.Parent     = beacon
 
 -- The two billboards, hung off the flanks. They MUST sit outside MAX_R (8.6) or they'd be buried inside the
 -- envelope and invisible; 9.5 clears the widest frame with a little daylight, like a real banner on standoffs.
-local donorRows    = board(blimp, "PortBoard",      CFrame.new(-9.5, 0, -4), "TOP DONATORS",     Color3.fromRGB(255, 205, 70))
-local purchaseRows = board(blimp, "StarboardBoard", CFrame.new( 9.5, 0, -4), "MOST PURCHASES",   Color3.fromRGB(120, 225, 140))
+-- ONE SCREEN. The port-side board is gone entirely -- it was the display you saw edge-on (or blank-backed)
+-- behind the near one from the ground. This single board hangs off the STARBOARD flank, which is the side
+-- that faces the island (see the note on board()), pushed out to 13 so the 26-stud panel clears the hull's
+-- widest frame once tilted, and dropped slightly so the tilt aims it down the outside of the envelope.
+local boardRows, _, boardTitle = board(blimp, "MainBoard", CFrame.new(13, -2, -4), "MLR STUDIOS",
+	Color3.fromRGB(120, 200, 255))
 
 -- An explicit invisible root, rather than borrowing a hull slice -- the slice list is generated, so which
 -- parts exist depends on the profile maths, and PrimaryPart must not be able to come back nil.
 local root = part(blimp, "Root", Enum.PartType.Block, Vector3.new(1, 1, 1), HULL, CFrame.new())
 root.Transparency = 1
 blimp.PrimaryPart = root
+
+
+-- ===== SCALE-UP =====
+-- The whole ship grows through ONE Model:ScaleTo rather than by editing forty hand-tuned offsets: every
+-- part, board and standoff scales together around the origin the ship was built at. The prop blades are
+-- the one thing re-placed from STORED local offsets each frame (see the flight loop), so those stored
+-- origins are scaled by the same factor -- without this the blades would spin in the old, smaller spots.
+local okScale = pcall(function() blimp:ScaleTo(BLIMP_SCALE) end)
+if okScale then
+	for _, p in ipairs(props) do p.origin = p.origin * BLIMP_SCALE end
+else
+	warn("[Blimp] ScaleTo failed -- flying at 1x size")
+end
+
+-- ===== ENGINE DRONE =====
+-- A looped 3D sound on the root, so it rides the ship around its whole circuit and every player hears it
+-- from the blimp's actual position (built server-side like the rest of the model). It runs forever -- the
+-- blimp never lands or stops -- so there is no start/stop wiring, just the one Play() below.
+--
+-- ADDED AFTER ScaleTo ON PURPOSE. Model:ScaleTo rescales the size-ish properties of what is already inside
+-- the model; creating the sound afterwards means these distances are exactly the studs written here rather
+-- than the same numbers multiplied by BLIMP_SCALE.
+--
+-- CLOSE-RANGE ONLY. The drone is audible within 40 studs of the ship and silent past it -- Roblox's own
+-- 3D attenuation does the gating per listener, so each player hears it only when THEY are near, which a
+-- server-side Play()/Stop() could never do (one Sound, one state, shared by everyone).
+--
+-- KNOW WHAT 40 STUDS MEANS HERE. The blimp laps at Y=343, roughly 100 studs above the Bean Farm spawn, so
+-- standing in the garden you are outside this radius for the entire circuit and will hear nothing. In
+-- practice the drone is now "you are on the deck, or you flew up alongside it". Raise BLIMP_FADE_DIST to
+-- ~150 if you want it audible from the ground as it passes over.
+local BLIMP_SOUND_ID  = "rbxassetid://84217751658202"
+local BLIMP_VOLUME    = 0.825 -- 0.5 -> 0.825 (+65%)
+local BLIMP_FULL_DIST = 15   -- studs of full volume -- right on top of the gondola
+local BLIMP_FADE_DIST = 40   -- studs to silence -- the "only when you get close" cutoff
+do
+	local drone = Instance.new("Sound")
+	drone.Name = "BlimpEngine"
+	drone.SoundId = BLIMP_SOUND_ID
+	drone.Looped = true
+	drone.Volume = BLIMP_VOLUME
+	drone.RollOffMode = Enum.RollOffMode.InverseTapered
+	drone.RollOffMinDistance = BLIMP_FULL_DIST
+	drone.RollOffMaxDistance = BLIMP_FADE_DIST
+	drone.Parent = root
+	drone:Play()
+end
+
+blimp:SetAttribute("BuiltByLiveScript", true) -- the stamp the duplicate-blimp sweep below recognises as OURS
 blimp.Parent = Workspace
+
+-- SWEEP AWAY ANY RIVAL BLIMP. The stale baked-in copy parents its own DonationBlimp a few seconds after the
+-- islands settle, which is AFTER this line runs -- so one pass here would miss it. Sweep repeatedly through
+-- the window where it can appear, then keep a slow watch in case a copy is re-inserted later.
+task.spawn(function()
+	local function sweep()
+		local killed = 0
+		for _, m in ipairs(Workspace:GetChildren()) do
+			if m ~= blimp and m:IsA("Model") and m.Name == "DonationBlimp" and not m:GetAttribute("BuiltByLiveScript") then
+				pcall(function() m:Destroy() end)
+				killed += 1
+			end
+		end
+		if killed > 0 then
+			warn(("[Blimp] destroyed %d rival DonationBlimp(s) built by a stale duplicate script -- "
+				.. "there is now ONE blimp. Delete the duplicate BlimpService in Studio for good."):format(killed))
+		end
+	end
+	for _ = 1, 20 do sweep(); task.wait(1) end   -- first 20s: the window the stale copy builds in
+	while true do task.wait(15); sweep() end     -- then a slow watch, in case one shows up later
+end)
 
 -- Workspace.StreamingEnabled is ON in this place (see IslandStreaming), so anything far from the player gets
 -- streamed OUT and never reaches their client. The blimp orbits high and wide, which puts it right in the
@@ -513,36 +677,89 @@ local function shortNum(n)
 	return tostring(n)
 end
 
+-- ===== SHORT PAGES ONLY. NOTHING THAT NEEDS READING TWICE. =====
+-- The board previously ran four-line gameplay TIPS in sentence form. From 150 studus below, moving, at an
+-- angle, a sentence is a grey smear -- by the time you have parsed one the blimp has turned. Every page
+-- here is now a HEADLINE plus at most three short rows, sized big (48px on a 1120px canvas).
+--
+-- Page 1  MLR STUDIOS      the studio card -- who made this. The default face of the ship.
+-- Page 2  TOP DONATORS     the podium, three names, cross-server.
+-- Page 3  ANNOUNCEMENTS    whatever the server currently wants to say (see _G.blimpAnnounce below).
+--
+-- MOST PURCHASES is retired as a page: two near-identical leaderboards on one screen is the sort of thing
+-- that reads as noise from the ground. The buyer store is still banked (it costs nothing and the data
+-- keeps accruing), so the page can come back by adding one branch here.
+local ANNOUNCE_DEFAULT = {
+	{ "Fly higher, earn more", "" },
+	{ "New realms in the More menu", "" },
+	{ "Thanks for playing!", "" },
+}
+-- Other scripts can put a short message on the ship: _G.blimpAnnounce("Double coins!", "next 10 min").
+-- Kept deliberately tiny -- two short strings, no formatting, no queue. Cleared by calling with nil.
+local announceLines = nil
+_G.blimpAnnounce = function(line1, line2)
+	if line1 == nil then announceLines = nil; return end
+	announceLines = { { tostring(line1), tostring(line2 or "") } }
+end
+
+local page = 1 -- 1 = MLR STUDIOS, 2 = TOP DONATORS, 3 = ANNOUNCEMENTS
+local renderBoard
+
+local function renderStudio()
+	clearRows(boardRows)
+	local n = #Players:GetPlayers()
+	addRow(boardRows, 1, nil, nil, "FART TO FLOAT", "")
+	addRow(boardRows, 2, nil, nil, "Players online", tostring(n))
+	local evt = Workspace:GetAttribute("ActiveServerEvent") -- PlayerStats publishes this, "" when idle
+	if type(evt) == "string" and evt ~= "" then
+		addRow(boardRows, 3, nil, nil, "EVENT LIVE", evt)
+	end
+end
+
 local function renderDonors()
-	clearRows(donorRows)
+	clearRows(boardRows)
 	if #topDonors == 0 then
-		emptyNote(donorRows, "No donations yet.\nBe the first to make the board!")
+		emptyNote(boardRows, "Be the first on the board!")
 		return
 	end
-	for i, d in ipairs(topDonors) do
-		addRow(donorRows, i, tostring(i), MEDALS[i] or Color3.fromRGB(96, 104, 122),
+	for i = 1, math.min(3, #topDonors) do -- THREE only: a podium reads from the ground, a top-8 list does not
+		local d = topDonors[i]
+		addRow(boardRows, i, tostring(i), MEDALS[i] or Color3.fromRGB(96, 104, 122),
 			d.name, shortNum(d.robux) .. " R$")
 	end
 end
 
--- WAS a chronological "recent purchases" feed, which only ever held what had been bought since this server
--- booted -- so it read "Nothing bought yet this server." on a fresh server and lost everything on restart.
--- Now a persistent ranking of who has bought the most, so the board always names real players.
-local function renderBuyers()
-	clearRows(purchaseRows)
-	if #topBuyers == 0 then
-		emptyNote(purchaseRows, "No purchases yet.\nBe the first to make the board!")
-		return
-	end
-	for i, b in ipairs(topBuyers) do
-		-- Ranked, so it carries the same medal badges as the donator board beside it.
-		addRow(purchaseRows, i, tostring(i), MEDALS[i] or Color3.fromRGB(96, 104, 122),
-			b.name, shortNum(b.count) .. (b.count == 1 and " buy" or " buys"))
+local function renderAnnounce()
+	clearRows(boardRows)
+	local lines = announceLines or ANNOUNCE_DEFAULT
+	for i, l in ipairs(lines) do
+		if i > 3 then break end
+		addRow(boardRows, i, nil, nil, l[1], l[2])
 	end
 end
 
-renderDonors()
-renderBuyers()
+renderBoard = function()
+	if page == 1 then
+		boardTitle.Text = "MLR STUDIOS"
+		renderStudio()
+	elseif page == 2 then
+		boardTitle.Text = "TOP DONATORS"
+		renderDonors()
+	else
+		boardTitle.Text = "ANNOUNCEMENTS"
+		renderAnnounce()
+	end
+end
+
+task.spawn(function()
+	while true do
+		task.wait(PAGE_SECONDS)
+		page = page % 3 + 1
+		renderBoard()
+	end
+end)
+
+renderBoard()
 
 -- =====================  PURCHASE HOOKS  =====================
 
@@ -553,16 +770,15 @@ _G.blimpRecordPurchase = function(player, productId)
 	-- because it needed a LABEL to print; this board only needs to know that a purchase happened, so token
 	-- packs and anything added later count too instead of being silently dropped.
 	task.spawn(function()
-		bankPurchase(player)
-		refreshTopBuyers() -- climb the board immediately, not on the next 60s tick
-		renderBuyers()
+		bankPurchase(player) -- still banked (the data keeps accruing); no longer has its own board page
+		refreshTopBuyers()
 	end)
 	local info = PRODUCTS[productId]
 	if info and info.robux then
 		task.spawn(function()
 			bankDonation(player, info.robux)
 			refreshTopDonors() -- a donation should climb the board immediately, not on the next 60s tick
-			renderDonors()
+			renderBoard()      -- through the pager, so it can only repaint the page actually on screen
 		end)
 	end
 end
@@ -574,7 +790,6 @@ MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, passI
 	task.spawn(function()
 		bankPurchase(player)
 		refreshTopBuyers()
-		renderBuyers()
 	end)
 end)
 
@@ -583,9 +798,8 @@ end)
 task.spawn(function()
 	while true do
 		refreshTopDonors()
-		renderDonors()
-		refreshTopBuyers() -- both boards re-read on the same tick, so they never drift apart
-		renderBuyers()
+		refreshTopBuyers()
+		renderBoard() -- repaint whichever page is currently up, with the freshly-read data
 		task.wait(BOARD_REFRESH)
 	end
 end)

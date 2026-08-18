@@ -62,18 +62,52 @@ local GAP          = 8          -- breathing room between the gear and the capsu
 local INNER_H = CAP_H - PAD * 2
 local START_W = 120  -- each pill's width before fit() measures the real digits
 
-local FRAME_TOP  = Color3.fromRGB( 46,  56,  96)  -- outer frame, lit upper edge
-local FRAME_MID  = Color3.fromRGB( 28,  35,  68)
-local FRAME_BOT  = Color3.fromRGB( 18,  23,  48)  -- outer frame, shaded underside
-local FRAME_LINE = Color3.fromRGB( 14,  18,  38)  -- its thin containing outline
-local NAVY_TOP   = Color3.fromRGB( 62, 116, 224)  -- token pill
-local NAVY_MID   = Color3.fromRGB( 30,  72, 168)
-local NAVY_BOT   = Color3.fromRGB( 17,  44, 116)
-local NAVY_LINE  = Color3.fromRGB( 10,  26,  72)
-local GOLD_TOP   = Color3.fromRGB(255, 226, 118)  -- coin pill: gold, through amber, to orange
-local GOLD_MID   = Color3.fromRGB(255, 184,  46)
-local GOLD_BOT   = Color3.fromRGB(233, 132,  16)
-local GOLD_LINE  = Color3.fromRGB(150,  78,   6)
+-- ===== LIGHT BLUE, FLAT, NOT GLOOMY =====
+-- Two things were wrong before. (1) The shell was a near-black navy (18,23,48) -- a dark object next to
+-- a bright menu. (2) The "fix" then matched Color3.fromRGB(30,90,200), which is what CoreClient BUILDS
+-- the right panel as and NOT what it ends up: a later restyle pass repaints it (30,140,255), a much
+-- lighter blue. That is the colour actually on screen at the right edge, so that is the colour here.
+--
+-- ===== A WHISPER OF GRADIENT, NOT A BEVEL =====
+-- Fully flat fixed the moulded-plastic look but left the capsule reading as paper shapes stacked on
+-- paper shapes. `lift` nudges a colour ~8% up or down for the top/bottom stop of each ramp -- against
+-- the 30-40% swings the original build used, which is what made everything look like a 3D render.
+-- LIFT_AMT is the single knob: raise it for more life, lower it if any moulding creeps back.
+local LIFT_AMT = 0.08
+local function lift(c, dir) -- dir +1 = slightly lighter (top), -1 = slightly darker (bottom)
+	local k = 1 + LIFT_AMT * dir
+	return Color3.new(math.clamp(c.R * k, 0, 1), math.clamp(c.G * k, 0, 1), math.clamp(c.B * k, 0, 1))
+end
+
+local PANEL_BLUE = Color3.fromRGB( 30, 140, 255)  -- the LIGHT blue actually on the right-side menu
+local FRAME_TOP  = lift(PANEL_BLUE,  1)
+local FRAME_MID  = PANEL_BLUE
+local FRAME_BOT  = lift(PANEL_BLUE, -1)
+-- THE CAPSULE'S OUTLINE. The shell had a 2px stroke in a dark blue that all but vanished once the fill
+-- became light blue -- so the pill behind the two currencies had no readable edge and bled into the sky
+-- behind it. It is now WHITE at 2.5px: the exact treatment the right-side menu uses (CoreClient strokes
+-- RightPanel white), so the capsule is outlined the same way as every other panel in the game.
+local FRAME_LINE = Color3.fromRGB(255, 255, 255)
+-- TOKEN PILL: LIGHT RED / PINK, so the two currencies never read as the same thing. (The constants keep
+-- their NAVY_* names -- they are referenced further down -- but they are pink now.)
+local PINK_BASE  = Color3.fromRGB(255, 118, 136)
+local NAVY_TOP   = lift(PINK_BASE,  1)
+local NAVY_MID   = PINK_BASE
+local NAVY_BOT   = lift(PINK_BASE, -1)
+local NAVY_LINE  = Color3.fromRGB(188,  58,  78)
+-- ===== COIN PILL: MONEY GOLD, NOT MUSTARD =====
+-- What makes a yellow read as mustard/olive rather than as gold is the GREEN channel sitting too close
+-- to red. The previous (255,226,62) had G/R = 0.89, which is lemon; metallic gold sits nearer 0.78, and
+-- the blue channel has to stay low but not zero or it goes muddy. (255,198,52) is G/R = 0.78 -- the same
+-- family as a real coin, warm rather than acidic, and still clearly yellow rather than the burnt orange
+-- this started as.
+-- The outline moves with it: the old (198,162,14) was an OLIVE brown, which is half of why the whole
+-- pill looked like mustard. It is now a warm amber-brown.
+local GOLD_BASE  = Color3.fromRGB(255, 198,  52)
+local GOLD_TOP   = lift(GOLD_BASE,  1)
+local GOLD_MID   = GOLD_BASE
+local GOLD_BOT   = lift(GOLD_BASE, -1)
+local GOLD_LINE  = Color3.fromRGB(184, 122,   8)
 
 local function corner(inst, r)
 	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r); c.Parent = inst; return c
@@ -92,10 +126,21 @@ local function three(a, b, c)
 	})
 end
 
--- INNER SHADOW -- a soft dark ring hugging the inside of a pill's edge. This is what gives
--- a rounded panel the sense of sitting DOWN in its frame, and with no drop shadow behind
--- the component it is doing most of the work.
-local function innerShadow(pill, radius, col, thickness, trans)
+-- ===== INNER SHADOW + RIM LIGHT DISABLED (flat UI) =====
+-- innerShadow drew a dark ring hugging the inside of a pill's edge; rimLight drew a bright hairline
+-- along its top. Together they are what made each pill look moulded and sunken -- the "3D look". Both
+-- helpers now no-op (and remove anything an earlier build left) so no call site needs rewiring.
+local function innerShadow(pill, _radius, _col, _thickness, _trans)
+	local stale = pill:FindFirstChild("InnerShadow")
+	if stale then stale:Destroy() end
+	return nil
+end
+local function rimLight(pill, _widthFrac, _trans)
+	local stale = pill:FindFirstChild("RimLight")
+	if stale then stale:Destroy() end
+	return nil
+end
+local function innerShadowUNUSED(pill, radius, col, thickness, trans)
 	local sh = Instance.new("Frame")
 	sh.Name = "InnerShadow"
 	sh.BackgroundTransparency = 1
@@ -107,9 +152,8 @@ local function innerShadow(pill, radius, col, thickness, trans)
 	return sh
 end
 
--- RIM HIGHLIGHT -- a short hairline of light along the top of a pill, fading out at both
--- ends. Gentle: it suggests one soft light source rather than a reflective strip.
-local function rimLight(pill, widthFrac, trans)
+-- (superseded by the no-op rimLight above -- kept only so the original build is on record)
+local function rimLightUNUSED(pill, widthFrac, trans)
 	local r = Instance.new("Frame")
 	r.Name = "RimLight"
 	r.AnchorPoint = Vector2.new(0.5, 0)
@@ -129,23 +173,9 @@ local function rimLight(pill, widthFrac, trans)
 	return r
 end
 
--- CONTACT SHADOW -- the small soft pool an icon casts on the panel under it. Tiny, but it
--- is the difference between an icon sitting ON the surface and floating above it. This one
--- stays: it is INSIDE a pill, over a known colour, so it reads as shading, not as a slab.
-local function contactShadow(parent, host, w, h)
-	local sh = Instance.new("Frame")
-	sh.Name = "ContactShadow"
-	sh.AnchorPoint = Vector2.new(0.5, 0.5)
-	sh.Position = UDim2.new(0, host.Position.X.Offset + host.Size.X.Offset / 2, 0.5, 7)
-	sh.Size = UDim2.fromOffset(w, h)
-	sh.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-	sh.BackgroundTransparency = 0.72
-	sh.BorderSizePixel = 0
-	sh.ZIndex = host.ZIndex - 1
-	sh.Parent = parent
-	corner(sh, math.floor(h / 2))
-	return sh
-end
+-- (CONTACT SHADOW REMOVED. It drew a small dark pool under each icon to sell "sitting on the surface".
+-- That is 3D-styling language, and against the flat light-blue/yellow pills it reads as a smudge rather
+-- than as depth. Both call sites are gone; the helper went with them.)
 
 -- THE NUMBER -- white, thick clean outline, and a soft drop shadow behind it for
 -- readability over both the navy and the gold. The label is AutomaticSize.X, so it is
@@ -254,9 +284,11 @@ end
 -- is independent of the pill's own size, so there is no feedback loop between the two.
 local function fit()
 	if not (capRef and tokenPillRef and coinPillRef and tokenValue and coinValue) then return end
-	local tw = TOKEN_X + tokenValue.TextBounds.X + 8 + PLUS_W + TRAIL
-	local cw = COIN_X  + coinValue.TextBounds.X  + 8 + PLUS_W + TRAIL
-	local w  = math.max(tw, cw, 120)
+	-- 14px of slack between the digits and the "+" (was 8) and a 140 floor (was 120): four-digit
+	-- values with their comma ("1,200") need the extra room -- they were kissing the plus before.
+	local tw = TOKEN_X + tokenValue.TextBounds.X + 14 + PLUS_W + TRAIL
+	local cw = COIN_X  + coinValue.TextBounds.X  + 14 + PLUS_W + TRAIL
+	local w  = math.max(tw, cw, 140)
 	if math.abs(tokenPillRef.Size.X.Offset - w) > 0.5 then
 		tokenPillRef.Size = UDim2.fromOffset(w, INNER_H)
 		coinPillRef.Size  = UDim2.fromOffset(w, INNER_H)
@@ -266,21 +298,23 @@ end
 
 local function build(parent)
 	-- ---- OUTER FRAME -----------------------------------------------------------------
-	-- Dark navy rather than flat black, gradient-lit from above, with one thin containing
-	-- outline. Nothing is drawn BEHIND it -- see the header note on drop shadows.
+	-- The light menu blue, a barely-there vertical lift, and ONE clear white outline -- the same
+	-- treatment CoreClient gives RightPanel, so the capsule is bounded like every other panel.
+	-- Nothing is drawn BEHIND it -- see the header note on drop shadows.
 	local cap = Instance.new("Frame")
 	cap.Name = "CurrencyCapsule"
 	cap.Size = UDim2.fromOffset(CAP_W, CAP_H)
-	cap.BackgroundColor3 = FRAME_BOT
+	cap.BackgroundColor3 = FRAME_MID
 	cap.BorderSizePixel = 0
 	cap.ZIndex = 3
 	cap.Parent = parent
 	corner(cap, CAP_H / 2)
 	grad(cap, three(FRAME_TOP, FRAME_MID, FRAME_BOT), 90)
-	stroke(cap, FRAME_LINE, 2)
+	stroke(cap, FRAME_LINE, 2.5)
 
-	-- the frame's own bevel: a light hairline along its top edge, nothing more
-	rimLight(cap, 0.86, 0.70)
+	-- the frame's own bevel: a faint hairline along its top edge, nothing more (was 0.70 -- brighter than
+	-- anything comparable elsewhere in the UI, and part of what made the capsule look moulded)
+	rimLight(cap, 0.86, 0.88)
 
 	-- ---- TOKEN PILL (left, 30%) ------------------------------------------------------
 	-- A fully rounded capsule, inset by PAD on every side. A TextButton, because tapping
@@ -299,8 +333,11 @@ local function build(parent)
 	corner(tokenPill, INNER_H / 2)
 	grad(tokenPill, three(NAVY_TOP, NAVY_MID, NAVY_BOT), 90)
 	stroke(tokenPill, NAVY_LINE, 2)
-	innerShadow(tokenPill, INNER_H / 2, Color3.fromRGB(6, 16, 48), 3, 0.55)
-	rimLight(tokenPill, 0.62, 0.72)
+	-- FLATTER: the inner shadow drops from a 3px near-black ring at 0.55 to a 1px blue one at 0.82, and
+	-- the rim highlight is barely there. Both used to do the heavy lifting on the old "sunken pill in a
+	-- metal frame" look; the rest of this game's UI is flat, so they only need to hint at an edge now.
+	innerShadow(tokenPill, INNER_H / 2, Color3.fromRGB(26, 70, 158), 1, 0.82)
+	rimLight(tokenPill, 0.62, 0.9)
 
 	-- TICKET -- the emoji, larger, with a soft shadow under it. The hand-drawn ticket was
 	-- crisper in theory and worse in practice; this one just reads better.
@@ -315,7 +352,7 @@ local function build(parent)
 	ticket.Text = "\xF0\x9F\x8E\x9F"
 	ticket.ZIndex = 8
 	ticket.Parent = tokenPill
-	contactShadow(tokenPill, ticket, 26, 7)
+	-- (contactShadow dropped here too, to match the coin side -- see the note by the coin)
 
 	tokenValue = autoNumber(tokenPill, 26, TOKEN_X)
 
@@ -346,59 +383,41 @@ local function build(parent)
 	corner(coinPill, INNER_H / 2)
 	grad(coinPill, three(GOLD_TOP, GOLD_MID, GOLD_BOT), 90)
 	stroke(coinPill, GOLD_LINE, 2)
-	innerShadow(coinPill, INNER_H / 2, Color3.fromRGB(140, 66, 4), 3, 0.6)
-	rimLight(coinPill, 0.5, 0.74)
+	innerShadow(coinPill, INNER_H / 2, Color3.fromRGB(196, 158, 16), 1, 0.82)
+	rimLight(coinPill, 0.5, 0.9)
 
-	-- COIN -- built in layers so it has real depth: a shaded thick edge, a lit face, a
-	-- milled inner ring, an embossed $ (dark cut over a light lower lip), one small glint.
+	-- ===== THE COIN IS ONE FLAT DISC =====
+	-- It used to be a five-layer medallion: a shaded thick edge, a gradient-lit face, a milled inner
+	-- ring, an embossed $ (a dark cut sitting over a lighter "lip" offset 1px below it) and a rotated
+	-- specular glint. That is a small 3D render sitting inside a flat UI. It is now a plain yellow
+	-- circle with a darker outline and a single flat $ -- same read at 38px, none of the moulding.
 	local coin = Instance.new("Frame")
 	coin.Name = "Coin"
 	coin.AnchorPoint = Vector2.new(0, 0.5)
 	coin.Position = UDim2.new(0, 14, 0.5, 0)
 	coin.Size = UDim2.fromOffset(38, 38)
-	coin.BackgroundColor3 = Color3.fromRGB(206, 126, 12)
+	-- The DISC is a lighter, brighter gold than the pill it sits on, with a warm amber rim. Coin and pill
+	-- being the same gold made the whole thing one mustard blob; this separation is what actually reads
+	-- as "a coin on a gold plate" without needing any of the old five-layer moulding back.
+	-- (255,214,108) is GOLD_BASE lifted ~28% toward white -- the SAME hue, just lighter, so the disc and
+	-- the pill read as one metal. Picking a lighter yellow freehand pushed green back up and the mustard
+	-- came straight back; deriving it from the pill's own colour cannot drift.
+	coin.BackgroundColor3 = Color3.fromRGB(255, 214, 108)
 	coin.BorderSizePixel = 0
 	coin.ZIndex = 8
 	coin.Parent = coinPill
 	corner(coin, 19)
-	stroke(coin, Color3.fromRGB(112, 62, 4), 2)
-	contactShadow(coinPill, coin, 30, 8)
+	stroke(coin, Color3.fromRGB(196, 134, 12), 2)
 
-	local face = Instance.new("Frame")
+	local face = Instance.new("Frame")   -- kept (the $ and the value label parent to it), but flat
 	face.Name = "Face"
 	face.AnchorPoint = Vector2.new(0.5, 0.5)
-	face.Position = UDim2.new(0.5, 0, 0.5, -1)
+	face.Position = UDim2.new(0.5, 0, 0.5, 0)
 	face.Size = UDim2.fromOffset(32, 32)
-	face.BackgroundColor3 = Color3.fromRGB(255, 206, 66)
+	face.BackgroundTransparency = 1   -- no second disc: the coin above IS the face now
 	face.BorderSizePixel = 0
 	face.ZIndex = 9
 	face.Parent = coin
-	corner(face, 16)
-	grad(face, three(Color3.fromRGB(255, 243, 186), Color3.fromRGB(255, 202, 62),
-		Color3.fromRGB(222, 142, 16)), 90)
-
-	local ring = Instance.new("Frame")   -- milled inner ring
-	ring.Name = "Ring"
-	ring.AnchorPoint = Vector2.new(0.5, 0.5)
-	ring.Position = UDim2.new(0.5, 0, 0.5, 0)
-	ring.Size = UDim2.fromOffset(25, 25)
-	ring.BackgroundTransparency = 1
-	ring.ZIndex = 10
-	ring.Parent = face
-	corner(ring, 13)
-	stroke(ring, Color3.fromRGB(196, 120, 8), 1.5, 0.25)
-
-	local lip = Instance.new("TextLabel")  -- lit lower lip of the embossed cut
-	lip.Name = "DollarLip"
-	lip.BackgroundTransparency = 1
-	lip.Position = UDim2.new(0, 0, 0, 1)
-	lip.Size = UDim2.new(1, 0, 1, 0)
-	lip.Font = Enum.Font.FredokaOne
-	lip.TextSize = 21
-	lip.TextColor3 = Color3.fromRGB(255, 238, 170)
-	lip.Text = "$"
-	lip.ZIndex = 10
-	lip.Parent = face
 
 	local dollar = Instance.new("TextLabel")
 	dollar.Name = "Dollar"
@@ -406,23 +425,13 @@ local function build(parent)
 	dollar.Size = UDim2.new(1, 0, 1, 0)
 	dollar.Font = Enum.Font.FredokaOne
 	dollar.TextSize = 21
-	dollar.TextColor3 = Color3.fromRGB(163, 92, 6)
+	dollar.TextColor3 = Color3.fromRGB(168, 108, 6)   -- warm amber-brown, matching the disc's rim
 	dollar.Text = "$"
 	dollar.ZIndex = 11
 	dollar.Parent = face
 
-	local glint = Instance.new("Frame")  -- one small specular, upper left, at an angle
-	glint.Name = "Glint"
-	glint.AnchorPoint = Vector2.new(0.5, 0.5)
-	glint.Position = UDim2.new(0.33, 0, 0.26, 0)
-	glint.Size = UDim2.fromOffset(11, 6)
-	glint.BackgroundColor3 = Color3.new(1, 1, 1)
-	glint.BackgroundTransparency = 0.3
-	glint.BorderSizePixel = 0
-	glint.Rotation = -34
-	glint.ZIndex = 12
-	glint.Parent = face
-	corner(glint, 3)
+	-- (the rotated white specular "glint" went with the rest of the medallion -- a highlight implies a
+	-- curved, lit surface, and this is a flat disc now)
 
 	coinValue = autoNumber(coinPill, 28, COIN_X)
 
@@ -438,6 +447,12 @@ local function build(parent)
 
 	capRef, tokenPillRef, coinPillRef = cap, tokenPill, coinPill
 	fit()
+	-- REFIT THE INSTANT THE DIGITS CHANGE WIDTH. The value pass only runs fit() on its 0.25s
+	-- cadence, so a balance that grew a digit could render clipped for a beat -- and if the pill
+	-- ever missed a resize it stayed clipped until the next change. TextBounds is the exact
+	-- signal "the rendered digits are a different width now".
+	tokenValue:GetPropertyChangedSignal("TextBounds"):Connect(fit)
+	coinValue:GetPropertyChangedSignal("TextBounds"):Connect(fit)
 	return cap
 end
 
@@ -552,8 +567,13 @@ task.spawn(function()
 					if cv and (cv:IsA("IntValue") or cv:IsA("NumberValue")) then
 						coinValue.Text = commas(cv.Value)
 					elseif amt and amt:IsA("TextLabel") then
-						local digits = amt.Text:gsub("[^%d]", "")
-						coinValue.Text = (#digits > 0) and commas(tonumber(digits)) or amt.Text
+						-- The label is ABBREVIATED ("1.2K", "3.4M"), so PARSE it as a number instead of
+						-- stripping non-digits -- the strip turned 12,000 ("12.0K") into "120" and
+						-- 1,200 ("1.2K") into "12". Only fall back to the raw text if it won't parse.
+						local num, suffix = amt.Text:match("^%s*([%d%.]+)%s*([KkMmBb]?)")
+						local mult = ({ K = 1e3, k = 1e3, M = 1e6, m = 1e6, B = 1e9, b = 1e9 })[suffix] or 1
+						local v = tonumber(num)
+						coinValue.Text = v and commas(v * mult) or amt.Text
 					end
 				end
 				fit()   -- both pills re-hug their digits, then square off to the wider one
@@ -583,13 +603,20 @@ task.spawn(function()
 			-- re-asserted EVERY frame, not just on the way in: a UIListLayout ignores a child's
 			-- Position but NOT its AnchorPoint, and CoreClient re-stamps (1, 0) on menu close --
 			-- which would slide the element a full width sideways inside the row.
-			local function adopt(el, order)
+			local function adopt(el, order, squareH)
 				if not (el and el.Parent) then return end
 				if el.Parent ~= row then
 					el.Position = UDim2.new()
 					el.Parent = row
 				end
 				if el.AnchorPoint ~= ZERO_ANCHOR then el.AnchorPoint = ZERO_ANCHOR end
+				-- GEAR SIZE IS OWNED HERE. SettingsMenu still sizes the gear from the HIDDEN original
+				-- coin pill (~40px), so next to the 60px capsule it always rendered undersized. The row
+				-- owns the gear's layout, so it owns its size too -- re-asserted every frame, because
+				-- SettingsMenu's place() re-stamps it whenever the hidden pill fires a property event.
+				if squareH and (el.Size.X.Offset ~= squareH or el.Size.Y.Offset ~= squareH) then
+					el.Size = UDim2.fromOffset(squareH, squareH)
+				end
 				-- SCALED ONCE, NOT TWICE. The gear is born in SettingsGui, where the responsive pass gives
 				-- it its OWN UIScale as a top-level child of that gui. Adopting it into this row does not
 				-- remove that -- and the row is itself a top-level child of CoinGui, so it carries a second
@@ -601,8 +628,8 @@ task.spawn(function()
 				if us and us.Scale ~= 1 then us.Scale = 1 end
 				el.LayoutOrder = order
 			end
-			adopt(gear, 1)      -- gear on the left
-			adopt(capsule, 2)   -- the capsule on the right
+			adopt(gear, 1, CAP_H - 6) -- gear on the left, sized to the capsule's row (54 in a 60 row)
+			adopt(capsule, 2)         -- the capsule on the right
 
 			-- ===== THE ONLY MEASUREMENT LEFT: THE STATS PANEL'S RIGHT INSET, AS A FRACTION =====
 			-- Read as a fraction of the PANEL gui's own width and re-applied as a fraction of OUR

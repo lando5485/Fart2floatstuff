@@ -78,11 +78,29 @@ local AUTO_SPEED     = 1.8                   -- multiplier on the assist's drive
 
 -- Audio: drop in your OWN asset ids. "" = silent, and nothing is ever created for an
 -- empty id -- given how many ids in this place fail auth, silence is the safe default.
-local SOUND_MOTOR    = ""        -- short whirr each time the crane starts moving
-local SOUND_CLUNK    = ""        -- the containment lid slamming shut
-local SOUND_SITE     = ""        -- LOOPING construction-site ambience from the crane
-local SITE_VOLUME    = 0.35
-local SITE_RANGE     = 140       -- studs you can hear the site from
+--
+-- ⚠ ONE TABLE, NOT EIGHT LOCALS -- AND ADD NEW CONFIG THE SAME WAY.
+-- This file sits at Luau's 200-locals-per-SCOPE ceiling. Adding a handful of plain `local`s at file
+-- scope pushed it past 200 and the WHOLE SCRIPT stopped compiling ("Out of local registers when
+-- trying to allocate makeSludgePool: exceeded limit 200") -- which meant island 9 built nothing at
+-- all: no crane, no waste piles, no console. A table costs ONE register no matter how many fields
+-- it holds, so group config instead of naming it at the top level.
+--
+-- ONE CLIP DOES BOTH MOTOR HALVES. The first MOTOR_STOP_AT seconds are the motor running; from that
+-- mark on, the same recording is the machine winding down. So the running loop wraps BEFORE the mark,
+-- and stopping jumps to it and lets the tail play itself out -- no second asset, and the stop always
+-- sounds like a stop.
+local AUDIO = {
+	MOTOR   = "rbxassetid://76342236247989",  -- the crane motor: runs while you drive it
+	CLUNK   = "",        -- the containment lid slamming shut
+	SITE    = "",        -- LOOPING construction-site ambience from the crane
+
+	MOTOR_STOP_AT = 5,   -- seconds into the clip where the "crane stopping" part begins
+	MOTOR_VOLUME  = 0.55,
+	MOTOR_RANGE   = 180, -- studs you can hear the motor from
+	SITE_VOLUME   = 0.35,
+	SITE_RANGE    = 140, -- studs you can hear the site from
+}
 
 -- industrial palette
 local PANEL   = Color3.fromRGB(28, 30, 34)
@@ -349,10 +367,10 @@ local function buildRig(craneInst)
 		print(("[Cleanup] exhaust stack at %.0f,%.0f,%.0f (smoke on)"):format(cap.Position.X, cap.Position.Y, cap.Position.Z))
 
 		-- looping site ambience, only built if you've supplied an id
-		if SOUND_SITE ~= "" then
+		if AUDIO.SITE ~= "" then
 			local s = Instance.new("Sound")
-			s.Name = "SiteAmbience"; s.SoundId = SOUND_SITE; s.Looped = true
-			s.Volume = SITE_VOLUME; s.RollOffMaxDistance = SITE_RANGE; s.RollOffMinDistance = 12
+			s.Name = "SiteAmbience"; s.SoundId = AUDIO.SITE; s.Looped = true
+			s.Volume = AUDIO.SITE_VOLUME; s.RollOffMaxDistance = AUDIO.SITE_RANGE; s.RollOffMinDistance = 12
 			s.Parent = pipe
 			s:Play()
 			r.siteSound = s
@@ -840,7 +858,7 @@ local function sealChamber()
 	local slam = TweenService:Create(chamberLid, TweenInfo.new(0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.In),
 		{ CFrame = CFrame.new(chamberCF.Position.X, chamberTop + 0.4, chamberCF.Position.Z) })
 	slam.Completed:Connect(function()
-		playSound(SOUND_CLUNK, 0.9)
+		playSound(AUDIO.CLUNK, 0.9)
 		-- shock ring + a thump you can feel
 		local ring = mk({ Name = "SealRing", Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.7, 4, 4),
 			Color = GREEN_L, Material = Enum.Material.Neon, Transparency = 0.15 })
@@ -880,6 +898,11 @@ console.Size = UDim2.new(0, 720, 0, 288)
 console.BackgroundColor3 = PANEL
 console.BorderSizePixel = 0
 console.Parent = gui
+-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
+-- The panel keeps its own size and every child keeps its own pixel coordinates;
+-- it is centred in the house shell and scaled to fit, so nothing inside moves.
+pcall(_G.housePanel, console)   -- island9 crane console
 do
 	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 14); c.Parent = console
 	local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(10, 11, 13); s.Thickness = 3; s.Parent = console
@@ -1049,13 +1072,15 @@ local function mkButton(text, x, y, w, h, tint)
 	return b
 end
 
--- THE EASY BUTTON: one press drives the whole crane to whatever you need next.
--- A kid can finish the entire job with just this and GRAB.
--- THE WHOLE GAME: two big buttons. Press the blue one, then the green one. Repeat.
-local btnAssist = mkButton("FIND WASTE", 12, 86, 344, 104, Color3.fromRGB(46, 84, 128))
+-- THE ONE BUTTON. Press it, the crane does the whole beat: drive over, lower, and grab (or drop).
+--
+-- GRAB/DROP IS GONE, AND IT WAS ALREADY REDUNDANT. The assist calls tryGrab() itself the instant it
+-- ARRIVES -- picking up at a pile, tipping in at the bin -- so the green button was a second way to do a
+-- thing that had just been done for you. Its only remaining use was punishing you for pressing it at the
+-- wrong moment ("!! HOOK NOT OVER WASTE"), which is a failure state invented by the button's own existence.
+-- One button, pressed twice per load: FIND WASTE -> GO TO BIN. Full width now that it is alone.
+local btnAssist = mkButton("FIND WASTE", 12, 86, 696, 104, Color3.fromRGB(46, 84, 128))
 btnAssist.TextSize = 30
-local btnGrab   = mkButton("GRAB", 364, 86, 344, 104, Color3.fromRGB(52, 104, 60))
-btnGrab.TextSize = 30
 
 local btnExit = mkButton("LEAVE", 440, 202, 268, 34, Color3.fromRGB(84, 44, 46))
 -- pulse the exit button red when the crane can't reach the last piles (attribute set in refreshHUD)
@@ -1168,9 +1193,9 @@ local function refreshHUD()
 	if finished then
 		hintLbl.Text = "All done! Press LEAVE and go file your findings."
 	elseif carrying then
-		hintLbl.Text = "Nice! Press GO TO BIN, then press DROP."
+		hintLbl.Text = "Nice! Now press GO TO BIN."
 	else
-		hintLbl.Text = "Press FIND WASTE, then press GRAB."
+		hintLbl.Text = "Press FIND WASTE -- the crane grabs it for you."
 	end
 
 	-- crane can't reach the last piles -> tell them to EXIT and go find the shovel (pulses the button)
@@ -1211,8 +1236,9 @@ local function refreshHUD()
 		sampleLbl.Text = ("%s  --  %s"):format(readingLine(last), last.note)
 	end
 
-	btnGrab.Text = carrying and "DROP" or "GRAB"
-	btnGrab.BackgroundColor3 = carrying and Color3.fromRGB(126, 78, 42) or Color3.fromRGB(52, 104, 60)
+	-- The single button carries the colour cue the two used to split between them: blue = go fetch,
+	-- amber = you are holding something, take it to the bin.
+	btnAssist.BackgroundColor3 = carrying and Color3.fromRGB(126, 78, 42) or Color3.fromRGB(46, 84, 128)
 end
 
 -- ============================================================================
@@ -1307,7 +1333,8 @@ local function tryGrab()
 	refreshHUD()
 end
 
-btnGrab.MouseButton1Click:Connect(tryGrab)
+-- (no GRAB/DROP button any more -- the assist calls tryGrab() on arrival. tryGrab itself stays: it is what
+--  the assist calls, and the hand-carry path uses registerLoad from it.)
 
 -- ============================================================================
 -- THE ASSIST -- "FIND WASTE" / "GO TO BIN". Works out the slew, roll and hoist
@@ -1449,10 +1476,80 @@ player.CharacterAdded:Connect(function()
 	if operating then setOperating(false) end
 end)
 
+-- ============================================================================
+-- THE CRANE MOTOR
+-- ============================================================================
+-- ONE persistent Sound on the machine, not a fresh one per movement. The old code made a new Instance every
+-- time `moved` flipped true, which on a clip this long stacks overlapping copies of the same motor within a
+-- couple of seconds of driving. Parented to a BasePart it is also 3D, so it comes from the crane and fades as
+-- you walk off -- correct for a machine everyone on the island can see.
+--
+-- ONE TABLE, for the same reason AUDIO is one table: this file is at the 200-locals ceiling and six more
+-- names at file scope is what broke the build. Fields and methods cost nothing extra.
+local Motor = { playing = false, sound = nil }
+
+function Motor.host()
+	if rig then
+		local h = rig.exhaust or rig.hook or rig.crate
+		if h and h:IsA("BasePart") and h.Parent then return h end
+	end
+	return firstBasePart(crane)
+end
+
+-- Built lazily: the rig does not exist yet when this file runs, and an id that fails auth should cost nothing.
+function Motor.ensure()
+	if AUDIO.MOTOR == "" then return nil end
+	if Motor.sound and Motor.sound.Parent then return Motor.sound end
+	local host = Motor.host()
+	if not host then return nil end
+	local s = Instance.new("Sound")
+	s.Name = "CraneMotor"
+	s.SoundId = AUDIO.MOTOR
+	s.Volume = AUDIO.MOTOR_VOLUME
+	s.RollOffMinDistance = 14
+	s.RollOffMaxDistance = AUDIO.MOTOR_RANGE
+	s.Parent = host
+	Motor.sound = s
+	return s
+end
+
+function Motor.start()
+	local s = Motor.ensure(); if not s then return end
+	s.Looped = true
+	-- Already running the motor half? Leave it alone -- restarting on every re-press would stutter the clip
+	-- back to its first frame each time you tapped a control.
+	if s.IsPlaying and s.TimePosition < AUDIO.MOTOR_STOP_AT then return end
+	s:Play()          -- Play() rewinds to 0 itself, so set TimePosition AFTER it, never before
+	s.TimePosition = 0
+end
+
+-- THE STOP CUE. Jump to the wind-down mark and unloop, so the clip plays out its own ending and then falls
+-- silent on its own. Nothing has to time or fade it.
+function Motor.stop()
+	local s = Motor.sound
+	if not (s and s.Parent) then return end
+	s.Looped = false
+	if not s.IsPlaying then s:Play() end
+	s.TimePosition = AUDIO.MOTOR_STOP_AT
+end
+
+-- Roblox Sound has no loop-region, so the running loop is held inside the motor half here: while the crane is
+-- driving, wrap back to 0 before playback can reach the stop cue. Without this the "crane stopping" noise
+-- plays on repeat WHILE it is still moving, which is the one thing the split is meant to prevent.
+RunService.Heartbeat:Connect(function()
+	local s = Motor.sound
+	if not (Motor.playing and s and s.Parent and s.IsPlaying) then return end
+	if s.TimePosition >= AUDIO.MOTOR_STOP_AT then s.TimePosition = 0 end
+end)
+
 -- the motion loop: eased slew + hoist while a control is held
-local motorPlaying = false
 RunService.RenderStepped:Connect(function(dt)
-	if not (operating and rig) then return end
+	if not (operating and rig) then
+		-- Left the controls (or died) mid-swing: the loop below never runs again, so the stop cue has to fire
+		-- from here or the motor would run forever with nobody driving.
+		if Motor.playing then Motor.playing = false; Motor.stop() end
+		return
+	end
 	local moved = false
 
 	if held.left  then rig.slewAngle -= SLEW_SPEED * dt; moved = true end
@@ -1464,6 +1561,10 @@ RunService.RenderStepped:Connect(function(dt)
 
 	-- touching anything manually takes the assist off -- it must never fight the player
 	if moved and autoTarget then autoTarget = nil; setStatus("MANUAL CONTROL") end
+
+	-- Did the ASSIST move the machine this frame? The motor has to run for assisted movement exactly as it
+	-- does for manual -- see the note on the shared tail below.
+	local assistDriving = false
 
 	-- ...otherwise the assist drives for you
 	if autoTarget and not moved then
@@ -1506,6 +1607,7 @@ RunService.RenderStepped:Connect(function(dt)
 
 			applyRig()
 			refreshHUD()
+			assistDriving = true -- the boom/hoist/rollers actually moved: the motor should be running
 
 			if arrived then
 				-- arrived: do the obvious thing
@@ -1531,19 +1633,31 @@ RunService.RenderStepped:Connect(function(dt)
 				end
 				refreshHUD()
 			end
-			return
+			-- NO `return` HERE ANY MORE. It used to bail straight out of the frame, which skipped the motor
+			-- block below entirely -- so the assist drove the crane in TOTAL SILENCE. That is most of the
+			-- craning in this quest, including the whole "AUTO: LOWERING" phase above: press the easy button
+			-- and the boom lifts, swings and lowers without a sound. It also skipped `engineWorking`, so the
+			-- exhaust never thickened while the assist worked either. Fall through to the shared tail instead.
 		end
 	end
 
-	if moved then
-		applyRig()
-		if not motorPlaying then motorPlaying = true; playSound(SOUND_MOTOR, 0.35) end
-		refreshHUD()
-	else
-		motorPlaying = false
+	-- ONE PLACE DECIDES WHETHER THE MACHINE IS RUNNING, whether you are driving it or the assist is.
+	local driving = moved or assistDriving
+	if driving then
+		-- The assist already did its own applyRig()/refreshHUD() above; don't repeat them on its frames.
+		if moved then
+			applyRig()
+			refreshHUD()
+		end
+		if not Motor.playing then Motor.playing = true; Motor.start() end
+	elseif Motor.playing then
+		-- EDGE-TRIGGERED, not "every frame it isn't moving": Motor.stop() re-seeks the clip, so running it
+		-- every idle frame would restart the wind-down 60 times a second and it would never finish.
+		Motor.playing = false
+		Motor.stop()
 	end
 
-	engineWorking = moved or (autoTarget ~= nil)
+	engineWorking = driving or (autoTarget ~= nil)
 end)
 -- (there's deliberately no "walked too far away" auto-exit: you're anchored in the cab,
 --  which sits ~26 studs above the slew axis, and that check was ejecting you instantly.)
@@ -1572,7 +1686,7 @@ RunService.RenderStepped:Connect(function(dt)
 
 	-- the ambience revs a little with it, and never stops
 	if rig.siteSound then
-		local wantVol = engineWorking and (SITE_VOLUME * 1.5) or SITE_VOLUME
+		local wantVol = engineWorking and (AUDIO.SITE_VOLUME * 1.5) or AUDIO.SITE_VOLUME
 		rig.siteSound.Volume = rig.siteSound.Volume + (wantVol - rig.siteSound.Volume) * k
 		if not rig.siteSound.IsPlaying then rig.siteSound:Play() end
 	end
@@ -1580,149 +1694,539 @@ end)
 
 -- ============================================================================
 -- THE FINDINGS TERMINAL -- built on the block(s) named "Findings". Once the bin
--- is full you walk over and type the samples up. Filing them all ends the job.
+-- is full you walk over and run every sample through the scanner. Analysing them
+-- all files the report and ends the job.
+--
+-- ===== IT IS AN ANALYSER NOW, NOT A FORM =====
+-- Modeled on Saturn's RockAnalyzer (SpaceRealmStuff/src/client/SaturnAnalyzerClient.client.luau):
+-- a SPECIMEN CHAMBER down the left side with the actual lump of irradiated cocoa
+-- turning in a ViewportFrame, the sample list on the right, and an
+-- ANALYSING... -> progress + telemetry -> ANALYSIS COMPLETE pass you sit through per
+-- sample instead of a button that instantly says LOGGED. The old version filed a
+-- reading the moment you clicked it, which is why the terminal read as paperwork:
+-- nothing on screen ever showed you the thing you spent the whole quest hauling.
+--
+-- EVERY PIECE OF COCOA GETS ITS OWN LUMP. The chunk in the chamber is built FROM the
+-- reading and seeded off its sample id (Random.new), so sample 3 is the same lump every
+-- time you open it, no two samples look alike, and the colour is that isotope's own
+-- chocolate tone -- Nougatium is a pale cream rock, Beanium is nearly black.
+--
+-- ===== REGISTERS =====
+-- Only termGui / screenLabels / refreshTerminal are column-0 locals; the whole console
+-- lives in the `do ... end` below. This file peaks at 192 of Luau's 200 top-level locals
+-- (tools/registers.py) -- a console built at column 0 would push it over the ceiling and
+-- the script would silently fail to compile. Locals inside a do-block are freed at the
+-- `end`, so this costs 3 registers no matter how big it gets (the old layout cost 10).
 -- ============================================================================
 local termGui = Instance.new("ScreenGui")
 termGui.Name = "FindingsTerminal"; termGui.ResetOnSpawn = false; termGui.DisplayOrder = 14
 termGui.IgnoreGuiInset = true; termGui.Enabled = false; termGui.Parent = PlayerGui
 
-local termFrame = Instance.new("Frame")
-termFrame.AnchorPoint = Vector2.new(0.5, 0.5); termFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
-termFrame.Size = UDim2.new(0, 560, 0, 420); termFrame.BackgroundColor3 = Color3.fromRGB(10, 16, 12)
-termFrame.BorderSizePixel = 0; termFrame.Parent = termGui
-do
-	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 12); c.Parent = termFrame
-	local s = Instance.new("UIStroke"); s.Color = WASTE; s.Thickness = 2; s.Transparency = 0.4; s.Parent = termFrame
-end
-do
-	local hdr = Instance.new("Frame")
-	hdr.Size = UDim2.new(1, 0, 0, 34); hdr.BackgroundColor3 = Color3.fromRGB(18, 34, 20); hdr.BorderSizePixel = 0
-	hdr.Parent = termFrame
-	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 12); c.Parent = hdr
-	local t = Instance.new("TextLabel")
-	t.BackgroundTransparency = 1; t.Size = UDim2.new(1, -20, 1, 0); t.Position = UDim2.new(0, 14, 0, 0)
-	t.Font = Enum.Font.RobotoMono; t.Text = "COCOA HAZARD LAB  //  FIELD DATA ENTRY"
-	t.TextColor3 = WASTE; t.TextSize = 14; t.TextXAlignment = Enum.TextXAlignment.Left; t.Parent = hdr
-end
-
-local termList = Instance.new("ScrollingFrame")
-termList.Position = UDim2.new(0, 12, 0, 44); termList.Size = UDim2.new(1, -24, 1, -100)
-termList.BackgroundColor3 = Color3.fromRGB(8, 12, 9); termList.BorderSizePixel = 0
-termList.ScrollBarThickness = 5; termList.CanvasSize = UDim2.new(0, 0, 0, 0); termList.Parent = termFrame
-do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 8); c.Parent = termList end
-
-local termFoot = Instance.new("TextLabel")
-termFoot.BackgroundTransparency = 1; termFoot.Position = UDim2.new(0, 14, 1, -52); termFoot.Size = UDim2.new(1, -180, 0, 22)
-termFoot.Font = Enum.Font.RobotoMono; termFoot.Text = ""; termFoot.TextColor3 = STEEL; termFoot.TextSize = 12
-termFoot.TextXAlignment = Enum.TextXAlignment.Left; termFoot.Parent = termFrame
-
-local function mkTermButton(text, xFromRight, w, tint)
-	local b = Instance.new("TextButton")
-	b.AnchorPoint = Vector2.new(1, 1)
-	b.Position = UDim2.new(1, -xFromRight, 1, -14); b.Size = UDim2.new(0, w, 0, 30)
-	b.BackgroundColor3 = tint; b.BorderSizePixel = 0; b.AutoButtonColor = false
-	b.Font = Enum.Font.RobotoMono; b.Text = text; b.TextColor3 = Color3.fromRGB(240, 246, 240); b.TextSize = 13
-	b.Parent = termFrame
-	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 7); c.Parent = b
-	return b
-end
-local btnFileAll = mkTermButton("FILE ALL FINDINGS", 132, 180, Color3.fromRGB(38, 92, 46))
-local btnTermX   = mkTermButton("CLOSE", 14, 108, Color3.fromRGB(60, 40, 42))
-
 local screenLabels = {}   -- SurfaceGui text on each physical terminal, kept in sync
 local refreshTerminal
-local function fileReading(r)
-	if r.filed then return end
-	r.filed = true
-	refreshTerminal()
 
-	-- all done? that's the job finished
-	local allFiled = #readings > 0
-	for _, x in ipairs(readings) do if not x.filed then allFiled = false; break end end
-	if allFiled and loadsDone >= LOADS_REQUIRED and not findingsFiled then
-		findingsFiled = true
-		_G.cleanupQuestComplete = true
-		refreshBanner()
-		if _G.NotifyCenter then
-			pcall(function() _G.NotifyCenter.push({
-				text = "\xE2\x98\xA2 Findings filed -- reactor cleanup complete!", color = GREEN_L }) end)
+do
+	-- ---- console constants -------------------------------------------------
+	local CHAMBER_BG = Color3.fromRGB(6, 11, 8)     -- inside of the specimen chamber
+	local ROW_BG     = Color3.fromRGB(16, 20, 17)
+	local ROW_DONE   = Color3.fromRGB(15, 31, 18)
+	local INK        = Color3.fromRGB(238, 246, 238)
+	local SCAN_SECS  = 2.6                          -- one specimen's analysis
+	local SCAN_SOUND = "rbxassetid://129289790297292"  -- the analyser running, looped for the scan
+	local LX, LW     = 14, 262                      -- left column x / width
+	local RX, RW     = 288, 398                     -- right column x / width
+
+	-- One chocolate tone per isotope, so you learn to tell specimens apart by sight
+	-- before you read the label.
+	local ISO_TINT = {
+		["Cocoa-60"]       = Color3.fromRGB(96, 60, 38),
+		["Cacaosium-137"]  = Color3.fromRGB(140, 94, 54),
+		["Theobromine-90"] = Color3.fromRGB(72, 46, 33),
+		["Chocotope-131"]  = Color3.fromRGB(176, 120, 52),
+		["Beanium-241"]    = Color3.fromRGB(58, 42, 34),
+		["Nougatium-235"]  = Color3.fromRGB(214, 178, 122),
+		["Fudgeon-99"]     = Color3.fromRGB(112, 70, 46),
+		["Praline-210"]    = Color3.fromRGB(198, 144, 80),
+	}
+	local READOUTS = {
+		"scanning lattice...", "spectral match...", "gamma count rising...",
+		"indexing cocoa mass...", "isotope cross-check...", "half-life estimate...",
+		"containment nominal...", "flavour index off-scale...", "density profile...",
+	}
+
+	-- tiny builders (this console makes ~60 instances; the long form would be 200 lines of noise)
+	local function mk(class, parent, props)
+		local o = Instance.new(class)
+		for k, v in pairs(props) do o[k] = v end
+		o.Parent = parent
+		return o
+	end
+	local function corner(o, r) mk("UICorner", o, { CornerRadius = UDim.new(0, r) }) end
+	local function stroke(o, col, t, tr)
+		return mk("UIStroke", o, { Color = col, Thickness = t, Transparency = tr or 0 })
+	end
+	local function mono(parent, props)
+		props.BackgroundTransparency = 1
+		props.Font = props.Font or Enum.Font.RobotoMono
+		props.TextXAlignment = props.TextXAlignment or Enum.TextXAlignment.Left
+		return mk("TextLabel", parent, props)
+	end
+
+	-- ---- the card ----------------------------------------------------------
+	-- 700x520 EXACTLY = the house panel's own size, so _G.housePanel adopts it at scale 1.0.
+	-- (It centres the panel in a 700x520 shell and scales to fit; matching the shell means no
+	-- upscale at all, and the chamber renders crisp instead of resampled.)
+	local termFrame = mk("Frame", termGui, {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+		Size = UDim2.new(0, 700, 0, 520), BackgroundColor3 = Color3.fromRGB(10, 16, 12),
+		BorderSizePixel = 0,
+	})
+	-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+	-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
+	pcall(_G.housePanel, termFrame)   -- island9 findings terminal
+	corner(termFrame, 12); stroke(termFrame, WASTE, 2, 0.4)
+
+	-- header: hazard bar, title left, a live containment lamp right
+	local hdrDot
+	do
+		local hdr = mk("Frame", termFrame, {
+			Size = UDim2.new(1, 0, 0, 40), BackgroundColor3 = Color3.fromRGB(18, 34, 20), BorderSizePixel = 0,
+		})
+		corner(hdr, 12)
+		-- square off the bottom two corners so the rounded header doesn't float above the list
+		mk("Frame", hdr, {
+			Position = UDim2.new(0, 0, 1, -12), Size = UDim2.new(1, 0, 0, 12),
+			BackgroundColor3 = Color3.fromRGB(18, 34, 20), BorderSizePixel = 0,
+		})
+		mono(hdr, {
+			Position = UDim2.new(0, 14, 0, 0), Size = UDim2.new(1, -200, 1, 0),
+			Text = "COCOA HAZARD LAB  //  SPECIMEN ANALYSER", TextColor3 = WASTE, TextSize = 14, ZIndex = 2,
+		})
+		hdrDot = mk("Frame", hdr, {
+			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -152, 0.5, 0), Size = UDim2.new(0, 9, 0, 9),
+			BackgroundColor3 = GREEN_L, BorderSizePixel = 0, ZIndex = 2,
+		})
+		corner(hdrDot, 5)
+		mono(hdr, {
+			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.5, 0), Size = UDim2.new(0, 132, 1, 0),
+			Text = "CONTAINMENT ONLINE", TextColor3 = Color3.fromRGB(96, 150, 104), TextSize = 11,
+			TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 2,
+		})
+	end
+
+	-- ========================================================================
+	-- LEFT: THE SPECIMEN CHAMBER
+	-- ========================================================================
+	local vp = mk("ViewportFrame", termFrame, {
+		Position = UDim2.new(0, LX, 0, 52), Size = UDim2.new(0, LW, 0, 246),
+		BackgroundColor3 = CHAMBER_BG, BorderSizePixel = 0,
+		Ambient = Color3.fromRGB(96, 104, 92), LightColor = Color3.fromRGB(255, 255, 255),
+		LightDirection = Vector3.new(-1, -1, -0.6),
+	})
+	corner(vp, 10); stroke(vp, Color3.fromRGB(46, 78, 40), 1.5)
+	local vpCam = mk("Camera", vp, { CFrame = CFrame.lookAt(Vector3.new(0, 1.6, 9), Vector3.new(0, 0, 0)) })
+	vp.CurrentCamera = vpCam
+
+	-- Chamber chrome. GuiObjects parented to a ViewportFrame draw OVER the 3D, so the brackets,
+	-- the sweep line and the tag all sit on the glass without needing a second frame on top.
+	do -- four corner brackets
+		local B = Color3.fromRGB(120, 200, 96)
+		for _, s in ipairs({ { 0, 0, 1, 1 }, { 1, 0, -1, 1 }, { 0, 1, 1, -1 }, { 1, 1, -1, -1 } }) do
+			local ax, ay, dx, dy = s[1], s[2], s[3], s[4]
+			mk("Frame", vp, { AnchorPoint = Vector2.new(ax, ay), Position = UDim2.new(ax, dx * 8, ay, dy * 8),
+				Size = UDim2.new(0, 18, 0, 2), BackgroundColor3 = B, BackgroundTransparency = 0.35,
+				BorderSizePixel = 0, ZIndex = 3 })
+			mk("Frame", vp, { AnchorPoint = Vector2.new(ax, ay), Position = UDim2.new(ax, dx * 8, ay, dy * 8),
+				Size = UDim2.new(0, 2, 0, 18), BackgroundColor3 = B, BackgroundTransparency = 0.35,
+				BorderSizePixel = 0, ZIndex = 3 })
 		end
-		print("[Cleanup] findings filed -- quest complete")
 	end
-end
+	local sweep = mk("Frame", vp, {   -- the scan line that walks down the glass
+		Size = UDim2.new(1, 0, 0, 2), Position = UDim2.new(0, 0, 0, 0),
+		BackgroundColor3 = WASTE, BackgroundTransparency = 0.55, BorderSizePixel = 0, ZIndex = 3,
+	})
+	mk("UIGradient", sweep, {
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0), NumberSequenceKeypoint.new(1, 1),
+		}),
+	})
+	local vpTag = mono(vp, {
+		AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 12, 1, -8), Size = UDim2.new(1, -24, 0, 14),
+		Font = Enum.Font.Code, Text = "NO SPECIMEN", TextColor3 = Color3.fromRGB(96, 150, 104), TextSize = 11, ZIndex = 3,
+	})
 
-refreshTerminal = function()
-	for _, ch in ipairs(termList:GetChildren()) do
-		if ch:IsA("Frame") then ch:Destroy() end
+	-- specimen identity + telemetry, under the glass
+	local specName = mono(termFrame, {
+		Position = UDim2.new(0, LX, 0, 304), Size = UDim2.new(0, LW, 0, 26),
+		Text = "-- AWAITING SPECIMEN --", TextColor3 = STEEL, TextSize = 19,
+	})
+	local specSub = mono(termFrame, {
+		Position = UDim2.new(0, LX, 0, 330), Size = UDim2.new(0, LW, 0, 18),
+		Text = "load a sample from the list", TextColor3 = STEEL, TextSize = 12,
+	})
+	local scanStatus = mono(termFrame, {
+		Position = UDim2.new(0, LX, 0, 354), Size = UDim2.new(0, LW, 0, 24),
+		Font = Enum.Font.FredokaOne, Text = "STANDBY", TextColor3 = STEEL, TextSize = 20,
+	})
+	local barBg = mk("Frame", termFrame, {
+		Position = UDim2.new(0, LX, 0, 380), Size = UDim2.new(0, LW, 0, 16),
+		BackgroundColor3 = Color3.fromRGB(20, 34, 22), BorderSizePixel = 0,
+	})
+	corner(barBg, 6)
+	local barFill = mk("Frame", barBg, {
+		Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = WASTE, BorderSizePixel = 0,
+	})
+	corner(barFill, 6)
+	local readout = mono(termFrame, {
+		Position = UDim2.new(0, LX, 0, 404), Size = UDim2.new(0, LW, 0, 50),
+		Font = Enum.Font.Code, Text = "", TextColor3 = Color3.fromRGB(95, 190, 130), TextSize = 12,
+		TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true,
+	})
+
+	-- ========================================================================
+	-- RIGHT: THE SAMPLE LIST
+	-- ========================================================================
+	local termList = mk("ScrollingFrame", termFrame, {
+		Position = UDim2.new(0, RX, 0, 52), Size = UDim2.new(0, RW, 0, 402),
+		BackgroundColor3 = Color3.fromRGB(8, 12, 9), BorderSizePixel = 0,
+		ScrollBarThickness = 5, ScrollBarImageColor3 = Color3.fromRGB(60, 110, 60),
+		CanvasSize = UDim2.new(0, 0, 0, 0),
+	})
+	corner(termList, 8)
+
+	local termFoot = mono(termFrame, {
+		Position = UDim2.new(0, LX, 1, -46), Size = UDim2.new(0, 350, 0, 22),
+		Text = "", TextColor3 = STEEL, TextSize = 12,
+	})
+	local function mkTermButton(text, xFromRight, w, tint)
+		local b = mk("TextButton", termFrame, {
+			AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -xFromRight, 1, -14),
+			Size = UDim2.new(0, w, 0, 30), BackgroundColor3 = tint, BorderSizePixel = 0,
+			AutoButtonColor = false, Font = Enum.Font.RobotoMono, Text = text, TextColor3 = INK, TextSize = 13,
+		})
+		corner(b, 7)
+		return b
 	end
-	local y = 6
-	for _, r in ipairs(readings) do
-		local row = Instance.new("Frame")
-		row.Position = UDim2.new(0, 6, 0, y); row.Size = UDim2.new(1, -12, 0, 46)
-		row.BackgroundColor3 = r.filed and Color3.fromRGB(16, 30, 18) or Color3.fromRGB(16, 20, 17)
-		row.BorderSizePixel = 0; row.Parent = termList
-		local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = row
+	local btnFileAll = mkTermButton("SCAN ALL SAMPLES", 132, 180, Color3.fromRGB(38, 92, 46))
+	local btnTermX   = mkTermButton("CLOSE", 14, 108, Color3.fromRGB(60, 40, 42))
 
-		local l1 = Instance.new("TextLabel")
-		l1.BackgroundTransparency = 1; l1.Position = UDim2.new(0, 10, 0, 4); l1.Size = UDim2.new(1, -130, 0, 20)
-		l1.Font = Enum.Font.RobotoMono; l1.Text = readingLine(r); l1.TextColor3 = WASTE; l1.TextSize = 13
-		l1.TextXAlignment = Enum.TextXAlignment.Left; l1.Parent = row
+	-- ---- the analyser's running sound ------------------------------------
+	-- Parented to the ScreenGui, NOT to a part in the world. A Sound under anything that is not a
+	-- BasePart or Attachment plays 2D -- full volume, no falloff, no direction -- which is what a
+	-- UI sound has to be: the console is on your screen, so it must not get quieter as you step
+	-- away from the terminal you are stood at.
+	--
+	-- ONE Sound, reused, rather than a fresh instance per scan: SCAN ALL fires these back to back,
+	-- and a per-scan Sound would stack a second copy over the tail of the last one.
+	local scanSound = mk("Sound", termGui, {
+		Name = "AnalyserLoop", SoundId = SCAN_SOUND, Looped = true, Volume = 0.55,
+	})
 
-		local l2 = Instance.new("TextLabel")
-		l2.BackgroundTransparency = 1; l2.Position = UDim2.new(0, 10, 0, 24); l2.Size = UDim2.new(1, -130, 0, 18)
-		l2.Font = Enum.Font.RobotoMono; l2.Text = r.note; l2.TextColor3 = STEEL; l2.TextSize = 11
-		l2.TextXAlignment = Enum.TextXAlignment.Left; l2.Parent = row
+	-- ========================================================================
+	-- SPECIMEN MODEL -- the lump itself, built from the reading
+	-- ========================================================================
+	local spinModel, spinT = nil, 0
+	local function clearChamber()
+		for _, c in ipairs(vp:GetChildren()) do
+			if c:IsA("Model") then c:Destroy() end
+		end
+		spinModel = nil
+	end
+	-- Seeded off the sample id, so a given sample is ALWAYS the same lump -- reopen the terminal,
+	-- rescan, come back later, and it is recognisably THAT specimen and not a fresh random blob.
+	local function buildSpecimen(r)
+		clearChamber()
+		local tint = ISO_TINT[r.isotope] or Color3.fromRGB(120, 84, 52)
+		local rng  = Random.new(4801 + r.id * 7717)
+		local m = Instance.new("Model")
+		local function lump(sz, off, tilt, col, mat)
+			return mk("Part", m, {
+				Size = sz, Color = col or tint, Material = mat or Enum.Material.Slate, Anchored = true,
+				CFrame = CFrame.new(off) * CFrame.Angles(tilt, tilt * 1.3, tilt * 0.6),
+			})
+		end
+		local core = lump(Vector3.new(2.5, 2.1, 2.7), Vector3.new(0, 0, 0), 0.3)
+		for i = 1, 3 + rng:NextInteger(0, 2) do
+			local s = rng:NextNumber(1.0, 1.7)
+			lump(Vector3.new(s, s * rng:NextNumber(0.8, 1.1), s * rng:NextNumber(0.9, 1.2)),
+				Vector3.new(rng:NextNumber(-1, 1), rng:NextNumber(-0.7, 0.9), rng:NextNumber(-1, 1)),
+				rng:NextNumber(0.2, 2.2))
+			-- the glowing bit: a neon pip of hot cocoa poking out of the chunk. This is the whole
+			-- reason the specimen reads as RADIOACTIVE rather than as a rock.
+			if i <= 3 then
+				local p = lump(Vector3.new(0.5, 0.5, 0.5),
+					Vector3.new(rng:NextNumber(-1.3, 1.3), rng:NextNumber(-0.9, 1.1), rng:NextNumber(-1.3, 1.3)),
+					0, WASTE, Enum.Material.Neon)
+				p.Shape = Enum.PartType.Ball
+			end
+		end
+		m.PrimaryPart = core
+		m.Parent = vp
+		spinModel = m
+		-- the chamber's own light picks up the isotope, so the glass tints with the specimen
+		vp.Ambient = tint:Lerp(Color3.fromRGB(140, 200, 120), 0.35)
+	end
 
+	-- ========================================================================
+	-- SCAN STATE
+	-- ========================================================================
+	local sel, scanning, scanT0, lastTick, queue = nil, false, 0, 0, {}
+	local fileReading   -- assigned below; the scan calls it on completion
+
+	local function setSelected(r)
+		sel = r
+		if not r then
+			clearChamber()
+			specName.Text = "-- AWAITING SPECIMEN --"; specName.TextColor3 = STEEL
+			specSub.Text = "load a sample from the list"
+			scanStatus.Text = "STANDBY"; scanStatus.TextColor3 = STEEL
+			vpTag.Text = "NO SPECIMEN"; barFill.Size = UDim2.new(0, 0, 1, 0); readout.Text = ""
+			return
+		end
+		buildSpecimen(r)
+		specName.Text = r.isotope; specName.TextColor3 = WASTE
+		specSub.Text = ("SAMPLE %02d   %.1f kg   %d mSv"):format(r.id, r.mass, r.dose)
+		vpTag.Text = ("SPEC-%03d // %s"):format(r.id, r.filed and "ARCHIVED" or "UNLOGGED")
 		if r.filed then
-			local ok = Instance.new("TextLabel")
-			ok.BackgroundTransparency = 1; ok.AnchorPoint = Vector2.new(1, 0.5)
-			ok.Position = UDim2.new(1, -10, 0.5, 0); ok.Size = UDim2.new(0, 100, 0, 24)
-			ok.Font = Enum.Font.RobotoMono; ok.Text = "\xE2\x9C\x93 LOGGED"; ok.TextColor3 = GREEN_L; ok.TextSize = 13
-			ok.Parent = row
+			scanStatus.Text = "ANALYSIS COMPLETE"; scanStatus.TextColor3 = GREEN_L
+			barFill.Size = UDim2.new(1, 0, 1, 0); readout.Text = r.note
 		else
-			local b = Instance.new("TextButton")
-			b.AnchorPoint = Vector2.new(1, 0.5); b.Position = UDim2.new(1, -10, 0.5, 0); b.Size = UDim2.new(0, 100, 0, 26)
-			b.BackgroundColor3 = Color3.fromRGB(38, 76, 44); b.BorderSizePixel = 0; b.AutoButtonColor = false
-			b.Font = Enum.Font.RobotoMono; b.Text = "ENTER"; b.TextColor3 = Color3.fromRGB(238, 246, 238); b.TextSize = 13
-			b.Parent = row
-			local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 6); bc.Parent = b
-			b.MouseButton1Click:Connect(function() fileReading(r) end)
+			scanStatus.Text = "READY TO SCAN"; scanStatus.TextColor3 = AMBER_L
+			barFill.Size = UDim2.new(0, 0, 1, 0); readout.Text = "specimen loaded. press SCAN."
 		end
-		y += 52
 	end
-	termList.CanvasSize = UDim2.new(0, 0, 0, y + 6)
 
-	local filed = 0
-	for _, r in ipairs(readings) do if r.filed then filed += 1 end end
-	if #readings == 0 then
-		termFoot.Text = "NO SAMPLES ON FILE -- clear the waste with the crane first."
-	elseif findingsFiled then
-		termFoot.Text = "REPORT FILED. Reactor cleanup complete."
-	else
-		termFoot.Text = ("%d of %d findings entered."):format(filed, #readings)
+	local function startScan(r)
+		if not r or r.filed then setSelected(r); return end
+		setSelected(r)
+		scanning, scanT0, lastTick = true, os.clock(), 0
+		scanStatus.Text = "ANALYSING..."; scanStatus.TextColor3 = Color3.fromRGB(255, 200, 90)
+		barFill.Size = UDim2.new(0, 0, 1, 0)
+		scanSound.TimePosition = 0   -- restart from the top; a queued scan must not resume mid-whirr
+		scanSound:Play()
+		refreshTerminal()
 	end
-	btnFileAll.Visible = (#readings > 0) and (filed < #readings)
 
-	-- mirror the state onto the physical terminal screens
-	local screenTxt
-	if #readings == 0 then
-		screenTxt = "STATUS: AWAITING SAMPLES\n\nNo cocoa logged.\nClear the piles with\nthe BeanLift crane."
-	elseif findingsFiled then
-		screenTxt = ("STATUS: REPORT FILED\n\n%d samples logged.\nReactor stable.\nWell done, operator."):format(#readings)
-	else
-		screenTxt = ("STATUS: DATA PENDING\n\nSamples held: %d\nEntered: %d\n\n[E] to file findings"):format(#readings, filed)
+	-- ---- filing (unchanged rules: every sample analysed + all loads done = quest complete) ----
+	fileReading = function(r)
+		if r.filed then return end
+		r.filed = true
+		refreshTerminal()
+
+		-- all done? that's the job finished
+		local allFiled = #readings > 0
+		for _, x in ipairs(readings) do if not x.filed then allFiled = false; break end end
+		if allFiled and loadsDone >= LOADS_REQUIRED and not findingsFiled then
+			findingsFiled = true
+			_G.cleanupQuestComplete = true
+			-- CINEMATIC PAYOFF. RevealCommand resolves island9's subject itself and plays the shot, so this
+			-- is one line and re-aiming it later is an edit to TARGETS there, not here. Delayed so the
+			-- completion banner and the world change land FIRST -- the camera is going there to show you
+			-- the result, and cutting away before it happens shows you the before.
+			task.delay(1.0, function() pcall(_G.revealIsland, 9) end)
+			refreshBanner()
+			if _G.NotifyCenter then
+				pcall(function() _G.NotifyCenter.push({
+					text = "\xE2\x98\xA2 Findings filed -- reactor cleanup complete!", color = GREEN_L }) end)
+			end
+			print("[Cleanup] findings filed -- quest complete")
+		end
 	end
-	for _, lbl in ipairs(screenLabels) do
-		if lbl.Parent then lbl.Text = screenTxt end
+
+	local function finishScan()
+		scanning = false
+		scanSound:Stop()
+		local r = sel
+		scanStatus.Text = "ANALYSIS COMPLETE"; scanStatus.TextColor3 = GREEN_L
+		barFill.Size = UDim2.new(1, 0, 1, 0)
+		if r then
+			readout.Text = ("match confirmed: %s\n%s"):format(r.isotope, r.note)
+			vpTag.Text = ("SPEC-%03d // ARCHIVED"):format(r.id)
+			fileReading(r)   -- a completed analysis IS the filing; no second click
+		end
+		-- SCAN ALL: take the next one off the queue after a beat, so each result is readable
+		task.delay(0.75, function()
+			if scanning then return end
+			while #queue > 0 do
+				local nxt = table.remove(queue, 1)
+				if nxt and not nxt.filed then
+					if termGui.Enabled then startScan(nxt) end
+					return
+				end
+			end
+		end)
 	end
+
+	-- ========================================================================
+	-- LIST RENDER
+	-- ========================================================================
+	refreshTerminal = function()
+		for _, ch in ipairs(termList:GetChildren()) do
+			if ch:IsA("Frame") then ch:Destroy() end
+		end
+		local qd = {}
+		for _, q in ipairs(queue) do qd[q] = true end
+		local y = 6
+		for _, r in ipairs(readings) do
+			local isSel = (r == sel)
+			local row = mk("Frame", termList, {
+				Position = UDim2.new(0, 6, 0, y), Size = UDim2.new(1, -12, 0, 58),
+				BackgroundColor3 = r.filed and ROW_DONE or ROW_BG, BorderSizePixel = 0,
+			})
+			corner(row, 6)
+			if isSel then stroke(row, WASTE, 1.5, 0.25) end
+
+			mono(row, {
+				Position = UDim2.new(0, 10, 0, 5), Size = UDim2.new(1, -130, 0, 20),
+				Text = ("SAMPLE %02d   %s"):format(r.id, r.isotope), TextColor3 = WASTE, TextSize = 13,
+			})
+			mono(row, {
+				Position = UDim2.new(0, 10, 0, 25), Size = UDim2.new(1, -130, 0, 16),
+				Text = r.note, TextColor3 = STEEL, TextSize = 11,
+			})
+			-- dose strip: how hot this one is, at a glance (red past ~600 mSv)
+			local dbg = mk("Frame", row, {
+				Position = UDim2.new(0, 10, 0, 44), Size = UDim2.new(1, -134, 0, 7),
+				BackgroundColor3 = Color3.fromRGB(26, 34, 27), BorderSizePixel = 0,
+			})
+			corner(dbg, 3)
+			local dfill = mk("Frame", dbg, {
+				Size = UDim2.new(math.clamp(r.dose / 900, 0.05, 1), 0, 1, 0), BorderSizePixel = 0,
+				BackgroundColor3 = (r.dose > 600 and RED_L) or (r.dose > 380 and AMBER_L) or WASTE,
+			})
+			corner(dfill, 3)
+
+			-- the action: SCAN / SCANNING / QUEUED / LOGGED
+			if r.filed then
+				mono(row, {
+					AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.new(0, 100, 0, 24),
+					Text = "\xE2\x9C\x93 LOGGED", TextColor3 = GREEN_L, TextSize = 13,
+					TextXAlignment = Enum.TextXAlignment.Center,
+				})
+			else
+				local busy = scanning and isSel
+				local b = mk("TextButton", row, {
+					AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.new(0, 100, 0, 28),
+					BackgroundColor3 = busy and Color3.fromRGB(120, 92, 30)
+						or (qd[r] and Color3.fromRGB(46, 56, 48) or Color3.fromRGB(38, 76, 44)),
+					BorderSizePixel = 0, AutoButtonColor = false, Font = Enum.Font.RobotoMono,
+					Text = busy and "SCANNING" or (qd[r] and "QUEUED" or "SCAN"), TextColor3 = INK, TextSize = 13,
+				})
+				corner(b, 6)
+				b.MouseButton1Click:Connect(function()
+					if scanning then return end   -- one specimen in the chamber at a time
+					startScan(r)
+				end)
+			end
+
+			-- clicking anywhere on the row LOADS it into the chamber without scanning, so you can
+			-- look at a specimen (or re-look at an archived one) without committing to a scan
+			local pick = mk("TextButton", row, {
+				Size = UDim2.new(1, -120, 1, 0), BackgroundTransparency = 1, Text = "", AutoButtonColor = false,
+			})
+			pick.MouseButton1Click:Connect(function()
+				if scanning then return end
+				setSelected(r); refreshTerminal()
+			end)
+			y += 64
+		end
+		termList.CanvasSize = UDim2.new(0, 0, 0, y + 6)
+
+		local filed = 0
+		for _, r in ipairs(readings) do if r.filed then filed += 1 end end
+		if #readings == 0 then
+			termFoot.Text = "NO SAMPLES ON FILE -- clear the waste with the crane first."
+		elseif findingsFiled then
+			termFoot.Text = "REPORT FILED. Reactor cleanup complete."
+		else
+			termFoot.Text = ("%d of %d specimens analysed."):format(filed, #readings)
+		end
+		btnFileAll.Visible = (#readings > 0) and (filed < #readings)
+		btnFileAll.BackgroundColor3 = scanning and Color3.fromRGB(46, 56, 48) or Color3.fromRGB(38, 92, 46)
+
+		-- mirror the state onto the physical terminal screens
+		local screenTxt
+		if #readings == 0 then
+			screenTxt = "STATUS: AWAITING SAMPLES\n\nNo cocoa logged.\nClear the piles with\nthe BeanLift crane."
+		elseif findingsFiled then
+			screenTxt = ("STATUS: REPORT FILED\n\n%d samples analysed.\nReactor stable.\nWell done, operator."):format(#readings)
+		else
+			screenTxt = ("STATUS: DATA PENDING\n\nSamples held: %d\nAnalysed: %d\n\n[E] to run the scanner"):format(#readings, filed)
+		end
+		for _, lbl in ipairs(screenLabels) do
+			if lbl.Parent then lbl.Text = screenTxt end
+		end
+	end
+
+	btnFileAll.MouseButton1Click:Connect(function()
+		if scanning then return end
+		queue = {}
+		for _, r in ipairs(readings) do
+			if not r.filed then queue[#queue + 1] = r end
+		end
+		local first = table.remove(queue, 1)
+		if first then startScan(first) end
+	end)
+	btnTermX.MouseButton1Click:Connect(function()
+		queue = {}; scanning = false
+		scanSound:Stop()   -- closing mid-scan must not leave the analyser whirring off-screen
+		termGui.Enabled = false
+	end)
+
+	-- ========================================================================
+	-- THE ONE FRAME LOOP -- spin, sweep, lamp, and the analysis itself.
+	-- Bails on the first line whenever the terminal is shut, so a closed console
+	-- costs one comparison a frame and nothing else.
+	-- ========================================================================
+	RunService.RenderStepped:Connect(function(dt)
+		if not termGui.Enabled then return end
+		spinT += dt
+
+		if spinModel and spinModel.PrimaryPart then
+			-- faster while scanning: the chamber visibly spins the specimen up to read it
+			local rate = scanning and 2.2 or 0.9
+			spinModel:PivotTo(CFrame.new(0, math.sin(spinT * 1.6) * 0.12, 0)
+				* CFrame.Angles(math.rad(14), spinT * rate, math.rad(6)))
+		end
+		-- sweep line walks the glass: a slow idle drift, a fast pass while analysing
+		sweep.Position = UDim2.new(0, 0, (spinT * (scanning and 0.85 or 0.22)) % 1, 0)
+		sweep.BackgroundTransparency = scanning and 0.35 or 0.75
+		-- containment lamp: steady green idle, amber pulse while the scanner is drawing power
+		if hdrDot then
+			hdrDot.BackgroundColor3 = scanning
+				and (math.sin(spinT * 9) > 0 and AMBER_L or Color3.fromRGB(90, 70, 24))
+				or GREEN_L
+		end
+
+		if scanning then
+			local frac = math.clamp((os.clock() - scanT0) / SCAN_SECS, 0, 1)
+			barFill.Size = UDim2.new(frac, 0, 1, 0)
+			if os.clock() - lastTick > 0.16 then
+				lastTick = os.clock()
+				readout.Text = READOUTS[math.random(1, #READOUTS)]
+					.. ("\n%04X  %04X  %04X"):format(math.random(0, 65535), math.random(0, 65535), math.random(0, 65535))
+			end
+			if frac >= 1 then finishScan() end
+		end
+	end)
+
+	-- Opening the terminal always starts on something: the first un-analysed sample if there is
+	-- one, otherwise the last one you brought in. An empty chamber on open looks broken.
+	termGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if not termGui.Enabled then queue = {}; scanning = false; scanSound:Stop(); return end
+		-- `readings` is wiped on quest reset, so a held selection can be a stale table that is no
+		-- longer in the list. Membership, not just `sel ~= nil`, decides whether to keep it.
+		local held = false
+		for _, r in ipairs(readings) do if r == sel then held = true; break end end
+		if held and not sel.filed then return end
+		local pickR
+		for _, r in ipairs(readings) do
+			if not r.filed then pickR = r; break end
+		end
+		setSelected(pickR or readings[#readings])
+		refreshTerminal()
+	end)
 end
-
-btnFileAll.MouseButton1Click:Connect(function()
-	for _, r in ipairs(readings) do
-		if not r.filed then fileReading(r) end
-	end
-end)
-btnTermX.MouseButton1Click:Connect(function() termGui.Enabled = false end)
 
 -- Build a real workstation on a "Findings" placement block: desk, legs, angled monitor
 -- with a live green screen, keyboard, and blinking status lamps. The block itself is
@@ -2673,28 +3177,31 @@ task.spawn(function()
 		warn("[Cleanup] no 'Nuclear Waste' / 'ContainmentChamber' found -- dropping will have nowhere to go")
 	end
 
-	-- island9's Candy Npc: the nearest one to the crane, so island1's/island3's is never taken
-	npcHead = pollFor(function() return findNPCNear(rig.slewCenter) end, 30)
-	if npcHead then
-		wireNPC(npcHead)
+	-- ⚠ THE NPC IS OPTIONAL. THE ISLAND MUST NOT WAIT FOR HER.
+	--
+	-- This block used to open with `npcHead = pollFor(findNPCNear, 30)`, with EVERY world build below it.
+	-- island9 has no 'Candy Npc' (NpcLife adopts them on 1, 3, 4, 5, 13, 14 and 15 -- never 9), so that poll
+	-- ran its full THIRTY SECONDS on every join and spawnPiles / wireOperatePrompt / buildFindingsTerminals /
+	-- wireSmokeBricks / startHazardCycle all sat behind it. Land on island 9 and there is no waste, no
+	-- terminals, no OPERATE prompt and no smoke -- for half a minute, on a quest whose own header says the
+	-- NPC is optional and the crane prompt is the fallback. The props are not optional.
+	--
+	-- So the world is built FIRST and she is hunted in the background.
+	spawnPiles()
+	wireSmokeBricks()
+	wireOperatePrompt()
+	buildFindingsTerminals()
+	startHazardCycle()
 
-		-- Arrive on island9 without the job and the arrows point you at her straight away
-		-- -- no need to bump into a terminal or the crane first. Stops the moment you take
-		-- the job (acceptQuest then re-points them at the crane).
-		task.spawn(function()
-			while not questAccepted and npcHead and npcHead.Parent do
-				local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-				if hrp and rig and rig.slewCenter
-					and (hrp.Position - rig.slewCenter).Magnitude <= 420 then
-					if _G.guideTrailTo then pcall(function() _G.guideTrailTo(npcHead.Position) end) end
-				end
-				task.wait(2)
-			end
-		end)
-		-- The shovel comes from a MODEL named "Shovel" you keep on the baseplate. That original
-		-- stays put as an invisible TEMPLATE -- the quest CLONES it and drops the copy where the
-		-- player needs it (round the back of the crane), then welds that same copy into their hands
-		-- as a Tool on pickup. With no such model, one is built from scratch instead.
+	-- THE SHOVEL IS BUILT UNCONDITIONALLY, which it was not before -- it only existed on the NPC branch.
+	-- Piles outside the crane's swing are hand-dug, and the red "THE CRANE CAN'T REACH THE REST" panel tells
+	-- you to go and find the shovel. On an island with no NPC there was no shovel to find, so the moment the
+	-- crane ran out of reachable piles the quest was unfinishable.
+	--
+	-- It comes from a MODEL named "Shovel" kept on the baseplate. That original stays put as an invisible
+	-- TEMPLATE -- the quest CLONES it and drops the copy round the back of the crane, then welds that copy
+	-- into the player's hands as a Tool on pickup. With no such model, one is built from scratch instead.
+	do
 		local shovelTemplate = findByName("shovel")
 		local spotPos = rig and groundUnder(rig.slewCenter - (rig.boomDir or Vector3.new(0, 0, 1)) * 26) or nil
 		if shovelTemplate then
@@ -2707,23 +3214,57 @@ task.spawn(function()
 		else
 			buildShovel(spotPos, nil)
 		end
-		print("[Cleanup] island9 Candy Npc wired")
-	else
-		-- no NPC in the world: don't lock the player out of their own crane
-		warn("[Cleanup] no 'Candy Npc' found near the crane -- crane unlocked without her")
+	end
+
+	-- One immediate look. The islands are ModelStreamingMode = Persistent now (IslandStreaming.server.luau),
+	-- so if she exists at all she is already replicated by the time the rig finished building.
+	npcHead = findNPCNear(rig.slewCenter)
+	if not npcHead then
+		-- Don't lock the player out of their own crane while we keep looking.
 		questAccepted = true
 	end
 
-	spawnPiles()
-	wireSmokeBricks()
-	wireOperatePrompt()
-	buildFindingsTerminals()
-	startHazardCycle()
 	refreshBanner()
 	refreshHUD()
 
 	print(("[Cleanup] ready -- crane rigged, %d pile(s), chamber %s, NPC %s"):format(
-		#piles, chamber and "found" or "MISSING", npcHead and "wired" or "MISSING"))
+		#piles, chamber and "found" or "MISSING",
+		npcHead and "wired" or "MISSING (crane unlocked, still watching)"))
+	-- RETAINER SIGNAL: the quest reached the end of its build with its world objects up. QuestRetainer
+	-- watches this flag; anything still false once its island has streamed in gets force-streamed and
+	-- re-run. It is set HERE, at the ready print, not at the top of the file -- a quest that bailed
+	-- early on a missing marker must NOT look built. See QuestRetainer.client.luau.
+	_G.questBuilt_cleanup = true
+
+	-- BACKGROUND: wire her now if she was here, or keep watching in case she streams in late. Nothing above
+	-- depends on this finishing.
+	task.spawn(function()
+		if not npcHead then
+			npcHead = pollFor(function() return findNPCNear(rig.slewCenter) end, 30)
+			if not npcHead then
+				warn("[Cleanup] no 'Candy Npc' near the crane -- the crane starts the quest on its own."
+					.. " Add one near island9's BeanLiftCrane if you want her to give it.")
+				return
+			end
+			print("[Cleanup] island9 Candy Npc streamed in late -- wiring her now")
+		end
+		wireNPC(npcHead)
+
+		-- Arrive on island9 without the job and the arrows point you at her straight away -- no need to bump
+		-- into a terminal or the crane first. Stops the moment you take the job (acceptQuest then re-points
+		-- them at the crane).
+		task.spawn(function()
+			while not questAccepted and npcHead and npcHead.Parent do
+				local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+				if hrp and rig and rig.slewCenter
+					and (hrp.Position - rig.slewCenter).Magnitude <= 420 then
+					if _G.guideTrailTo then pcall(function() _G.guideTrailTo(npcHead.Position) end) end
+				end
+				task.wait(2)
+			end
+		end)
+		print("[Cleanup] island9 Candy Npc wired")
+	end)
 end)
 
 -- ============================================================================

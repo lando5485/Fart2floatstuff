@@ -16,28 +16,52 @@ local Workspace         = game:GetService("Workspace")
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- ---- status message (centred, same slot the Space Realm message uses) ----
-local msgGui = Instance.new("ScreenGui")
-msgGui.Name = "DinoRealmMsg"; msgGui.ResetOnSpawn = false; msgGui.IgnoreGuiInset = true
-msgGui.DisplayOrder = 60; msgGui.Parent = playerGui
+--======================================================================
+-- STATUS MESSAGES ARE BANNERS NOW -- the mid-screen box is deleted
+--======================================================================
+-- This used to be its own ScreenGui ("DinoRealmMsg") holding a 540x72 label at y 0.42 -- the middle of the
+-- screen, which is where this game puts nothing else. It was shown by flipping `Visible` and hidden by an
+-- UNGUARDED `task.delay`, with `traveling` doing double duty as both the touch debounce and part of the
+-- hide condition. Two statuses arriving close together and the older timer hides the newer message; an
+-- error between the show and the hide and the box stays up, because ResetOnSpawn = false means it outlives
+-- the character that was standing on the portal.
+--
+-- All three of these are the same class of message as the wormhole's "land on an island first": a short
+-- answer to something the player just tried to do. They belong in the hero lane with every other answer --
+-- same card, same size, same place, same priority order -- not in a private box in the middle of the
+-- screen with its own colours and its own fragile timer.
+--
+-- EVENT priority: a travel refusal must not shove an island landing off the screen, and it queues behind
+-- the garden watering directions and any exclusive tutorial/achievement moment rather than talking over
+-- them. NotifyCenter owns the hide, so there is no timer here left to strand anything.
+local DINO_GREEN = Color3.fromRGB(90, 200, 90)
 
-local msgLbl = Instance.new("TextLabel")
-msgLbl.AnchorPoint = Vector2.new(0.5, 0.5)
-msgLbl.Position = UDim2.new(0.5, 0, 0.42, 0)
-msgLbl.Size = UDim2.new(0, 540, 0, 72)
-msgLbl.BackgroundColor3 = Color3.fromRGB(12, 34, 16)
-msgLbl.BackgroundTransparency = 1 -- box hidden until there's a real message
-msgLbl.Font = Enum.Font.FredokaOne
-msgLbl.TextSize = 30
-msgLbl.TextColor3 = Color3.fromRGB(190, 255, 190)
-msgLbl.Text = ""
-msgLbl.Visible = false
-msgLbl.Parent = msgGui
-Instance.new("UICorner", msgLbl).CornerRadius = UDim.new(0, 14)
-local mstk = Instance.new("UIStroke", msgLbl); mstk.Color = Color3.fromRGB(90, 200, 90); mstk.Thickness = 2
+local function showMsg(t, seconds)
+	local NC = _G.NotifyCenter
+	if NC and NC.push then
+		pcall(NC.push, {
+			text     = t,
+			color    = DINO_GREEN,
+			priority = (NC.PRIORITY and NC.PRIORITY.EVENT) or 80,
+			duration = seconds or 2.5,
+		})
+		return
+	end
+	warn("[DinoPortal] " .. t .. "  (NotifyCenter unavailable -- message not shown on screen)")
+end
 
-local function showMsg(t) msgLbl.Text = t; msgLbl.BackgroundTransparency = 0.2; msgLbl.Visible = true end
-local function hideMsg() msgLbl.Visible = false; msgLbl.BackgroundTransparency = 1; msgLbl.Text = "" end
+-- SWEEP THE OLD BOX. ResetOnSpawn = false meant one built by a previous session, or by a stale copy of this
+-- script baked into the place, hangs around with nothing left to hide it.
+task.spawn(function()
+	for _ = 1, 5 do
+		local old = playerGui:FindFirstChild("DinoRealmMsg")
+		if old then
+			old:Destroy()
+			print("[DinoPortal] removed a leftover DinoRealmMsg box -- realm-travel status is a banner now")
+		end
+		task.wait(2)
+	end
+end)
 
 -- ---- the remote ----
 local enterEvent = ReplicatedStorage:WaitForChild("DinoRealmEnterEvent", 30)
@@ -50,16 +74,19 @@ local traveling = false -- local debounce (one touch -> one intent)
 
 -- The SERVER decides what we show. We just render the string it hands us.
 enterEvent.OnClientEvent:Connect(function(status)
+	-- The banner hides itself, so the only thing these timers still do is release the touch debounce.
+	-- That is the whole reason the old code was fragile: `traveling` was tangled up with hiding a box, so a
+	-- missed hide and a stuck debounce were the same bug. They are separate concerns now.
 	if status == "traveling" then
-		showMsg("\xF0\x9F\xA6\x96 Traveling to the Dino Realm...")
-		-- FAILSAFE: if the teleport never lands (Studio, or a TeleportAsync error), don't strand the box.
-		task.delay(5, function() if traveling then hideMsg(); traveling = false end end)
+		showMsg("\xF0\x9F\xA6\x96 Traveling to the Dino Realm...", 5)
+		-- FAILSAFE: if the teleport never lands (Studio, or a TeleportAsync error), let them try again.
+		task.delay(5, function() traveling = false end)
 	elseif status == "locked" then
 		showMsg("\xF0\x9F\x94\x92 Dino Realm \xE2\x80\x94 Coming soon!")
-		task.delay(2.5, function() hideMsg(); traveling = false end)
+		task.delay(2.5, function() traveling = false end)
 	elseif status == "error" then
 		showMsg("Couldn't travel right now, try again")
-		task.delay(2.5, function() hideMsg(); traveling = false end)
+		task.delay(2.5, function() traveling = false end)
 	end
 end)
 

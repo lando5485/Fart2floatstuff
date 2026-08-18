@@ -77,7 +77,15 @@ local function build(npc)
 
 	local top = part.Position.Y + 3
 	local ok, cf, size = pcall(function() return npc:GetBoundingBox() end)
-	if ok and cf then top = cf.Position.Y + size.Y * 0.5 end
+	if ok and cf then
+		local btop = cf.Position.Y + size.Y * 0.5
+		-- TRUST THE BOX ONLY INSIDE A RIG-SIZED ENVELOPE. GetBoundingBox measured mid-stream (parts
+		-- still arriving) or on a model that holds more than the rig can put its top tens or hundreds
+		-- of studs above the actual character -- and the arrow then floats high in empty sky instead
+		-- of over anyone's head. A humanoid rig's top is always within a few studs of its root part,
+		-- so anything outside that band is a bad measurement and the fallback (root + 3) wins.
+		if btop > part.Position.Y - 2 and btop < part.Position.Y + 12 then top = btop end
+	end
 
 	adornee    = part
 	baseOffset = Vector3.new(0, (top - part.Position.Y) + ARROW_MARGIN, 0)
@@ -104,6 +112,32 @@ local function build(npc)
 	label.TextStrokeTransparency = 0.3 -- has to survive a bright sky
 	label.Parent = gui
 	return true
+end
+
+--======================================================================
+-- A THUNDERSTORM TAKES THE ARROW AWAY, AND THE END OF ONE GIVES IT BACK
+--======================================================================
+-- This ▼ is built to be impossible to miss: AlwaysOnTop so it draws through the island's own scenery, and
+-- LightInfluence = 0 so it is full brightness at night and in shadow. During a thunderstorm -- the one event
+-- that deliberately darkens the whole sky -- that combination stops being helpful and starts being wrong: a
+-- vivid green triangle burning through a black storm, the single brightest thing on screen, reading as a
+-- glitch rather than as guidance. The storm is the thing the player should be looking at.
+--
+-- ===== HIDDEN, NOT TORN DOWN, AND THAT IS THE WHOLE TRICK =====
+-- Flipping `Enabled` is what makes "give it back" free. There is no state to save and nothing to rebuild:
+-- the gui keeps its adornee, its offset and its bounce, so when the storm clears the arrow simply reappears
+-- over the same NPC, mid-bounce, as though it had never gone. A teardown would have to re-find the NPC,
+-- re-measure the bounding box and re-derive the offset, and any of those failing (parts streamed out during
+-- the storm, say) would mean the arrow never came back at all.
+--
+-- The COUNTDOWN is handled at the other end: NpcGuideArrow freezes its 45-second visit timer while a storm
+-- is up, so a long storm cannot quietly retire the island while the arrow is invisible. Hiding it here
+-- without that would make "give it back when it ends" a promise this file could not keep.
+--
+-- Windstorms are deliberately NOT included. They do not black the sky out -- the arrow stays perfectly
+-- readable through one -- and hiding guidance during an event that does not obscure it is just losing it.
+local function stormUp()
+	return _G.thunderstormActive == true
 end
 
 -- The NPC talking puts a speech bubble exactly where this arrow sits. Two overlapping billboards is a mess,
@@ -137,9 +171,20 @@ RunService.Heartbeat:Connect(function()
 		return
 	end
 
-	gui.Enabled = not bubbleUp(npc)
+	-- Two things can take the slot: the NPC's own speech bubble (same spot, more urgent) and a thunderstorm
+	-- (see the block above). Both are re-evaluated every frame, so both restore the instant they clear.
+	local hide = stormUp() or bubbleUp(npc)
+	if gui.Enabled == hide then -- state actually changed; log the storm transitions, not the bubble flicker
+		if stormUp() and hide then
+			print("[NpcArrow] thunderstorm -- \xE2\x96\xBC hidden for the duration (visit timer frozen; it comes back when the storm ends)")
+		elseif not hide and not bubbleUp(npc) then
+			print("[NpcArrow] storm over -- \xE2\x96\xBC restored over the quest giver")
+		end
+	end
+	gui.Enabled = not hide
 	gui.StudsOffsetWorldSpace = baseOffset
 		+ Vector3.new(0, math.sin(os.clock() * BOUNCE_SPEED) * BOUNCE_AMP, 0)
 end)
 
-print("[NpcArrow] ready -- bouncing marker over the quest giver, on the same rules as the ground trail")
+print("[NpcArrow] ready -- bouncing marker over the quest giver, on the same rules as the ground trail " ..
+	"(hidden for the duration of a thunderstorm, restored when it ends)")

@@ -7,6 +7,19 @@ local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local IslandUnlockEvent = game:GetService("ReplicatedStorage"):FindFirstChild("IslandUnlockEvent")
 
+-- ⚠ MODEL NUMBER IS NOT CLIMB ORDER IN THIS REALM.
+-- This file was ported from the Food realm, where island N is the Nth island up, so `for i = 1, 13` walking
+-- "gap i -> i+1" was correct there. In Candy it is wrong twice over:
+--   * the models are 1,2,3,4,5,8,9,11,13,14,15 -- 6, 7, 10 and 12 were never built, so those iterations
+--     found nothing and silently skipped (or, in the bubble-drift loop below, threw on nil inside a pcall
+--     and abandoned the rest of the scan);
+--   * the tower order is SCRAMBLED -- 1,9,3,13,5,8,2,11,4,14,15 -- so "island1 -> island2" is not a gap a
+--     player ever flies. It is a 27,000-stud jump from slot 1 to slot 7, and rings and gas pockets were
+--     being strung along it instead of along the real climb.
+-- IslandOrder owns both facts. Iterate SLOTS and map each to its model, exactly as its header instructs.
+local IslandOrder = require(game:GetService("ReplicatedStorage")
+	:WaitForChild("Shared"):WaitForChild("IslandOrder"))
+
 local currentKnownIsland = 0
 local playerBillboards = {}
 
@@ -40,10 +53,17 @@ local function startBubbleDrift(part, homePos, HR, VR)
 		local yMin, yMax = homePos.Y - VR, homePos.Y + VR
 		pcall(function()
 			local belowY, aboveY = -math.huge, math.huge
-			for i = 1, 14 do
-				local sy = getStandPosition(i).Y
-				if sy <= homePos.Y and sy > belowY then belowY = sy end
-				if sy >= homePos.Y and sy < aboveY then aboveY = sy end
+			-- NIL-SAFE, and over the islands that exist. `for i = 1, 14` indexed .Y on a nil the first time it
+			-- reached a model number this world never built (6), and since the whole block is pcall'd that
+			-- aborted the scan silently -- every bubble above island 5 got its gap clamped from an incomplete
+			-- set of stand heights.
+			for _, islandNum in ipairs(IslandOrder.SLOT_TO_ISLAND) do
+				local sp = getStandPosition(islandNum)
+				local sy = sp and sp.Y
+				if sy then
+					if sy <= homePos.Y and sy > belowY then belowY = sy end
+					if sy >= homePos.Y and sy < aboveY then aboveY = sy end
+				end
 			end
 			if belowY > -math.huge then yMin = math.max(yMin, belowY + 120) end
 			if aboveY <  math.huge then yMax = math.min(yMax, aboveY - 200) end
@@ -359,8 +379,11 @@ task.spawn(function()
 	-- Each ring sits a random direction out at MIN..MAX studs, so collecting is a real choice.
 	local RING_SPREAD_MIN = 85   -- min studs off the centerline (was 55) -- wider sideways spread
 	local RING_SPREAD_MAX = 145  -- max studs off the centerline (was 110)
-	for i=1,13 do
-		local startPos=getStandPosition(i); local endPos=getStandPosition(i+1)
+	-- SLOTS, not model numbers -- see the note at the top of this file. Gap `slot -> slot+1` is a crossing a
+	-- player actually flies; gap `island1 -> island2` is not one that exists in this realm.
+	for slot=1,IslandOrder.COUNT-1 do
+		local startPos=getStandPosition(IslandOrder.SLOT_TO_ISLAND[slot])
+		local endPos=getStandPosition(IslandOrder.SLOT_TO_ISLAND[slot+1])
 		if not (startPos and endPos) then continue end -- island not built/loaded -> skip that gap
 		local safeStart=startPos+Vector3.new(0,120,0)
 		local safeEnd=endPos-Vector3.new(0,200,0)
@@ -382,8 +405,10 @@ task.spawn(function()
 	-- so they're far from each other too. Vertical placement (t=0.35 / 0.65) is unchanged.
 	local BUBBLE_SPREAD_MIN = 60   -- min studs off the centerline (was a ~+/-30 jitter)
 	local BUBBLE_SPREAD_MAX = 110  -- max studs off the centerline
-	for i=1,13 do
-		local startPos=getStandPosition(i); local endPos=getStandPosition(i+1)
+	-- SLOTS, not model numbers -- same reason as the ring loop above.
+	for slot=1,IslandOrder.COUNT-1 do
+		local startPos=getStandPosition(IslandOrder.SLOT_TO_ISLAND[slot])
+		local endPos=getStandPosition(IslandOrder.SLOT_TO_ISLAND[slot+1])
 		if not (startPos and endPos) then continue end -- island not built/loaded -> skip that gap
 		local safeStart=startPos+Vector3.new(0,120,0)
 		local safeEnd=endPos-Vector3.new(0,200,0)
@@ -395,13 +420,20 @@ task.spawn(function()
 		end
 		spawnGasPocket(lerpPocket(0.35, pocketBaseAng)); spawnGasPocket(lerpPocket(0.65, pocketBaseAng + math.pi))
 	end
-	-- BLACK HOLE (VISUAL ONLY): place it high above Pizza Palms (Island 14). getStandPosition(14) is
+	-- BLACK HOLE (VISUAL ONLY): place it high above the SUMMIT island (Bakery Summit here, Pizza Palms in the
+	-- Food realm this came from -- hence the old hardcoded 14). getStandPosition(summit) is
 	-- the real island-14 top (already used by the loops above, so island 14 exists by now). pcall'd so
 	-- a build hiccup can't stop the world spawn, and the placement Y is printed either way.
-	local pizzaPos = getStandPosition(14)
+	-- THE SUMMIT, not "island 14". Hardcoded 14 is the Food realm's Pizza Palms; in Candy island14 is
+	-- Marshmallow Camp at slot 10 and the summit is island15 (Bakery Summit). The old line looked up a model
+	-- that DOES exist here and still warned "island 14 not found" -- because getStandPosition needs the
+	-- island's Stand part, and the message then blamed the wrong island. Ask IslandOrder for the top instead,
+	-- so this keeps working if the tower is ever re-ordered or extended.
+	local summitIsland = IslandOrder.TOP_ISLAND
+	local pizzaPos = getStandPosition(summitIsland)
 	if not pizzaPos then
-		-- CandyRealm has no island14 built, so there's nowhere to hang the black hole.
-		warn("[BlackHole] island 14 not found -- skipping the black hole (no Space Realm portal)")
+		warn(("[BlackHole] summit island%d ('%s') has no Stand yet -- skipping the black hole (no Space Realm portal)")
+			:format(summitIsland, IslandOrder.NAME_BY_ISLAND[summitIsland] or "?"))
 		return
 	end
 	local bhCenter = Vector3.new(pizzaPos.X, pizzaPos.Y + BH_HEIGHT_OFFSET, pizzaPos.Z)

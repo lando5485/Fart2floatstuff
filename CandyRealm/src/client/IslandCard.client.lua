@@ -1,112 +1,96 @@
 --======================================================================
--- IslandCard.client.lua   (LocalScript, per-player)
+-- IslandCard.client.lua   (LocalScript, per-player)  -- CandyRealm
 --======================================================================
--- LAND SOMEWHERE AND IT TELLS YOU WHERE YOU ARE.
+-- LAND SOMEWHERE AND IT WELCOMES YOU, exactly the way realm 1 does.
 --
---        COCONUT COVE
---        - ISLAND 5 -
+-- ===== WHAT CHANGED, AND WHY THE OLD CARD IS GONE =====
+-- This file used to draw its own side title-card ("COCONUT COVE / - ISLAND 5 -", left edge of the
+-- screen) -- a look this game shares with nothing, and worse, its name table was realm 1's: it said
+-- "BEAN FARM" while you stood on Candy Cane Court, because the model numbers happen to line up.
 --
--- Fourteen platforms with numbers become fourteen PLACES the moment they are named at you. It
--- is the cheapest thing on the whole polish list and the one players read as production value.
+-- Now it does what realm 1's showArrival does: push the arrival to NotifyCenter's HERO lane --
 --
--- ONCE PER ISLAND PER SESSION. A card every time you set foot on Bean Farm is a notification;
--- a card the first time is an arrival. And it waits until you are actually DOWN -- announcing
--- an island while you are still falling past it is how you end up naming three on one flight.
+--       🏝️ You reached
+--       Candy Cane Court!
+--
+-- -- on the island's own colour, at the top ISLAND priority (it PREEMPTS a reward nag or a purchase
+-- toast rather than drawing under one), for 3.5s, with realm 1's landing chime. Same payload shape,
+-- same priority, same duration, same sound id. The banner therefore also inherits every behaviour the
+-- hero lane already has here: the TopCenterStack keeps it clear of other banners, and the quest objectives
+-- no longer compete for the spot at all -- ObjectiveBannerBridge hides their eleven home-made banners for
+-- good and re-pushes their text at PRIORITY.REWARD, which this ISLAND-priority card outranks outright.
+--
+-- Names come from IslandOrder (slot names), so the banner can never disagree with the wormhole, the HUD
+-- or the shop about what an island is called.
+--
+-- ===== WHAT DID NOT CHANGE =====
+-- The landing detector. Realm 1 fires from a server WelcomeEvent Candy doesn't have; this realm's
+-- client-side detector was already right -- bounding-box island resolution (pivot distance picks the
+-- wrong island; that bug shipped once in the NPC arrows), grounded + still + settled before speaking,
+-- once per island per session.
 --======================================================================
 
-local Players    = game:GetService("Players")
-local Workspace  = game:GetService("Workspace")
-local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
-local player     = Players.LocalPlayer
-local PlayerGui  = player:WaitForChild("PlayerGui")
+local Players           = game:GetService("Players")
+local Workspace         = game:GetService("Workspace")
+local RunService        = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- The names come from the design doc, so the card agrees with everything else in the game.
-local NAMES = {
-	[1] = "BEAN FARM",        [2] = "BROCCOLI BLUFF",   [3] = "CABBAGE CLIFFS",
-	[4] = "TURNIP TRANQUIL",  [5] = "COCONUT COVE",     [6] = "BREAD BOARD",
-	[7] = "PASTA PEAK",       [8] = "POPCORN PINNACLE", [9] = "MILK MARSH",
-	[10] = "BUTTER SWAMP",    [11] = "ICE CREAM ISLE",  [12] = "BURGER BLUFF",
-	[13] = "BURRITO BARRENS", [14] = "PIZZA PALMS",
-}
+local player = Players.LocalPlayer
 
-local SETTLE   = 0.7    -- seconds you must be on the ground before it will announce
-local HOLD     = 2.6    -- how long the card stays up
-local RESCAN   = 0.6
+local IslandOrder = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("IslandOrder"))
+
+local SETTLE = 0.7    -- seconds you must be on the ground before it will announce
+local RESCAN = 0.6
 
 local function norm(s) return (tostring(s):lower():gsub("[%s_%-]", "")) end
 
--- ---- the card -------------------------------------------------------------
-local gui = Instance.new("ScreenGui")
-gui.Name = "IslandCard"; gui.ResetOnSpawn = false; gui.DisplayOrder = 6
-gui.IgnoreGuiInset = true; gui.Parent = PlayerGui
+-- Per-SLOT banner colours, climbing the tower the way realm 1's islandColors ladder climbs its own:
+-- greens at the bottom, ambers in the middle, cool blues and pinks near the top, red-hot at the summit.
+-- Indexed by CLIMB SLOT (not model number) so the progression follows the actual ascent.
+local SLOT_COLORS = {
+	Color3.fromRGB(100, 200, 100), Color3.fromRGB(100, 180, 100), Color3.fromRGB(150, 200, 80),
+	Color3.fromRGB(180, 220, 80),  Color3.fromRGB(255, 180, 50),  Color3.fromRGB(220, 160, 80),
+	Color3.fromRGB(200, 120, 60),  Color3.fromRGB(100, 180, 255), Color3.fromRGB(150, 200, 255),
+	Color3.fromRGB(255, 150, 200), Color3.fromRGB(255, 80, 80),
+}
 
-local holder = Instance.new("Frame")
-holder.BackgroundTransparency = 1
-holder.AnchorPoint = Vector2.new(0, 0.5)
-holder.Position = UDim2.new(0.06, 0, 0.36, 0)
-holder.Size = UDim2.new(0, 560, 0, 120)
-holder.Parent = gui
+-- Realm 1's landing chime.
+--
+-- ⚠ THE ID IS EMPTY ON PURPOSE. It was 117464325212045, copied over from realm 1 -- but that asset is not
+-- shared with THIS experience, so every single island arrival threw:
+--     "The experience doesn't have access permission to use asset id 117464325212045"
+--     "Failed to load sound rbxassetid://117464325212045: User is not authorized to access Asset."
+-- plus Studio's "Click to share access" nag. It never made a sound here; it only made noise in the log.
+-- Asset ids do not travel between experiences just because the code does.
+--
+-- TO GIVE THE ARRIVAL ITS CHIME BACK: either share that asset with this experience on the Creator
+-- Dashboard, or paste an id this place owns below. An empty id stays silent and creates no Sound at all.
+local ISLAND_CHIME = ""
 
--- A RULE, NOT A PANEL. A filled box over the view is a popup and reads as UI; a name with a
--- line under it reads as a title card. The difference is entirely in what you leave out.
-local title = Instance.new("TextLabel")
-title.BackgroundTransparency = 1
-title.Position = UDim2.new(0, 0, 0, 0); title.Size = UDim2.new(1, 0, 0, 72)
-title.Font = Enum.Font.FredokaOne; title.TextSize = 56
-title.TextColor3 = Color3.fromRGB(255, 252, 245)
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.TextTransparency = 1
-title.Text = ""
-title.Parent = holder
-local ts = Instance.new("UIStroke")
-ts.Color = Color3.fromRGB(28, 22, 34); ts.Thickness = 3; ts.Transparency = 1
-ts.Parent = title
+local function playIslandSound()
+	if ISLAND_CHIME == "" then return end
+	local sound = Instance.new("Sound")
+	sound.SoundId = ISLAND_CHIME
+	sound.Volume = 0.8
+	sound.Parent = Workspace
+	sound:Play()
+	game:GetService("Debris"):AddItem(sound, 4)
+end
 
-local rule = Instance.new("Frame")
-rule.BackgroundColor3 = Color3.fromRGB(255, 208, 92); rule.BorderSizePixel = 0
-rule.Position = UDim2.new(0, 2, 0, 74); rule.Size = UDim2.new(0, 0, 0, 4)
-rule.Parent = holder
-
-local sub = Instance.new("TextLabel")
-sub.BackgroundTransparency = 1
-sub.Position = UDim2.new(0, 2, 0, 84); sub.Size = UDim2.new(1, 0, 0, 30)
-sub.Font = Enum.Font.GothamBold; sub.TextSize = 20
-sub.TextColor3 = Color3.fromRGB(255, 208, 92)
-sub.TextXAlignment = Enum.TextXAlignment.Left
-sub.TextTransparency = 1
-sub.Text = ""
-sub.Parent = holder
-
-local showing = 0
-local function showCard(n)
-	showing += 1
-	local mine = showing
-	title.Text = NAMES[n] or ("ISLAND " .. n)
-	sub.Text   = ("- ISLAND %d -"):format(n)
-
-	-- everything comes in from the left and slightly out of position, because a title that
-	-- fades in on the spot reads as a label appearing, not as one arriving
-	holder.Position = UDim2.new(0.04, 0, 0.36, 0)
-	rule.Size = UDim2.new(0, 0, 0, 4)
-	TweenService:Create(holder, TweenInfo.new(0.55, Enum.EasingStyle.Quint),
-		{ Position = UDim2.new(0.06, 0, 0.36, 0) }):Play()
-	TweenService:Create(title, TweenInfo.new(0.45), { TextTransparency = 0 }):Play()
-	TweenService:Create(ts, TweenInfo.new(0.45), { Transparency = 0 }):Play()
-	TweenService:Create(rule, TweenInfo.new(0.6, Enum.EasingStyle.Quint),
-		{ Size = UDim2.new(0, 300, 0, 4) }):Play()
-	task.delay(0.18, function()
-		if mine ~= showing then return end
-		TweenService:Create(sub, TweenInfo.new(0.4), { TextTransparency = 0 }):Play()
-	end)
-
-	task.delay(HOLD, function()
-		if mine ~= showing then return end
-		TweenService:Create(title, TweenInfo.new(0.5), { TextTransparency = 1 }):Play()
-		TweenService:Create(ts, TweenInfo.new(0.5), { Transparency = 1 }):Play()
-		TweenService:Create(sub, TweenInfo.new(0.5), { TextTransparency = 1 }):Play()
-		TweenService:Create(rule, TweenInfo.new(0.5), { Size = UDim2.new(0, 0, 0, 4) }):Play()
-	end)
+-- Realm 1's showArrival, fed by this realm's names and colours. NotifyCenter owns the pixels.
+local function showArrival(islandNum)
+	local NC = _G.NotifyCenter
+	if not NC then return end
+	local slot = IslandOrder.ISLAND_TO_SLOT[islandNum]
+	local name = IslandOrder.NAME_BY_ISLAND[islandNum] or ("Island " .. islandNum)
+	NC.push({
+		top      = "\xF0\x9F\x8F\x9D\xEF\xB8\x8F You reached",
+		text     = name .. "!",
+		color    = (slot and SLOT_COLORS[slot]) or Color3.fromRGB(100, 200, 100),
+		priority = NC.PRIORITY.ISLAND,
+		duration = 3.5,
+		sound    = playIslandSound,
+	})
 end
 
 -- ---- which island am I on? -------------------------------------------------
@@ -155,7 +139,7 @@ RunService.Heartbeat:Connect(function(dt)
 	if not hrp then return end
 
 	-- WAIT UNTIL YOU ARE DOWN. Mid-flight you cross several islands, and announcing each one as
-	-- you pass over it turns the card into a ticker. Grounded, and still, and then it speaks.
+	-- you pass over it turns the banner into a ticker. Grounded, and still, and then it speaks.
 	local still = (not _G.isFlying)
 		and (hum == nil or hum.FloorMaterial ~= Enum.Material.Air)
 		and hrp.AssemblyLinearVelocity.Magnitude < 26
@@ -172,9 +156,9 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 	if n and grounded >= SETTLE and not seen[n] then
 		seen[n] = true
-		showCard(n)
-		print(("[IslandCard] arrived on island %d -- %s"):format(n, NAMES[n] or "?"))
+		showArrival(n)
+		print(("[IslandCard] arrived on island %d -- %s"):format(n, IslandOrder.NAME_BY_ISLAND[n] or "?"))
 	end
 end)
 
-print("[IslandCard] ready -- names each island the first time you land on it")
+print("[IslandCard] ready -- realm 1's arrival banner (NotifyCenter hero lane), this realm's island names")

@@ -23,9 +23,22 @@ local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
 
 local player = Players.LocalPlayer
-local sync = ReplicatedStorage:WaitForChild("RocketEventSync")
--- Server teleport to island 1's stand (same teleport the game uses elsewhere).
-local GoToIsland1Event = ReplicatedStorage:WaitForChild("GoToIsland1Event")
+-- BOUNDED WAIT, matching RocketSounds/RocketBuildPreload -- which already use a 60s timeout on this exact
+-- remote. This one did not, so it yielded forever and printed "Infinite yield possible" every boot while its
+-- two siblings timed out cleanly. Nothing in the Candy realm creates RocketEventSync.
+local sync = ReplicatedStorage:WaitForChild("RocketEventSync", 60)
+if not sync then
+	warn("[RocketUI] RocketEventSync never appeared -- no rocket event in this realm, UI not built")
+	return
+end
+-- Server teleport to island 1's stand (same teleport the game uses elsewhere). Also bounded: with the rocket
+-- event absent this realm has no reason to have created it either, and a second forever-wait sitting behind
+-- the first is the same bug twice.
+local GoToIsland1Event = ReplicatedStorage:WaitForChild("GoToIsland1Event", 30)
+if not GoToIsland1Event then
+	warn("[RocketUI] GoToIsland1Event missing -- rocket UI not built (its finish button would go nowhere)")
+	return
+end
 
 --======================================================================
 -- Build the ScreenGui (banner + countdown labels).

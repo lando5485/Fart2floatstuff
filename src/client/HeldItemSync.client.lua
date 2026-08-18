@@ -54,7 +54,7 @@ BUILDERS.FishingRod = function()
 		p.Material = mat or Enum.Material.SmoothPlastic; p.Anchored = true; p.CanCollide = false
 		p.CanQuery = false; p.CastShadow = false; p.Parent = rod; return p
 	end
-	local shaft = rp("Shaft", Enum.PartType.Cylinder, Vector3.new(6, 0.16, 0.16), Color3.fromRGB(110, 70, 40), Enum.Material.Wood)
+	local shaft = rp("Shaft", Enum.PartType.Cylinder, Vector3.new(6, 0.16, 0.16), Color3.fromRGB(110, 70, 40), Enum.Material.SmoothPlastic)
 	local grip  = rp("Grip",  Enum.PartType.Cylinder, Vector3.new(1.1, 0.26, 0.26), Color3.fromRGB(35, 30, 28))
 	local reel  = rp("Reel",  Enum.PartType.Cylinder, Vector3.new(0.3, 0.7, 0.7), Color3.fromRGB(40, 40, 46), Enum.Material.Metal)
 	rod.Parent = Workspace

@@ -100,7 +100,19 @@ end
 local sidebarGui = Instance.new("ScreenGui")
 sidebarGui.Name = "SidebarGui"; sidebarGui.ResetOnSpawn = false; sidebarGui.Parent = PlayerGui
 
--- ===== CANDY PAINT HELPERS =====
+-- ===== CANDY PAINT HELPERS (revamp pass) =====
+-- SAME GRID, NEW PAINT. Every size, position and the 107px pitch are untouched -- this pass only
+-- standardises the look: ONE corner radius, ONE border weight, ONE highlight, ONE shadow, ONE icon
+-- scale and ONE type treatment across all four buttons, in a pastel candy palette (strawberry /
+-- lavender / mint / pink). The old face was four different treatments (full-face stripes, corner 14
+-- vs 16, stroke w2 vs w3, a heavy 28%-white gloss slab); the new one is deliberately quieter.
+local RAIL = {
+	corner  = 18,   -- one radius everywhere (MORE used to be 14; the mismatch read as a mistake)
+	stroke  = 3,    -- one border weight everywhere (MORE used to be 2)
+	icon    = 34,   -- one glyph size
+	label   = 13,   -- one label size; GothamBold, white, dark outline
+}
+
 -- The button's BackgroundColor3 is left WHITE and all colour comes from the UIGradient.
 -- UIGradient MULTIPLIES with the background, so a tinted background would quietly mute
 -- every colour underneath it -- white is the only value that renders the stops as authored.
@@ -113,69 +125,99 @@ local function candyGradient(frame, top, bottom, rotation)
 	return g
 end
 
--- CANDY-CANE STRIPES. Hard stops are the whole trick: two keypoints a hair apart give a
--- BAND, where two keypoints far apart give a fade. Diagonal, because vertical stripes on a
--- square read as a barcode. ColorSequence demands strictly-increasing offsets that start at
--- exactly 0 and end at exactly 1, which is what the clamping on the first/last band is for.
-local function candyStripes(grad, a, b, bands, rotation)
-	local keys, n = {}, bands or 6
-	for i = 0, n - 1 do
-		local col = (i % 2 == 0) and a or b
-		local s, e = i / n, (i + 1) / n
-		keys[#keys + 1] = ColorSequenceKeypoint.new(i == 0 and 0 or s + 0.0005, col)
-		keys[#keys + 1] = ColorSequenceKeypoint.new(i == n - 1 and 1 or e - 0.0005, col)
-	end
-	grad.Color = ColorSequence.new(keys)
-	grad.Rotation = rotation or 45
-end
+-- One 95x95 rail button, the standard face:
+--   * SHADOW: a same-shape frame 3px lower, near-transparent black. Depth you feel, not see.
+--   * BORDER: RAIL.stroke, in a deep shade of the button's own colour -- reads as the candy's
+--     edge rather than an outline drawn on top.
+--   * INNER HIGHLIGHT: one soft top band (82% transparent, was 72%) -- the "sugar sheen".
+--     The old gloss slab was the single shiniest thing on screen; this is the same idea at a
+--     quarter of the volume.
+-- Frames never consume input, so none of this touches the click overlay (ZIndex 5) above it.
+local function mkRailBtn(y, colTop, colBot, strokeCol, iconTxt, labelTxt)
+	-- shadow FIRST (sibling under the button, not a child -- a child would clip at the corner)
+	local shadow = mkFrame(sidebarGui,{
+		Name="Shadow", Size=UDim2.new(0,95,0,95), Position=UDim2.new(0,12,0,y+3),
+		BackgroundColor3=Color3.fromRGB(60,20,40), BackgroundTransparency=0.86, BorderSizePixel=0, ZIndex=0,
+	})
+	mkCorner(shadow, RAIL.corner)
 
--- makes a 95x95 rail button with the FINAL corner/stroke geometry from the restyle pass,
--- now painted as a wrapped sweet. Returns the frame, a transparent full-size TextButton
--- overlay for click wiring, and the gradient (so a caller can restripe it).
-local function mkRailBtn(y, colTop, colBot, corner, strokeCol, strokeW, iconTxt, labelTxt)
 	local btn = mkFrame(sidebarGui,{
 		Size=UDim2.new(0,95,0,95), AnchorPoint=Vector2.new(0,0),
 		Position=UDim2.new(0,12,0,y), BackgroundColor3=Color3.new(1,1,1),
 	})
-	mkCorner(btn, corner); mkStroke(btn, strokeCol, strokeW)
+	mkCorner(btn, RAIL.corner); mkStroke(btn, strokeCol, RAIL.stroke)
 	local grad = candyGradient(btn, colTop, colBot, 90)
-	-- GLOSS: a soft white band across the top. This one detail is what turns a flat coloured
-	-- square into something that looks WRAPPED and pickable-up. It is a plain Frame, and Frames
-	-- never consume input, so the click overlay above it is completely unaffected.
-	local gloss = mkFrame(btn,{Name="Gloss",Size=UDim2.new(1,-12,0,26),Position=UDim2.new(0,6,0,5),BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=0.72,BorderSizePixel=0,ZIndex=2})
-	mkCorner(gloss, math.max(corner - 5, 6))
-	-- icon + label sit ABOVE the gloss (ZIndex 3 vs 2), or the shine washes the glyph out
-	local iconL=mkLabel(btn,{Text=iconTxt,Font=Enum.Font.Gotham,TextSize=math.floor(30*scale),Size=UDim2.new(1,0,0,56),Position=UDim2.new(0,0,0,0),RichText=true,TextXAlignment=Enum.TextXAlignment.Center,ZIndex=3})
-	mkStroke(iconL,Color3.new(0,0,0),1)
-	local textL=mkLabel(btn,{Name="Label",Text=labelTxt,Font=Enum.Font.GothamBold,TextSize=math.floor(12*scale),TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,0,0,28),Position=UDim2.new(0,0,0,57),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=3})
-	mkStroke(textL,Color3.new(0,0,0),1)
+
+	local gloss = mkFrame(btn,{Name="Gloss",Size=UDim2.new(1,-14,0,20),Position=UDim2.new(0,7,0,6),BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=0.82,BorderSizePixel=0,ZIndex=2})
+	mkCorner(gloss, RAIL.corner - 8)
+
+	-- icon + label sit ABOVE the gloss (ZIndex 3 vs 2), or the sheen washes the glyph out
+	local iconL=mkLabel(btn,{Name="Glyph",Text=iconTxt,Font=Enum.Font.Gotham,TextSize=math.floor(RAIL.icon*scale),Size=UDim2.new(1,0,0,56),Position=UDim2.new(0,0,0,2),RichText=true,TextXAlignment=Enum.TextXAlignment.Center,ZIndex=3})
+	local textL=mkLabel(btn,{Name="Label",Text=labelTxt,Font=Enum.Font.GothamBold,TextSize=math.floor(RAIL.label*scale),TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,0,0,28),Position=UDim2.new(0,0,0,58),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=3})
+	local ls = mkStroke(textL,Color3.fromRGB(45,20,35),1.5); ls.Transparency = 0.15 -- subtle dark outline, one weight everywhere
 	local clickBtn=mkButton(btn,{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",ZIndex=5})
-	return btn, clickBtn, grad
+	return btn, clickBtn, grad, iconL
 end
 
--- 1) SHOP -- CANDY CANE. The only striped button on the rail: one striped face among four
---    solid ones reads as a highlight, where four striped faces read as noise. Corner 16 (kept).
-local shopSide, shopClick, shopGrad = mkRailBtn(96, Color3.new(1,1,1), Color3.new(1,1,1), 16, Color3.fromRGB(205,45,70), 3, "\xF0\x9F\x8D\xAC", "SHOP")
-candyStripes(shopGrad, Color3.fromRGB(255,255,255), Color3.fromRGB(255,80,95), 6, 45)
--- 2) PETS -- GRAPE. Same grape-lolly wrapper the slot always had (keeps the rail's candy
---    palette: cane / grape / mint / bubblegum), now with the paw glyph and the PET HUB behind
---    it. WORMHOLE gave up this slot and lives in the MORE+ menu (MorePopup_AllInOne).
-local petsSide, petsClick = mkRailBtn(203, Color3.fromRGB(200,140,255), Color3.fromRGB(140,70,225), 16, Color3.fromRGB(95,40,165), 3, "\xF0\x9F\x90\xBE", "PETS")
--- 3) Stomach -- MINT. Corner 16, stroke w3 (kept); icon is still the GUT_IMAGE.
-local stomachSide, stomachClick = mkRailBtn(310, Color3.fromRGB(155,240,205), Color3.fromRGB(70,205,155), 16, Color3.fromRGB(35,140,110), 3, "", "Stomach")
+-- SUBTLE candy-cane striping: thin white DIAGONAL bands laid OVER the colour as a transparency
+-- gradient, instead of repainting the whole face in hard stripes. The stripes read at a glance
+-- and the button still reads as STRAWBERRY -- which is the difference between an accent and a
+-- barcode. (Alternating a transparency sequence needs the same hair-apart keypoints trick a
+-- colour band does: two stops close together make an edge, far apart make a fade.)
+local function stripeOverlay(btn)
+	local ov = mkFrame(btn,{Name="CaneStripes",Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.new(1,1,1),BorderSizePixel=0,ZIndex=2})
+	mkCorner(ov, RAIL.corner)
+	local g = Instance.new("UIGradient")
+	g.Rotation = 45
+	local keys, n = {}, 7
+	for i = 0, n - 1 do
+		local t = (i % 2 == 0) and 1 or 0.8   -- clear band / faint white band
+		local s, e = i / n, (i + 1) / n
+		keys[#keys + 1] = NumberSequenceKeypoint.new(i == 0 and 0 or s + 0.001, t)
+		keys[#keys + 1] = NumberSequenceKeypoint.new(i == n - 1 and 1 or e - 0.001, t)
+	end
+	g.Transparency = NumberSequence.new(keys)
+	g.Parent = ov
+end
+
+-- 1) SHOP -- STRAWBERRY. Solid strawberry face, faint white cane stripes over it, peppermint glyph.
+local shopSide, shopClick = mkRailBtn(96,
+	Color3.fromRGB(240, 95, 115), Color3.fromRGB(214, 58, 84), Color3.fromRGB(168, 36, 62),
+	"\xF0\x9F\x8D\xAC", "SHOP")
+stripeOverlay(shopSide)
+-- 2) PETS -- LAVENDER. Softened from the old saturated grape into a pastel lavender; paw glyph.
+local petsSide, petsClick = mkRailBtn(203,
+	Color3.fromRGB(214, 186, 250), Color3.fromRGB(168, 128, 232), Color3.fromRGB(118, 84, 190),
+	"\xF0\x9F\x90\xBE", "PETS")
+-- 3) STOMACH -- MINT. Same mint family as before, one shade softer; keeps the GUT_IMAGE icon.
+--    Label case unified: the rail read SHOP / PETS / Stomach / MORE -- one lowercase word in a
+--    row of caps looks like a typo, not a choice.
+local stomachSide, stomachClick = mkRailBtn(310,
+	Color3.fromRGB(168, 238, 212), Color3.fromRGB(96, 206, 168), Color3.fromRGB(44, 148, 118),
+	"", "STOMACH")
 do
 	local gutIcon=Instance.new("ImageLabel")
 	gutIcon.Name="Icon"; gutIcon.BackgroundTransparency=1; gutIcon.Image=GUT_IMAGE; gutIcon.ScaleType=Enum.ScaleType.Fit
-	gutIcon.Size=UDim2.new(0,math.floor(40*scale),0,math.floor(40*scale)); gutIcon.Position=UDim2.new(0.5,0,0,6); gutIcon.AnchorPoint=Vector2.new(0.5,0)
+	gutIcon.Size=UDim2.new(0,math.floor(40*scale),0,math.floor(40*scale)); gutIcon.Position=UDim2.new(0.5,0,0,8); gutIcon.AnchorPoint=Vector2.new(0.5,0)
 	gutIcon.ZIndex=3; gutIcon.Parent=stomachSide
 end
--- 4) MORE -- STATS PINK. Was a lighter bubblegum (255,150,215 -> 240,80,175); now the exact
---    CANDY.bodyTop/bodyBot the stats panel is built from (StatsPanelKit_AllInOne, `local CANDY`),
---    so the button and the panel it sits beside are one pink rather than two that nearly match.
---    That pink is also the CONTRAST-MEASURED one: the stats panel notes a first draft of
---    (238,116,186) measured 2.7:1 against white text, where this reads ~4.7:1. Keeps its
---    ORIGINAL corner 14 + WHITE stroke w2 (the old restyle pass never touched MORE, deliberately).
-local moreSide, moreClick = mkRailBtn(417, Color3.fromRGB(196,66,148), Color3.fromRGB(158,48,140), 14, Color3.new(1,1,1), 2, "+", "MORE")
+-- 4) MORE -- PINK, now on the SAME standard face as the other three (it used to keep its own
+--    corner 14 / white stroke w2, which is exactly the inconsistency this pass removes). The plus
+--    is CHOCOLATE -- a drawn glyph, not text, so its colour is actually ours to choose -- with a
+--    small peppermint accent tucked by the label.
+local moreSide, moreClick = mkRailBtn(417,
+	Color3.fromRGB(250, 148, 190), Color3.fromRGB(232, 96, 152), Color3.fromRGB(178, 56, 108),
+	"", "MORE")
+do
+	-- chocolate plus: two rounded bars (emoji "+" can't be recoloured; two Frames can)
+	local choc = Color3.fromRGB(94, 58, 38)
+	local hbar = mkFrame(moreSide,{Name="PlusH",AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.new(0.5,0,0,30),Size=UDim2.new(0,34,0,10),BackgroundColor3=choc,BorderSizePixel=0,ZIndex=3})
+	mkCorner(hbar, 5)
+	local vbar = mkFrame(moreSide,{Name="PlusV",AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.new(0.5,0,0,30),Size=UDim2.new(0,10,0,34),BackgroundColor3=choc,BorderSizePixel=0,ZIndex=3})
+	mkCorner(vbar, 5)
+	-- the peppermint accent: small, off to the side of the label, deliberately not another big glyph
+	mkLabel(moreSide,{Name="Mint",Text="\xF0\x9F\x8D\xAC",Font=Enum.Font.Gotham,TextSize=13,Size=UDim2.new(0,16,0,16),Position=UDim2.new(1,-18,0,6),RichText=true,ZIndex=3})
+end
 
 --======================================================================
 -- WIRING (all guarded) -- verbatim CoreClient behavior
