@@ -1006,6 +1006,11 @@ local SOUR_STORM = {
 	CLOUD_B = Color3.fromRGB(58, 88, 44),
 	RAIN  = Color3.fromRGB(150, 226, 74),    -- SourRain's own green, exactly
 	RAIN2D = Color3.fromRGB(168, 236, 96),
+	-- THE SKY DOME ITSELF, not the fog in front of it. Atmosphere.Color tints the whole sky, so this
+	-- is what turns the horizon dark green rather than just greying out what is near you.
+	SKY     = Color3.fromRGB(52, 84, 40),
+	SKY_HAZE = 4.2,       -- thick: haze is what carries the colour across the dome
+	SKY_DENSITY = 0.42,   -- enough to feel heavy without washing the island out
 }
 
 -- ===== SOUR STORM SKY + WEATHER (rebuilt) -- DARK storm-cloud look while FLYING, island visible when LANDED.
@@ -1119,13 +1124,24 @@ local function applyStormState(flying, t)
 		-- island is VISIBLE again. Classic fog also eases back via the Lighting tween above.
 		if stormAtmos then
 			if not stormAtmos.Parent then stormAtmos.Parent = Lighting end
-			if savedAtmos then
-				local s = savedAtmos
-				TweenService:Create(stormAtmos, TweenInfo.new(t or 1.1, Enum.EasingStyle.Sine), {
-					Density=s.Density, Offset=s.Offset, Color=s.Color, Decay=s.Decay, Glare=s.Glare, Haze=s.Haze,
-				}):Play()
-			end
-			print(string.format("[Storm] LANDED: Atmosphere restored (Density=%.2f) -> island visible", savedAtmos and savedAtmos.Density or 0))
+			-- ⚠ THE SKY GOES DARK GREEN HERE, and it is deliberately NOT the saved original.
+			--
+			-- This branch used to restore savedAtmos, which is the ordinary sky -- so landing during a
+			-- sour storm gave you a normal blue horizon with green fog in front of it, and the storm
+			-- stopped at eye level. The flying half already reads as sour because it is a solid wall of
+			-- FOG_F; this is the half you actually LOOK at, standing on an island watching it roll over.
+			--
+			-- savedAtmos is still kept untouched and is still what endStorm restores. The original sky
+			-- comes back when the storm ends, not when you land in the middle of one.
+			TweenService:Create(stormAtmos, TweenInfo.new(t or 1.1, Enum.EasingStyle.Sine), {
+				Density = SOUR_STORM.SKY_DENSITY,
+				Haze    = SOUR_STORM.SKY_HAZE,
+				Color   = SOUR_STORM.SKY,
+				Decay   = SOUR_STORM.SKY,
+				Glare   = 0,
+				Offset  = 0,
+			}):Play()
+			print("[Storm] LANDED: Atmosphere re-attached in SOUR GREEN -> island visible under a green sky")
 		else
 			print("[Storm] LANDED: no Atmosphere -> classic Fog eased back, island visible")
 		end
