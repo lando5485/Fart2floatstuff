@@ -41,13 +41,18 @@ end
 
 -- ===== the gut tiers -- read from the SHARED module (ReplicatedStorage.Shared.
 -- StomachTiers), the same table the server prices from, so panel and server can
--- never drift. 12 coin tiers (one per crossing) + the Robux Sugar Rush Gut.
+-- never drift. 7 coin tiers (the food realm's Tiny..Iron) + the Robux Sugar Rush Gut.
 -- unlockSlot = the climb slot you must have REACHED before the tier can be bought
--- (the server enforces it; this panel just draws the lock).
+-- (the server enforces it against HighestSlot; this panel just draws the lock).
 local StomachTiersShared = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("StomachTiers"))
+local IslandOrderShared  = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("IslandOrder"))
 local TIERS = {}
+-- `index` is the LADDER position (nil for the Robux row, which is not on the ladder) and
+-- `islandName` is the island you have to reach to unlock the row, so the lock can name it.
 for _, t in ipairs(StomachTiersShared.LIST) do
-	TIERS[#TIERS+1] = { name=t.name, max=t.maxPower, cost=t.cost, robux=t.robux, emoji=t.emoji, unlockSlot=t.unlockSlot }
+	TIERS[#TIERS+1] = { name=t.name, max=t.maxPower, cost=t.cost, robux=t.robux, emoji=t.emoji,
+		unlockSlot=t.unlockSlot, index=StomachTiersShared.INDEX_BY_NAME[t.name],
+		islandName=IslandOrderShared.NAMES[t.unlockSlot or 1] }
 end
 
 -- ===== THE ROBUX GUT IS A GAMEPASS (Infinite Gut, id in Shared.Gamepasses) =====
@@ -65,6 +70,14 @@ local function gutPassPrice() return Gamepasses.PRICE[GUT_PASS] or 0 end
 -- highest climb slot reached (server-set attribute; gates the locked rows)
 local function highestSlot()
 	return math.max(1, math.floor(tonumber(player:GetAttribute("HighestSlot")) or 1))
+end
+
+-- THE GUT GATE, as the panel sees it (food-realm rule): the highest ladder tier whose
+-- unlockSlot the player has physically REACHED. Anything above it is locked no matter how
+-- many coins they have. StomachUpgrade re-derives the same thing from HighestSlot on every
+-- buy, so a forged attribute gets a refusal, not a gut.
+local function unlockedGutTier()
+	return StomachTiersShared.unlockedTierFor(highestSlot())
 end
 
 -- ===== read server-owned state (this place stores it in _G.leaderstats) =====
@@ -163,8 +176,17 @@ local function buildRows()
 				print("[StomachShop] prompted gamepass:", GUT_PASS, Gamepasses.IDS[GUT_PASS])
 				return
 			end
-			if (t.unlockSlot or 1) > highestSlot() then -- (robux already returned above)
-				local old = buyBtn.Text; buyBtn.Text = "Locked"; buyBtn.BackgroundColor3 = Color3.fromRGB(150,150,150)
+			-- THE ISLAND GATE (drawn here; enforced by StomachUpgrade against HighestSlot).
+			-- A row above the island you have reached cannot be bought at any price.
+			if (t.index or 1) > unlockedGutTier() then -- (robux already returned above)
+				local old = buyBtn.Text
+				buyBtn.Text = "Locked"; buyBtn.BackgroundColor3 = Color3.fromRGB(150,150,150)
+				if _G.NotifyCenter and _G.NotifyCenter.push then
+					pcall(_G.NotifyCenter.push, {
+						text = ("\xF0\x9F\x94\x92 Reach %s to unlock the %s!")
+							:format(t.islandName or ("island " .. tostring(t.unlockSlot or 1)), t.name),
+						color = Color3.fromRGB(255,123,172) })
+				end
 				task.delay(1, function() buyBtn.Text = old end)
 				return
 			end
@@ -222,11 +244,12 @@ local function refresh()
 			btn.Active = false; btn.AutoButtonColor = false
 			btn.BackgroundColor3 = Color3.fromRGB(90,90,90)
 			btn.Text = (t.name == currentName) and "EQUIPPED" or "OWNED"
-		elseif (t.unlockSlot or 1) > highestSlot() then
-			-- not reached this tier's island yet -- the wall stays drawn
+		elseif (t.index or 1) > unlockedGutTier() then
+			-- THE ISLAND LOCK: you have not reached this tier's island yet, so no amount of
+			-- coins buys it. Name the island so the player knows where the climb has to get to.
 			btn.Active = false; btn.AutoButtonColor = false
 			btn.BackgroundColor3 = Color3.fromRGB(120,120,120)
-			btn.Text = "\xF0\x9F\x94\x92 Island "..(t.unlockSlot or 1)
+			btn.Text = t.islandName and ("\xF0\x9F\x94\x92 "..t.islandName) or "\xF0\x9F\x94\x92 Locked"
 		else
 			btn.Active = true; btn.AutoButtonColor = true
 			local afford = coins >= t.cost
@@ -256,6 +279,8 @@ end
 -- refresh whenever the shop opens, and live while it's open
 gui:GetPropertyChangedSignal("Enabled"):Connect(function() if gui.Enabled then refresh() end end)
 player:GetAttributeChangedSignal("HighestSlot"):Connect(function() if gui.Enabled then refresh() end end)
+-- (The island gate is derived from HighestSlot, whose signal is wired just above, so a row
+-- goes from "Locked: Cocoa Reactor" to buyable the moment the landing is banked.)
 -- The gut pass lands as an attribute -- on join (a web round trip, so AFTER this panel is built) and again the
 -- instant a purchase completes. Refresh UNCONDITIONALLY, not just while open: the buyer is looking at the panel
 -- when the prompt closes, and a gated refresh would leave the card still saying "499 R$" until they reopen it.

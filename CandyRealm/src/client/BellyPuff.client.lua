@@ -9,13 +9,17 @@ local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local player     = Players.LocalPlayer
 
--- must match BellySystem.server -------------------------------------------------
--- ranks:           Tiny  Small Medium Large  XL    Iron  Infinite  (ascending; Iron > XL)
-local TIERS      = {100,  182,  520,   1075,  2146, 3218, 9999}
-local TIER_SCALE = {1.00, 1.20, 1.40,  1.60,  1.80, 2.00, 2.20}
+-- CANDY REALM'S TIERS -- they MUST be the maxPower values in src/shared/StomachTiers.luau. Since the
+-- food-realm port those are the first realm's seven tanks (120/270/470/620/1080/1710/2600) plus the Robux
+-- Sugar Rush Gut (9999) on top. tierIndex takes the highest threshold at or below the tank, so this list
+-- has to stay sorted by maxPower. Seven coin tiers get seven distinct belly sizes; the pass is the biggest.
+--   1 Gumdrop  2 Taffy  3 Cookie  4 Jelly  5 Gummy  6 Choco  7 Caramel  (8 Sugar Rush)
+local TIERS      = {120,  270,  470,  620,  1080, 1710, 2600, 9999}
+local TIER_SCALE = {1.00, 1.15, 1.30, 1.45, 1.65, 1.85, 2.05, 2.30}
 local PUFF_MAX  = 0.30
 local INFLATE_SPEED = 6
 local DEFLATE_SPEED = 12
+local GROW_SLOW_SPEED = 2.6 -- the pace a BOUGHT gut grows at while the purchase cinematic is watching it
 local BASE       = Vector3.new(1.90, 1.50, 0.90)
 local GROW       = Vector3.new(0.40, 0.85, 0.70)
 local SHOULDER_W = 2.05
@@ -71,7 +75,7 @@ end
 local function currentMax()
 	local ls = player:FindFirstChild("leaderstats")
 	local sm = ls and ls:FindFirstChild("StomachMax")
-	return (sm and sm.Value) or 100
+	return (sm and sm.Value) or 120 -- Candy starts on the Gumdrop Belly (120), the food realm's Tiny Gut
 end
 local function findGut()
 	local char = player.Character
@@ -91,13 +95,32 @@ local function applyScale(folder, scale)
 	end
 end
 
-local curScale = tierScale(100)
+-- Tells GutGrowCinematic.client that this script owns the local belly's size, so it drives the pace through
+-- the two timestamps below instead of writing the size itself (which would fight this loop every frame).
+_G.bellyPuffActive = true
+
+local curScale = tierScale(120)
 RunService.Heartbeat:Connect(function(dt)
 	local folder = findGut()
 	if not folder then return end
 	local fill = math.clamp(tonumber(_G.gasFill01) or 0, 0, 1) -- 0..1 gas charge (from CoreClient)
 	local target = tierScale(currentMax()) * (1 + PUFF_MAX * fill) -- tier base + charge puff
-	local speed = (target >= curScale) and INFLATE_SPEED or DEFLATE_SPEED
+	-- GROWTH PACE. Normally the base scale snaps up over a few frames, which is right when it happens
+	-- off-screen. During a gut-purchase cinematic (GutGrowCinematic.client) it has to be HELD at the old size
+	-- while the camera flies in, and then CRAWL so the player can actually watch it stretch. Those two
+	-- timestamps are the entire contract between the two scripts; with both unset this behaves exactly as it
+	-- always did, so nothing changes for a gut that grows while nobody is looking at it.
+	local now = os.clock()
+	local speed
+	if target < curScale then
+		speed = DEFLATE_SPEED
+	elseif now < (tonumber(_G.gutGrowHoldUntil) or 0) then
+		speed = 0
+	elseif now < (tonumber(_G.gutGrowSlowUntil) or 0) then
+		speed = GROW_SLOW_SPEED
+	else
+		speed = INFLATE_SPEED
+	end
 	curScale = curScale + (target - curScale) * math.clamp(dt * speed, 0, 1)
 	applyScale(folder, curScale) -- local-only visual on top of the server's tier base
 end)

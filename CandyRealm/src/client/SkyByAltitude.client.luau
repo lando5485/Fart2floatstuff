@@ -1,8 +1,16 @@
 -- SkyByAltitude.client.luau  (LocalScript)  -- the sky thins and darkens as you climb.
 --
--- Bean Farm sits at Y≈250 and Pizza Palms at Y≈24,000 -- roughly airliner altitude -- and the air looked
--- IDENTICAL at both ends. You spend an hour ascending and the world never once acknowledges it. The climb is
--- the whole game; the sky should be a progress bar you can feel.
+-- Candy Cane Court sits at Y≈220 and Bakery Summit at Y≈81,620, and the air looked IDENTICAL at both ends.
+-- You spend an hour ascending and the world never once acknowledges it. The climb is the whole game; the sky
+-- should be a progress bar you can feel.
+--
+-- ⚠ EVERY HEIGHT IN THIS FILE IS DERIVED FROM IslandOrder, NOT WRITTEN DOWN.
+-- This file used to carry the FOOD realm's absolute Ys (Bean Farm 245, Turnip Tranquil 2492, Pizza Palms
+-- 24,012) with a "vacuum" band at 27,000. Candy never had those islands, and when the space-economy port
+-- re-spaced the tower to 81,620 the entire top two-thirds of the climb fell past the last keyframe into
+-- flat vacuum -- while the orbiting satellites, pinned at 25,600-30,500, ended up parked inside slot 8.
+-- Keying the gradient to SLOT NUMBERS and the fleet to the SUMMIT means a re-spacing moves the sky with
+-- the tower automatically, and this cannot rot again.
 --
 -- So it's a GRADIENT, driven by the player's height:
 --   * ground  -> thick, warm, hazy. Humid farm air; you can't see far.
@@ -24,69 +32,103 @@ local Players    = game:GetService("Players")
 local player = Players.LocalPlayer
 
 -- ============================================================================
--- THE GRADIENT. Real world Y values, read off the island-positioning logs -- NOT the design-doc numbers in
--- CLAUDE.md, which are the pre-positioning values PlayerStats overwrites on startup.
+-- WHERE THE ISLANDS ACTUALLY ARE. IslandOrder.SLOT_POS is the one table that positions the
+-- tower, so reading it here is what keeps the sky and the world in step.
 --
--- Each keyframe describes the air at that height; the script blends between the two bracketing the player.
--- `space` is how "airless" it is: 0 = normal day, 1 = full night with stars.
+-- Falls back to the shipped ladder if the module is missing, rather than collapsing every
+-- keyframe onto Y=0 -- a sky stuck in ground haze is a bug you might not notice for a week.
 -- ============================================================================
--- The `y` values are the ISLANDS' real positioned heights, straight off the STAND DATA log lines. Keying the
--- gradient to the islands themselves means the sky changes exactly as you ARRIVE somewhere, instead of at some
--- arbitrary number that happens to fall mid-flight.
+local FALLBACK_Y = { 150, 780, 1848, 3090, 4395, 6187.5, 8073, 10555.5, 13165.5, 16614, 20239.5, 25066.5, 31266.5 }
+local slotY, SUMMIT_SLOT, SUMMIT_POS do
+	local ok, IslandOrder = pcall(function()
+		return require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("IslandOrder"))
+	end)
+	if ok and IslandOrder and IslandOrder.SLOT_POS and #IslandOrder.SLOT_POS > 0 then
+		SUMMIT_SLOT = #IslandOrder.SLOT_POS
+		SUMMIT_POS  = IslandOrder.SLOT_POS[SUMMIT_SLOT]
+		slotY = function(n)
+			local pos = IslandOrder.SLOT_POS[math.clamp(n, 1, SUMMIT_SLOT)]
+			return pos and pos.Y or (FALLBACK_Y[n] or 0)
+		end
+	else
+		warn("[Sky] IslandOrder unavailable -- falling back to the shipped ladder heights")
+		SUMMIT_SLOT = #FALLBACK_Y
+		SUMMIT_POS  = Vector3.new(340, FALLBACK_Y[SUMMIT_SLOT], -300)
+		slotY = function(n) return FALLBACK_Y[math.clamp(n, 1, SUMMIT_SLOT)] end
+	end
+end
+local SUMMIT_Y = slotY(SUMMIT_SLOT)
+
+-- ============================================================================
+-- THE GRADIENT, keyed to CLIMB SLOTS rather than to absolute heights.
 --
--- Daylight holds all the way to ISLAND 10 (Butter Swamp, Y≈12,014). From there it darkens steadily, island by
--- island, and Pizza Palms is night.
+-- Each keyframe describes the air on arrival at that slot; the script blends between the two
+-- bracketing the player. `space` is how "airless" it is: 0 = normal day, 1 = full night.
+--
+-- Keying to the islands themselves means the sky changes exactly as you ARRIVE somewhere,
+-- instead of at some arbitrary number that happens to fall mid-flight -- and, since the Ys
+-- come from IslandOrder, re-spacing the tower drags the whole gradient along with it.
+--
+-- THE SHAPE (unchanged from the original; only the rungs it hangs on have moved): daylight
+-- holds most of the climb, then the last five rungs darken on an ACCELERATING curve. A linear
+-- ramp would make the midpoint look half-dark the moment you land on it, giving the whole
+-- climb away at once -- the point is that it creeps up on you.
+-- ============================================================================
 local KEYS = {
-	{	y = 245,     -- 1 BEAN FARM. Humid, hazy, warm. You can smell the farm.
+	{	slot = 1,    -- CANDY CANE COURT. Humid, hazy, warm. You can smell the sugar.
 		density = 0.0, offset = 0.0, haze = 0.0, glare = 0.0, -- NO ground haze: the custom skybox shows fully, no gray band
 		color = Color3.fromRGB(206, 190, 170), decay = Color3.fromRGB(106, 118, 140),
 		space = 0,
 	},
-	{	y = 2492,    -- 4 TURNIP TRANQUIL. The haze starts to lift; you can see further.
+	{	slot = 4,    -- GUMTREE PARK. The haze starts to lift; you can see further.
 		density = 0.0, offset = 0.0, haze = 0.0, glare = 0.0,
 		color = Color3.fromRGB(198, 198, 196), decay = Color3.fromRGB(96, 112, 142),
 		space = 0,
 	},
-	{	y = 8182,    -- 8 POPCORN PINNACLE. Proper altitude. Thin, clean, the blue deepens.
+	{	slot = 6,    -- CRYSTAL CANDY CAVES. Proper altitude. Thin, clean, the blue deepens.
 		density = 0.08, offset = 0.02, haze = 0.2, glare = 0.03,
 		color = Color3.fromRGB(180, 194, 214), decay = Color3.fromRGB(70, 96, 140),
 		space = 0,
 	},
-	-- ISLANDS 10 -> 14 ARE THE DARKENING. The curve ACCELERATES rather than running straight: 10 has only just
-	-- started to cool, 11 is late afternoon, 12 an evening, 13 proper dusk, and only 14 is night. A linear ramp
-	-- would make island 10 look half-dark the moment you land on it, which gives the whole climb away at once
-	-- -- the point is that it creeps up on you.
-	{	y = 12014,   -- 10 BUTTER SWAMP. The light has *just* begun to cool. Barely noticeable, deliberately.
+	-- SLOTS 8 -> 12 ARE THE DARKENING, on the accelerating curve described above.
+	{	slot = 9,    -- LICORICE TUNNELS. The light has *just* begun to cool. Barely noticeable, deliberately.
 		density = 0.21, offset = 0.00, haze = 0.68, glare = 0.03,
 		color = Color3.fromRGB(162, 182, 214), decay = Color3.fromRGB(52, 76, 122),
 		space = 0.06,
 	},
-	{	y = 14174,   -- 11 ICE CREAM ISLE. Late afternoon. You can tell now, if you look up.
+	{	slot = 10,   -- FROSTBELL PEAK. Late afternoon. You can tell now, if you look up.
 		density = 0.18, offset = 0.00, haze = 0.52, glare = 0.02,
 		color = Color3.fromRGB(150, 172, 206), decay = Color3.fromRGB(44, 66, 110),
 		space = 0.18,
 	},
-	{	y = 17179,   -- 12 BURGER BLUFF. Evening. Blue going deep; a first star or two.
+	{	slot = 11,   -- MARSHMALLOW CAMP. Evening. Blue going deep; a first star or two.
 		density = 0.14, offset = 0.00, haze = 0.34, glare = 0.01,
 		color = Color3.fromRGB(134, 156, 196), decay = Color3.fromRGB(32, 50, 92),
 		space = 0.38,
 	},
-	{	y = 20240,   -- 13 BURRITO BARRENS. Dusk. Stars are properly out; the sky is nearly black.
+	{	slot = 12,   -- SUGARBEET FARM. Dusk. Stars are properly out; the sky is nearly black.
 		density = 0.07, offset = 0.00, haze = 0.14, glare = 0.00,
 		color = Color3.fromRGB(112, 132, 174), decay = Color3.fromRGB(18, 30, 62),
 		space = 0.66,
 	},
-	{	y = 24012,   -- 14 PIZZA PALMS. Night. Density near zero so the stars are CRISP, not washed out.
+	{	slot = 13,   -- BAKERY SUMMIT. Night. Density near zero so the stars are CRISP, not washed out.
 		density = 0.015, offset = 0.00, haze = 0.0, glare = 0.00,
 		color = Color3.fromRGB(88, 106, 148), decay = Color3.fromRGB(4, 7, 18),
 		space = 1,
 	},
-	{	y = 27000,   -- ABOVE THE TOWER (the black hole sits at ~25,500). Vacuum.
+	{	above = 8000, -- ABOVE THE TOWER (where the fleet orbits). Vacuum.
 		density = 0.0, offset = 0.00, haze = 0.0, glare = 0.00,
 		color = Color3.fromRGB(80, 96, 136), decay = Color3.fromRGB(2, 3, 10),
 		space = 1,
 	},
 }
+
+-- Resolve every keyframe to a real Y once, at load. `slot` reads the island's height straight
+-- out of IslandOrder; `above` is an offset past the summit for the one band with no island
+-- under it. The blend below only ever reads `.y`, so nothing downstream changes.
+for _, k in ipairs(KEYS) do
+	k.y = k.slot and slotY(k.slot) or (SUMMIT_Y + (k.above or 0))
+end
 
 local SMOOTH = 2.2 -- how fast the sky chases the target. Too high and it strobes on a fast climb.
 
@@ -149,11 +191,21 @@ end)
 -- is ~150 studs across so it's unmistakably a space station when you finally get up there.
 -- ============================================================================
 
-local HULL       = Color3.fromRGB(214, 216, 222)
-local TRUSS      = Color3.fromRGB(150, 154, 164)
-local PANEL      = Color3.fromRGB(28, 44, 96)    -- solar array blue
-local PANEL_EDGE = Color3.fromRGB(190, 160, 60)
-local GOLD_FOIL  = Color3.fromRGB(214, 172, 74)  -- the wrapped-in-foil look of a real satellite bus
+-- ===== CHRISTMAS CANDY-CANE PALETTE =====
+-- These six craft came over from the Space Realm with the rest of this file: a grey-hulled station
+-- with navy solar arrays and gold-foil satellite buses. Correct for that game, and the only thing
+-- in the candy sky that still looked like hardware. The SHAPES stay -- they read well at 2,000
+-- studs and the orbit maths is built around their sizes -- but every surface is now confectionery.
+--
+-- The names are kept (HULL, TRUSS, PANEL...) because they are used in a dozen places below and a
+-- rename would touch far more than a re-skin needs to. What each one MEANS is in its comment.
+local HULL       = Color3.fromRGB(252, 248, 244)  -- peppermint white: the sugar body of everything
+local TRUSS      = Color3.fromRGB(236,  72, 110)  -- candy-cane red: booms, spars and stripes
+local PANEL      = Color3.fromRGB(150, 225, 190)  -- spearmint green, where the solar arrays were
+local PANEL_EDGE = Color3.fromRGB(255, 205,  90)  -- gold sugar trim along every panel edge
+local GOLD_FOIL  = Color3.fromRGB(236,  72, 110)  -- red foil wrapper on the satellite bus
+local CANE_WHITE = Color3.fromRGB(252, 248, 244)  -- the white half of a barber stripe
+local HOLLY      = Color3.fromRGB( 86, 168, 104)  -- the one non-candy note, for the station's holly
 local UPX        = CFrame.Angles(0, 0, math.rad(90)) -- Roblox cylinders run along X; stand them upright
 
 local skyFolder = Instance.new("Folder")
@@ -208,7 +260,27 @@ local function buildStation()
 	local m = Instance.new("Model")
 	m.Name = "SpaceStation"
 
-	mkPart(m, "Truss", Enum.PartType.Block, Vector3.new(150, 5, 5), TRUSS, CFrame.new())
+	-- THE SPINE IS A CANDY CANE. It used to be one flat grey bar 150 studs long -- the single most
+	-- hardware-looking thing in the sky. Built as alternating red and white segments instead, which
+	-- is the whole trick: a barber stripe reads as a candy cane from any distance, where a solid
+	-- red bar would just read as a red bar.
+	do
+		local SEGS, LEN = 15, 150
+		local seg = LEN / SEGS
+		for k = 0, SEGS - 1 do
+			mkPart(m, "Spine" .. k, Enum.PartType.Cylinder, Vector3.new(seg, 6, 6),
+				(k % 2 == 0) and TRUSS or CANE_WHITE,
+				CFrame.new(-LEN/2 + seg*(k + 0.5), 0, 0) * CFrame.Angles(0, math.rad(90), 0) * UPX)
+		end
+		-- ...and it hooks at one end, so the silhouette is unmistakably a cane and not a striped pole
+		for k = 0, 3 do
+			local a = math.rad(28 + k * 34)
+			mkPart(m, "Hook" .. k, Enum.PartType.Cylinder, Vector3.new(seg, 6, 6),
+				(k % 2 == 0) and CANE_WHITE or TRUSS,
+				CFrame.new(LEN/2, 0, 0) * CFrame.Angles(0, 0, a) * CFrame.new(seg*(k*0.9 + 0.5), seg*0.7, 0)
+					* CFrame.Angles(0, math.rad(90), 0) * UPX)
+		end
+	end
 
 	-- Pressurised modules -- cylinders, the giveaway shape of a station.
 	mkPart(m, "ModuleA", Enum.PartType.Cylinder, Vector3.new(34, 15, 15), HULL, CFrame.new(0, -10, 0) * CFrame.Angles(0, math.rad(90), 0))
@@ -226,8 +298,15 @@ local function buildStation()
 			CFrame.new(sx, 0, 0) * CFrame.Angles(0, math.rad(90), 0) * UPX)
 	end
 
-	mkPart(m, "RadiatorA", Enum.PartType.Block, Vector3.new(30, 0.5, 16), Color3.fromRGB(236, 238, 242), CFrame.new(0, 14, 0))
-	mkPart(m, "RadiatorB", Enum.PartType.Block, Vector3.new(30, 0.5, 16), Color3.fromRGB(236, 238, 242), CFrame.new(0, -30, 0))
+	-- Where the radiators were: a ribbon and a sprig of holly, so the station reads as a present
+	-- rather than a machine. Same footprint, so nothing about the silhouette's size changes.
+	mkPart(m, "RibbonA", Enum.PartType.Block, Vector3.new(30, 1.2, 16), TRUSS,      CFrame.new(0,  14, 0))
+	mkPart(m, "RibbonB", Enum.PartType.Block, Vector3.new(30, 1.2, 16), CANE_WHITE, CFrame.new(0, -30, 0))
+	for k = 0, 2 do
+		mkPart(m, "Holly" .. k, Enum.PartType.Block, Vector3.new(12, 1.0, 5), HOLLY,
+			CFrame.new(0, 16, 0) * CFrame.Angles(0, k * math.rad(60), 0) * CFrame.new(7, 0, 0))
+	end
+	mkPart(m, "Berry", Enum.PartType.Ball, Vector3.new(4, 4, 4), Color3.fromRGB(226, 44, 66), CFrame.new(0, 17, 0))
 
 	local beacon, light = addBeacon(m, CFrame.new(0, -10, 30), 1.4) -- station gets the biggest beacon
 	return m, beacon, light
@@ -242,7 +321,19 @@ local function buildSatellite(scale)
 	local s = scale or 1
 
 	mkPart(m, "Bus",  Enum.PartType.Block, Vector3.new(14, 12, 12) * s, GOLD_FOIL, CFrame.new())
-	mkPart(m, "Boom", Enum.PartType.Cylinder, Vector3.new(46, 1.6, 1.6) * s, TRUSS, CFrame.new() * CFrame.Angles(0, 0, math.rad(90)) * UPX)
+	-- A wrapper band across the bus, so it reads as a sweet rather than a red box
+	mkPart(m, "BusBand", Enum.PartType.Block, Vector3.new(15, 4, 13) * s, CANE_WHITE, CFrame.new())
+	-- THE BOOM IS A CANDY CANE, same trick as the station's spine: eleven alternating segments
+	-- instead of one solid red cylinder.
+	do
+		local SEGS, LEN = 11, 46
+		local seg = LEN / SEGS
+		for k = 0, SEGS - 1 do
+			mkPart(m, "Cane" .. k, Enum.PartType.Cylinder, Vector3.new(seg, 2.2, 2.2) * s,
+				(k % 2 == 0) and TRUSS or CANE_WHITE,
+				CFrame.new(0, (-LEN/2 + seg*(k + 0.5)) * s, 0) * CFrame.Angles(0, 0, math.rad(90)) * UPX)
+		end
+	end
 
 	for _, sx in ipairs({ -1, 1 }) do
 		mkPart(m, "Panel", Enum.PartType.Block, Vector3.new(1, 10, 30) * s, PANEL, CFrame.new(sx * 24 * s, 0, 0))
@@ -262,16 +353,30 @@ end
 -- ===== THE FLEET =====
 -- Different radii, altitudes, speeds, tilts and phases, so they never sit in a neat line -- a sky where
 -- everything orbits at the same rate reads as a carousel, not as space.
-local CENTRE = Vector3.new(380, 0, -391) -- roughly over Pizza Palms (24,012)
+-- Centred over the SUMMIT island, not over a hard-coded XZ. The old value (380, -391) was Pizza
+-- Palms in the Food realm; Candy summits at a different corner of the map entirely.
+local CENTRE = Vector3.new(SUMMIT_POS.X, 0, SUMMIT_POS.Z)
 
+-- ===== THE FLEET =====
+-- Different radii, altitudes, speeds, tilts and phases, so they never sit in a neat line -- a sky
+-- where everything orbits at the same rate reads as a carousel, not as space.
+--
+-- ALTITUDES ARE OFFSETS ABOVE THE SUMMIT, not absolute Ys. They used to be absolute (25,600 to
+-- 30,500), which put them a comfortable 1.5k-6.5k above the Food realm's 24,012 summit -- and
+-- then squarely INSIDE slot 8 once the candy tower grew to 81,620. The original spread is kept
+-- exactly; only its anchor moved, so the fleet now floats over whatever the top island is.
+local FLEET_BASE = SUMMIT_Y
 local FLEET = {
-	{ kind = "station", y = 27500, radius = 2600, seconds = 240, phase = 0.00, tilt = 8,   bob = 260 },
-	{ kind = "sat",     y = 26200, radius = 3400, seconds = 155, phase = 1.90, tilt = -14, bob = 420, scale = 1.0 },
-	{ kind = "sat",     y = 29000, radius = 2100, seconds = 110, phase = 3.60, tilt = 22,  bob = 300, scale = 0.7 },
-	{ kind = "sat",     y = 25600, radius = 4200, seconds = 300, phase = 5.10, tilt = -6,  bob = 520, scale = 1.4 },
-	{ kind = "sat",     y = 30500, radius = 2800, seconds = 190, phase = 2.70, tilt = 30,  bob = 240, scale = 0.85 },
-	{ kind = "sat",     y = 28200, radius = 5000, seconds = 380, phase = 4.40, tilt = 12,  bob = 600, scale = 1.2 },
+	{ kind = "station", up = 3500, radius = 2600, seconds = 240, phase = 0.00, tilt = 8,   bob = 260 },
+	{ kind = "sat",     up = 2200, radius = 3400, seconds = 155, phase = 1.90, tilt = -14, bob = 420, scale = 1.0 },
+	{ kind = "sat",     up = 5000, radius = 2100, seconds = 110, phase = 3.60, tilt = 22,  bob = 300, scale = 0.7 },
+	{ kind = "sat",     up = 1600, radius = 4200, seconds = 300, phase = 5.10, tilt = -6,  bob = 520, scale = 1.4 },
+	{ kind = "sat",     up = 6500, radius = 2800, seconds = 190, phase = 2.70, tilt = 30,  bob = 240, scale = 0.85 },
+	{ kind = "sat",     up = 4200, radius = 5000, seconds = 380, phase = 4.40, tilt = 12,  bob = 600, scale = 1.2 },
 }
+for _, cfg in ipairs(FLEET) do
+	cfg.y = FLEET_BASE + cfg.up
+end
 
 local craft = {} -- [{ model, beacon, light, cfg }]
 
@@ -362,6 +467,26 @@ RunService.RenderStepped:Connect(function(dt)
 	-- The thunderstorm DELETES the Atmosphere outright, so we must not touch it OR recreate what it removed.
 	if _G.thunderstormActive or _G.windstormActive or _G.serverEventActive or _G.meteorEventActive then
 		cur = nil -- forget our state, so when the event ends we ease in from the event's sky, not a stale one
+		return
+	end
+
+	-- A QUEST THAT OWNS THE SKY OWNS IT, for exactly as long as it says so.
+	--
+	-- The `else` branch below writes ClockTime, Brightness and OutdoorAmbient EVERY FRAME, on purpose --
+	-- "the sky is the thing that owns them here". That is right for scenery and wrong for the four quests
+	-- that darken the world as their main effect, because it silently undid all four:
+	--   * TaffyStorm dims to 45% brightness for the storm      -> back to full daylight next frame
+	--   * SummitBell drops the light for the blizzard whiteout -> same
+	--   * TunnelBlast sets Brightness 0 for a sealed black mine, and its own comment says "ambient light
+	--     is what stops a cave being dark"                     -> the cave was never dark
+	--   * CandyMine's finale storm                             -> same
+	-- Only their FOG survived, because fog is the one thing this file deliberately never touches. So each
+	-- of those quests now registers a claim (see setStormSky / setWeather / caveDark) and we stand down
+	-- the same way we do for a server event -- including forgetting `cur`, so the sky eases back in from
+	-- whatever the quest left rather than lurching from a stale value.
+	local claims = _G.questSkyClaims
+	if claims and next(claims) ~= nil then
+		cur = nil
 		return
 	end
 

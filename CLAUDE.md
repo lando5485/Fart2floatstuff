@@ -1,16 +1,17 @@
 # Fart to Float - Game Documentation
 
-> **All numbers below were re-verified against the source on 2026-08-14.** The previous version of this
-> file was a full balance pass out of date — every table (islands, foods, guts, speeds, coin formula) had
-> different numbers from the code. If you are about to trust a figure here, it is cheaper to re-grep it
-> than to assume; the authority is always the source, and the file/line is given for each table.
+> **Progression was rebuilt on 2026-08-22 from `F2F UNIVERSAL SPACING GUIDE.md` (the Dinosaur Realm's
+> shipped tower), values copied exactly.** The authority for every number below is the source:
+> `src/shared/FlightTuning.luau`, `src/shared/IslandOrder.luau` and the two tables in `PlayerStats`.
+> `python tools/ladder.py` parses those files and replays the whole climb -- **run it after any tuning
+> change; a realm is not done until it passes.** If this file and the harness disagree, the harness is right.
 
 ## Game Concept
-Players buy food -> fills stomach and gas meter -> hold fart button to fly up -> earn coins based on
-height -> buy more food -> reach higher islands. 14 islands total.
+Players buy food -> fills stomach -> hold fart button to fly up -> earn coins **per stud travelled** ->
+buy more food -> reach higher islands. 14 islands, 13 crossings, 7 coin guts.
 
-New player defaults (`PlayerStats.server.lua`, `DEFAULT_COINS/STOMACH/ISLAND`): **25 coins, Tiny Gut
-(100 maxPower), island 1.**
+New player defaults (`PlayerStats.server.lua`, `DEFAULT_COINS/STOMACH/ISLAND`): **2,000 coins, Tiny Gut
+(120 maxPower), island 1.** 2,000 against a 1,280 first meal is a 3-rung tutorial ladder off the bank.
 
 ---
 
@@ -28,151 +29,206 @@ never did. Flipping them changes nothing.
 
 ---
 
+## The structure: one gut = one WALL + one STRETCH
+Every coin gut covers exactly two crossings. The **wall** gap is the previous gut's full-tank climb
+× 1.020 — you get 97%+ of the way on a full tank and cannot land; that 2% *is* the "buy a gut" message,
+delivered by the flight, not a popup. The **stretch** gap is the new gut's climb ÷ 1.031 (97% of the tank).
+Tier 1 covers only c1 (tutorial, 1.355× headroom). Tier 7 covers c12 (widened to 6200 for the summit
+grind) and c13. **Do not move an island without re-running the harness** — the gates are
+`climb[k] ≥ own gaps` and `climb[k] + coast < next tier's gaps`, and both are asserted.
+
 ## Island Heights
-Exact positions (`ISLAND_POSITIONS`, `PlayerStats.server.lua`).
-Note these are the island **model** positions; the physical Stand a player lands on sits ~90 studs higher
-on island 1 and a few studs off on the rest (see the `STAND DATA ISLAND n` boot log for live values).
+`IslandOrder.SLOT_POS` (**one copy**; PlayerStats positions the Workspace models from it at boot and
+CoreClient reads the same table). Slot == island number; keep the identity `SLOT_TO_ISLAND` table.
 
-| # | Island | X | Y | Z |
-|---|--------|------|-------|------|
-| 1 | Bean Farm | 0 | 150 | 0 |
-| 2 | Broccoli Bluff | 120 | 790 | 60 |
-| 3 | Cabbage Cliffs | -160 | 1680 | 100 |
-| 4 | Turnip Tranquil | 180 | 2480 | -120 |
-| 5 | Coconut Cove | -200 | 3580 | 160 |
-| 6 | Bread Board | 220 | 4820 | -180 |
-| 7 | Pasta Peak | -240 | 6460 | 200 |
-| 8 | Popcorn Pinnacle | 260 | 8202 | -220 |
-| 9 | Milk Marsh | -280 | 9732 | 240 |
-| 10 | Butter Swamp | 300 | 11978 | -260 |
-| 11 | Ice Cream Isle | -320 | 14194 | 280 |
-| 12 | Burger Bluff | 340 | 17138 | -300 |
-| 13 | Burrito Barrens | -360 | 20206 | 320 |
-| 14 | Pizza Palms | 380 | 24017 | -340 |
+| # | Island | X | Y | Z | Gap up | Gut (tier) |
+|---|--------|------|-------|------|-------|------|
+| 1 | Bean Farm | 0 | 150 | 0 | 630.0 | Tiny |
+| 2 | Broccoli Bluff | 120 | 780 | 60 | 1068.0 | Small (wall) |
+| 3 | Cabbage Cliffs | -160 | 1848 | 100 | 1242.0 | Small (stretch) |
+| 4 | Turnip Tranquil | 180 | 3090 | -120 | 1305.0 | Medium (wall) |
+| 5 | Coconut Cove | -200 | 4395 | 160 | 1792.5 | Medium (stretch) |
+| 6 | Bread Board | 220 | 6187.5 | -180 | 1885.5 | Large (wall) |
+| 7 | Pasta Peak | -240 | 8073 | 200 | 2482.5 | Large (stretch) |
+| 8 | Popcorn Pinnacle | 260 | 10555.5 | -220 | 2610.0 | XL (wall) |
+| 9 | Milk Marsh | -280 | 13165.5 | 240 | 3448.5 | XL (stretch) |
+| 10 | Butter Swamp | 300 | 16614 | -260 | 3625.5 | XXL (wall) |
+| 11 | Ice Cream Isle | -320 | 20239.5 | 280 | 4827.0 | XXL (stretch) |
+| 12 | Burger Bluff | 340 | 25066.5 | -300 | 6200.0 | Iron (wall, summit grind) |
+| 13 | Burrito Barrens | -360 | 31266.5 | 320 | 6896.2 | Iron (stretch) |
+| 14 | Pizza Palms | 380 | 38162.7 | -340 | — | — |
 
-Islands 3, 5 and 7 are rotated about Y for looks only (`ISLAND_ROTATIONS`); heights are untouched.
+Slots 1–13 are the guide's exact positions; island 14 is the one addition (the guide's tower is 13
+islands), placed by the guide's own stretch rule `7110 ÷ 1.031`. Islands 3, 5 and 7 are rotated about
+Y for looks only (`ISLAND_ROTATIONS`). Anything that hard-codes a height (skies, events) needs re-checking
+against this table — the old summit was Y 24,017, the new one is 38,163.
 
 **Known world issue:** island 2's model is misspelled `Island_2_BrocolliBluff` in Workspace. PlayerStats
 falls back and warns every boot. Renaming it to `Island_2_BroccoliBluff` removes a permanent workaround.
 
 ## Food Data
-All 14 foods (`foods` table — **identical in `CoreClient.client.lua` and `PlayerStats.server.lua`**;
-if you change one, change both).
+`foods` — **identical in `CoreClient.client.lua` and `PlayerStats.server.lua`**; change both.
 
 | Name | Price | Power | Island | Power/coin |
 |------|-------|-------|--------|-----------|
-| Beans | 5 | 8 | 1 | 1.60 |
-| Broccoli | 24 | 25 | 2 | 1.04 |
-| Cabbage | 85 | 45 | 3 | 0.53 |
-| Turnips | 94 | 70 | 4 | 0.74 |
-| Coconuts | 142 | 100 | 5 | 0.70 |
-| Bread | 138 | 140 | 6 | 1.01 |
-| Pasta | 202 | 185 | 7 | 0.92 |
-| Popcorn | 600 | 240 | 8 | 0.40 |
-| Milk | 500 | 300 | 9 | 0.60 |
-| Butter | 400 | 370 | 10 | 0.93 |
-| IceCream | 560 | 450 | 11 | 0.80 |
-| Burger | 405 | 540 | 12 | 1.33 |
-| Burrito | 700 | 640 | 13 | 0.91 |
-| Pizza | 518 | 750 | 14 | 1.45 |
+| Beans | 1280 | 32 | 1 | 0.0250 |
+| Broccoli | 1480 | 40 | 2 | 0.0270 |
+| Cabbage | 1480 | 40 | 3 | 0.0270 |
+| Turnips | 1520 | 45 | 4 | 0.0296 |
+| Coconuts | 1520 | 45 | 5 | 0.0296 |
+| Bread | 1720 | 55 | 6 | 0.0320 |
+| Pasta | 1720 | 55 | 7 | 0.0320 |
+| Popcorn | 1840 | 65 | 8 | 0.0353 |
+| Milk | 1840 | 65 | 9 | 0.0353 |
+| Butter | 2200 | 85 | 10 | 0.0386 |
+| IceCream | 2200 | 85 | 11 | 0.0386 |
+| Burger | 3080 | 130 | 12 | 0.0422 |
+| Burrito | 3080 | 130 | 13 | 0.0422 |
+| Pizza | 3080 | 130 | 14 | 0.0422 |
 
-**Prices are not monotonic and value swings wildly** — see Known Issues.
-The comment above the table claims `price = round(power * (0.8 + (island-1)/13 * 2.2))`. That formula does
-**not** produce these numbers (it gives Pizza 2250, not 518). The table is hand-tuned; the comment is stale.
+**Rules the harness asserts:** power/price never decreases up the tower (1.69× spread, ≥1.5 required);
+power never decreases; every crossing can afford its own food on flight 1; no meal past the tutorial
+exceeds 20% of its crossing. A food unlocks when its island has been reached (ceiling lock); below
+that, anything is buyable anywhere — with monotonic value that is never a trap.
+
+Stretch crossings need ~97% of the tank, which whole servings of one food cannot always make (6 Broccoli
+= 240 of a 270 tank). Mixing in a cheaper food (5 Broccoli + 2 Beans = 264) does it — that is by design.
 
 ## Stomach Tiers
-`stomachTiers`, `PlayerStats.server.lua`. The client keeps a mirror in `CoreClient.client.lua` — the server
-owns the real check, so if they drift the button lies but the purchase is still refused correctly.
+`stomachTiers`, `PlayerStats.server.lua`; `maxPower` **must** equal `FlightTuning.BASE_TIERS` row for row
+(asserted). Mirrors: `tierDefs` + `dbgTiers` + `stomachNames` in CoreClient, `TIERS` in BellySystem/BellyPuff.
 
-| Name | maxPower | Cost | Currency | Island gate |
-|------|----------|------|----------|-------------|
-| Tiny Gut | 100 | 0 | Coins (default) | 1 |
-| Small Gut | 182 | 1600 | Coins | 2 |
-| Medium Gut | 520 | 3000 | Coins | 4 |
-| Large Gut | 1075 | 5200 | Coins | 7 |
-| XL Gut | 2146 | 8000 | Coins | 11 |
-| Iron Gut | 3218 | 11000 | Coins | 14 |
-| Infinite Gut | 9999 | 499 | Robux (`robux=true`) | 1 |
+| Name | maxPower | Climb (full tank) | Cost | Island gate |
+|------|----------|-------|------|-------------|
+| Tiny Gut | 120 | 853.5 | 0 | 1 |
+| Small Gut | 270 | 1279.5 | 1,000 | 2 |
+| Medium Gut | 470 | 1848.0 | 2,000 | 4 |
+| Large Gut | 620 | 2559.0 | 4,000 | 6 |
+| XL Gut | 1080 | 3555.0 | 5,000 | 8 |
+| XXL Gut | 1710 | 4977.0 | 6,000 | 10 |
+| Iron Gut | 2600 | 7110.0 | 11,500 | 12 |
+| Infinite Gut | 9999 | 7110.0 (top tier) | 499 Robux | 1 |
 
-The island gate is a **second** lock on top of cost: banked coins alone cannot buy a gut for a stretch of
-the game the player has not reached.
+Each gut costs less than the crossing before its wall pays out, so saving is short. The island gate is a
+second lock on top of cost. **A purchased gut arrives EMPTY** (`COURTESY_FRACTION = 0`) — it used to come
+full, which handed out a free crossing with every purchase. Whatever was in the tank is kept.
 
-## Flight System
-- **Drain rate:** `DRAIN_RATE = 3.5` gas/sec (`CoreClient`). A full 100 tank ≈ 28s of thrust.
-- **maxGasMeter:** 100. Horizontal speed: `FLIGHT_HORIZONTAL_SPEED = 48`.
-- **gasMeter ↔ currentPower:** during flight `currentPower = (gasMeter / maxGasMeter) * stomachMax`.
-  gasMeter is the 0-100 normalised fuel bar. At 0 the thrust stops and the player falls.
-- **`getFlightSpeed()` by current power:**
-
-  | power ≤ | speed |
-  |---------|-------|
-  | 100 | 40 |
-  | 182 | 62 |
-  | 611 | 84 |
-  | 1075 | 126 |
-  | 2146 | 144 |
-  | 3218 | 226 |
-  | else | 280 |
-
-  ⚠ The third band is `611`, but Medium Gut's maxPower is `520` — the speed table and the gut table do not
-  line up there. Harmless today (nothing sits between 520 and 611) but it will bite on the next retune.
-
-  Multiplied by `_G.serverEventSpeedMult`, `_G.rebirthSpeedMult`, ×1.35 while Shady Sal's rocket gas is
-  active (`SalSpeedBoostUntil`, server-clock expiry), and ×2 for a 2x boost.
+## Flight System (`src/shared/FlightTuning.luau`)
+- **`climbFor(tank, power)` / `powerForClimb(tank, dist)`** are the whole model: an 8-band speed taper
+  (`SPEED_SHAPE`, mean exactly 1.0) across the tank, so a full tank climbs exactly `tier.climb` studs.
+  **No time term in either** — that is what makes every gate scale-free.
+- **Wall-clock:** `FLIGHT_SECONDS = 22.75`, stretched per tier by `TIER_TIME` (1.00, 1.00, 1.35, 1.50,
+  1.55, 1.60, 1.60). Mean speeds 37.5 → 56.2 → 60.2 → 75.0 → 100.8 → 136.7 → 195.3 studs/s — must rise
+  with every gut. `speed = climb ÷ time`, so retiming moves no gate; it is the only free pacing lever.
+- **Drain:** `100 / tankSecondsFor(stomachMax)` %/s — the bar always empties in one flight.
+- `getFlightSpeed(power, stomachMax)` is multiplied by `_G.serverEventSpeedMult`, `_G.rebirthSpeedMult`,
+  ×1.35 for Shady Sal's rocket gas, ×2 for a 2x boost, ×0.7 carrying the watering can. (These lift the
+  climb without lifting drain — events are bounded so they can save an attempt, never skip a crossing.)
+- **Coast:** thrust ends → upward velocity damped to `COAST_DAMPING = 0.4` (16% of the undamped coast),
+  1–22 studs across the tiers. Gates are verified **with** the coast.
+- **Fuel is never wiped on touchdown** — leftover carries. The arrival bleed is off (`ARRIVAL_BLEED_RADIUS
+  = 0`); the wall spacing makes it redundant.
 - **Infinite Gut owners never drain** — the meter is re-topped every frame.
-- **Gas bubbles** grant a % of the tank scaled by gut tier (3 → 6). Bubbles respawn after 45s; rings 30s.
+- **Gas bubbles** grant `max(2, tank * 0.0075)` -- +2 on a Tiny Gut, +3.5 on a Medium, +19.5 on an Iron,
+  so the raw power climbs with you instead of decaying to nothing. **0.75% is the top of the range, not a
+  preference:** a gap holds two bubbles and a wall crossing leaves only a ~2% margin, so the pair must fit
+  inside it. At 0.75% the Medium/Large/XL walls keep 6.9/8.4/10.4 studs spare; 0.8% cuts that to ~5 and
+  **0.9% goes negative** -- a full tank plus two bubbles clears a wall and the tower loses a rung. The
+  fraction has to stay flat across tiers because the margin it fits inside is itself a flat ~1.9% of the
+  climb. Baseline progression still works with zero bubbles. Bubbles also pay coins -- see **Pickup
+  bonus** above.
 
 ## Coin System
-Sent from the client every 0.5s during flight via `CoinEvent:FireServer(...)`.
+`COIN_PER_STUD = COIN_PER_STUD_BASE / SPACING_SCALE = 2.4024 / 0.6825 = 3.52`. Coins are billed for
+**distance travelled**, not height.
 
-```lua
-tickCoins = height * 0.0044 * (_G.serverEventCoinMult or 1)   -- height = hrp.Position.Y
-dynCap    = math.max(FLIGHT_COIN_CAP, peakHeight * CAP_PER_HEIGHT)   -- 80, 0.2
-pay       = math.min(tickCoins, dynCap - flightCoinsEarned)
-CoinEvent:FireServer(pay * 0.70)                              -- 70% payout scalar
-```
+| Outcome | Pays |
+|---|---|
+| Crossing lands | `gap × 3.52` (climb only) |
+| Flight fails | `climb × 3.52 × (1 + DESCENT_PAY_MULT)` = **3× the climb** |
 
-The old `(height / 500) ^ 2` term is **gone**. Height coins are capped per flight; ring bonuses are not.
+That asymmetry is the single lever that sets flight counts — never fold the 2× into the base rate.
+`R = eff × 3.52 × 3 × climb / tank` is "how much further the next flight goes"; min R is 1.187 (≥1.15
+asserted), which is what keeps the last miss in the 80s instead of grinding through the 90s.
 
-**Ring bonus:** `math.floor(15 * ringMultiplier * serverEventRingMult)` where
-`ringMultiplier = 1 + ringStreak * 0.2`. `ringStreak` resets to 0 on landing.
-Event ceilings: `serverEventCoinMult` peaks at **2**, `serverEventRingMult` at **10** — so one ring on a
-long streak during a ring event legitimately pays ~1,650, at any altitude.
+**Prepay** (`CoreClient`): at launch `climbFor(stomachMax, currentPower)` predicts the peak; if it is
+under `gap × PREPAY_SAFETY (0.90)` the flight is already a failure and every climbed stud pays 3× on the
+spot. Otherwise the climb pays 1× per `COIN_TICK` (0.23s) and the 2× is paid per stud **fallen** below
+the peak, settled at touchdown — a landing on the next island falls ~0 studs and pays nothing extra.
 
-**Server side** (`CoinEvent.OnServerEvent`, PlayerStats) applies, in order: friend/group bonus
-(`_G.coinBonusMult`), rebirth (`_G.rebirthMult`), Sal's 2x (`SalCoinBoostUntil`); then accumulates
-fractions in `playerCoinAccum` and adds `math.floor` to `Coins` + `TotalCoinsEarned`.
+**Pickup bonus:** both bubbles pay a **set amount, no streak multiplier**, and it **grows with altitude**
+(`_G.pickupCoins(kind, atY)` in CoreClient): a fixed share of the meal sold at whatever island the player
+is currently level with -- **15%** for a coin bubble (190 at Bean Farm -> 460 at Pizza Palms), **half
+that** for a gas bubble (100 -> 230). It reads the player's Y against `ISLAND_POS` (+25 tolerance, because
+a landing surface can sit just below its own configured Y), **not** the `Island` leaderstat, which only
+goes up and would pay summit rates to someone on island 1. Two of each per gap, so sweeping a gap is ~45%
+of one meal at every height. `serverEventRingMult` still applies and peaks at 10, so one bubble at the
+summit can pay ~4,600 -- under the 8,000 single-grant cap.
 
-**Validation:** the handler rejects NaN/inf/≤0, caps a single grant (`COIN_MAX_SINGLE`), rate-limits calls
-and enforces a per-window budget that scales with the player's real altitude. This is a **bound, not
-authority** — the client still decides the figure. The real fix is computing flight coins server-side.
+**Server side** (`CoinEvent.OnServerEvent`): friend/group bonus, rebirth, Sal's 2× in that order; then
+`math.floor` via `playerCoinAccum`. **Validation** rejects NaN/inf/≤0, caps a single grant at 8,000
+(an Iron Gut falling at terminal speed during COIN_RUSH is ~5.4k per tick), rate-limits calls and
+budgets each 5s window at "one full failed flight on this player's gut during COIN_RUSH" + a 5,000 ring
+allowance — computed from the server's own StomachMax. Still a **bound, not authority**.
+
+**Anti-strand** (`BuyFoodEvent`): land dry and unable to afford any unlocked food → the shop grants
+exactly enough for one serving of the island's own food, once per landing. The free meal peaks at 34% of a
+crossing; it must never hand one over (an earlier design priced it on `powerShortfall()` and did).
+
+## Reference ladder (`python tools/ladder.py`)
+Whole-serving reference player, no events, no bubbles:
+`[3, 7, 4, 7, 8, 6, 4, 13, 7, 14, 9, 12, 6]` = 100 flights. The guide's own curve for the same values is
+`[3, 7, 4, 8, 7, 8, 4, 10, 6, 13, 9, 16]`; c1–c3 replay identically. Two texture checks fail under
+whole servings (a coin-limited 99.6% final-try miss on c13; repeated steps at wall crossings where coins
+are low right after the gut) — the values were copied as-is and not retuned around them.
 
 ## Power System Rules
-- **currentPower resets on:** island unlock (`UnlockIslandEvent`), stomach upgrade (`BuyStomachEvent`),
-  and respawn/landing (`stopFlying`).
-- **Stomach full check uses `>` not `>=`:** `if newPower > stomachMax.Value then` reject — a purchase
-  landing exactly on stomachMax is allowed.
-- **Coins are NOT deducted if the stomach is full:** the check fires `StomachFullEvent` and returns
-  *before* `coins.Value` is reduced.
+- **Stomach full check uses `>` not `>=`:** a purchase landing exactly on stomachMax is allowed.
+- **Coins are NOT deducted if the stomach is full:** `StomachFullEvent` fires and the handler returns
+  before `coins.Value` is reduced.
+- currentPower resets on respawn; it is **kept** (clamped) on a gut purchase and on landing.
 
 ## Known Issues
-- **Food prices are not monotonic.** Popcorn (island 8) costs 600 while Milk 500, Butter 400, Burger 405
-  and Pizza 518 are all cheaper *and* stronger. Popcorn is 0.40 power/coin, Pizza is 1.45 — a 3.6x spread
-  with the worst deal in the middle of the game. Later foods being cheaper than earlier ones inverts the
-  progression.
-- Flight speed / coin earn rate still being tuned.
-- Targets: island 1→2 ≈ 2 min, each later island ≈ 3 min base, events +1-3 min each, total 65-70 min.
-- The speed table's 611 band vs Medium Gut's 520 (above).
+- **No island has a PrimaryPart**, so PlayerStats places all 14 with `MoveTo`, which puts the model's
+  **bounding-box centre** on `SLOT_POS`. One part left far outside the island stretches that box and the
+  landmass lands somewhere else entirely while the boot log still prints the right Y. Cabbage Cliffs did
+  this on 2026-08-30: `Positioned Island_3_CabbageCliffs at Y=1848` with its ground at Y=243, 1605 studs
+  low. PlayerStats now measures the island by the **median part** (`coreCentre`), corrects the placement
+  and warns with the stray part's full name; `tools/IslandAudit.studio.luau` finds them in Studio. The
+  correction is a safety net -- delete the stray in Studio, don't leave the island relying on it.
+- Anything that hard-coded the old heights (sky bands in `EventClient`, island 14 at 24,017) is stale.
+- Events and the 2x gamepass multiply speed without multiplying drain, so they extend the climb; events are
+  bounded (×1.3 for 7s) but the 2x pass is a ×2 climb for its whole duration and can leak a gate.
 
 ## Repo layout
 Three separate Roblox places, three separate repos:
 - **This repo** — the main Food Realm (14 islands).
-- `CandyRealm/` — subfolder here, its own `default.project.json`.
+- `CandyRealm/` — subfolder here, its own `default.project.json`. **Runs this same food progression model
+  since 2026-09-01** (slots 1–13 of the tower, the 7 guts, food rows 1–13, coins per stud) on its own
+  shared modules; `CandyRealm/tools/ladder.py` is its harness and `CandyRealm/CANDY_ISLAND_SPACING_AND_ECONOMY.md`
+  the spec. Guts there are bought with coins and gated by island reached; quests gate the food stands only.
 - `../farttofloatdinosaurealm/` and `../SpaceRealmStuff/` — separate checkouts.
 
-Key files: `src/client/CoreClient.client.lua` (flight, HUD, food table), `src/server/PlayerStats.server.lua`
-(save/load, islands, guts, coins), `src/client/PetFollow.client.lua` (pets **and** the real fishing quest),
-`src/client/NotifyCenter.client.luau` (all banners — use `push`/`pin`, don't build a new ScreenGui).
+**⚠ `CoreClient` sits at 199/200 locals and CandyRealm's `PetFollow` + `AncientTreeQuest` at 200/200.**
+Roblox refuses a 201st live local in a function and a script's main chunk IS one -- the script then
+silently never runs (no error except one line in the client log). `python tools/registers.py .` measures
+it; note that locals inside a top-level `do`/`if`/`for` block count too, so indentation tells you nothing.
+In a file that is full, write `_G.name = function() ... end` instead of `local function name()` -- it
+costs zero registers.
+
+Key files: `src/shared/FlightTuning.luau` (flight math + coin constants), `src/shared/IslandOrder.luau`
+(island positions), `src/client/CoreClient.client.lua` (flight loop, HUD, food table), `src/server/PlayerStats.server.lua`
+(save/load, islands, guts, coins), `tools/ladder.py` (the progression harness), `src/client/PetFollow.client.lua` (pets **and** the real fishing quest),
+`src/client/NotifyCenter.client.luau` (all banners — use `push`/`pin`, don't build a new ScreenGui),
+`src/client/GutGrowCinematic.client.luau` (the gut-purchase shot — **identical file in all four realms**).
+
+## The gut purchase moment (`GutGrowCinematic.client.luau`)
+Stomach max going **up** is the only trigger — never the buy button, so a purchase the server refuses can't
+play it. It always plays a buy sound; if the player is **landed** it also hides the open shop panel, swings
+the camera around to the belly and plays the stretch sound while the belly grows. `BellyPuff` owns the local
+belly size and reads `_G.gutGrowHoldUntil` / `_G.gutGrowSlowUntil` to freeze then slow that growth; realms
+with no BellyPuff (space, dino) let the cinematic write the size itself. It is the same file in the food,
+candy, dino and space repos — configure nothing per realm, copy it verbatim.
 
 ## Rojo Setup
 - Run `rojo serve`, connect the plugin in Studio, Ctrl+S in Studio for world changes.

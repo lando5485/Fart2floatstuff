@@ -28,7 +28,12 @@ local LUCK_PER   = 0.15  -- rare-pet odds divided by (1 + 0.15 * rebirths)
 -- must have reached the SUMMIT to rebirth. This is a SLOT (climb position), not an island
 -- model number: the tower scrambles the two, so "HighestIsland >= 14" was both wrong and
 -- unreachable. The summit is the last slot in IslandOrder.
-local REQ_SLOT = 11
+-- The summit slot. Read from IslandOrder so adding or removing a rung cannot leave the
+-- rebirth requirement pointing at the wrong island -- the space-economy port took the tower
+-- from 11 slots to 12, and a hard-coded 11 would have made rebirth available one island
+-- early, before the Bake-Off.
+local REQ_SLOT = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared")
+	:WaitForChild("IslandOrder")).COUNT
 
 -- realm-completion stores (the SAME keys/fields RealmPortals.server reads)
 local SPACE_STORE, SPACE_PLANETS = "SpaceRealm_PlayerState_v1", 8
@@ -36,11 +41,16 @@ local DINO_STORE                 = "DinoRealm_PlayerState_v1"
 local CANDY_STORE                = "CandyRealm_PlayerState_v1"
 local KEY_PREFIX                 = "Player_"
 
--- MUST match the new-player defaults in FlightEconomy/StomachUpgrade ensureStats.
--- 100 is not a real tier any more (the ladder starts at Gumdrop Belly = 110), so a
--- rebirth used to hand back a tank no gut in the shop matches; and 25 coins cannot
--- buy a profitable first flight in the per-stud economy.
-local DEFAULT_COINS, DEFAULT_STOMACH = 120, 110
+-- MUST match the new-player defaults in FlightEconomy/StomachUpgrade ensureStats -- so they
+-- are read from the same Constants/StomachTiers rather than written down a third time.
+-- Under the food-realm port the starting tank is tier 1's maxPower, 120 (the Gumdrop Belly):
+-- a rebirthed player can fly at once and re-earns every gut out of flight coins. The ledger
+-- wipe below re-locks the island FOOD STANDS behind their quests, which is the redo.
+local SharedRB      = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
+local ConstantsRB   = require(SharedRB:WaitForChild("Constants"))
+local StomachTiersRB = require(SharedRB:WaitForChild("StomachTiers"))
+local DEFAULT_COINS   = ConstantsRB.STARTING_COINS
+local DEFAULT_STOMACH = StomachTiersRB.getTier(ConstantsRB.STARTING_STOMACH_TIER).maxPower
 
 --------------------------------------------------------------------------------
 -- wiring
@@ -144,6 +154,20 @@ end
 
 local function resetRun(player)
 	wipeRealms(player.UserId) -- redo-every-rebirth: clear Space/Dino completion
+
+	-- WIPE THE CANDY TOWER TOO. Under the space economy the island-quest ledger is this
+	-- realm's progression save (every gut is funded and gated by one quest in it), so a
+	-- rebirth that left it standing would strand the player at tier 1 with nothing left to
+	-- fund a gut -- and GutProgression would restore the whole tower on their next join
+	-- anyway. See islandTaskResetForRebirth for the trade-off this accepts.
+	if type(_G.islandTaskResetForRebirth) == "function" then
+		pcall(_G.islandTaskResetForRebirth, player)
+	else
+		warn("[Rebirth] IslandTaskTokens has not published _G.islandTaskResetForRebirth -- the "
+			.. "candy tower will NOT reset and this rebirth will be undone on the next join")
+	end
+	player:SetAttribute("UnlockedGutTier", 1)
+	player:SetAttribute("UnlockedSlot", 1)   -- the island lock resets with the guts
 	if type(_G.rebirthResetHome) == "function" then
 		_G.rebirthResetHome(player) -- PlayerStats owns home base + teleport + coins/gut/meter reset
 		return

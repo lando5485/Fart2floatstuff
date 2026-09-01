@@ -63,6 +63,22 @@ local IGNORED_ROOTS = {
 }
 
 -- Reviewed and accepted. Same idea as the scanner's ALLOWLIST; keep them in step.
+-- Remotes this realm creates ON DEMAND rather than at boot, so REMOTE-ADDED-LATE is expected for them
+-- and the alert is noise. StateRemotes is Shared/Remotes.luau's own folder (its FOLDER_NAME), built
+-- lazily the first time PlayerState streams a snapshot -- which is always after the boot audit ran.
+-- Matched by ANCESTRY, so every remote inside the folder is covered without listing each one.
+local LATE_REMOTE_OK = {
+	["StateRemotes"] = true,
+}
+local function lateRemoteExpected(d)
+	local n = d
+	while n and n ~= game do
+		if LATE_REMOTE_OK[n.Name] then return true end
+		n = n.Parent
+	end
+	return false
+end
+
 local ALLOWLIST = {
 	["StarterPlayer.StarterPlayerScripts.PlayerScriptsLoader"] = true, -- Roblox stock, injected by the engine
 }
@@ -90,7 +106,7 @@ local FREE_MODEL_NAMES = {
 }
 
 -- ============================ GENERATED MANIFEST ============================
--- 116 script instances, from CandyRealm/default.project.json + src/ on disk.
+-- 194 script instances, from CandyRealm/default.project.json + src/ on disk.
 local MANIFEST = {
 	["ReplicatedStorage.Shared.CandyData"] = true,
 	["ReplicatedStorage.Shared.Constants"] = true,
@@ -119,11 +135,14 @@ local MANIFEST = {
 	["ServerScriptService.MonsterEatSync"] = true,
 	["ServerScriptService.PlayerState"] = true,
 	["ServerScriptService.RealmServer"] = true,
+	["ServerScriptService.RealmTravel"] = true,   -- wormhole -> Food/Space/Dino realm rows
 	["ServerScriptService.RebirthSystem"] = true,
 	["ServerScriptService.ReturnIsland"] = true,
 	["ServerScriptService.RewardsService"] = true,
 	["ServerScriptService.ServerEvents"] = true,   -- mini-event driver (new: this realm never had one)
 	["ServerScriptService.PassOwnership"] = true,  -- gamepass ownership -> attributes
+	["StarterPlayer.StarterPlayerScripts.BubbleWords"] = true,   -- 8-word NPC bubble cap
+	["ReplicatedFirst.IntroCover"] = true,   -- black-from-frame-one cover the intro adopts
 	["ServerScriptService.BigEvents"] = true,   -- meteor / rocket / rainbow / weather set pieces
 	["ServerScriptService.SourRain"] = true,
 	["ServerScriptService.VipService"] = true,     -- VIP daily stipend
@@ -138,7 +157,6 @@ local MANIFEST = {
 	["StarterPlayer.StarterPlayerScripts.BakeryQuest_AllInOne"] = true,
 	["StarterPlayer.StarterPlayerScripts.BellyPuff"] = true,
 	["StarterPlayer.StarterPlayerScripts.BlackBarKiller"] = true,
-	["StarterPlayer.StarterPlayerScripts.Blizzard"] = true,   -- powdered sugar blizzard set piece
 	["StarterPlayer.StarterPlayerScripts.BlackHole"] = true,
 	["StarterPlayer.StarterPlayerScripts.BottomMeterPanel"] = true,
 	["StarterPlayer.StarterPlayerScripts.CampSmoresQuest_AllInOne"] = true,
@@ -171,6 +189,7 @@ local MANIFEST = {
 	["StarterPlayer.StarterPlayerScripts.GardenerChat"] = true,
 	["StarterPlayer.StarterPlayerScripts.GardenerLife"] = true,
 	["StarterPlayer.StarterPlayerScripts.GutSkinClient"] = true,
+	["StarterPlayer.StarterPlayerScripts.GutGrowCinematic"] = true,
 	["StarterPlayer.StarterPlayerScripts.IslandCard"] = true,
 	["StarterPlayer.StarterPlayerScripts.IslandTeleport"] = true,
 	["StarterPlayer.StarterPlayerScripts.JellyTowerQuest_AllInOne"] = true,
@@ -189,7 +208,10 @@ local MANIFEST = {
 	["StarterPlayer.StarterPlayerScripts.NotifyCenterBoot"] = true,  -- starts it + publishes _G.NotifyCenter
 	["StarterPlayer.StarterPlayerScripts.CandyTheme"] = true,  -- palette + panel helpers for the banner module
 	["StarterPlayer.StarterPlayerScripts.QuestRetainer"] = true,
+	["StarterPlayer.StarterPlayerScripts.QuestDevGate"] = true,   -- gates every quest /skip command
+	["StarterPlayer.StarterPlayerScripts.RealmOutro"] = true,     -- ported realm-crossing cinematic
 	["StarterPlayer.StarterPlayerScripts.RevealCommand"] = true,   -- /reveal cinematic payoff shot
+	["StarterPlayer.StarterPlayerScripts.Sinkhole"] = true,   -- sinkhole set piece: hole, drop, treasure cave
 	["StarterPlayer.StarterPlayerScripts.SourRain"] = true,
 	["StarterPlayer.StarterPlayerScripts.VipClient"] = true,
 	["StarterPlayer.StarterPlayerScripts.NotifyOptIn"] = true,
@@ -243,8 +265,12 @@ local MANIFEST = {
 	-- the one job this file has. Verified by diffing default.project.json against this table; everything still
 	-- flagged after this is genuine free-model junk in Workspace (LightConfig / ProceduralGeneration / Package /
 	-- CoreViewSystem / PoseTexture chains) or Roblox's own PlayerModule, none of which this project produces.
+	-- IslandConfig (per-island quest data) is a shared module and GutProgression the server
+	-- script that publishes the quest-ledger UnlockedSlot attribute. (FlightPayout was the
+	-- space port's income model and is gone with it.)
 	["ReplicatedStorage.Shared.FlightTuning"] = true,
 	["ReplicatedStorage.Shared.Gamepasses"] = true,
+	["ReplicatedStorage.Shared.IslandConfig"] = true,
 	["ReplicatedStorage.Shared.IslandOrder"] = true,
 	["ReplicatedStorage.Shared.NpcWave"] = true,
 	["ReplicatedStorage.Shared.PetRarity"] = true,
@@ -257,6 +283,7 @@ local MANIFEST = {
 	["ServerScriptService.FlightEconomy"] = true,
 	["ServerScriptService.FoodPetTemplates"] = true,
 	["ServerScriptService.Gifting"] = true,
+	["ServerScriptService.GutProgression"] = true,
 	["ServerScriptService.HideSpawnPads"] = true,
 	["ServerScriptService.Intro"] = true,
 	["ServerScriptService.Island15Npc"] = true,
@@ -429,7 +456,8 @@ task.delay(10, function()
 					pcall(function() d.Disabled = true end)
 					pcall(function() d:Destroy() end)
 				end
-			elseif (d:IsA("RemoteEvent") or d:IsA("RemoteFunction")) and not baselineRemotes[d] then
+			elseif (d:IsA("RemoteEvent") or d:IsA("RemoteFunction")) and not baselineRemotes[d]
+				and not lateRemoteExpected(d) then
 				alert("REMOTE-ADDED-LATE", d,
 					"a new remote appeared long after boot -- a common backdoor control channel")
 			end

@@ -27,6 +27,19 @@
 --   is done. The intro's opening slam onto Bakery Summit becomes the cut out of the black.
 --======================================================================
 
+-- The altitude that counts as "back down at the spawn island" -- halfway between slot 1 and
+-- slot 2, so it can never drift above an island as the tower is re-spaced.
+local BOTTOM_Y do
+	local ok, IslandOrder = pcall(function()
+		return require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("IslandOrder"))
+	end)
+	if ok and IslandOrder and IslandOrder.SLOT_POS[1] and IslandOrder.SLOT_POS[2] then
+		BOTTOM_Y = (IslandOrder.SLOT_POS[1].Y + IslandOrder.SLOT_POS[2].Y) / 2
+	else
+		BOTTOM_Y = 465 -- the midpoint for the shipped ladder (150 / 780)
+	end
+end
+
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local DataStoreService  = game:GetService("DataStoreService")
@@ -287,7 +300,11 @@ IntroDone.OnServerEvent:Connect(function(player)
 	-- timer and only skips while IntroPlaying is set, so clearing the flag immediately would bank the
 	-- entire tower as "reached" on a brand-new join.
 	--
-	-- Slot 1 sits at Y 150 and slot 2 at Y 3525, so 2000 is an unambiguous "back at the bottom" line.
+	-- "Back at the bottom" is the MIDPOINT between slot 1 and slot 2, derived from IslandOrder rather
+	-- than written down. It used to be a hard-coded 2000, which was fine when slot 1 sat at Y 150 and
+	-- slot 2 at Y 3525 -- but the space-economy port moved them to 220 and 1620, putting that line
+	-- ABOVE slot 2, so the flag would clear while the player was still on the second island and bank it
+	-- as reached on a brand-new join. Deriving it means the next re-spacing cannot reintroduce that.
 	-- The 5s cap means a player who somehow never lands still gets progression back rather than being
 	-- stuck with it disabled forever.
 	task.spawn(function()
@@ -295,7 +312,7 @@ IntroDone.OnServerEvent:Connect(function(player)
 		while os.clock() - t0 < 5 do
 			local char = player.Character
 			local hrp  = char and char:FindFirstChild("HumanoidRootPart")
-			if hrp and hrp.Position.Y < 2000 then break end
+			if hrp and hrp.Position.Y < BOTTOM_Y then break end
 			task.wait(0.1)
 		end
 		if player.Parent then

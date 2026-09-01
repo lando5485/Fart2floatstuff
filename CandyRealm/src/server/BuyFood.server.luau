@@ -1,19 +1,25 @@
 --!nonstrict
 --======================================================================
 -- BuyFood.server.luau  (Server Script)  -- CandyRealm
+-- FOOD-REALM PORT: the first realm's food purchase rules.
 --======================================================================
 -- Authoritative backend for the FOOD STAND. The client fires
 --   _G.BuyFoodEvent:FireServer(foodName)   (Shop_AllInOne, BUY / BUY MAX)
 -- and EconomyBootstrap binds _G.BuyFoodEvent to the RemoteEvent this creates.
 --
--- Reworked for the Dino-Realm-style economy:
---   * ISLAND LOCK gates on the HighestSlot attribute (set by FlightEconomy's
---     progress tracker) -- a food only unlocks once you have STOOD on its island.
+--   * ISLAND LOCK (the CEILING): a food unlocks once you have physically REACHED its
+--     island -- the HighestSlot attribute, raised only by FlightEconomy's landing detection.
+--     Below that ceiling anything is buyable anywhere: the price table is monotonic in
+--     power-per-coin, so a cheaper lower food is never a trap, and stretch crossings are
+--     DESIGNED to be filled by mixing a cheaper food in.
 --   * COINS ARE CHECKED FIRST (the common blocker) -> "not_enough_coins".
---   * Then room: TRULY full -> "stomach_full", has room but this serving won't
---     fit -> "not_enough_room". A buy landing EXACTLY on the cap is allowed.
+--   * Then room: TRULY full -> "stomach_full", has room but this serving won't fit ->
+--     "not_enough_room". A buy landing EXACTLY on the cap is allowed (`>` not `>=`).
 --   * Coins are never deducted on a rejected buy.
 -- Rejection reasons go to the client via StomachFullEvent.
+--
+-- The anti-strand (one free serving for a dry, broke player) lives in FlightEconomy, on the
+-- tank-empty report, so it has already run by the time the player opens the shop.
 --======================================================================
 
 local Players           = game:GetService("Players")
@@ -43,11 +49,13 @@ BuyFoodEvent.OnServerEvent:Connect(function(player, foodName)
 	local sm    = ls:FindFirstChild("StomachMax")
 	if not (coins and cp and sm) then return end
 
-	-- ISLAND LOCK: reached-slot gate (the client greying a cell is cosmetic; this is the rule)
-	local reached  = math.floor(tonumber(player:GetAttribute("HighestSlot")) or 1)
+	-- ISLAND LOCK: reached-slot gate (the client greying a cell is cosmetic; this is the rule).
+	-- Checked BEFORE the coin check on purpose: a locked food must say "locked", not "not
+	-- enough coins".
+	local reached  = math.max(1, math.floor(tonumber(player:GetAttribute("HighestSlot")) or 1))
 	local foodSlot = IslandOrder.ISLAND_TO_SLOT[food.island] or food.island
 	if foodSlot > reached then
-		pcall(function() StomachFullEvent:FireClient(player, "food_locked") end)
+		pcall(function() StomachFullEvent:FireClient(player, "food_locked", food.name, foodSlot) end)
 		return
 	end
 
@@ -78,4 +86,4 @@ BuyFoodEvent.OnServerEvent:Connect(function(player, foodName)
 	if type(_G.petOnGas) == "function" then pcall(_G.petOnGas, player, food.power) end
 end)
 
-print("[BuyFood] server ready -- BuyFoodEvent(foodName): slot gate, coins-first reasons, exact-cap fills")
+print("[BuyFood] server ready -- BuyFoodEvent(foodName): reached-slot ceiling, coins-first reasons, exact-cap fills")

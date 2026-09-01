@@ -1,61 +1,89 @@
 --!strict
 --======================================================================
 -- CandyData.luau  (ModuleScript -> ReplicatedStorage.Shared)  -- CandyRealm
+-- FOOD-REALM PORT: 13 foods, one per slot, the first realm's price/power rows copied exactly.
 --======================================================================
--- Single source of truth for the FOOD STAND's food list. The BuyFood server validates
--- purchases against this and EconomyBootstrap publishes it as _G.foods for the shop UI,
--- so client + server can never disagree about price/power/island.
+-- Single source of truth for the FOOD STAND's list. BuyFood.server validates purchases
+-- against this and EconomyBootstrap publishes it as _G.foods for the shop UI, so client
+-- and server can never disagree about price/power/island.
 --
--- ORDERED BY CLIMB SLOT (1..11), which is the order the player meets them -- NOT by island
--- model number. The tower scrambles the two (IslandOrder.SLOT_TO_ISLAND is
--- {1,9,3,13,5,8,2,11,4,14,15}), so keying this by model number would scatter power along the
--- actual route, and several foods would unlock on slots where the player's tank is too small
--- to hold even one serving -- an outright rejected buy. Model numbers are also NOT contiguous
--- (6, 7, 10, 12 were never built), so a model-keyed list would have holes in it.
+-- ORDERED BY CLIMB SLOT (1..13) -- the order the player meets them, NOT by island model
+-- number. The tower scrambles the two, so keying this by model number would scatter power
+-- along the actual route; model numbers are also not contiguous, so it would have holes.
 --
--- THE ROW ORDER IS THE CONTRACT; THE `island` FIELD JUST NAMES THE HOST. Row k is the food
--- for SLOT k and its price/power are solved for slot k; `island` only says which model the
--- stand physically sits on. Whenever IslandOrder moves an island, the affected rows' island
--- fields move with it.
+-- ===== THE NUMBERS ARE THE FOOD REALM'S `foods` TABLE, ROWS 1-13 =====
+-- Beans -> Burrito, renamed for candy. Nothing here is a candy invention. The rules the
+-- ladder harness (tools/ladder.py) asserts about them:
+--   * power/price never DECREASES up the tower (0.0250 -> 0.0422, a 1.69x spread; >= 1.5
+--     required) -- so a later food is always at least as good a buy, never a trap;
+--   * power never decreases;
+--   * every crossing can afford its own food on flight 1;
+--   * no meal past the tutorial exceeds 20% of what its crossing pays.
 --
--- PRICES ARE DERIVED, NOT PICKED. Each row is solved for a flat
---       R = (coins a full flight earns) / (coins a full refill costs) = 1.91
---       price = gap * MARGIN * COIN_PER_STUD / (R * (tierMaxPower / power))
--- against the gap and the tank size AT THAT SLOT (tierMaxPower = the ORIGINAL solved sizes
--- 100/140/190/260/355/485/665/910/1250/1715, not the +10 the shop sells). The summit row has
--- no gap above it, so it is priced against the LAST crossing and the top tier.
+-- A FOOD UNLOCKS WHEN ITS ISLAND HAS BEEN REACHED (a ceiling lock on HighestSlot, enforced
+-- by BuyFood). Below that ceiling anything is buyable anywhere -- with monotonic value that
+-- is never a trap. Stretch crossings need ~97% of the tank, which whole servings of one food
+-- cannot always make (6 Gumdrops = 240 of a 270 tank). Mixing in a cheaper food (5 Gumdrops
+-- + 2 Candy Canes = 264) does it -- that is by design.
 --
--- Rules that matter:
---   * R must stay ABOVE 1 at every row or a flight costs more than it earns and the player
---     spirals down. That, not the price, is the number to protect.
---   * R > 1 means prices CANNOT set the try count -- a solvent economy gives one-pass islands
---     by construction. The only thing that makes an island take several tries is a WALL: a
---     gut you can't yet afford (StomachTiers' 10 tiers).
---   * COIN_PER_STUD (0.14, in PropelSystem_AllInOne.client) is the other half of R. Change
---     one, re-solve both.
+-- WHY THE PRICES LOOK BIG NEXT TO THE OLD 110-COIN CANDY CANE: coins are paid per STUD
+-- TRAVELLED at 3.52/stud, x3 on a failed flight. The 630-stud tutorial crossing pays
+-- 2,217 on a landing and ~2,700 on each near-miss, so a 1,280 meal is about half a flight.
+-- New players start with 2,000 coins -- a 3-rung tutorial ladder off the bank.
+--
+-- ===== THE ROW ORDER IS THE CONTRACT; `island` JUST NAMES THE HOST =====
+-- Row k is the food for SLOT k; `island` only says which model the stand physically sits
+-- on. Whenever IslandOrder moves an island, the affected rows' island fields move with it.
 --======================================================================
 
 local CandyData = {}
 
---                                                 slot  host island   gut tier at that slot
+--                                                              slot  host      food-realm row
 CandyData.FOODS = {
-	{ name = "Candy Canes",    price = 21,  power = 8,   island = 1 },  --  1  island1   Gumdrop
-	{ name = "Gumdrops",       price = 53,  power = 25,  island = 9 },  --  2  island9   Taffy
-	{ name = "Cookies",        price = 79,  power = 45,  island = 3 },  --  3  island3   Cookie
-	{ name = "Jelly Beans",    price = 101, power = 70,  island = 13 }, --  4  island13  Jelly
-	{ name = "Taffy",          price = 118, power = 100, island = 5 },  --  5  island5   Gummy
-	{ name = "Gummy Bears",    price = 136, power = 140, island = 8 },  --  6  island8   Choco
-	{ name = "Chocolate Bars", price = 147, power = 185, island = 2 },  --  7  island2   Caramel
-	{ name = "Rock Candy",     price = 156, power = 240, island = 11 }, --  8  island11  Marshmallow
-	{ name = "Marshmallows",   price = 159, power = 300, island = 4 },  --  9  island4   Fudge
-	{ name = "Caramel Apples", price = 160, power = 370, island = 14 }, -- 10  island14  Licorice
-	{ name = "Sundaes",        price = 194, power = 450, island = 15 }, -- 11  island15  Licorice (summit)
+	{ name = "Candy Canes",    price = 1280, power = 32,  island = 1 },  --  1  island1   Beans
+	{ name = "Gumdrops",       price = 1480, power = 40,  island = 9 },  --  2  island9   Broccoli
+	{ name = "Cookies",        price = 1480, power = 40,  island = 3 },  --  3  island3   Cabbage
+	{ name = "Jelly Beans",    price = 1520, power = 45,  island = 13 }, --  4  island13  Turnips
+	{ name = "Taffy",          price = 1520, power = 45,  island = 5 },  --  5  island5   Coconuts
+	{ name = "Gummy Bears",    price = 1720, power = 55,  island = 8 },  --  6  island8   Bread
+	{ name = "Chocolate Bars", price = 1720, power = 55,  island = 18 }, --  7  island18  Pasta
+	{ name = "Sundaes",        price = 1840, power = 65,  island = 15 }, --  8  island15  Popcorn
+	{ name = "Rock Candy",     price = 1840, power = 65,  island = 11 }, --  9  island11  Milk
+	{ name = "Marshmallows",   price = 2200, power = 85,  island = 4 },  -- 10  island4   Butter
+	{ name = "Caramel Apples", price = 2200, power = 85,  island = 14 }, -- 11  island14  IceCream
+	{ name = "Candy Floss",    price = 3080, power = 130, island = 19 }, -- 12  island19  Burger
+	{ name = "Sherbet Scoops", price = 3080, power = 130, island = 16 }, -- 13  island16  Burrito (summit)
 }
 
--- name -> food, for O(1) server validation
+-- name -> food, for O(1) server validation.
 CandyData.FOOD_BY_NAME = {}
 for _, f in ipairs(CandyData.FOODS) do
 	CandyData.FOOD_BY_NAME[f.name] = f
+end
+
+--[[ slot -> food, since the row index IS the climb slot. ]]
+function CandyData.foodForSlot(slot: number)
+	return CandyData.FOODS[math.floor(tonumber(slot) or 0)]
+end
+
+-- BOOT AUDIT (server only): the monotonic-value rule, so a hand edit that makes a later food
+-- a worse buy than an earlier one is caught at boot rather than by a player.
+if game:GetService("RunService"):IsServer() then
+	local prevEff, prevPower = 0, 0
+	for slot, f in ipairs(CandyData.FOODS) do
+		local eff = f.power / f.price
+		if eff + 1e-9 < prevEff then
+			warn(("[CandyData] slot %d %s is WORSE value (%.4f/coin) than the food below it (%.4f) -- a trap")
+				:format(slot, f.name, eff, prevEff))
+		end
+		if f.power < prevPower then
+			warn(("[CandyData] slot %d %s has less power (%d) than the food below it (%d)")
+				:format(slot, f.name, f.power, prevPower))
+		end
+		prevEff, prevPower = eff, f.power
+	end
+	print(("[CandyData] %d foods, value %.4f -> %.4f power/coin (food-realm rows 1-13)")
+		:format(#CandyData.FOODS, CandyData.FOODS[1].power / CandyData.FOODS[1].price, prevEff))
 end
 
 return CandyData

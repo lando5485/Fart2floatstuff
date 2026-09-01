@@ -14,7 +14,9 @@
 -- The claim arrives from the client, so a crafted call can claim a quest the player never played. Two things
 -- make that acceptable rather than a hole:
 --   * IT IS PAID ONCE, EVER, per quest per player, and the ledger is persisted. The entire exploit is worth
---     1,850 tokens -- the same total an honest player earns -- and then it is worth nothing, forever.
+--     one full clear of CrateTokens.ISLAND_TASK -- the same total an honest player earns -- and then it is
+--     worth nothing, forever. (The figure quoted here used to be 1,850, which was the pre-rescale ladder;
+--     it is derived at the boot print below rather than written down twice.)
 --   * The realm ALREADY trusts the client for the much larger prize: CoinEvent grants coins on the client's
 --     word (FlightEconomy), and the quests pay their coin rewards through it. This adds no new class of
 --     exposure; it adds a strictly BOUNDED one.
@@ -38,7 +40,9 @@ if _G.__IslandTaskTokensServer then
 end
 _G.__IslandTaskTokensServer = true
 
-local CrateTokens = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("CrateTokens"))
+local Shared       = ReplicatedStorage:WaitForChild("Shared")
+local CrateTokens  = require(Shared:WaitForChild("CrateTokens"))
+local IslandConfig = require(Shared:WaitForChild("IslandConfig"))
 
 local STORE_NAME = "CandyIslandTasks_v1"
 local store = nil
@@ -91,6 +95,62 @@ Players.PlayerAdded:Connect(load)
 for _, p in ipairs(Players:GetPlayers()) do task.spawn(load, p) end
 
 --======================================================================
+-- THE LEDGER IS THE QUEST SAVE (and, through it, the food-stand gate)
+--======================================================================
+-- CandyRealm persists NOTHING about the economy -- coins, CurrentPower and StomachMax are
+-- all rebuilt by ensureStats on every join. This ledger IS persisted. Under the food-realm
+-- port it no longer funds or restores guts (those are bought with flight coins); what it
+-- still drives is GutProgression's UnlockedSlot attribute -- the FOOD STAND gate on every
+-- island, the journal's ticks and the wormhole rows. These two accessors are that read path.
+--
+-- ready(player) is separate from claimed() on purpose: "no ledger yet" and "ledger says no"
+-- are different answers, and a slow DataStore read must only ever LOCK a stand, never open one.
+local function ledgerReady(player)
+	return claimed[player] ~= nil
+end
+local function ledgerHas(player, questId)
+	local mine = claimed[player]
+	return (mine ~= nil) and (mine[tostring(questId or "")] == true)
+end
+_G.islandTaskLedgerReady = ledgerReady
+_G.islandTaskClaimed     = ledgerHas
+
+--[[
+	WIPE THE LEDGER FOR A REBIRTH.
+
+	Rebirth is "redo everything": it already clears Space / Dino / Candy realm completion so
+	those realms must be re-beaten. Under the space economy this ledger is ALSO the candy
+	tower's progression save, so leaving it intact would make a rebirth unplayable rather than
+	just hard -- the rebirthed player is reset to tier 1 (maxPower 0, cannot fly, cannot earn),
+	while every quest still reads as claimed, so nothing can ever fund a gut again. On their
+	next join GutProgression would then restore the whole tower and quietly undo the rebirth.
+	Neither outcome is a rebirth.
+
+	THE COST, STATED PLAINLY: the tokens for those quests become re-earnable, once per
+	rebirth. That is a real fountain, and it is accepted deliberately -- a rebirth costs
+	re-beating three realms and the whole climb, so the loop is far more expensive than the
+	750 tokens it returns. If that trade ever stops being worth it, the fix is to split this
+	table in two (a permanent `paid` set for tokens, a resettable `done` set for progression)
+	rather than to stop wiping, because not wiping is the broken case.
+]]
+local function resetForRebirth(player)
+	claimed[player] = {}
+	if store then
+		local ok, err = pcall(function() store:SetAsync(key(player.UserId), {}) end)
+		if not ok then
+			warn("[IslandTask] rebirth ledger wipe FAILED for " .. player.Name .. ": " .. tostring(err)
+				.. " -- their tower progression is still recorded, so the rebirth will not stick")
+			return false
+		end
+	end
+	if _G.refreshGutUnlock then pcall(_G.refreshGutUnlock, player) end
+	print(("[IslandTask] %s rebirthed -- island quest ledger wiped, the whole tower is replayable")
+		:format(player.Name))
+	return true
+end
+_G.islandTaskResetForRebirth = resetForRebirth
+
+--======================================================================
 -- AWARD
 --======================================================================
 -- Returns the number of tokens actually granted (0 if already claimed / unknown quest / award refused).
@@ -116,8 +176,23 @@ local function awardIslandTask(player, questId)
 			end)
 		end)
 		if not ok then
-			warn("[IslandTask] ledger write failed for " .. player.Name .. " / " .. questId .. ": " .. tostring(err))
-			return 0                                        -- do NOT pay what we could not record
+			-- IN STUDIO, DEGRADE TO MEMORY. Studio blocks DataStore writes unless "Enable Studio
+			-- Access to API Services" is ticked, so every claim fails here -- and under the space
+			-- economy that used to mean the GUT PAYOUT never ran either, leaving a tester grounded
+			-- at tier 1 with maxPower 0 and no way to earn a tank. The whole realm was untestable
+			-- in Studio for a reason that has nothing to do with the game.
+			-- Memory-only is exactly what this file already does when `store` is nil (see the boot
+			-- note about Studio); a rejected write is the same situation, so treat it the same.
+			if RunService:IsStudio() then
+				warn("[IslandTask] ledger write blocked in Studio for " .. player.Name .. " / " .. questId
+					.. " -- granting anyway, MEMORY ONLY (it resets when you stop the playtest). "
+					.. "Tick Game Settings > Security > Enable Studio Access to API Services to persist it.")
+			else
+				-- LIVE: do NOT pay what we could not record. A transient DataStore failure must never
+				-- hand out a second payout on the next server.
+				warn("[IslandTask] ledger write failed for " .. player.Name .. " / " .. questId .. ": " .. tostring(err))
+				return 0
+			end
 		end
 		if alreadyStored then
 			mine[questId] = true                            -- resync memory and move on quietly
@@ -157,6 +232,19 @@ local function awardIslandTask(player, questId)
 		end
 	end
 
+	-- ===== NO GUT PAYOUT ANY MORE (food-realm port) =====
+	-- Under the space port this is where a quest paid EXACTLY the next gut's cost and unlocked
+	-- its purchase (the "two-purse" economy). Guts are now bought out of flight coins and gated
+	-- by the island reached, so a quest is worth its own coin reward (paid by the quest client
+	-- through CoinEvent) plus the tokens above -- nothing here touches Coins or StomachMax.
+	--
+	-- What a first-ever completion still does is advance the persisted quest ledger, which is
+	-- what GutProgression publishes as UnlockedSlot -- the FOOD STAND gate, the journal ticks
+	-- and the wormhole rows. Re-publish it now so the stand opens without a rejoin.
+	if IslandConfig.BY_QUEST[questId] and _G.refreshGutUnlock then
+		pcall(_G.refreshGutUnlock, player)
+	end
+
 	if granted > 0 and _G.badgeIslandQuest then pcall(_G.badgeIslandQuest, player, questId) end
 	return granted
 end
@@ -190,5 +278,9 @@ if RunService:IsStudio() and not store then
 	print("[IslandTask] NOTE: no DataStore in Studio (Game Settings > Security > Enable Studio Access to API "
 		.. "Services). Tokens still grant, but the once-ever ledger resets every run.")
 end
-print(("[IslandTask] ready -- %d island quests worth %d tokens total (= 5 Starter + 1 Premium crate), "
-	.. "paid once each, ever."):format(n, total))
+-- The "= 5 Starter + 1 Premium" promise is about the CLIMB -- CrateTokens' ladder is solved so the twelve
+-- quests on the tower total exactly 750. The three off-ladder islands (16/18/19) are extra on top and were
+-- never part of that sum, so quoting the grand total here read as the promise being overshot by a third.
+print(("[IslandTask] ready -- %d island quests, %d tokens in total; the 12 on the climb are the solved 750 "
+	.. "(= 5 Starter + 1 Premium crate) and the rest is the off-ladder islands. Paid once each, ever.")
+	:format(n, total))
