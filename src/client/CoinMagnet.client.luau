@@ -14,14 +14,15 @@
 --   * there is exactly ONE collection path in the game, so a magnet bug can never pay out twice
 --
 -- ---- THE TWO RANGES ARE VERY DIFFERENT ON PURPOSE ----------------------------------------------------------
--- A gas BUBBLE is bounded: the boost is capped at 6% of the tank whatever your gut, and it respawns on a 45s
--- timer. Pulling those from a long way off is free -- the worst case is a slightly fuller meter.
+-- A gas BUBBLE's GAS is bounded hard: 0.6% of the tank whatever your gut (the cap that keeps two bubbles
+-- inside a wall crossing's 2% margin), on a 45s respawn. Pulling that from a long way off is free.
 --
--- A RING is NOT bounded. Its payout is `15 * ringMultiplier * serverEventRingMult`, the streak multiplier
--- compounds for the whole flight (+0.2 per ring, reset only on landing), and while flight HEIGHT coins are
--- capped per flight, RING coins are not capped by anything. A long-range ring magnet would let a player hoover
--- a whole island's rings into one streak and mint coins. So the ring range is short -- you still have to fly
--- roughly at them, the magnet just forgives your aim.
+-- What is NOT bounded is COINS. Both pickups now pay a set amount priced off the player's island -- a coin
+-- bubble is 15% of their current meal, a gas bubble half that -- and while flight HEIGHT coins are capped per
+-- flight, pickup coins are not capped by anything. A long-range magnet would let a player hoover a whole
+-- island's bubbles without flying at them. So the ring range stays short -- you still have to fly roughly at
+-- them, the magnet just forgives your aim. (The streak multiplier this paragraph used to be about is gone;
+-- the payout no longer compounds, which removes the worst version of that abuse.)
 --
 -- ⚠ Even at the short range this raises how fast a legitimate player fires CoinEvent. PlayerStats rate-limits
 -- and budgets that per window (~PlayerStats 1447-1480); if magnet owners start seeing coin grants silently

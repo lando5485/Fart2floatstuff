@@ -10,7 +10,7 @@
 --
 -- Flow: lock controls + hide HUD -> cinematic camera smoothly pans between the
 -- Gardener, the cow (EasterCow) and the pig (WanderingPig), each auto-advancing its
--- chat-bubble lines on a timer -> ISLAND FLYOVER (Island 1 from above, then a side
+-- chat-bubble lines on a timer (the cow and pig also MOO/OINK on their noise lines -- see ANIMAL NOISES) -> ISLAND FLYOVER (Island 1 from above, then a side
 -- view up the island stack 2..14, ending bottom-up on the black hole) -> return the
 -- camera to the player, restore everything. Any NPC/island that can't be found is
 -- skipped gracefully; existing garden/NPC behaviour is left intact afterwards.
@@ -25,6 +25,7 @@ local TweenService     = game:GetService("TweenService")
 local StarterGui       = game:GetService("StarterGui")
 local Workspace        = game:GetService("Workspace")
 local SoundService     = game:GetService("SoundService")
+local Debris           = game:GetService("Debris")
 
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -60,6 +61,31 @@ local PIG_LINES = {
 	"Oink oink!",
 	"Come back soon!",
 }
+
+-- ---- ANIMAL NOISES --------------------------------------------------------
+-- The cow MOOS and the pig OINKS during their own segments. The bubbles are silent text, and two farm animals
+-- visibly mouthing "Moo!" / "Oink!" at the camera without a sound was the one beat of the cinematic that read
+-- as unfinished -- the lines are already written as noises, so the audio just has to exist.
+--
+-- A cry fires on any line that STARTS with the animal's own word, which today is lines 1 and 3 of each set
+-- above ("Moo! Welcome!" / "Moo moo!", "Oink! Welcome!" / "Oink oink!"). Deliberately derived from the text
+-- rather than a second list of indices: reword the lines and the noises follow, with nothing to keep in sync.
+-- Two per animal across an 8s window is enough to register as a farm and short of a barnyard.
+--
+-- WHERE THE ASSET COMES FROM, in order:
+--   1. `reuse` -- a Sound the animal is ALREADY carrying. EasterEggManager builds the cow with a "MooSound"
+--      on its body for the ambient 15-40s moo, so setting that script's MOO_SOUND_ID lights up the ambient
+--      moo AND this one from a single place. Skipped if the sound is absent or its SoundId is still blank.
+--   2. `id` -- a fallback asset for animals with no sound of their own (the pig has none: SquirrelEasterEgg
+--      builds WanderingPig without one).
+-- BOTH blank => that animal simply stays quiet and the rest of the cinematic is untouched. Same convention as
+-- EasterEggManager's MOO_SOUND_ID and Monsoon's ROAR_SOUND_ID: no asset is a silent no-op, never an error.
+-- `plays` is HOW MANY TIMES the animal cries during its own segment, spread evenly across that
+-- segment's window. It replaced a rule that fired on any bubble line starting with the animal's own
+-- word: that read nicely but the count was a side effect of how the lines happened to be worded (two
+-- each, today), so "the cow should moo once" was not something the config could actually say.
+local COW_CRY = { reuse = "MooSound", id = "rbxassetid://124453455193367", plays = 1, volume = 0.85, pitch = 1.00 }
+local PIG_CRY = {                     id = "rbxassetid://855134280",       plays = 3, volume = 0.85, pitch = 1.00 }
 
 -- TOTAL on-screen window (s) per NPC — ALL of that NPC's lines play within this window, divided evenly
 -- across them (auto-advancing). The camera holds on the NPC for the whole window before panning on.
@@ -603,7 +629,42 @@ local function playIntro()
 	-- ---- one subject segment: pan in, auto-advance ALL the NPC's lines across `window` seconds total ----
 	-- `window` (seconds) is divided EVENLY across this NPC's lines, so the whole set fills the 8-10s window
 	-- and the camera holds on them for it. Returns true if SKIP fired so the caller bails the rest.
-	local function frameAndSpeak(model, lines, window, dist, noPan)
+	-- Play an animal's own noise ON the animal, so it arrives from over there instead of out of the player's
+	-- head -- the camera is 9-11 studs off the subject during a segment, which is well inside the rolloff.
+	-- Routed through SFXGroup where the realm has one, so the Settings "Sound Effects" toggle mutes it like
+	-- every other cue. Debris-cleaned. No asset, no part to hang it on, or a dead model => silent no-op.
+	local function playCry(model, cry)
+		if not cry or not model or not model.Parent then return end
+
+		-- 1. the animal's own sound, if it has one with an asset actually set. Rewound first: the ambient moo
+		--    loop may be mid-play, and :Play() on an already-playing Sound is otherwise a no-op.
+		if cry.reuse then
+			local own = model:FindFirstChild(cry.reuse, true)
+			if own and own:IsA("Sound") and own.SoundId ~= "" then
+				pcall(function() own.TimePosition = 0; own:Play() end)
+				return
+			end
+		end
+
+		-- 2. fallback asset, hung on the animal for the one shot.
+		if cry.id == "" then return end
+		local host = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true)
+		if not host then return end
+		local s = Instance.new("Sound")
+		s.Name = "IntroCry"
+		s.SoundId = cry.id
+		s.Volume = cry.volume or 0.85
+		s.PlaybackSpeed = cry.pitch or 1
+		s.RollOffMinDistance = 12
+		s.RollOffMaxDistance = 160
+		local grp = SoundService:FindFirstChild("SFXGroup")
+		if grp and grp:IsA("SoundGroup") then s.SoundGroup = grp end
+		s.Parent = host
+		s:Play()
+		Debris:AddItem(s, 6)
+	end
+
+	local function frameAndSpeak(model, lines, window, dist, noPan, cry)
 		-- temporarily silence any existing rotating speech bubble so it can't fight ours
 		local hidExisting = {}
 		for _, d in ipairs(model:GetDescendants()) do
@@ -636,6 +697,9 @@ local function playIntro()
 		-- holding and a CFrame. Keep it tiny; crank these and it reads as a wobble.
 		local SWAY_YAW  = 0.006  -- radians
 		local SWAY_PIT  = 0.004
+		-- Declared HERE, above the closure that reads it. It is also the cries' cancel flag further down,
+		-- and a `local` placed after this connection would be a DIFFERENT variable -- the closure would
+		-- read a nil global, return every frame, and the camera would stop following the animal entirely.
 		local following = true
 		local conn = RunService.RenderStepped:Connect(function()
 			if not following or not model.Parent then return end
@@ -643,6 +707,23 @@ local function playIntro()
 			local sway = CFrame.Angles(math.sin(t * 0.73) * SWAY_PIT, math.sin(t * 0.51) * SWAY_YAW, 0)
 			camera.CFrame = camera.CFrame:Lerp(frameCFrame(model, dist) * sway, 0.06)
 		end)
+
+		-- THE CRIES, on their own timer for the length of the segment. Separate from the line loop below
+		-- because the two are counted differently now: the lines divide the window between them, while the
+		-- cries are a fixed number spread across the whole of it. The first fires immediately, so the animal
+		-- makes its noise as the camera settles on it rather than after a silent beat.
+		-- `following` doubles as the cancel flag -- it is already cleared when the segment ends (or is
+		-- skipped), so a cry can never land over the next NPC.
+		if cry and (cry.plays or 0) > 0 then
+			task.spawn(function()
+				local gap = window / cry.plays
+				for i = 1, cry.plays do
+					if not following or not model.Parent then return end
+					playCry(model, cry)
+					if i < cry.plays then task.wait(gap) end
+				end
+			end)
+		end
 
 		-- split the window evenly across the lines (each line = clear + show, summing to ~per)
 		local n = #lines
@@ -663,7 +744,7 @@ local function playIntro()
 	end
 
 	-- Returns true if SKIP fired (so the sequence bails). Skip-aware model wait so a missing NPC can't stall a skip.
-	local function doSegment(finder, lines, window, dist, label, noPan)
+	local function doSegment(finder, lines, window, dist, label, noPan, cry)
 		local model = finder()
 		local t = 0
 		while not model and t < 5 and not skipped do task.wait(0.25); t = t + 0.25; model = finder() end
@@ -695,7 +776,7 @@ local function playIntro()
 			end)
 		end
 
-		return frameAndSpeak(model, lines, window, dist, noPan)
+		return frameAndSpeak(model, lines, window, dist, noPan, cry)
 	end
 
 	-- ---- RUN THE CINEMATIC (guarded so cleanup ALWAYS happens; SKIP bails any step early) ----
@@ -773,8 +854,8 @@ local function playIntro()
 		-- NPCs in their existing order; the gardener now PANS in (camera was on the farmer).
 		if doSegment(findFarmer,   FARMER_LINES,   FARMER_WINDOW,   9, "FARMER", true) then return end
 		if doSegment(findGardener, GARDENER_LINES, GARDENER_WINDOW, 9, "GARDENER") then return end
-		if doSegment(findCow,      COW_LINES,      COW_WINDOW,      11, "COW") then return end
-		if doSegment(findPig,      PIG_LINES,      PIG_WINDOW,      10, "PIG") then return end
+		if doSegment(findCow,      COW_LINES,      COW_WINDOW,      11, "COW",  false, COW_CRY) then return end
+		if doSegment(findPig,      PIG_LINES,      PIG_WINDOW,      10, "PIG",  false, PIG_CRY) then return end
 
 		-- ---- ISLAND FLYOVER: Island 1 top-down -> side view up a FEW islands -> black hole bottom-up ----
 		-- Only a handful of islands are shown (not all 14): the point is a quick "look how high this goes"

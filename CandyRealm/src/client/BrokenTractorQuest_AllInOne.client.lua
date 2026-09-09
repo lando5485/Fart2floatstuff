@@ -6,11 +6,16 @@
 --   1. FIND     five missing tractor parts scattered around the island
 --   2. FIT      carry each one back and drop it into its socket on the tractor
 --   3. REPAIR   turn the key -- the engine catches on the third try, not the first
---   4. HARVEST  drive it through the wheat field and cut a section
+--   4. HARVEST  drive it through the wheat field and cut a section -- AGAINST THE WEATHER.
+--               The first stalk you cut starts a storm clock: the sky darkens, a countdown
+--               card runs, and getting the field in before the rain grades the run
+--               GOLD / SILVER / BRONZE on the time you had left. Run out and you are SOAKED,
+--               which costs the bonus and nothing else -- the field stays cut and the quest
+--               carries on. The storm scores the driving; it never gates the story.
 --   5. DELIVER  drive the loaded trailer to the barn and tip it
 --
---   Reward: coins (CoinEvent) plus crate tokens and a fart-power top-up, both once ever
---   through IslandTaskTokens' ledger.
+--   Reward: coins (CoinEvent) plus a storm-grade bonus (GOLD 900 / SILVER 500 / BRONZE 250),
+--   plus crate tokens and a fart-power top-up, both once ever through IslandTaskTokens' ledger.
 --
 -- ===== BUILT ON THE ISLAND 18 PATTERN, DELIBERATELY =====
 -- Same placement-block convention (a block gives POSITION and SIZE, then hides itself), same
@@ -185,7 +190,7 @@ local PARTS = {
 -- The geometry's build tag, stamped on every prop and read by the stale-copy sweep. It hangs off
 -- PARTS rather than being its own local because this file has two registers of headroom left
 -- before Luau refuses to compile it. Bump it when the part models change shape.
-PARTS.BUILD = "parts-detailed-v3"
+PARTS.BUILD = "parts-detailed-v4"   -- v4: no pallet under the parts -- bumped so the stale-build sweep clears v3's pallets
 -- how much bigger than life the pickups stand. They are hand props sitting in a field and have to
 -- read from across it, but a wheel taller than the tractor stops looking like the tractor's wheel.
 PARTS.SCALE = 1.3
@@ -523,6 +528,25 @@ do
 		obj.Font = Enum.Font.GothamBold; obj.TextSize = 16; obj.TextColor3 = HINTC
 		obj.TextXAlignment = Enum.TextXAlignment.Left; obj.Text = prompt.ObjectText; obj.Parent = pill
 
+		-- ===== THE PILL IS THE BUTTON (THE MOBILE FIX) =====
+		-- Style = Custom removes Roblox's default prompt UI and with it the touch button, so
+		-- 'Fit The Part' and 'Hop On' were keyboard-only. The pill is the touch target now,
+		-- driving the prompt through InputHoldBegin/InputHoldEnd -- same fix as the bakery's
+		-- big prompts, same official custom-UI route.
+		bb.Active = true
+		local tap = Instance.new("TextButton")
+		tap.Name = "TapZone"; tap.Size = UDim2.fromScale(1, 1)
+		tap.BackgroundTransparency = 1; tap.Text = ""; tap.ZIndex = 5
+		tap.Parent = pill
+		tap.MouseButton1Down:Connect(function() pcall(function() prompt:InputHoldBegin() end) end)
+		local function endHold() pcall(function() prompt:InputHoldEnd() end) end
+		tap.MouseButton1Up:Connect(endHold)
+		tap.MouseLeave:Connect(endHold)
+		local UIS = game:GetService("UserInputService")
+		if UIS.TouchEnabled and not UIS.KeyboardEnabled then
+			key.Text = "TAP"; key.TextSize = 24
+		end
+
 		-- ActionText changes as the quest runs, so track it rather than snapshot it
 		local conn = prompt:GetPropertyChangedSignal("ActionText"):Connect(function()
 			act.Text = prompt.ActionText
@@ -579,6 +603,36 @@ local barnModel, barnPoint
 -- costs one register: kind = "straw" (loose, factory-bound) | "pressing" (delivered, waiting on
 -- the baler) | "bales" (pressed, farm-house-bound); owed = bales still to come out of the press.
 local HAY = { kind = "straw", owed = 0, prompt = nil }
+
+-- ===== HARVEST BEFORE THE STORM =====
+-- The harvest used to be an open-ended mow: drive about until the counter reached
+-- WHEAT_TARGET, with nothing pushing you and nothing to beat. The driving is the best thing
+-- on this island -- it is the realm's only vehicle -- so it deserved a reason to be driven
+-- WELL rather than just eventually finished.
+--
+-- So the moment the cutting bar bites its first stalk, weather comes in over the field: the
+-- sky darkens, the wind picks up, and a countdown runs. Cut the field before it breaks and
+-- the harvest is graded GOLD / SILVER / BRONZE on the time you had left. Miss it entirely and
+-- the rain lands, you get SOAKED -- and nothing else: the field stays cut, the quest carries
+-- on to the factory exactly as before. The storm grades you, it never blocks you, because a
+-- one-shot story quest must not be failable on a timer.
+--
+-- ⚠ IT LIVES ON THE `HAY` TABLE, WITH NO NEW TOP-LEVEL LOCALS, AND THAT IS DELIBERATE.
+-- tools/registers.py reads this file at 198 of Luau's 200-register ceiling -- the tightest in
+-- the realm. One more top-level `local` here is one away from a file that stops compiling with
+-- an error that names no cause. Table fields cost nothing, so the whole feature is fields.
+HAY.storm = {
+	on      = false,   -- is the clock running?
+	endsAt  = 0,
+	span    = 60,      -- ONE MINUTE from first cut to the rain. Tight on purpose: the field is
+	                   -- driven, not walked, and a clock you comfortably beat while pottering
+	                   -- about is not a clock. GOLD (40% left) now means finishing inside ~36s,
+	                   -- which takes a clean line through the crop rather than a lap of the farm.
+	graded  = nil,     -- "GOLD" | "SILVER" | "BRONZE" | "SOAKED", set once when the field falls
+	sky     = nil,     -- our ColorCorrection; ours alone to enable, so no sky system is fought
+	gui     = nil,     -- the countdown card
+	label   = nil,
+}
 local fieldCF, fieldHalf
 local sockets     = {}     -- [id] = { hole=, tag=, prompt=, filled=, def=, at= OR off= }
 -- ⚠ THESE TWO ARE DECLARED UP HERE ON PURPOSE, and moving them back down breaks the quest
@@ -863,38 +917,45 @@ end
 -- far in am I". A counter with no instruction, or an instruction with no counter, is half a banner.
 local function baseText()
 	if step >= 6 then _G.tractorQuestStep = nil; return E_TRACTOR .. " The harvest is in. Nice driving!" end
-	if step == 0 then _G.tractorQuestStep = nil; return E_TRACTOR .. " Go talk to the Candy NPC!" end
+	if step == 0 then
+		_G.tractorQuestStep = nil
+		return E_TRACTOR .. " Talk to the Candy NPC to start -- follow the green arrows!"
+	end
 	if step == 5 then
 		-- the delivery is two legs now, and the banner says which one you are on
 		if HAY.kind == "straw" then
 			_G.tractorQuestStep = "Straw to the factory"
-			return E_WHEAT .. " Full load! Take the straw to the HAY BALE FACTORY!"
+			return E_WHEAT .. " Full load! Drive the straw to the Hay Bale Factory and tip it in!"
 		elseif HAY.kind == "pressing" then
 			_G.tractorQuestStep = ("Press %d bale(s)"):format(HAY.owed)
-			return ("%s Work the baler's console -- %d bale(s) to press!"):format(E_WRENCH, HAY.owed)
+			return ("%s Use the baler console to press your bales -- %d to go!"):format(E_WRENCH, HAY.owed)
 		end
 		if HAY.stack and not HAY.carrying then
 			_G.tractorQuestStep = "Fetch the bales"
-			return E_BARN .. " Five bales stacked outside the factory -- pick them up!"
+			return E_BARN .. " Your bales are stacked outside the factory -- hold Carry The Bales!"
 		end
 		_G.tractorQuestStep = "Bales to the farm house"
-		return E_BARN .. " Bales on your back! Carry them to the FARM HOUSE!"
+		return E_BARN .. " Bales on your back! Carry them to the Farm House and hold Tip The Bales!"
 	end
 	if step == 4 then
 		_G.tractorQuestStep = ("Wheat %d/%d"):format(harvested, WHEAT_TARGET)
-		return ("%s Drive through the wheat and cut a section:  %d/%d")
+		return ("%s Drive the tractor through the golden wheat to cut it:  %d/%d")
 			:format(E_WHEAT, harvested, WHEAT_TARGET)
 	end
-	if step == 3 then _G.tractorQuestStep = "Start the engine"; return E_KEY .. " All fixed -- TURN THE KEY!" end
+	if step == 3 then
+		_G.tractorQuestStep = "Start the engine"
+		return E_KEY .. " She's fixed! Press Hop On the tractor, then turn the key."
+	end
 	if carrying then
 		_G.tractorQuestStep = ("Parts %d/%d"):format(fitted, PART_COUNT)
 		-- each bay says which part it wants on its own sign, so the banner names the PART you are
 		-- holding rather than repeating "the tractor" five times
-		return ("%s Take the %s to its bay!  %d/%d")
+		return ("%s Carry the %s to its Repair Bay and hold its Fit button!  %d/%d")
 			:format(carrying.def.emoji, carrying.def.label, fitted, PART_COUNT)
 	end
 	_G.tractorQuestStep = ("Parts %d/%d"):format(fitted, PART_COUNT)
-	return ("%s Find the missing tractor parts:  %d/%d"):format(E_WRENCH, fitted, PART_COUNT)
+	return ("%s Search the island for tractor parts -- press Pick Up on each:  %d/%d")
+		:format(E_WRENCH, fitted, PART_COUNT)
 end
 
 refreshBanner = function() objLabel.Text = baseText() end
@@ -1484,13 +1545,11 @@ local function buildPartProp(def, at)
 	local CERAM  = Color3.fromRGB(246, 242, 232)
 	local COPPER = Color3.fromRGB(198, 126,  70)
 	local PAINT  = Color3.fromRGB( 74, 132,  56)   -- tractor green: the accent that ties them together
-	local PLANK  = Color3.fromRGB(156, 112,  68)
-	local PLANK_D= Color3.fromRGB(118,  84,  50)
 
-	-- THE PROP STANDS ON A PALLET, so `base` is a little above the marker: the pallet occupies the
-	-- ground and the part sits on its deck. Everything in the branches below is written against
-	-- `base` and needs no adjusting for it.
-	local ground = at
+	-- `base` sits a little above the marker (a leftover from the pallet the parts used to stand
+	-- on). Every branch below is written against it, and seatAssembly re-seats the finished
+	-- model's measured bottom onto the ground anyway -- so the offset is harmless and the forty
+	-- call sites need no adjusting.
 	local base = at * CFrame.new(0, 0.42, 0)
 
 	local function p(props, cf)
@@ -1725,55 +1784,10 @@ local function buildPartProp(def, at)
 	m.PrimaryPart = main
 
 	-- ========================================================================
-	-- THE PALLET IT WAS PUT DOWN ON
-	-- ========================================================================
-	-- A machine part lying loose in grass reads as litter. The same part on a pallet reads as a
-	-- part somebody PUT there -- which is what these are, five components taken off a tractor and
-	-- set aside. It costs six flat boards and it does more for how deliberate the pickups look
-	-- than any amount of extra detail on the parts themselves.
-	--
-	-- Sized off the finished model's own footprint, so the wheel gets a big one and the plug a
-	-- small one with nothing hand-tuned, and the whole thing sits UNDER base (see `ground`).
-	--
-	-- (!) IT IS ITS OWN MODEL, not part of this one, and that is three behaviours in one decision:
-	--   * the idle bob and spin move the PART and leave the pallet standing still (a pallet
-	--     hovering and turning in mid-air was the alternative),
-	--   * picking the part up carries the part, not a pallet under your arm,
-	--   * and the empty pallet stays behind where the part was, which is a nicer thing to leave
-	--     than a bare patch of grass.
-	-- It is built at the FINAL size (the part is scaled by PARTS.SCALE after this returns, so the
-	-- footprint it has to match is the scaled one) and carries the same attributes, so the
-	-- stale-build sweep treats a pallet exactly like the part it belongs to.
-	local pal
-	do
-		local ok, _, bsz = pcall(m.GetBoundingBox, m)
-		local w = math.clamp((ok and math.max(bsz.X, bsz.Z) or 5) * PARTS.SCALE * 0.95, 3.2, 9)
-		pal = Instance.new("Model")
-		pal.Name = "TractorPart_" .. def.id .. "_Pallet"
-		pal:SetAttribute("QuestProp", true)
-		pal:SetAttribute("Build", PARTS.BUILD)
-		local function q(props, cf)
-			local part = mk(props); part.CFrame = cf; part.Parent = pal; return part
-		end
-		for k = -1, 1 do
-			q({ Name = "PalletDeck", Size = Vector3.new(w, 0.3, w * 0.27), Color = PLANK,
-				Material = Enum.Material.WoodPlanks },
-				ground * CFrame.new(0, 0.27, k * w * 0.34))
-		end
-		for _, sgn in ipairs({ -1, 1 }) do
-			q({ Name = "PalletBearer", Size = Vector3.new(w * 0.92, 0.26, 0.6), Color = PLANK_D,
-				Material = Enum.Material.Wood }, ground * CFrame.new(0, 0.1, sgn * w * 0.32))
-		end
-		-- loose straw across the boards: the one thing that stops a pallet reading as a crate lid
-		for k = 1, 3 do
-			q({ Name = "PalletStraw", Size = Vector3.new(w * 0.7, 0.12, 0.3), Color = WHEAT,
-				Material = Enum.Material.Grass },
-				ground * CFrame.new((k - 2) * w * 0.16, 0.44, (k % 2 - 0.5) * w * 0.3)
-					* CFrame.Angles(0, k * 0.7, 0))
-		end
-		pal.Parent = questFolder
-	end
-
+	-- (the wooden pallet that used to be built under each part is GONE, on request: the part
+	-- stands alone on its marker, and seatAssembly rests its own bounding-box bottom on the
+	-- ground. The stale-build sweep still clears pallets left by an older baked copy -- they
+	-- carry the QuestProp attribute and an old Build tag, which is exactly what it keys off.)
 	-- ========================================================================
 	-- SOLID. NOT NEGOTIABLE.
 	-- ========================================================================
@@ -1833,8 +1847,7 @@ local function buildPartProp(def, at)
 	-- it is a pickup, and the E prompt names it in its ObjectText the moment you are close enough
 	-- to take it. That is the same way every other island labels a collectible.
 	m.Parent = questFolder
-	-- the pallet comes back as a THIRD value so whoever built the part can clean up both together
-	return m, main, pal
+	return m, main
 end
 
 -- ============================================================================
@@ -2189,7 +2202,6 @@ local function placeParts()
 	-- open" this is meant to end.
 	for _, rec in ipairs(partRecs) do
 		if rec.model and rec.model.Parent then rec.model:Destroy() end
-		if rec.pallet and rec.pallet.Parent then rec.pallet:Destroy() end
 	end
 	table.clear(partRecs)
 
@@ -2222,6 +2234,61 @@ local function placeParts()
 		return pa.Z < pb.Z
 	end)
 	local nextGeneric = 1
+
+	-- ========================================================================
+	-- ONE SEAT FOR EVERYTHING THAT STANDS ON A MARKER
+	-- ========================================================================
+	-- Hoisted out of the pickup loop so the BAY GHOSTS below run the IDENTICAL maths -- they
+	-- used to get no seating at all (WorldPivot = the bay's base, then ScaleTo, done), which
+	-- is exactly how a bay copy ends up half-buried in its block: the bay base is only ground
+	-- level if the block sits ON the ground, and nothing ever measured the model.
+	--
+	-- The seat is MEASURED, never assumed: the model's bounding-box bottom (full extents,
+	-- never the pivot), lifted until the lowest face rests SEAT_CLEARANCE above the surface. Call it AFTER ScaleTo -- scaling moves the bottom, so
+	-- a seat taken before it is stale. (Anchoring moves nothing, but FH.reseat re-applies this
+	-- after anchorAll anyway -- see below -- so a floor that arrived late still gets obeyed.)
+	--
+	-- THE SURFACE IS THE GROUND, NOT THE BLOCK: a ray from 120 up (markers are hidden before
+	-- this runs, so a block cannot answer its own question), then the island's floor of record,
+	-- and never below the deck. X, Z and yaw are untouched -- only the height moves.
+	local SEAT_CLEARANCE = 0.05  -- a hair of daylight: flush to the eye, never z-fighting the grass
+	local function bottomOf(mdl)
+		if not mdl then return nil end
+		local ok, c, s = pcall(mdl.GetBoundingBox, mdl)
+		if not (ok and c) then return nil end
+		return c.Position.Y - s.Y * 0.5
+	end
+	local function seatAssembly(mdl, at)
+		local surfaceY
+		do
+			refreshRayFilter()
+			local hit = Workspace:Raycast(at.Position + Vector3.new(0, 120, 0),
+				Vector3.new(0, -500, 0), rayParams)
+			surfaceY = (hit and hit.Position.Y) or floorTopY or at.Position.Y
+			if floorTopY and surfaceY < floorTopY - 2 then surfaceY = floorTopY end
+		end
+		local lowest = bottomOf(mdl)
+		if lowest then
+			local dy = (surfaceY + SEAT_CLEARANCE) - lowest
+			if math.abs(dy) > 0.001 then
+				mdl:PivotTo(mdl:GetPivot() + Vector3.new(0, dy, 0))
+				at = at + Vector3.new(0, dy, 0)
+			end
+		end
+		return at, surfaceY, (bottomOf(mdl) or surfaceY) - surfaceY
+	end
+	-- RE-APPLIED AFTER ANCHORING: the boot sequence's one chance for the ground to move under a
+	-- seat taken earlier (an adopted floor arriving late, a re-run). The bob loop poses off
+	-- rec.home absolutely every frame, so the model is FIRST put back exactly at home -- measuring
+	-- it mid-bob would read the bob's lift as height and push the part into the ground by that much.
+	FH.reseat = function()
+		for _, rec in ipairs(partRecs) do
+			if rec.home and not rec.taken and rec.model and rec.model.Parent then
+				rec.model:PivotTo(rec.home)
+				rec.home = (seatAssembly(rec.model, rec.home))
+			end
+		end
+	end
 
 	local placed, missing = 0, {}
 	for _, def in ipairs(PARTS) do
@@ -2262,7 +2329,7 @@ local function placeParts()
 			-- hidden BEFORE the seating ray below, so the block cannot be its own answer
 			hideMarker(marker)
 
-			local m, main, pal = buildPartProp(def, at)
+			local m, main = buildPartProp(def, at)
 			-- PIVOT AT THE MARKER'S BASE, then scale. ScaleTo grows a model about its pivot, so
 			-- with the pivot on the ground the part grows UPWARD out of the spot you chose instead
 			-- of sinking half its new height into it. It is also what lets the idle bob below be
@@ -2297,44 +2364,10 @@ local function placeParts()
 			-- 120 studs up (the marker already hidden, so it cannot answer its own question), then
 			-- the island's floor of record if the ray finds nothing at all, and only as a last
 			-- resort the block itself. X, Z and yaw are never touched -- only the height.
-			local surfaceY
-			do
-				refreshRayFilter()
-				local hit = Workspace:Raycast(at.Position + Vector3.new(0, 120, 0),
-					Vector3.new(0, -500, 0), rayParams)
-				surfaceY = (hit and hit.Position.Y)
-					or floorTopY
-					or (at.Position.Y + msz.Y)
-				-- ...and never below the deck, whatever the ray came back with. A part cannot be
-				-- under the island it is standing on.
-				if floorTopY and surfaceY < floorTopY - 2 then surfaceY = floorTopY end
-			end
-			-- the lowest face of everything that stands here: the part AND the pallet under it
-			local function bottomOf(mdl)
-				if not mdl then return nil end
-				local ok, c, s = pcall(mdl.GetBoundingBox, mdl)
-				if not (ok and c) then return nil end
-				return c.Position.Y - s.Y * 0.5
-			end
-			-- the assembly's lowest face, whichever piece owns it. On a leaning wheel that is the
-			-- TYRE, not the pallet -- which is why the gap below is measured the same way rather
-			-- than off the pallet alone: measuring the pallet on a part that hangs past it reported
-			-- "0.64 studs above the surface" for something already touching the ground.
-			local function assemblyBottom()
-				local a, b = bottomOf(m), bottomOf(pal)
-				if a and b then return math.min(a, b) end
-				return a or b
-			end
-			local lowest = assemblyBottom()
-			if lowest then
-				local dy = surfaceY - lowest
-				if math.abs(dy) > 0.001 then
-					m:PivotTo(m:GetPivot() + Vector3.new(0, dy, 0))
-					if pal then pal:PivotTo(pal:GetPivot() + Vector3.new(0, dy, 0)) end
-					at = at + Vector3.new(0, dy, 0)      -- the idle loop poses from here
-				end
-			end
-			local gap = (assemblyBottom() or surfaceY) - surfaceY
+			-- (the maths lives in seatAssembly above, shared with the bay ghosts; `at` comes
+			-- back lifted, and the idle loop poses from it)
+			local surfaceY, gap
+			at, surfaceY, gap = seatAssembly(m, at)
 			-- ===== THE OPACITY RECEIPT =====
 			-- buildPartProp forces every piece opaque; this reports what actually stuck, per part,
 			-- as the HIGHEST transparency anywhere in the model. Anything but 0.00 here is a real
@@ -2361,7 +2394,7 @@ local function placeParts()
 					.. "setting it after the build."):format(def.label, worst))
 			end
 			placed += 1
-			local rec = { def = def, model = m, main = main, pallet = pal, taken = false, home = at }
+			local rec = { def = def, model = m, main = main, taken = false, home = at }
 			-- ===== ONE E PROMPT PER PART, AND IT IS THE ORDINARY ONE =====
 			-- (!) NOT bigPrompt. The big custom card -- rounded panel, giant E badge, subtitle --
 			-- belongs to the TRACTOR and nothing else: it is the one object in this quest you
@@ -2431,6 +2464,10 @@ local function placeParts()
 			ghost:SetAttribute("QuestProp", nil)     -- not a pickup: keep it out of the prop sweeps
 			ghost.WorldPivot = at
 			if math.abs(PARTS.SCALE - 1) > 0.01 then ghost:ScaleTo(PARTS.SCALE) end
+			-- SEATED LIKE EVERY PICKUP: measured bounding-box bottom onto the ground, after the
+			-- scale. This is the line the ghosts never had -- a bay block sunk into the field put
+			-- its base underground, and the copy stood half-buried in its own marker.
+			at = seatAssembly(ghost, at)
 			for _, d in ipairs(ghost:GetDescendants()) do
 				if d:IsA("BasePart") then
 					d:SetAttribute("TrueColor", d.Color)   -- what it becomes when the part is fitted
@@ -2645,10 +2682,11 @@ do
 	panel.AnchorPoint = Vector2.new(0.5, 1); panel.Position = UDim2.new(0.5, 0, 1, -30)
 	panel.Size = UDim2.new(0, 560, 0, 240); panel.BackgroundColor3 = FILL
 	panel.BorderSizePixel = 0; panel.Parent = g
-	-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+	-- HOUSE PANEL: the house 700x260 task card, centred in the free band, and the bottom
 	-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
 	-- The panel keeps its own size and every child keeps its own pixel coordinates;
 	-- it is centred in the house shell and scaled to fit, so nothing inside moves.
+	panel:SetAttribute("WantsHousePanel", true)   -- adopted by attribute, so load order cannot lose it
 	pcall(_G.housePanel, panel)   -- island19 part repair
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 18)
 	do local s = Instance.new("UIStroke"); s.Color = STROKE; s.Thickness = 3; s.Parent = panel end
@@ -2716,8 +2754,9 @@ end
 -- because the JOB of this quest is finding the five parts, and this is the moment of fitting one,
 -- not a second quest bolted onto the first.
 --
--- 700x520, the Pet Hub's dimensions, and pushed through _G.applyHudScaling on open like every
--- other full panel in this realm, so it lands at exactly the size players already know.
+-- 700x260, the house TASK-HUD card (half the menus' height -- see HousePanel.client.luau), and
+-- pushed through _G.applyHudScaling on open like every other full panel in this realm, so it
+-- lands at exactly the size players already know.
 do
 	local g = Instance.new("ScreenGui")
 	g.Name = "TractorPartFixHUD"; g.ResetOnSpawn = false; g.DisplayOrder = 14
@@ -2733,11 +2772,12 @@ do
 	local panel = Instance.new("Frame")
 	panel.Name = "Panel"
 	panel.AnchorPoint = Vector2.new(0.5, 0.5); panel.Position = UDim2.new(0.5, 0, 0.5, -45)
-	panel.Size = UDim2.fromOffset(700, 520); panel.BackgroundColor3 = FILL
+	panel.Size = UDim2.fromOffset(700, 260); panel.BackgroundColor3 = FILL
 	panel.BorderSizePixel = 0; panel.Active = true; panel.Parent = g
 	-- Already the house size and spot by hand, so the resize is a no-op -- adopted anyway for the
 	-- OTHER half of what housePanel does: holding the bottom HUD down while it is up, and doing it
 	-- by watching the panel rather than trusting this file to remember on every exit path.
+	panel:SetAttribute("WantsHousePanel", true)   -- adopted by attribute, so load order cannot lose it
 	pcall(_G.housePanel, panel)   -- island19 barn HUD
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 18)
 	do local s = Instance.new("UIStroke"); s.Color = STROKE; s.Thickness = 3; s.Parent = panel end
@@ -3181,6 +3221,48 @@ local function setSteer(v) steer = v end
 -- CastShadow is a real property and does not reset, so it is remembered per-part and restored.
 local shadowWas = {}      -- [BasePart] = its CastShadow before we turned it off
 
+-- ============================================================================
+-- THE DRIVER LOOKS LIKE A DRIVER -- TO EVERYONE ELSE, NOT JUST TO YOU
+-- ============================================================================
+-- You never see your own body while driving (the camera is a chase cam and the character is
+-- hidden locally), so the pose only ever mattered for the people watching -- and for them the
+-- driver was a rigid standing figure sliding across the field with a tractor drawn under them.
+-- PlatformStand stops the walk animation, which is what it is for, but it does not sit anybody
+-- down.
+--
+-- ANIMATIONS PLAYED ON YOUR OWN CHARACTER REPLICATE, so a sit track loaded here is seen by every
+-- other client for free -- no relay, no remote, nothing for the server to validate. It is also
+-- the one approach that cannot go wrong quietly: if the asset fails to load, the driver simply
+-- looks the way they looked before this existed.
+-- ⚠ THE TRACK LIVES IN A do-BLOCK, not beside sitPose. This file runs at 198 of Luau's 200
+-- main-chunk locals; a block-scoped local is an upvalue of the closure and costs the chunk
+-- nothing once the block closes, where a second top-level local would put us on the ceiling.
+local sitPose
+do
+	local sitTrack
+	sitPose = function(on)
+		if not on then
+			if sitTrack then pcall(function() sitTrack:Stop(0.2) end); sitTrack = nil end
+			return
+		end
+		local hum = humOf()
+		if not hum or sitTrack then return end
+		local animator = hum:FindFirstChildWhichIsA("Animator")
+		if not animator then return end
+		local anim = Instance.new("Animation")
+		-- Roblox's own default sit animations, one per rig type. A wrong-rig id loads and plays
+		-- nothing, which is why this picks rather than trying both.
+		anim.AnimationId = (hum.RigType == Enum.HumanoidRigType.R6)
+			and "rbxassetid://178130996" or "rbxassetid://2506281703"
+		local ok, track = pcall(function() return animator:LoadAnimation(anim) end)
+		if not ok or not track then return end
+		track.Priority = Enum.AnimationPriority.Action
+		track.Looped = true
+		track:Play(0.2)
+		sitTrack = track
+	end
+end
+
 local function applyDriverHidden()
 	local char = player.Character
 	if not char then return end
@@ -3206,23 +3288,18 @@ local function showDriver()
 		if part.Parent then part.CastShadow = was end
 	end
 	shadowWas = {}
-	local hum = char and char:FindFirstChildWhichIsA("Humanoid")
-	if hum then
-		hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
-		hum.NameDisplayDistance = 100
-		hum.HealthDisplayDistance = 100
-	end
+	-- the seated pose comes off with the driver (see sitPose) -- nothing else to restore: the name
+	-- tag is never touched any more, for the reason written at hideDriver
+	sitPose(false)
 end
 
 local function hideDriver()
 	applyDriverHidden()
-	local hum = humOf()
-	if hum then
-		-- the name tag has no part to hide -- it is drawn by the Humanoid itself
-		hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
-		hum.NameDisplayDistance = 0
-		hum.HealthDisplayDistance = 0
-	end
+	-- ⚠ THE NAME TAG IS LEFT ALONE ON PURPOSE. This used to set DisplayDistanceType = None while
+	-- driving, and those are HUMANOID properties: they replicate. You never see your OWN overhead
+	-- tag in the first place, so the only thing that ever did was make the driver anonymous to
+	-- everybody else -- a nameless figure riding past on a tractor. LocalTransparencyModifier
+	-- above is the local-only half, and that is the only half that should exist here.
 end
 
 -- ============================================================================
@@ -3537,6 +3614,104 @@ local function addToLoad()
 	loadParts[#loadParts + 1] = sheaf
 end
 
+-- ---------------------------------------------------------------------------
+-- THE STORM CLOCK. Functions hang off HAY.storm for the register reason above.
+-- ---------------------------------------------------------------------------
+HAY.storm.startClock = function()
+	local S = HAY.storm
+	if S.on or S.graded then return end
+	S.on = true
+	S.endsAt = os.clock() + S.span
+
+	-- the sky turning is the tell; the card is the ruler. Both, because a countdown with no
+	-- weather is a UI element and weather with no countdown is a vibe.
+	if not S.sky then
+		local cc = Instance.new("ColorCorrectionEffect")
+		cc.Name = "HarvestStorm"
+		cc.TintColor = Color3.fromRGB(168, 176, 200)
+		cc.Parent = game:GetService("Lighting")
+		S.sky = cc
+	end
+	S.sky.Enabled = true
+
+	if not S.gui then
+		local g = Instance.new("ScreenGui")
+		g.Name = "HarvestStormClock"; g.ResetOnSpawn = false; g.IgnoreGuiInset = true
+		g.DisplayOrder = 24; g.Parent = player:WaitForChild("PlayerGui")
+		local card = Instance.new("Frame")
+		card.AnchorPoint = Vector2.new(0.5, 0); card.Position = UDim2.new(0.5, 0, 0, 78)
+		card.Size = UDim2.new(0, 330, 0, 44); card.BackgroundColor3 = Color3.fromRGB(38, 34, 30)
+		card.BackgroundTransparency = 0.12; card.BorderSizePixel = 0; card.Parent = g
+		Instance.new("UICorner", card).CornerRadius = UDim.new(0, 12)
+		local st = Instance.new("UIStroke"); st.Color = WHEAT; st.Thickness = 2; st.Parent = card
+		local l = Instance.new("TextLabel")
+		l.Size = UDim2.fromScale(1, 1); l.BackgroundTransparency = 1
+		l.Font = Enum.Font.FredokaOne; l.TextScaled = true
+		l.TextColor3 = Color3.fromRGB(255, 236, 190); l.Parent = card
+		Instance.new("UITextSizeConstraint", l).MaxTextSize = 22
+		S.gui, S.label = g, l
+	end
+	S.gui.Enabled = true
+
+	flashBanner(E_WHEAT .. " Weather coming in -- cut the field before the rain!", 4)
+	if _G.NotifyCenter and _G.NotifyCenter.push then
+		pcall(function() _G.NotifyCenter.push({
+			text = "\xE2\x9B\x88 Storm rolling in -- get the harvest cut!", color = WHEAT }) end)
+	end
+
+	-- one loop: ticks the card, deepens the gloom, and rains if you run out
+	task.spawn(function()
+		while HAY.storm.on do
+			local left = HAY.storm.endsAt - os.clock()
+			local frac = math.clamp(1 - (left / HAY.storm.span), 0, 1)
+			if HAY.storm.sky then
+				HAY.storm.sky.Brightness = -0.22 * frac
+				HAY.storm.sky.Saturation = -0.3 * frac
+			end
+			if HAY.storm.label then
+				if left > 0 then
+					HAY.storm.label.Text = ("\xE2\x9B\x88  STORM IN %d:%02d   --   %d/%d cut")
+						:format(math.floor(left / 60), math.floor(left % 60), harvested, WHEAT_TARGET)
+					HAY.storm.label.TextColor3 = (left <= 20) and Color3.fromRGB(255, 170, 150)
+						or Color3.fromRGB(255, 236, 190)
+				else
+					HAY.storm.label.Text = "\xF0\x9F\x8C\xA7  THE RAIN'S HERE -- get what you can!"
+					HAY.storm.label.TextColor3 = Color3.fromRGB(190, 210, 255)
+				end
+			end
+			task.wait(0.25)
+		end
+	end)
+end
+
+-- called when the field falls (or when the quest moves past the harvest): grade and clear
+HAY.storm.gradeAndStop = function()
+	local S = HAY.storm
+	if not S.on then return S.graded end
+	S.on = false
+	local left = S.endsAt - os.clock()
+	local frac = left / S.span
+	S.graded = (left <= 0 and "SOAKED")
+		or (frac >= 0.40 and "GOLD")
+		or (frac >= 0.15 and "SILVER")
+		or "BRONZE"
+	if S.sky then
+		-- the gloom lifts over a couple of seconds rather than snapping -- the storm passing
+		local cc = S.sky
+		task.spawn(function()
+			for i = 1, 20 do
+				if not cc.Parent then return end
+				cc.Brightness = cc.Brightness * 0.85
+				cc.Saturation = cc.Saturation * 0.85
+				task.wait(0.06)
+			end
+			cc.Enabled = false
+		end)
+	end
+	if S.gui then S.gui.Enabled = false end
+	return S.graded
+end
+
 local function cutNear(pos)
 	for _, s in ipairs(stalks) do
 		if not s.cut and (Vector3.new(s.pos.X, 0, s.pos.Z) - Vector3.new(pos.X, 0, pos.Z)).Magnitude <= CUT_RADIUS then
@@ -3586,12 +3761,32 @@ local function cutNear(pos)
 				step = 4
 				refreshBanner(); refreshPrompts()
 			end
+			-- FIRST BITE STARTS THE WEATHER. Not the key turn and not the quest accept: the
+			-- clock should only run while there is actually a field being cut, or a player who
+			-- drove out, parked and read the dialogue would lose half of it to a menu.
+			HAY.storm.startClock()
 			updateDriveHUD()
 			refreshBanner()
 			if harvested >= WHEAT_TARGET and step == 4 then
 				step = 5
+				-- the field is in: stop the clock and say how it went. SOAKED still continues to
+				-- the factory -- the grade is a score on the driving, never a gate on the quest.
+				local grade = HAY.storm.gradeAndStop()
 				refreshBanner(); refreshPrompts(); updateDriveHUD()
-				flashBanner(E_WHEAT .. " That's the field cut! Take the straw to the FACTORY!", 3.5)
+				if grade and grade ~= "SOAKED" then
+					flashBanner(("%s %s HARVEST! Beat the storm -- take the straw to the FACTORY!")
+						:format(E_WHEAT, grade), 4)
+					if _G.NotifyCenter and _G.NotifyCenter.push then
+						pcall(function() _G.NotifyCenter.push({
+							top   = ("\xE2\xAD\x90 %s HARVEST"):format(grade),
+							text  = "You got the field in before the rain!",
+							color = GOLD }) end)
+					end
+				elseif grade == "SOAKED" then
+					flashBanner(E_WHEAT .. " Soaked, but it's in! Take the straw to the FACTORY!", 4)
+				else
+					flashBanner(E_WHEAT .. " That's the field cut! Take the straw to the FACTORY!", 3.5)
+				end
 				-- the realm already owns a guide trail; a full trailer and no idea which way the
 				-- first stop is was the one moment this quest sent you looking rather than driving.
 				-- It points at the FACTORY now, because loose straw is not a delivery -- the farm
@@ -3628,6 +3823,7 @@ startDriving = function()
 	hum.PlatformStand = true        -- stops the walk animation fighting the seat pose
 	hrp.Anchored = true
 	hideDriver()
+	sitPose(true)                   -- ...and everybody else sees you SITTING in it
 	startCamera()
 	print("[Tractor] boarded -- starting cab sound")
 	setCabSound(true)
@@ -4006,18 +4202,43 @@ local function tipTheLoad()
 	task.delay(0.5, function() firework(barnPoint + Vector3.new(12, 12, -8), WHEAT) end)
 
 	_G.tractorQuestComplete = true    -- IslandTaskWatcher claims the crate tokens off this
+	-- PAYOFF SHOT. The same camera move island 3's cookie gets, from the shared RevealCommand:
+	-- it resolves island 19's subject from that file's TARGETS table, so the framing lives in ONE
+	-- place and re-aiming this island later is an edit there, not here.
+	--
+	-- Delayed, because the thing worth looking at does not exist yet at this line -- the world
+	-- changes on completion (island 11's MineShaft is CREATED by the blast) and a camera that
+	-- arrives first frames the before shot. playReveal is also silent when the target is missing
+	-- and refuses to run on top of itself, so a quest that reaches this twice cannot double up.
+	task.delay(0.9, function()
+		if _G.revealIsland then pcall(_G.revealIsland, 19) end
+	end)
 	_G.tractorQuestStep = nil
-	payCoins(COIN_REWARD)
+	-- THE GRADE PAYS A BONUS. Beating the storm has to be worth something at the till or it is
+	-- just a colour on a banner -- and paying it HERE, on delivery, rather than at the moment
+	-- the field fell, keeps the whole job as one payout instead of two.
+	HAY.storm.gradeAndStop()          -- no-op if the field already graded; safety for /done paths
+	local bonus = (HAY.storm.graded == "GOLD" and 900)
+		or (HAY.storm.graded == "SILVER" and 500)
+		or (HAY.storm.graded == "BRONZE" and 250)
+		or 0
+	payCoins(COIN_REWARD + bonus)
 	refreshBanner(); refreshPrompts()
 	if npcHead then showBubble(npcHead, "A full barn and a running tractor. You're hired!", false) end
 	if _G.NotifyCenter and _G.NotifyCenter.push then
 		pcall(function() _G.NotifyCenter.push({
-			text = ("%s Harvest delivered! +%d coins"):format(E_SPARK, COIN_REWARD), color = GOLD }) end)
+			text = ("%s Harvest delivered! +%d coins"):format(E_SPARK, COIN_REWARD + bonus), color = GOLD }) end)
 	end
-	flashBanner(("%s Harvest delivered!  +%d coins -- the FOOD STAND is open! %s")
-		:format(E_SPARK, COIN_REWARD, E_SPARK), 6)
-	print(("[Tractor] quest complete -- +%d coins, island19 food stand UNLOCKED "
-		.. "(_G.tractorQuestComplete = true)"):format(COIN_REWARD))
+	if bonus > 0 then
+		flashBanner(("%s %s HARVEST!  +%d coins (+%d storm bonus) -- the FOOD STAND is open! %s")
+			:format(E_SPARK, HAY.storm.graded, COIN_REWARD + bonus, bonus, E_SPARK), 6)
+	else
+		flashBanner(("%s Harvest delivered!  +%d coins -- the FOOD STAND is open! %s")
+			:format(E_SPARK, COIN_REWARD, E_SPARK), 6)
+	end
+	print(("[Tractor] quest complete -- +%d coins (grade %s, bonus %d), island19 food stand "
+		.. "UNLOCKED (_G.tractorQuestComplete = true)")
+		:format(COIN_REWARD + bonus, tostring(HAY.storm.graded), bonus))
 end
 
 -- ============================================================================
@@ -4062,6 +4283,13 @@ refreshPrompts = function()
 	local canTip = (step == 5) and not loadTipped
 	local haveBales = HAY.kind == "bales" and (HAY.carrying or not HAY.stack)
 	if HAY.prompt then HAY.prompt.Enabled = canTip and HAY.kind == "straw" end
+	-- ...and the same switch, on the factory's own console screen: with a load waiting its prompt
+	-- reads "Tip The Straw In" and calls this quest's hand-in; with nothing waiting it is the
+	-- baler's button again. Set every refresh rather than once, so a reset or a respawn mid-leg
+	-- cannot leave the screen asking for straw that is no longer on the trailer.
+	if _G.hayFactory then
+		_G.hayFactory.deliverAt = (canTip and HAY.kind == "straw") and HAY.deliver or nil
+	end
 	if tipPrompt then tipPrompt.Enabled = canTip and haveBales end
 	if barnPrompt then barnPrompt.Enabled = canTip and haveBales end
 end
@@ -4075,22 +4303,25 @@ local function questPages()
 	elseif step == 5 then
 		return { "Now get that load down to the barn!" }
 	elseif step == 4 then
-		return { ("Drive her through the wheat! %d of %d cut."):format(harvested, WHEAT_TARGET) }
+		return { ("Drive through the wheat! %d of %d."):format(harvested, WHEAT_TARGET) }
 	elseif step == 3 then
-		return { "She's whole again -- go on, turn the key!" }
+		return { "She's whole! Press Hop On, turn the key." }
 	elseif step == 1 then
-		if carrying then return { "That's one of them! Get it back on the tractor." } end
+		if carrying then
+			return { "Carry it to its Repair Bay, hold Fit." }
+		end
 		return {
 			("Still %d part%s missing."):format(PART_COUNT - fitted, (PART_COUNT - fitted) == 1 and "" or "s"),
-			"They'll have rolled off across the whole island. Have a good look round.",
+			"They've rolled off all over the island. Press Pick Up on one when you find it.",
 		}
 	end
+	-- PART_COUNT rather than a hard-coded "five", so re-tuning the quest cannot leave the
+	-- farmer asking for a number of parts the island does not actually hide
 	return {
-		"My tractor's died on me, right in the middle of harvest.",
-		"Worse than that -- five bits of her have gone missing.",
-		"Find them, fit them, and get her running again.",
-		"Then cut me a section of that wheat and run it to the barn.",
-		("Do all that and there's %d coins in it. Deal?"):format(COIN_REWARD),
+		"My tractor died mid-harvest.",
+		("Press Pick Up on %d scattered parts."):format(PART_COUNT),
+		"Fit each into its Repair Bay, Hop On.",
+		("Cut the wheat, barn it: %d coins!"):format(COIN_REWARD),
 	}
 end
 
@@ -4134,7 +4365,7 @@ local function wireNPC(head)
 		end)
 	end
 	prompt.Triggered:Connect(function()
-		if index == 0 then pages = questPages() end
+		if index == 0 then pages = (_G.capBubble and _G.capBubble(questPages())) or questPages() end
 		index += 1
 		if not pages or index > #pages then
 			closeDialogue()
@@ -4146,9 +4377,10 @@ local function wireNPC(head)
 			return
 		end
 		local last = index >= #pages
-		local footer = last and "[E] close" or ("[E] more  (%d/%d)"):format(index, #pages)
-		showBubble(head, pages[index], true, footer)
-		prompt.ActionText = last and "Close" or "Continue"
+		-- no "[E] ..." badge in the bubble: the ProximityPrompt IS the E prompt, and the page
+		-- count rides its ActionText instead of a second floating HUD over the NPC's head
+		showBubble(head, pages[index], true, nil)
+		prompt.ActionText = last and "Close" or ("Continue  (%d/%d)"):format(index, #pages)
 		startWatcher()
 	end)
 	prompt.PromptHidden:Connect(function() if index ~= 0 then closeDialogue() end end)
@@ -4470,15 +4702,31 @@ task.spawn(function()
 			CanQuery = true, Parent = questFolder })
 		local p = fac.point
 		pad.CFrame = CFrame.new(p.X, groundY(p) + 0.22, p.Z) * CFrame.Angles(0, 0, math.rad(90))
-		HAY.prompt = Instance.new("ProximityPrompt")
-		HAY.prompt.ActionText = "Tip The Straw In"; HAY.prompt.ObjectText = "Hay Bale Factory"
-		HAY.prompt.HoldDuration = 0.4; HAY.prompt.Enabled = false
-		HAY.prompt.KeyboardKeyCode = Enum.KeyCode.E
-		HAY.prompt.MaxActivationDistance = 18    -- same as the farm house pad: you arrive driving
-		HAY.prompt.RequiresLineOfSight = false
-		HAY.prompt.Parent = pad                  -- stock prompt; the card belongs to the tractor
-		HAY.prompt.Triggered:Connect(HAY.deliver)
-		print("[Tractor] factory tip pad -> DEFAULT prompt (18 studs)")
+
+		-- ===== YOU HAND THE STRAW OVER AT THE CONSOLE SCREEN =====
+		-- The pad used to carry the tip prompt itself, so this building had two things to press
+		-- twenty studs apart: a glowing disc in the yard that took the load, and the little screen
+		-- inside that pressed it. The pad stays as a DRIVE-TO MARKER -- it is what you aim the
+		-- tractor at from across the field -- but the button is the factory's own console now, via
+		-- the `deliverAt` slot it publishes. One machine, one thing to press.
+		--
+		-- The factory may not have finished building its console (this waits on `point`, which it
+		-- publishes first), so fall back to a prompt on the pad if the console never turns up --
+		-- an unreachable hand-in would dead-end the whole quest.
+		if fac.console then
+			HAY.prompt = nil
+			print("[Tractor] straw is handed in AT THE FACTORY CONSOLE (its own E prompt)")
+		else
+			HAY.prompt = Instance.new("ProximityPrompt")
+			HAY.prompt.ActionText = "Tip The Straw In"; HAY.prompt.ObjectText = "Hay Bale Factory"
+			HAY.prompt.HoldDuration = 0.4; HAY.prompt.Enabled = false
+			HAY.prompt.KeyboardKeyCode = Enum.KeyCode.E
+			HAY.prompt.MaxActivationDistance = 18  -- same as the farm house pad: you arrive driving
+			HAY.prompt.RequiresLineOfSight = false
+			HAY.prompt.Parent = pad                -- stock prompt; the card belongs to the tractor
+			HAY.prompt.Triggered:Connect(HAY.deliver)
+			warn("[Tractor] the factory published no console -- tip prompt left on the yard pad")
+		end
 		refreshPrompts()
 		-- the pad breathes on the leg it matters for, like the farm house's does
 		task.spawn(function()
@@ -4675,6 +4923,9 @@ task.spawn(function()
 	end
 
 	anchorAll()
+	-- the seats were taken mid-build; anchoring moves nothing, but the world under a seat can
+	-- have (a late-adopted floor, a re-run) -- one absolute re-seat pass closes the gap for good
+	if FH.reseat then pcall(FH.reseat) end
 	refreshBanner(); refreshPrompts()
 	print("[Tractor] ready on " .. island:GetFullName())
 	-- RETAINER SIGNAL: the quest reached the end of its build with its world objects up. QuestRetainer
@@ -4828,6 +5079,9 @@ local function fixTractor()
 end
 
 player.Chatted:Connect(function(msg)
+	-- DEV ONLY. QuestDevGate publishes this; read at command time so load order cannot matter,
+	-- and nil (gate not up yet) refuses. Without it any player could type their way to the whole realm.
+	if not _G.questDevOK then return end
 	local text = tostring(msg or ""):lower()
 	local hrp = hrpOf()
 	if not (tractorCF and hrp) then return end

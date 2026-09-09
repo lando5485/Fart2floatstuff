@@ -71,10 +71,20 @@ _G.__FirstPersonMenuMouse = true
 -- measured against what this realm actually draws:
 --   HUD, must NOT count -- bottom meter card 470x144, stats panel 230x500, coin pill 200x52,
 --                          rail buttons 95x95, banners ~470x56.
---   PANELS, must count  -- the house card 700x520, and the smallest task HUD inside it.
+--   PANELS, must count  -- the 700x520 card, which EVERY menu and every task HUD now uses
+--                          (HousePanel copies the Pet Hub's geometry verbatim).
 -- 320 clears the stats panel's 230 width; 220 clears the bottom card's 144 height. The stats
 -- panel is 500 tall but only 230 wide, and the bottom card is 470 wide but only 144 tall, so
--- requiring BOTH is what excludes them while a 700x520 card passes on either measure.
+-- requiring BOTH is what excludes them while a house card passes on either measure.
+--
+-- One card size for everything means one comfortable margin: 700x520 clears these thresholds by
+-- 380 x 300. An earlier revision ran the task HUD at 260 tall, which cleared PANEL_MIN_H by only
+-- 40px and coupled this constant to that height. That coupling is gone -- but the rule behind it
+-- stands: if a card is ever made shorter than 220, it stops counting as a menu here and the cursor
+-- silently never frees in first person on that panel.
+--
+-- These read AbsoluteSize, so they see the card as actually drawn -- including any shrink applied
+-- on a small window, which is the case worth watching if these thresholds are ever raised.
 local PANEL_MIN_W, PANEL_MIN_H = 320, 220
 local SOLID_ENOUGH = 0.7     -- BackgroundTransparency below this = a real card, not a dim/vignette
 local COVER_FRAC   = 0.9     -- >= this much of the viewport in BOTH axes = a full-screen cover, not a panel
@@ -175,6 +185,39 @@ task.spawn(function()
 		return (cam.CFrame.Position - head.Position).Magnitude < 1.5
 	end
 
+	-- ===== ONE RESTORE, AND IT CANNOT BE SKIPPED =====
+	-- Handing the camera back used to live inline in the poll loop, which meant it only ever ran on
+	-- the tick where a panel stopped being found. Anything that ended the session another way left
+	-- the camera pinned -- and a pinned CameraMinZoomDistance of 8 is exactly "stuck in third
+	-- person, cannot get back in". Now there is one function, and everything that can end the hold
+	-- calls it.
+	--
+	-- ⚠ ZOOM LIMITS GO BACK BEFORE CameraMode, NOT AFTER. Setting CameraMode = LockFirstPerson while
+	-- the minimum is still the pushed-out 8 asks Roblox for two contradictory things in the same
+	-- frame -- lock the camera to the head, but never closer than 8 studs. Restoring the limits
+	-- first means the mode lands on a camera that can actually satisfy it.
+	local function restore(why)
+		if not saved then return end
+		modalBtn.Visible = false
+		player.CameraMinZoomDistance = saved.minZoom
+		player.CameraMaxZoomDistance = saved.maxZoom
+		player.CameraMode            = saved.mode
+		saved, firstPersonSince, lastPanel = nil, nil, nil
+		print(("[FirstPerson] camera handed back (%s) -- zoom %.1f..%.1f, mode %s")
+			:format(why, player.CameraMinZoomDistance, player.CameraMaxZoomDistance,
+				tostring(player.CameraMode)))
+	end
+
+	-- RESPAWNING WITH A HUD UP. CameraMinZoomDistance is a PLAYER property, so it survives death --
+	-- but a quest GUI with ResetOnSpawn = true does not. The panel vanishes, the poll loop is mid
+	-- task.wait, and the player comes back with the zoom floor still at 8 and no panel left to
+	-- close to release it. That is a permanent stick, and it needs a character event to catch.
+	player.CharacterAdded:Connect(function()
+		task.defer(function()
+			if saved and not findOpenPanel() then restore("respawned with no panel open") end
+		end)
+	end)
+
 	while true do
 		task.wait(POLL)
 		local panel = findOpenPanel()
@@ -199,12 +242,7 @@ task.spawn(function()
 			firstPersonSince, lastPanel = nil, panel
 
 		elseif not panel and saved then
-			-- hand the camera back EXACTLY as its owner left it
-			modalBtn.Visible = false
-			player.CameraMode            = saved.mode
-			player.CameraMinZoomDistance = saved.minZoom
-			player.CameraMaxZoomDistance = saved.maxZoom
-			saved, firstPersonSince, lastPanel = nil, nil, nil
+			restore("panel closed")
 		end
 
 		if panel then

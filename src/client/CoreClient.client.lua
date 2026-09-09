@@ -271,31 +271,69 @@ local islandColors = {
 	Color3.fromRGB(100,180,255),Color3.fromRGB(150,200,255),Color3.fromRGB(255,150,200),Color3.fromRGB(200,80,80),
 	Color3.fromRGB(180,100,60),Color3.fromRGB(255,80,80),
 }
-local ISLAND_POS = {
-	{x=0,y=150,z=0},{x=120,y=790,z=60},{x=-160,y=1680,z=100},
-	{x=180,y=2480,z=-120},{x=-200,y=3580,z=160},{x=220,y=4820,z=-180},
-	{x=-240,y=6460,z=200},{x=260,y=8202,z=-220},{x=-280,y=9732,z=240},
-	{x=300,y=11978,z=-260},{x=-320,y=14194,z=280},{x=340,y=17138,z=-300},
-	{x=-360,y=20206,z=320},{x=380,y=24017,z=-340},
-}
--- price = round(power * (0.8 + (island - 1) / 13 * 2.2))  -- cheap early islands, expensive late
+-- Island positions + the flight math live in ReplicatedStorage.Shared (ONE copy: PlayerStats positions the
+-- models from the same IslandOrder table). Same {x,y,z} shape every use below always had.
+local FlightTuning = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("FlightTuning"))
+local ISLAND_POS = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("IslandOrder")).SLOT_POS
+-- FOOD -- copied from the F2F UNIVERSAL PROGRESSION GUIDE. power/price is monotonically non-decreasing up the
+-- tower and so is power: later food is NEVER worse value. IDENTICAL table in PlayerStats.server.lua (the
+-- authority) -- if you change one, change both.
 local foods = {
-	{name="Beans",    price=5,    power=8,   island=1},
-	{name="Broccoli", price=24,   power=25,  island=2},
-	{name="Cabbage",  price=85,   power=45,  island=3},
-	{name="Turnips",  price=94,   power=70,  island=4},
-	{name="Coconuts", price=142,  power=100, island=5},
-	{name="Bread",    price=138,  power=140, island=6},
-	{name="Pasta",    price=202,  power=185, island=7},
-	{name="Popcorn",  price=600,  power=240, island=8},
-	{name="Milk",     price=500,  power=300, island=9},
-	{name="Butter",   price=400,  power=370, island=10},
-	{name="IceCream", price=560,  power=450, island=11},
-	{name="Burger",   price=405,  power=540, island=12},
-	{name="Burrito",  price=700,  power=640, island=13},
-	{name="Pizza",    price=518,  power=750, island=14},
+	{name="Beans",    price=1280, power=32,  island=1},
+	{name="Broccoli", price=1480, power=40,  island=2},
+	{name="Cabbage",  price=1480, power=40,  island=3},
+	{name="Turnips",  price=1520, power=45,  island=4},
+	{name="Coconuts", price=1520, power=45,  island=5},
+	{name="Bread",    price=1720, power=55,  island=6},
+	{name="Pasta",    price=1720, power=55,  island=7},
+	{name="Popcorn",  price=1840, power=65,  island=8},
+	{name="Milk",     price=1840, power=65,  island=9},
+	{name="Butter",   price=2200, power=85,  island=10},
+	{name="IceCream", price=2200, power=85,  island=11},
+	{name="Burger",   price=3080, power=130, island=12},
+	{name="Burrito",  price=3080, power=130, island=13},
+	{name="Pizza",    price=3080, power=130, island=14},
 }
 local RING_COLORS = {Color3.fromRGB(255,215,0),Color3.fromRGB(0,200,255),Color3.fromRGB(255,100,200)}
+
+-- ===== PICKUP PAYOUT: A SET AMOUNT, SIZED OFF THE MEAL YOU ARE ACTUALLY BUYING =====
+-- Bubbles used to pay a flat 15 coins scaled by a RING STREAK: 18 coins for the first one, against a
+-- 1,280-coin plate of beans. Detouring 145 studs off the climb line for 1.4% of a meal is not a
+-- decision, and the streak made the payout depend on a lucky run rather than on the pickup itself.
+--
+-- It is now a SET amount per pickup, and it GROWS THE HIGHER YOU ARE: priced as a fixed share of the
+-- meal sold at whatever island the player is currently level with. A bubble in the Burrito Barrens gap
+-- is worth two and a half times the same bubble down at Bean Farm, so climbing pays and a pickup never
+-- decays into pocket change.
+--
+-- ALTITUDE, NOT PROGRESS. This reads the player's own Y against ISLAND_POS rather than the `Island`
+-- leaderstat, which only ever goes UP and would pay summit rates to someone pottering about on island 1.
+-- The bubbles live in the gaps, so where you pop one IS which gap it belongs to -- the two agree by
+-- construction. The +25 tolerance is because MoveTo centres an island's bounding box on SLOT_POS, so a
+-- landing surface can sit slightly BELOW its own configured Y (island 2's stand is 1.4 studs under it,
+-- island 8's 19): without it, standing on those islands would pay the rate for the one below. 25 is
+-- safe against over-counting -- the smallest gap in the tower is 630.
+--
+-- SIZE: 15% of a meal for a coin bubble, half that for a gas bubble. There are two of each per gap, so
+-- a flight that sweeps its whole gap earns ~45% of one meal on top of the crossing -- worth the detour,
+-- and nowhere near enough to stop having to buy food. 190 coins at Bean Farm, 460 at Pizza Palms.
+--
+-- ON _G, NOT A LOCAL, DELIBERATELY. This file's main chunk sits AT the 200-local register ceiling (the
+-- `do` block around line 4200 stacks its locals on the same frame), so one more top-level local here is
+-- the difference between the script running and the script silently never running at all. Same idiom
+-- the rest of the file already uses for cross-script handles.
+_G.pickupCoins = function(kind, atY)
+	local share = (kind == "gas") and 0.075 or 0.15
+	local isl = 1
+	if atY then
+		for i, ip in ipairs(ISLAND_POS) do
+			if ip.y <= atY + 25 then isl = i end   -- ISLAND_POS is in ascending Y, so the last hit wins
+		end
+	end
+	local price = foods[1].price
+	for _, f in ipairs(foods) do if f.island == isl then price = f.price; break end end
+	return math.max(10, math.floor(price * share / 10 + 0.5) * 10) -- round to a clean 10
+end
 
 _G.ISLAND_NAMES=ISLAND_NAMES; _G.ISLAND_DISPLAY_NAMES=ISLAND_DISPLAY_NAMES
 _G.ISLAND_COLORS=islandColors; _G.ISLAND_POS=ISLAND_POS
@@ -304,6 +342,9 @@ _G.foods=foods; _G.RING_COLORS=RING_COLORS
 -- ===== SHARED FLIGHT STATE =====
 _G.isFlying=false; _G.cosmeticGas=0; _G.hasLanded=true; _G.hasBoughtFood=false; _G.hasRainbowTrail=false
 _G.peakHeight=0; _G.ringsCollectedFlight=0
+-- Gas bubbles popped THIS flight. The tutorial's bubble step is about BOTH kinds of bubble, so it needs
+-- to see a green one popped too -- the ring counter only ever sees the gold ones.
+_G.gasBubblesPoppedFlight=0
 -- ===== SHARED EVENT STATE (set by EventClient) =====
 _G.serverEventActive=false; _G.serverEventEndTime=0; _G.serverEventDisplayName=""
 _G.serverEventSpeedMult=1; _G.serverEventCoinMult=1; _G.serverEventGasDrainMult=1
@@ -330,8 +371,7 @@ _G.gui = {}
 
 -- ===== LOCAL STATE =====
 local flightStartTime = 0
-local ringStreak = 0
-local ringMultiplier = 1
+local ringStreak = 0   -- still counted for the 5/10/20 haptic milestones; it no longer scales coins
 local twoXBoostActive = false
 local twoXBoostEndTime = 0
 local arrivedIslands = {}
@@ -344,7 +384,7 @@ local glideVel = nil
 local isFlying = false
 local hasBoughtFood = false
 local currentPower = 0
-local stomachMax = 100
+local stomachMax = 120
 local gasMeter = 0
 local maxGasMeter = 100
 -- 2x Fart Power pass/product: when active the effective tank is POWER_PASS_MULT x larger, so the
@@ -362,7 +402,8 @@ end
 local function effGasMax()
 	return powerPassActive() and (maxGasMeter * POWER_PASS_MULT) or maxGasMeter
 end
-local DRAIN_RATE = 3.5 -- gas drained per second of flight (full tank ~= 28s)
+-- DRAIN is per GUT now: 100 / FlightTuning.tankSecondsFor(stomachMax) %/s, so the meter always empties in
+-- one flight (22.75s on Tiny/Small, stretching to 36.4s on Iron). See FlightTuning.drainRateFor.
 -- Sideways steering speed (studs/s) WHILE FLYING only. Was a hardcoded 27; raised for more
 -- responsive drifting to line up with islands. Affects horizontal X/Z only — NOT vertical rise,
 -- gas drain, or on-ground WalkSpeed. Tune freely.
@@ -370,20 +411,31 @@ local FLIGHT_HORIZONTAL_SPEED = 48 -- ~1.8x the old 27
 -- Climb-speed multiplier while carrying the Gardener's watering can. A full can is heavy: you CAN still fly
 -- with it, you just fly worse -- which is the joke. 0.7 = a noticeable drag without stranding anyone.
 local CAN_WEIGHT_MULT = 0.7
--- Per-flight cap on HEIGHT coin earnings (in-flight ring bonus is separate and NOT capped). The cap
--- now SCALES with how high you fly: this flight's height coins are capped at peakHeight*CAP_PER_HEIGHT
--- (never below FLIGHT_COIN_CAP). So a deep flight pays out much more than a shallow one, and earnings
--- clearly exceed food cost as the player climbs (earn ~= maxPower*14*CAP_PER_HEIGHT vs food cost/power).
-local FLIGHT_COIN_CAP = 80     -- floor: minimum per-flight height-coin cap (covers low/short flights)
-local CAP_PER_HEIGHT  = 0.2    -- per-flight cap = max(FLIGHT_COIN_CAP, peakHeight * this)
-local flightCoinsEarned = 0 -- height coins actually sent this flight (capped at FLIGHT_COIN_CAP)
+-- ===== COINS ARE PAID PER STUD TRAVELLED, NOT PER HEIGHT (F2F UNIVERSAL PROGRESSION GUIDE, section 5) =====
+--   landing  : gap   * COIN_PER_STUD                         (climb only -- you never fall)
+--   failure  : climb * COIN_PER_STUD * (1 + DESCENT_PAY_MULT) = 3x the climb
+-- That asymmetry is the single lever that sets flight counts. When the descent payout was accidentally dead
+-- in an early build a repeated flight earned 1x instead of 3x and crossing 1 stalled at 35% forever.
+--
+-- WHEN the descent is paid (PREPAY): at launch, climbFor(stomachMax, currentPower) predicts the peak. If the
+-- tank cannot reach gap * PREPAY_SAFETY the flight is ALREADY a failure, so every climbed stud pays 3x on the
+-- spot and the counter never snaps upward at the apex. Otherwise the climb pays 1x, and the 2x is paid per
+-- stud FALLEN below the peak -- a flight that lands on the next island falls ~0 studs and pays nothing
+-- extra; a flight that falls all the way back pays exactly 2x its climb. Totals are identical either way.
+local COIN_PER_STUD     = FlightTuning.COIN_PER_STUD     -- 3.52
+local DESCENT_PAY_MULT  = FlightTuning.DESCENT_PAY_MULT  -- 2.0
+local flightPrepaid     = false   -- this flight's descent is being paid during the climb
+local flightLastY       = 0       -- Y at the previous coin tick (per-stud accounting)
+local flightGap         = 0       -- the crossing in front of the player at launch (studs)
+local flightDescentOwed = 0       -- studs of descent still unpaid on a non-prepaid flight (peak - launch Y)
+local flightCoinsEarned = 0 -- coins sent this flight (climb + descent, before server multipliers)
 -- FLIGHT DEBUG balance tracking (per flight): food bought since last flight, and the
 -- coins/tank snapshot taken at launch. dbgPrepPower/Cost accumulate in the RegenEvent handler.
 local dbgPrepPower = 0
 local dbgPrepCost = 0
 local dbgCoinsBefore = 0
 local dbgTankPower = 0
-local dbgFlightRaw = 0 -- height coins this flight BEFORE the cap (uncapped total)
+local dbgFlightRaw = 0 -- studs climbed this flight (for the FLIGHT DEBUG line)
 local stomachName = "Tiny Gut"
 local stomachEmoji = "\xF0\x9F\x91\xB6"
 local updateStomachDisplay = nil
@@ -956,39 +1008,95 @@ do
 	lockerGui.DisplayOrder = 100; lockerGui.Enabled = false; lockerGui.Parent = PlayerGui -- EXACT same ScreenGui settings as the SHOP (PremiumShopGui): DisplayOrder 100, no IgnoreGuiInset
 	-- EXACT same Size + Position + AnchorPoint as the SHOP menu's FINAL layout (PremiumShopGui's premPanel, after its
 	-- layout pass): 700 x 520 fixed, centered, nudged up 45px. No UIScale/UISizeConstraint/UIAspectRatioConstraint on the Shop.
+	-- ===== THIS PANEL OPTS OUT OF MenuSkin =====
+	-- MenuSkin's skinShapes() runs over every menu after it is built and rewrites BOTH the panel's own corner
+	-- and stroke AND the radius of every descendant that already has a UICorner -- which, after the pass that
+	-- gave the banner/card/preview/bar their 8/12 radii, is every inner frame in here. So the radii were being
+	-- set correctly at build time and replaced a moment later by the house values.
+	--
+	-- NoMenuSkin is MenuSkin's own documented opt-out and it is checked up the whole ancestor chain, so one
+	-- attribute on the ScreenGui covers the panel and everything in it. This panel is the garden's cream and
+	-- brown, not the house blue, so it was never a candidate for the palette pass anyway -- it only ever
+	-- wanted out of the shape pass.
+	lockerGui:SetAttribute("NoMenuSkin", true)
 	local lockPanel = mkFrame(lockerGui, { Size = UDim2.new(0, 700, 0, 520), Position = UDim2.new(0.5, 0, 0.5, -45), AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.fromRGB(245, 238, 214), ClipsDescendants = true })
 	mkCorner(lockPanel, 18); mkStroke(lockPanel, Color3.fromRGB(120, 78, 40), 4)
 	local function lockerFit() end -- no-op: the panel now uses the SHOP's static scale-based geometry (kept as a stub so existing call sites still work)
 	-- header (dark wood)
+	-- Rounded to the panel's own 18px where it meets the panel's top corners, squared off at the bottom by a
+	-- filler band -- without the corner the header's square top corners paint OVER the panel's rounded ones
+	-- (ClipsDescendants clips to the rectangle, never to the radius), and without the filler the cream shows
+	-- through at the header's lower corners. Same trick as the MORE panel's band.
 	local lockHead = mkFrame(lockPanel, { Size = UDim2.new(1, 0, 0, 50), BackgroundColor3 = Color3.fromRGB(74, 48, 30), BorderSizePixel = 0 })
+	mkCorner(lockHead, 18)
+	mkFrame(lockHead, { Size = UDim2.new(1, 0, 0, 18), Position = UDim2.new(0, 0, 1, -18), BackgroundColor3 = Color3.fromRGB(74, 48, 30), BorderSizePixel = 0 })
 	mkLabel(lockHead, { Text = "\xF0\x9F\x8C\xBB", Font = Enum.Font.FredokaOne, TextSize = 20, Size = UDim2.new(0, 26, 0, 26), Position = UDim2.new(0, 16, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5), TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center })
-	mkLabel(lockHead, { Text = "Seasonal Pets", Font = Enum.Font.FredokaOne, TextSize = 22, TextColor3 = WHT, Size = UDim2.new(1, -100, 1, 0), Position = UDim2.new(0, 50, 0, 0), TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center })
+	-- CrispText = "give this label a real UIStroke in the edges pass below". Only the WHITE-ON-DARK labels are
+	-- marked: dark text on the cream cards needs no outline and would only look muddy with one.
+	mkLabel(lockHead, { Text = "Seasonal Pets", Font = Enum.Font.FredokaOne, TextSize = 22, TextColor3 = WHT, Size = UDim2.new(1, -100, 1, 0), Position = UDim2.new(0, 50, 0, 0), TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center }):SetAttribute("CrispText", true)
 	local lockX = mkButton(lockHead, { Size = UDim2.new(0, 34, 0, 34), Position = UDim2.new(1, -12, 0.5, 0), AnchorPoint = Vector2.new(1, 0.5), BackgroundColor3 = Color3.fromRGB(210, 60, 55), Text = "X", Font = Enum.Font.FredokaOne, TextSize = 20, TextColor3 = WHT })
 	mkCorner(lockX, 9)
+	-- ButtonTextStyle darkens a filled button and puts a 2px stroke on its text every few seconds. On these two
+	-- that is wrong twice over: the 2px stroke is the "heavy outline" (this panel wants 1.5 with round joins),
+	-- and re-asserting a remembered fill would fight equipBtn, whose colour IS its state (green = equippable,
+	-- muted green = already equipped, set live in cardRefreshers). BTS_Skip is that sweep's own opt-out.
+	lockX:SetAttribute("BTS_Skip", true)
 	-- subtitle banner (dark-green pill with leaf accents)
 	local sub = mkFrame(lockPanel, { Size = UDim2.new(1, -28, 0, 42), Position = UDim2.new(0, 14, 0, 60), BackgroundColor3 = Color3.fromRGB(58, 116, 52) })
-	mkCorner(sub, 12)
+	mkCorner(sub, 8)
 	mkLabel(sub, { Text = "\xF0\x9F\x8C\xBF", Font = Enum.Font.FredokaOne, TextSize = 16, Size = UDim2.new(0, 24, 1, 0), Position = UDim2.new(0, 8, 0, 0), TextXAlignment = Enum.TextXAlignment.Center })
-	mkLabel(sub, { Text = "Grow the Community Garden each season to unlock exclusive pets!", Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = WHT, TextWrapped = true, Size = UDim2.new(1, -64, 1, 0), Position = UDim2.new(0, 32, 0, 0), TextXAlignment = Enum.TextXAlignment.Center })
+	mkLabel(sub, { Text = "Grow the Community Garden each season to unlock exclusive pets!", Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = WHT, TextWrapped = true, Size = UDim2.new(1, -64, 1, 0), Position = UDim2.new(0, 32, 0, 0), TextXAlignment = Enum.TextXAlignment.Center }):SetAttribute("CrispText", true)
 	mkLabel(sub, { Text = "\xF0\x9F\x8C\xBF", Font = Enum.Font.FredokaOne, TextSize = 16, Size = UDim2.new(0, 24, 1, 0), Position = UDim2.new(1, -32, 0, 0), TextXAlignment = Enum.TextXAlignment.Center })
 	-- footer (small green strip)
-	local footer = mkFrame(lockPanel, { Size = UDim2.new(1, 0, 0, 28), Position = UDim2.new(0, 0, 1, -28), BackgroundColor3 = Color3.fromRGB(70, 130, 60), BorderSizePixel = 0 })
-	mkLabel(footer, { Text = "New seasons, new rewards. Keep growing!", Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = WHT, Size = UDim2.new(1, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Center })
+	-- 36 tall, not 28: a UICorner is clamped to half the frame's shorter side, so on a 28px strip the 18px
+	-- radius would render as 14 and the strip's corners would poke ~1px past the panel's own 18px arc.
+	local footer = mkFrame(lockPanel, { Size = UDim2.new(1, 0, 0, 36), Position = UDim2.new(0, 0, 1, -36), BackgroundColor3 = Color3.fromRGB(70, 130, 60), BorderSizePixel = 0 })
+	mkCorner(footer, 18) -- same as the header, mirrored: rounded where it meets the panel's bottom corners, filler squares off its top edge
+	mkFrame(footer, { Size = UDim2.new(1, 0, 0, 18), BackgroundColor3 = Color3.fromRGB(70, 130, 60), BorderSizePixel = 0 })
+	mkLabel(footer, { Text = "New seasons, new rewards. Keep growing!", Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = WHT, Size = UDim2.new(1, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Center }):SetAttribute("CrispText", true)
 	-- scrolling list of season cards (between subtitle + footer)
 	local scroll = Instance.new("ScrollingFrame"); scroll.BackgroundTransparency = 1; scroll.BorderSizePixel = 0
-	scroll.Position = UDim2.new(0, 12, 0, 110); scroll.Size = UDim2.new(1, -24, 1, -146); scroll.ScrollBarThickness = 5
+	scroll.Position = UDim2.new(0, 12, 0, 110); scroll.Size = UDim2.new(1, -24, 1, -150); scroll.ScrollBarThickness = 5 -- -150: 110 above + the 36px footer + 4px of air
 	scroll.ScrollBarImageColor3 = Color3.fromRGB(120, 78, 40); scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 	scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y; scroll.Parent = lockPanel
 	local slay = Instance.new("UIListLayout", scroll); slay.Padding = UDim.new(0, 10); slay.SortOrder = Enum.SortOrder.LayoutOrder; slay.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	-- ===== THE LANE THE CARD ACTUALLY GETS =====
+	-- The card was Size (1, -6) inside a 676px scroll and centred, so it ran 3..673 -- and its 2px UIStroke
+	-- draws OUTWARD from that, reaching 1..675. Roblox paints a ScrollingFrame's bar INSIDE the frame's own
+	-- rect (671..676 at ScrollBarThickness 5) and clips everything at 676, so the right border and both
+	-- rounded corners were being drawn under the scrollbar and shaved off at the edge.
+	--
+	-- A UIStroke CANNOT BE MADE TO FIT BY CHANGING ApplyStrokeMode. Border vs Contextual only decides WHAT it
+	-- outlines (the frame's border vs a text object's glyphs) -- neither draws inward, and there is no inset
+	-- option. Every UIStroke always extends outward from the object's edge, so the only way to stop one being
+	-- clipped is to leave room for it. That is what this padding is.
+	--
+	--   left  4 = the 2px stroke plus 2px of air
+	--   right 9 = the same 4, plus the 5px scrollbar lane the bar paints over
+	--
+	-- The 4/9 asymmetry is deliberate and only visible if the bar is absent (it never is here -- four season
+	-- cards are always taller than the scroll). It is the same reserve SkinCrateClient's body makes for the
+	-- identical reason.
+	do
+		local sp = Instance.new("UIPadding", scroll)
+		sp.PaddingLeft  = UDim.new(0, 4)
+		sp.PaddingRight = UDim.new(0, 4 + scroll.ScrollBarThickness)
+		-- Vertically the strokes need the same 4px, for the same reason: the first card sat at canvas y=0 with
+		-- its 2px top stroke on the clip boundary.
+		sp.PaddingTop = UDim.new(0, 4)
+	end
 
 	for i, s in ipairs(SEASONS) do
-		local card = mkFrame(scroll, { Size = UDim2.new(1, -6, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = s.card, LayoutOrder = i, ClipsDescendants = true })
-		mkCorner(card, 14); mkStroke(card, s.accent, 2)
+		-- (1, 0), not (1, -6): the padding above now owns the inset AND the scrollbar lane, so the card fills
+		-- exactly the width it is allowed and its stroke has somewhere to go. Hand-shrinking it here as well
+		-- would double-count the gap and re-centre the card off the lane the padding just defined.
+		local card = mkFrame(scroll, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = s.card, LayoutOrder = i, ClipsDescendants = true })
+		mkCorner(card, 12); mkStroke(card, s.accent, 2)
 		local clay = Instance.new("UIListLayout", card); clay.SortOrder = Enum.SortOrder.LayoutOrder
 		-- collapsed header row (the whole row is the expand button)
 		local hrow = mkButton(card, { Size = UDim2.new(1, 0, 0, 66), BackgroundTransparency = 1, Text = "", LayoutOrder = 1, AutoButtonColor = false })
 		local mini = Instance.new("ViewportFrame"); mini.BackgroundColor3 = WHT; mini.BackgroundTransparency = 0.15
-		mini.Size = UDim2.new(0, 52, 0, 52); mini.Position = UDim2.new(0, 8, 0.5, 0); mini.AnchorPoint = Vector2.new(0, 0.5); mini.Parent = hrow; mkCorner(mini, 10)
+		mini.Size = UDim2.new(0, 52, 0, 52); mini.Position = UDim2.new(0, 8, 0.5, 0); mini.AnchorPoint = Vector2.new(0, 0.5); mini.Parent = hrow; mkCorner(mini, 8)
 		mkLabel(hrow, { Text = s.icon, Font = Enum.Font.FredokaOne, TextSize = 18, Size = UDim2.new(0, 22, 0, 18), Position = UDim2.new(0, 70, 0, 10), BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left })
 		mkLabel(hrow, { Text = s.season:upper(), Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = s.accent, Size = UDim2.new(0, 150, 0, 18), Position = UDim2.new(0, 94, 0, 10), TextXAlignment = Enum.TextXAlignment.Left, BackgroundTransparency = 1 })
 		mkLabel(hrow, { Text = s.petName, Font = Enum.Font.FredokaOne, TextSize = 18, TextColor3 = Color3.fromRGB(60, 45, 30), Size = UDim2.new(0, 220, 0, 24), Position = UDim2.new(0, 70, 0, 30), TextXAlignment = Enum.TextXAlignment.Left, BackgroundTransparency = 1 })
@@ -997,15 +1105,15 @@ do
 		-- expanded content (hidden until this row is the open one)
 		local exp = mkFrame(card, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = 2, Visible = false })
 		local ep = Instance.new("UIPadding", exp); ep.PaddingLeft = UDim.new(0, 12); ep.PaddingRight = UDim.new(0, 12); ep.PaddingBottom = UDim.new(0, 12)
-		local el = Instance.new("UIListLayout", exp); el.Padding = UDim.new(0, 8); el.SortOrder = Enum.SortOrder.LayoutOrder; el.HorizontalAlignment = Enum.HorizontalAlignment.Center
-		local big = Instance.new("ViewportFrame"); big.BackgroundColor3 = WHT; big.BackgroundTransparency = 0.05; big.Size = UDim2.new(1, 0, 0, 150); big.LayoutOrder = 1; big.Parent = exp; mkCorner(big, 12); mkStroke(big, s.accent, 2)
+		local el = Instance.new("UIListLayout", exp); el.Padding = UDim.new(0, 7); el.SortOrder = Enum.SortOrder.LayoutOrder; el.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		local big = Instance.new("ViewportFrame"); big.BackgroundColor3 = WHT; big.BackgroundTransparency = 0.05; big.Size = UDim2.new(1, 0, 0, 118); big.LayoutOrder = 1; big.Parent = exp; mkCorner(big, 8); mkStroke(big, s.accent, 2)
 		mkLabel(exp, { Text = s.season:upper() .. " REWARD", Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = s.accent, Size = UDim2.new(1, 0, 0, 18), LayoutOrder = 2, TextXAlignment = Enum.TextXAlignment.Center, BackgroundTransparency = 1 })
 		mkLabel(exp, { Text = s.petName, Font = Enum.Font.FredokaOne, TextSize = 24, TextColor3 = Color3.fromRGB(60, 45, 30), Size = UDim2.new(1, 0, 0, 30), LayoutOrder = 3, TextXAlignment = Enum.TextXAlignment.Center, BackgroundTransparency = 1 })
-		local barBG = mkFrame(exp, { Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = Color3.fromRGB(225, 215, 190), LayoutOrder = 4 }); mkCorner(barBG, 11)
-		local barFill = mkFrame(barBG, { Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = Color3.fromRGB(90, 200, 80) }); mkCorner(barFill, 11)
+		local barBG = mkFrame(exp, { Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = Color3.fromRGB(225, 215, 190), LayoutOrder = 4 }); mkCorner(barBG, 8)
+		local barFill = mkFrame(barBG, { Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = Color3.fromRGB(90, 200, 80) }); mkCorner(barFill, 8)
 		local barTxt = mkLabel(barBG, { Text = "0 / 2000 Flowers", Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = Color3.fromRGB(60, 50, 40), Size = UDim2.new(1, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 3, BackgroundTransparency = 1 })
-		mkLabel(exp, { Text = s.desc, Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = Color3.fromRGB(80, 65, 45), TextWrapped = true, Size = UDim2.new(1, 0, 0, 38), LayoutOrder = 5, TextXAlignment = Enum.TextXAlignment.Center, BackgroundTransparency = 1 })
-		local equipBtn = mkButton(exp, { Size = UDim2.new(1, 0, 0, 40), BackgroundColor3 = Color3.fromRGB(70, 150, 55), Text = "EQUIP", Font = Enum.Font.FredokaOne, TextSize = 18, TextColor3 = WHT, LayoutOrder = 6 }); mkCorner(equipBtn, 12)
+		mkLabel(exp, { Text = s.desc, Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = Color3.fromRGB(80, 65, 45), TextWrapped = false, Size = UDim2.new(1, 0, 0, 18), LayoutOrder = 5, TextXAlignment = Enum.TextXAlignment.Center, BackgroundTransparency = 1 })
+		local equipBtn = mkButton(exp, { Size = UDim2.new(1, 0, 0, 40), BackgroundColor3 = Color3.fromRGB(70, 150, 55), Text = "EQUIP", Font = Enum.Font.FredokaOne, TextSize = 18, TextColor3 = WHT, LayoutOrder = 6 }); mkCorner(equipBtn, 12); equipBtn:SetAttribute("BTS_Skip", true) -- see the lockX note: its fill is its state
 
 		hrow.MouseButton1Click:Connect(function() playUIClick(); expanded = (expanded == s.season) and nil or s.season; refreshLocker() end)
 		equipBtn.MouseButton1Click:Connect(function()
@@ -1033,6 +1141,78 @@ do
 			equipBtn.Visible = owns
 			equipBtn.Text = (seasonalEquipped == s.petId) and "EQUIPPED \xE2\x9C\x93" or "EQUIP"
 			equipBtn.BackgroundColor3 = (seasonalEquipped == s.petId) and Color3.fromRGB(120, 160, 110) or Color3.fromRGB(70, 150, 55)
+		end
+	end
+
+	-- THE BOTTOM 4px HAS TO BE A CHILD, NOT PaddingBottom. AutomaticCanvasSize measures the ScrollingFrame's
+	-- CHILDREN, and a UIPadding is not one -- so PaddingBottom does not extend the scrollable range by a
+	-- single pixel and the last card's bottom stroke stays shaved off at the clip edge no matter how much of
+	-- it you set. A spacer IS measured, so the canvas grows by exactly its height.
+	do
+		local stail = Instance.new("Frame")
+		stail.Name = "SeasonTailSpacer"
+		stail.Size = UDim2.new(1, 0, 0, 4)
+		stail.BackgroundTransparency = 1
+		stail.BorderSizePixel = 0
+		stail.LayoutOrder = 10000 -- past every season card
+		stail.Parent = scroll
+	end
+
+	-- ============================================================================================================
+	-- EDGES PASS -- run once, over the finished panel
+	-- ============================================================================================================
+	-- WHAT WAS ACTUALLY WRONG. Every GuiObject in Roblox defaults to BorderSizePixel = 1 in BLACK, and that
+	-- border is drawn as a hard SQUARE that ignores UICorner. So each rounded thing in this panel -- the card,
+	-- the pill, the progress bar, and most visibly the two ViewportFrame pet previews -- had a 1px black box
+	-- drawn around it whose corners stuck out past the rounding. That is the jagged edge: not the stroke and
+	-- not the corner radius, but a third outline nobody asked for sitting on top of both.
+	--
+	-- lockHead, footer and scroll each set BorderSizePixel = 0 by hand, which is the tell that this had been
+	-- hit and patched three times in the places somebody happened to notice. Sweeping the whole panel fixes it
+	-- everywhere at once, including the two previews and anything added to this panel later.
+	--
+	-- DONE AS A SWEEP RATHER THAN AT EACH CALL SITE for a second reason: mkFrame/mkLabel/mkButton are shared
+	-- by the ENTIRE HUD (sidebar, stats panel, shop, gas meter). Fixing the helpers would silently restyle
+	-- every panel in the game, which is far outside "the Seasonal Pets panel". This touches this panel only.
+	--
+	-- ===== WHY ApplyStrokeMode IS NOT SET TO Border ON TEXT =====
+	-- On a TextLabel with a transparent background, Contextual strokes the GLYPHS -- which is the whole point
+	-- of using UIStroke for a text outline. Border strokes the label's rectangular box instead, so forcing
+	-- Border everywhere would put a rectangle round each caption and leave the letters unoutlined: the exact
+	-- opposite of what a text outline is for. Border is therefore applied to the non-text frames (where it is
+	-- explicit rather than inferred) and text keeps Contextual.
+	for _, d in ipairs(lockPanel:GetDescendants()) do
+		if d:IsA("GuiObject") then
+			d.BorderSizePixel = 0
+		elseif d:IsA("UIStroke") then
+			-- Round joins on every stroke: the default Miter spikes at a tight corner, which is what makes a
+			-- 2px accent outline look chipped where it turns.
+			d.LineJoinMode = Enum.LineJoinMode.Round
+			local par = d.Parent
+			if par and not (par:IsA("TextLabel") or par:IsA("TextButton") or par:IsA("TextBox")) then
+				d.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+			end
+		end
+	end
+	lockPanel.BorderSizePixel = 0 -- GetDescendants does not include the panel itself
+
+	-- THE TEXT OUTLINES. There were no TextStrokeTransparency outlines in this panel to replace -- these
+	-- labels had no outline at all, which is why white-on-dark read as soft rather than as jagged. This adds
+	-- the real thing: a UIStroke at 1.5 with round joins, which anti-aliases with the glyph instead of the
+	-- hard aliased edge TextStrokeTransparency produces.
+	--
+	-- ONLY the labels tagged CrispText, and only ones with a TRANSPARENT background -- a filled text object
+	-- resolves Contextual to Border, so a stroke there would outline the fill and never touch the letters.
+	for _, d in ipairs(lockPanel:GetDescendants()) do
+		if d:IsA("TextLabel") and d:GetAttribute("CrispText") and d.BackgroundTransparency >= 1
+			and not d:FindFirstChildOfClass("UIStroke") then
+			local ts = Instance.new("UIStroke")
+			ts.Color = Color3.fromRGB(32, 20, 12)
+			ts.Thickness = 1.5
+			ts.Transparency = 0.15
+			ts.LineJoinMode = Enum.LineJoinMode.Round
+			ts.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+			ts.Parent = d
 		end
 	end
 
@@ -1213,7 +1393,7 @@ do
 		dot.Size = UDim2.fromOffset(18, 18)
 		dot.AnchorPoint = Vector2.new(1, 0)
 		dot.Position = UDim2.new(1, -2, 0, -2)
-		dot.BackgroundColor3 = Color3.fromRGB(225, 50, 50)
+		dot.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
 		dot.ZIndex = 8
 		dot.Visible = false
 		dot.Parent = parent
@@ -1360,9 +1540,31 @@ do
 		end
 		row.MouseButton1Click:Connect(function() playUIClick(); setMoreOpen(false); pcall(e.action) end)
 	end
-		mkCrateDot(stomachSideFrame, crateReadyDots) -- "!" dot on the MORE button itself
-		-- Wiggle the WHOLE MORE+ button whenever the daily-rewards crate is claimable OR the daily tasks are
-		-- unfinished (same ±8° rotation oscillation as the gut button). Driven by the poll below.
+		-- ===== NO BADGE ON THE MORE+ BUTTON ITSELF =====
+		-- It used to wear a red "!" dot as well as the dots on the rows inside the menu, so a claimable crate
+		-- was shouted three times over: dot on the button, dot on the row, and the button wiggling. The rows
+		-- keep their dots -- inside the menu a dot says WHICH thing is waiting, which is information. On the
+		-- button it only said "something", which the wiggle already says.
+		--
+		-- Any dot a stale baked-in copy of this script parented to the button is destroyed on sight, because
+		-- the duplicate would otherwise put its own back and nothing here would remove it (Rojo only ADDS).
+		for _, d in ipairs(stomachSideFrame:GetChildren()) do
+			if d.Name == "CrateReadyDot" then d:Destroy() end
+		end
+		-- ===== THE WIGGLE MEANS "COME AND COLLECT SOMETHING", AND ONLY THAT =====
+		-- It used to fire on `ready OR pending`, where `pending` is _G.dailyTasksPending -- true while ANY
+		-- daily task is still outstanding. That is true from the moment a player joins until they have done
+		-- all four, which is to say almost always: the button wiggled all day, every day, over a to-do list.
+		--
+		-- A to-do is not a reward. Nothing is waiting to be collected, nothing expires if it is ignored, and
+		-- the tasks tick off by PLAYING rather than by opening a menu -- so the button was asking to be
+		-- pressed for something pressing it could not do. A control that moves permanently stops reading as
+		-- movement at all, and that costs the one case that matters: a crate you can actually claim.
+		--
+		-- So the wiggle follows the CRATE alone. The daily-tasks dot is untouched and still shows on the row
+		-- inside the menu, where a dot says WHICH thing wants attention -- that is information. On the button
+		-- it only ever said "something", and said it constantly.
+		-- (Same 8-degree rotation oscillation as the gut button. Driven by the poll below.)
 		local moreWiggling, moreWiggleTween = false, nil
 		local function stopMoreWiggle()
 			if not moreWiggling then return end
@@ -1378,15 +1580,42 @@ do
 			moreWiggleTween = TweenService:Create(stomachSideFrame, info, { Rotation = 8 })
 			moreWiggleTween:Play()
 		end
-		task.spawn(function() -- poll every 1s; toggles the row dots + MORE-button dot + wiggle
+		task.spawn(function() -- poll every 1s; toggles the row dots + the wiggle
 			while true do
-				local ready   = (_G.crateIsClaimable and _G.crateIsClaimable()) == true
+				-- ===== THE BUTTON MOVES FOR WHAT THE BUTTON CAN OPEN =====
+				-- `ready` is the Mystery Meteor Crate. It USED to be the right question, back when MORE+ had a
+				-- Daily Rewards row that fired it. It is not any more: REWARDS is the DAILY / TIMED /
+				-- COMMUNITY hub and the crate is not on it, so a claimable crate would wiggle this button
+				-- toward something pressing it cannot reach -- and for a fresh player the crate is claimable
+				-- from the moment they join, which is why the button never stopped.
+				--
+				-- `_G.rewardsPending` is the hub's own answer across its three tabs, published by
+				-- DailyStreak.client. That is the same thing RailGuard's Rewards badge counts, so the tile and
+				-- the card inside it now agree about whether there is anything waiting.
+				local claim   = (_G.rewardsPending    and _G.rewardsPending())    == true
+				local ready   = (_G.crateIsClaimable  and _G.crateIsClaimable())  == true
 				local pending = (_G.dailyTasksPending and _G.dailyTasksPending()) == true
 				-- Two INDEPENDENT dot groups: claiming the crate must not clear the daily-tasks dot, and
 				-- finishing your tasks must not clear the crate's. They just happen to share one wiggle.
 				for _, d in ipairs(crateReadyDots)   do d.Visible = ready   end
 				for _, d in ipairs(taskPendingDots)  do d.Visible = pending end
-				if ready or pending then startMoreWiggle() else stopMoreWiggle() end
+				if claim then   -- NOT `ready` and NOT `pending` -- only what REWARDS itself can hand over
+					startMoreWiggle()
+				else
+					-- ===== STATIC WHEN THERE IS NOTHING TO CLAIM =====
+					-- Not just "stop our tween" -- ASSERT the resting pose every second. A button that moves
+					-- means "look at me", and a button that means that permanently means nothing at all. The
+					-- reset covers movement started somewhere this script does not own: a stale duplicate's
+					-- wiggle, a UIScale left behind by a hover that never got its MouseLeave (common on
+					-- touch), or a cancelled tween that stopped mid-swing.
+					stopMoreWiggle()
+					if stomachSideFrame.Rotation ~= 0 then stomachSideFrame.Rotation = 0 end
+					local sc = stomachSideFrame:FindFirstChildOfClass("UIScale")
+					if sc and sc.Scale ~= 1 then sc.Scale = 1 end
+					for _, d in ipairs(stomachSideFrame:GetChildren()) do
+						if d.Name == "CrateReadyDot" then d:Destroy() end
+					end
+				end
 				task.wait(1)
 			end
 		end)
@@ -1542,14 +1771,15 @@ sg=Instance.new("ScreenGui"); sg.Name="FlightStatsGui"; sg.ResetOnSpawn=false; s
 -- left of the gas meter and scales WITH it (applyScaling scales the whole bottom cluster). This keeps
 -- it in the right relative spot on BOTH PC and mobile and clear of the left-side STOMACH button column,
 -- instead of a fixed screen offset that drifted onto the buttons when the meter scaled down on phones.
-_G.gui.flightStatsFrame=mkFrame(_G.gui.gasMeterPanel,{Size=UDim2.new(0,130,0,140),Position=UDim2.new(0,-12,0.5,0),AnchorPoint=Vector2.new(1,0.5),BackgroundColor3=Color3.fromRGB(30,100,200),BackgroundTransparency=0.1,Visible=false})
-mkCorner(_G.gui.flightStatsFrame,12); mkStroke(_G.gui.flightStatsFrame,Color3.new(1,1,1),2)
-_G.gui.fsHeight=mkLabel(_G.gui.flightStatsFrame,{Text="\xF0\x9F\x93\x8f Height: 0",Font=Enum.Font.GothamBold,TextSize=12,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,-10,0,38),Position=UDim2.new(0,6,0,6),TextXAlignment=Enum.TextXAlignment.Left,BackgroundTransparency=1})
-mkStroke(_G.gui.fsHeight,Color3.new(0,0,0),1)
-_G.gui.fsRings=mkLabel(_G.gui.flightStatsFrame,{Text="\xF0\x9F\x92\x8d Rings: 0",Font=Enum.Font.GothamBold,TextSize=12,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,-10,0,38),Position=UDim2.new(0,6,0,48),TextXAlignment=Enum.TextXAlignment.Left,BackgroundTransparency=1})
-mkStroke(_G.gui.fsRings,Color3.new(0,0,0),1)
-_G.gui.fsAir=mkLabel(_G.gui.flightStatsFrame,{Text="\xe2\x8f\xb1 Air: 0s",Font=Enum.Font.GothamBold,TextSize=12,TextColor3=Color3.new(1,1,1),Size=UDim2.new(1,-10,0,38),Position=UDim2.new(0,6,0,90),TextXAlignment=Enum.TextXAlignment.Left,BackgroundTransparency=1})
-mkStroke(_G.gui.fsAir,Color3.new(0,0,0),1)
+-- FLIGHT STATS PANEL REMOVED. This was the blue rounded box left of the gas meter carrying the Height,
+-- Bubbles and Air rows. It is gone -- frame, all three labels, their strokes and the corner.
+--
+-- Nothing else moves as a result: it was parented to gasMeterPanel but ABSOLUTELY positioned
+-- (AnchorPoint (1, 0.5) at (0, -12, 0.5, 0)), i.e. floating outside the meter with no layout under it,
+-- so no sibling was ever laid out around it and no sibling shifts now that it is gone.
+--
+-- The numbers are not lost: peak height and airtime are both on the per-flight FLIGHT DEBUG line, and
+-- bubbles pay out coins on pickup, so nothing about a flight became unobservable.
 
 -- ===== GAS METER: kill the dark band in the REAL gas meter -- the separate "GasMeterGui" ScreenGui =====
 -- The visible gas meter is its OWN ScreenGui "GasMeterGui" (a pre-placed leftover, NOT the BottomStack one the
@@ -2032,6 +2262,75 @@ _G.updateTrailSelector=updateTrailSelector
 
 -- ===== REMOTE EVENTS =====
 local RS = game:GetService("ReplicatedStorage")
+
+--======================================================================
+-- THE ARRIVAL BLEED  (you touch down on the next island empty)
+--======================================================================
+-- A flight used to END with whatever was left in the tank, and that leftover carried into the next flight. With
+-- a big gut that is a free head start: you arrive at island 6 still holding most of a tank and the next one or
+-- two climbs cost nothing, so a gut quietly bought 1-3 flights rather than one.
+--
+-- ===== IT IS PROXIMITY, NOT ALTITUDE =====
+-- The obvious version -- scale the tank by height -- is wrong twice over. It would bleed you the whole way up
+-- (the climb is where the fuel is FOR), and it cannot tell "level with the island" from "at the island": the
+-- stands are hundreds of studs apart horizontally (island 4's is at x190 z-96, island 5's at x-227 z94), so
+-- matching an island's Y can leave you 450 studs away from it with nowhere to land.
+--
+-- So the bleed is DISTANCE TO THE STAND, in 3D, and it does nothing at all until you are inside the radius:
+-- the flight burns at the normal per-gut drain for all of the climb, and only in the last 300 studs does the
+-- ceiling come down -- linearly, so it reaches zero exactly as you reach the island.
+--
+-- Only ever a CEILING (math.min), never a refill: getting further away again cannot hand fuel back.
+--
+-- The target is the nearest stand ABOVE you, which is the one you are flying to. Islands stack, so that is
+-- always the next rung -- and it is why a big gut can no longer skip one: you arrive at the next island empty
+-- instead of sailing past it.
+local islandStands = {}            -- [islandNum] = Vector3 of that island's landing stand
+-- ===== OFF (radius 0). Fuel is NOT wiped on touchdown any more (guide rule 26) =====
+-- The bleed existed to stop a big gut banking a tank past the island it was bought for. The wall/stretch
+-- spacing makes that impossible by construction: every gut's full-tank climb + coast falls 2% short of the
+-- next gut's first gap, verified in FlightTuning. Leftover fuel now carries into the next flight -- the
+-- player keeps what they earned. Kept at 0 rather than deleted so the mechanism is one number away.
+local ARRIVAL_BLEED_RADIUS = 0
+-- ===== THE BUFFER =====
+-- ZERO. Arriving on an island you have never reached before empties the tank completely.
+--
+-- It used to stop at 5 -- a nudge, under one Bean (8), meant to let you catch yourself after a mistimed
+-- touchdown on the lip of an island. In practice it just meant every new island greeted you with a meter
+-- that was not empty but could not fly either, which reads as a bug rather than as a mercy: the bar shows
+-- fuel, the button does nothing useful with it. Empty is the honest state, and the shop's anti-strand grant
+-- (BuyFoodEvent, server side) is the real safety net for landing broke -- it hands over a whole serving
+-- rather than a fraction of a second of lift.
+--
+-- Still a named constant, not a literal, so putting the cushion back is one number.
+local ARRIVAL_BUFFER_POWER = 0
+task.spawn(function()
+	-- Spawned, never a top-level WaitForChild: the stands are published a few seconds after the server boots
+	-- and blocking this chunk on them would hold up the whole HUD.
+	local sre = RS:WaitForChild("StandsReadyEvent", 60)
+	if not sre then return end
+	sre.OnClientEvent:Connect(function(data)
+		local t = {}
+		for islandNum, pos in pairs(data) do
+			local n = tonumber(islandNum)
+			if n and pos then t[n] = Vector3.new(pos.x, pos.y, pos.z) end
+		end
+		islandStands = t
+	end)
+end)
+
+-- Returns the fraction of the tank still allowed (0..1), or nil when nothing is close enough to matter.
+local function arrivalBleedFrac(from)
+	local nearest
+	for _, p in pairs(islandStands) do
+		if p.Y > from.Y + 8 then -- ABOVE us: the island being flown to, not one already climbed past
+			local d = (p - from).Magnitude
+			if not nearest or d < nearest then nearest = d end
+		end
+	end
+	if not nearest or nearest >= ARRIVAL_BLEED_RADIUS then return nil end
+	return nearest / ARRIVAL_BLEED_RADIUS
+end
 local BuyFoodEvent=RS:FindFirstChild("BuyFoodEvent") or RS:WaitForChild("BuyFoodEvent",10)
 local RegenEvent=RS:FindFirstChild("RegenEvent") or RS:WaitForChild("RegenEvent",10)
 local CoinEvent=RS:FindFirstChild("CoinEvent") or RS:WaitForChild("CoinEvent",10)
@@ -2175,12 +2474,13 @@ task.spawn(function()
 		-- PlayerStats owns the real check and rejects the purchase itself, so these numbers just make
 		-- the shop tell the truth instead of a tap failing silently. Keep them in step with the server
 		-- table; if they ever drift, the server wins and the button lies (which is the safe direction).
-		{name="Tiny Gut",     maxPower=100,  cost=0,      robux=false, island=1,  emoji="\xF0\x9F\x91\xB6"},
-		{name="Small Gut",    maxPower=182,  cost=1600,   robux=false, island=2,  emoji="\xF0\x9F\xA7\x92"},
-		{name="Medium Gut",   maxPower=520,  cost=3000,   robux=false, island=4,  emoji="\xF0\x9F\x90\xB7"},
-		{name="Large Gut",    maxPower=1075, cost=5200,   robux=false, island=7,  emoji="\xF0\x9F\x90\x98"},
-		{name="XL Gut",       maxPower=2146, cost=8000,   robux=false, island=11, emoji="\xF0\x9F\x92\xAA"},
-		{name="Iron Gut",     maxPower=3218, cost=11000,  robux=false, island=14, emoji="\xF0\x9F\x8F\x8B\xEF\xB8\x8F"},
+		{name="Tiny Gut",     maxPower=120,  cost=0,      robux=false, island=1,  emoji="\xF0\x9F\x91\xB6"},
+		{name="Small Gut",    maxPower=270,  cost=1000,   robux=false, island=2,  emoji="\xF0\x9F\xA7\x92"},
+		{name="Medium Gut",   maxPower=470,  cost=2000,   robux=false, island=4,  emoji="\xF0\x9F\x90\xB7"},
+		{name="Large Gut",    maxPower=620,  cost=4000,   robux=false, island=6,  emoji="\xF0\x9F\x90\x98"},
+		{name="XL Gut",       maxPower=1080, cost=5000,   robux=false, island=8,  emoji="\xF0\x9F\x92\xAA"},
+		{name="XXL Gut",      maxPower=1710, cost=6000,   robux=false, island=10, emoji="\xF0\x9F\xA6\x8F"},
+		{name="Iron Gut",     maxPower=2600, cost=11500,  robux=false, island=12, emoji="\xF0\x9F\x8F\x8B\xEF\xB8\x8F"},
 		{name="Infinite Gut", maxPower=9999, cost=499,    robux=true,  island=1,  emoji="\xe2\x99\xbe\xef\xb8\x8f"},
 	}
 	local BuyStomachEvent=RS:WaitForChild("BuyStomachEvent",30)
@@ -2221,13 +2521,23 @@ task.spawn(function()
 		end
 		return best
 	end
+	-- ISLAND GATE. A tier the player has not reached the island for CANNOT BE BOUGHT -- PlayerStats rejects
+	-- the purchase and the shop paints a padlock instead of a price -- so it must not wiggle the button or
+	-- fire the "Stomach Upgrade Available!" banner either. This used to test COINS ALONE, which nagged a
+	-- player on island 3 with 2,000 coins to buy a Medium Gut that the shop was showing them a padlock for.
+	-- Same rule as the shop's own isLocked() below, so the banner and the green BUY button always agree.
+	local function tierUnlocked(tier)
+		if not tier then return false end
+		if tier.robux or not tier.island or tier.island <= 1 then return true end
+		return (player:GetAttribute("HighestIsland") or 1) >= tier.island
+	end
 	local function checkGutAfford()
 		local ls = player:FindFirstChild("leaderstats")
 		if not ls then stopGutWiggle(); _G.gutUpgradeAffordable = false; return end
 		local sm = ls:FindFirstChild("StomachMax"); local c = ls:FindFirstChild("Coins")
 		if not (sm and c) then stopGutWiggle(); _G.gutUpgradeAffordable = false; return end
 		local nextTier = nextCoinGutTier(sm.Value)                       -- nil once every coin tier is owned
-		local affordable = (nextTier ~= nil) and (c.Value >= nextTier.cost)
+		local affordable = (nextTier ~= nil) and tierUnlocked(nextTier) and (c.Value >= nextTier.cost)
 		if affordable then startGutWiggle() else stopGutWiggle() end
 		_G.gutUpgradeAffordable = affordable  -- read by the periodic banner scheduler
 	end
@@ -2240,6 +2550,9 @@ task.spawn(function()
 		local smv = ls:WaitForChild("StomachMax", 30)
 		if coins then coins:GetPropertyChangedSignal("Value"):Connect(checkGutAfford) end
 		if smv then smv:GetPropertyChangedSignal("Value"):Connect(checkGutAfford) end
+		-- and on the ISLAND itself, so a player who has been saving arrives on the gating island and the
+		-- prompt appears on landing rather than waiting for their next coin tick.
+		player:GetAttributeChangedSignal("HighestIsland"):Connect(checkGutAfford)
 		checkGutAfford()
 	end)
 
@@ -2318,6 +2631,8 @@ task.spawn(function()
 							shakeButton(buyBtn)
 						end
 						pcall(function() BuyStomachEvent:FireServer(tier.maxPower, tier.cost) end)
+						-- A gut upgrade is a permanent step up, not a purchase -- `unlock`, the same thing a new island gets.
+						if _G.hapticPulse then pcall(_G.hapticPulse, "unlock") end
 					end
 			end)
 			task.spawn(function()
@@ -2335,12 +2650,13 @@ task.spawn(function()
 	end
 
 	local stomachNames = {
-		[100]  = {"\xF0\x9F\x91\xB6", "Tiny Gut"},
-		[182]  = {"\xF0\x9F\xAB\x83", "Small Gut"},
-		[520]  = {"\xF0\x9F\x90\xB7", "Medium Gut"},
-		[1075] = {"\xF0\x9F\x90\x98", "Large Gut"},
-		[2146] = {"\xF0\x9F\x92\xAA", "XL Gut"},
-		[3218] = {"\xF0\x9F\x8F\x8B\xEF\xB8\x8F", "Iron Gut"},
+		[120]  = {"\xF0\x9F\x91\xB6", "Tiny Gut"},
+		[270]  = {"\xF0\x9F\xAB\x83", "Small Gut"},
+		[470]  = {"\xF0\x9F\x90\xB7", "Medium Gut"},
+		[620]  = {"\xF0\x9F\x90\x98", "Large Gut"},
+		[1080] = {"\xF0\x9F\x92\xAA", "XL Gut"},
+		[1710] = {"ð¦", "XXL Gut"},
+		[2600] = {"\xF0\x9F\x8F\x8B\xEF\xB8\x8F", "Iron Gut"},
 		[9999] = {"\xe2\x99\xbe\xef\xb8\x8f", "Infinite Gut"},
 	}
 	if StomachUpdateEvent then
@@ -2464,18 +2780,25 @@ print("[BIRD] attack drain changed 50% -> 20% of fart power.")
 -- the player can press fart again to climb on the next attempt. Optional small downward knock (pushDown,
 -- studs/sec): with the upward BodyVelocity now gone, setting Y-velocity sticks; gravity continues. 0 = rely
 -- on the natural fall only.
+-- SPACE JUNK HALVES THE TANK. The rise is NOT ended -- the player keeps climbing on half the fuel and falls
+-- when that runs out -- but the hit is flagged so the landing that follows empties them to the 5-power
+-- buffer. A small downward shove sells the impact without taking the flight away.
 _G.applyJunkHit = function(pushDown)
-	local meter = gasMeter
-	if _G.stopFlying then _G.stopFlying() end   -- normal end-of-rise fall; power preserved
+	local before = gasMeter
+	_G.junkHitThisFlight = true
+	gasMeter = gasMeter * 0.5
+	currentPower = (stomachMax > 0) and (gasMeter / maxGasMeter) * stomachMax or 0
+	updateMeter()
 	if pushDown and pushDown > 0 then
 		local char = player.Character
 		local hrp = char and char:FindFirstChild("HumanoidRootPart")
 		if hrp then
 			local v = hrp.AssemblyLinearVelocity
-			hrp.AssemblyLinearVelocity = Vector3.new(v.X, -pushDown, v.Z)
+			hrp.AssemblyLinearVelocity = Vector3.new(v.X, math.min(v.Y, 0) - pushDown, v.Z)
 		end
 	end
-	print(string.format("JUNK HIT: rise ended (fall state), meter PRESERVED at %.1f (no drain)", meter))
+	if _G.hapticPulse then pcall(_G.hapticPulse, "fail") end
+	print(string.format("JUNK HIT: meter %.1f -> %.1f (halved), flight continues", before, gasMeter))
 end
 
 -- Rainbow-beam hit (called from the beam system's client listener): knock the player down.
@@ -2727,7 +3050,7 @@ task.spawn(function()
 				-- Food stand locked: this island's pet quest isn't done yet. Styled HERO notice (matches the game),
 				-- with a plain floating-text fallback. Never opens a shop.
 				local petName = GATE_PET_NAMES[needPet] or "pet"
-				local msg = "Finish the " .. petName .. " quest to unlock this food stand!"
+				local msg = "FINISH THE " .. string.upper(petName) .. " QUEST!"
 				if _G.NotifyCenter and _G.NotifyCenter.push then
 					_G.NotifyCenter.push({ top = "\xF0\x9F\x94\x92 Food Stand Locked", text = msg, color = Color3.fromRGB(255,190,60), priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.PURCHASE or nil, duration = 3.5 })
 				else
@@ -2740,14 +3063,20 @@ task.spawn(function()
 				-- open, which is the wrong advice entirely -- a bigger stomach does not unlock this food.
 				local isl = tonumber(needPet) or 0
 				local msg = isl > 0
-					and ("Reach Island " .. isl .. " to unlock " .. tostring(foodName) .. "!")
-					or  "You have not reached this food's island yet!"
+					and ("REACH ISLAND " .. isl .. " FIRST!")
+					or  "CLIMB HIGHER FIRST!"
 				if _G.NotifyCenter and _G.NotifyCenter.push then
 					_G.NotifyCenter.push({ top = "\xF0\x9F\x94\x92 Food Locked", text = msg, color = Color3.fromRGB(255,190,60), priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.PURCHASE or nil, duration = 3.5 })
 				else
 					showFloatingText("\xF0\x9F\x94\x92 " .. msg, Color3.fromRGB(255,190,60))
 				end
 			elseif reason == "food_below_island" then
+				-- DEAD PATH, KEPT ON PURPOSE. The island floor was removed from PlayerStats.BuyFoodEvent --
+				-- every food you have unlocked is now on sale at every stand, and the server never sends this
+				-- reason any more. The branch stays because a stale copy of the old PlayerStats baked into the
+				-- place file still would (see the Rojo note in CLAUDE.md), and a refusal with no explanation is
+				-- worse than an explanation for a rule that is gone.
+				--
 				-- FLOOR: the food is from an island BELOW the one the player is standing on. Third arg is the
 				-- island they are currently on. Its own branch for the same reason as food_locked -- the
 				-- generic branch opens the gut shop, and a bigger gut has nothing to do with this refusal.
@@ -2943,6 +3272,22 @@ local function onLand(char)
 		if hum.FloorMaterial ~= Enum.Material.Air and lastMaterial == Enum.Material.Air then
 			if not isFlying then
 				local hrpNow = char:FindFirstChild("HumanoidRootPart")
+				-- TOUCHDOWN SETTLES THE DESCENT. Pay whatever fell since the last tick, then close the book:
+				-- once you are standing, nothing more is owed -- otherwise landing on a new island and hopping
+				-- off it would collect the 2x fall bonus on top of the 1x landing, a free crossing every time.
+				if hrpNow and not flightPrepaid and flightDescentOwed > 0 then
+					local studs = math.min(flightDescentOwed, math.max(0, flightLastY - hrpNow.Position.Y))
+					if studs > 0 then
+						local pay = studs * COIN_PER_STUD * DESCENT_PAY_MULT * (_G.serverEventCoinMult or 1)
+						-- PET: VOID DRAGON'S "VOID TITHE" (+10%..+50%). Pays you for the half of the loop nothing else
+						-- rewards -- the flight that did not make it. Read from the server-written PetAbil_ attribute,
+						-- so the client cannot invent it, and the total still passes CoinEvent's cap and budget.
+						pay = pay * (player:GetAttribute("PetAbil_coinFall") or 1)
+						flightCoinsEarned = flightCoinsEarned + pay
+						pcall(function() CoinEvent:FireServer(pay) end)
+					end
+				end
+				flightDescentOwed = 0
 				if hrpNow then
 					for _,pad in ipairs(_G.landingPads) do
 						if pad and pad.Parent then
@@ -2954,7 +3299,7 @@ local function onLand(char)
 						end
 					end
 				end
-				_G.hasLanded=true; ringStreak=0; ringMultiplier=1
+				_G.hasLanded=true; ringStreak=0
 				-- Keep whatever gas was NOT burned in flight (currentPower already reflects the
 				-- remaining tank). Do NOT force it to 0 — only respawn/death resets to 0.
 				-- Sync the actual remaining power to the server (decrease-only clamp prevents inflation).
@@ -2966,6 +3311,37 @@ local function onLand(char)
 				local airtime = (flightStartTime > 0) and (tick() - flightStartTime) or 0
 				local realAttempt = (_G.flewSinceGrounded == true) and airtime > 3
 				_G.flewSinceGrounded = false
+				-- END A FLIGHT ON EXACTLY ZERO. The bleed above already empties you on an arrival, but a flight
+				-- that ends anywhere else -- short of the island, or back where you started -- would otherwise
+				-- bank its remainder into the next launch. Every flight now starts from food you bought for it.
+				--
+				-- Gated on realAttempt (actually launched, and airborne over 3s), which is the same filter the
+				-- logging uses: a spawn fall, a post-teleport settle or a walk off a ledge must not cost the
+				-- player the tank they just paid for.
+				-- ===== WHEN A LANDING EMPTIES THE TANK =====
+				-- Only in two cases:
+				--   1. you touched down on an island you had NEVER reached before (the arrival that earns it), or
+				--   2. space junk knocked you out of this flight.
+				-- Every other landing -- cancelling mid-air and dropping back onto the island you launched from, or
+				-- landing on an island you already own -- keeps whatever fuel is left, so a cancelled flight is not
+				-- a wasted meal.
+				local landedIdx, landedDist = 1, math.huge
+				if hrpNow and _G.ISLAND_POS then
+					for i, p in ipairs(_G.ISLAND_POS) do
+						local d = (hrpNow.Position - Vector3.new(p.x, p.y, p.z)).Magnitude
+						if d < landedDist then landedDist = d; landedIdx = i end
+					end
+				end
+				local firstTimeHere = landedIdx > (_G.dbgIslandBefore or (player:GetAttribute("HighestIsland") or 1))
+				if realAttempt and (firstTimeHere or _G.junkHitThisFlight) then
+					-- Still math.min rather than a bare assignment: at a buffer of 0 the two are identical, but
+					-- the moment ARRIVAL_BUFFER_POWER is raised again this must never TOP UP someone who landed
+					-- on less than it.
+					currentPower = math.min(currentPower, ARRIVAL_BUFFER_POWER)
+					gasMeter = (stomachMax > 0) and (currentPower / stomachMax) * maxGasMeter or 0
+					updateMeter()
+				end
+				_G.junkHitThisFlight = false
 				pcall(function() if LandingEvent then LandingEvent:FireServer(currentPower, _G.birdHitThisFlight and true or false, realAttempt) end end)
 				task.wait(0.2)
 				updateFartBtn()
@@ -2987,7 +3363,7 @@ local coinTimer = 0
 -- also gate which islands a gut could unlock; unlocking is now physical-landing only, server-side,
 -- so this is left as a readout/reference value rather than a progression gate.
 local function getMaxHeight()
-	return 50 + (stomachMax * 14)
+	return FlightTuning.fullTankClimb(stomachMax)
 end
 
 local highestUnlockedByHeight = 1
@@ -3015,6 +3391,8 @@ local function stopFlying()
 	isFlying = false
 	_G.isFlying = false
 	stopFlightLoop() -- the rise is over: fade the looped flight bed out
+	-- Kill the hum on the SAME frame the rise ends. A loop left running is a phone that never stops buzzing.
+	if _G.hapticLoopStop then pcall(_G.hapticLoopStop, "thrust") end
 	if bodyVel then bodyVel:Destroy(); bodyVel = nil end
 	local char = player.Character
 	if char then
@@ -3023,9 +3401,23 @@ local function stopFlying()
 			local old = hrp:FindFirstChild("FartVelocity")
 			if old then old:Destroy() end
 			hrp.Anchored = false -- never leave the player anchored
+			-- THE BALLISTIC COAST. Thrust is gone but the upward velocity is not: undamped it carries on for
+			-- v^2/2g, which at Iron-Gut speed is enough to push a tier over the next wall gap and make a gut
+			-- optional. Damp it to COAST_DAMPING (0.4): the coast distance becomes 0.4^2 = 16% of undamped,
+			-- 1-22 studs across the seven tiers -- small enough that no gate leaks (verified in FlightTuning).
+			local v = hrp.AssemblyLinearVelocity
+			if v.Y > 0 then
+				hrp.AssemblyLinearVelocity = Vector3.new(v.X, v.Y * FlightTuning.COAST_DAMPING, v.Z)
+			end
+			-- Arm the descent payout: everything between here and the launch altitude is owed at 2x if we fall
+			-- (non-prepaid flights only -- a prepaid flight has already been paid its 3x on the way up).
+			if not flightPrepaid then
+				flightLastY = hrp.Position.Y
+				flightDescentOwed = math.max(0, hrp.Position.Y - ((_G.beamLaunchSnapshot and ISLAND_POS[_G.beamLaunchSnapshot.islandIndex] and ISLAND_POS[_G.beamLaunchSnapshot.islandIndex].y) or hrp.Position.Y))
+			end
 		end
 	end
-	_G.gui.flightStatsFrame.Visible = false; _G.gui.windIndicatorFrame.Visible = false
+	_G.gui.windIndicatorFrame.Visible = false
 	-- FLIGHT DEBUG: ONE complete, labeled balance line per flight. Captured now, but printed ~0.5s
 	-- later so the server has finalized this flight's coins + island progression (landing detection,
 	-- last ring/coin ticks). All values below are snapshots so a quick re-flight can't clobber them.
@@ -3055,9 +3447,10 @@ local function stopFlying()
 	local fBirdHit = _G.birdHitThisFlight and true or false
 	-- [BALANCE LOGGING] affordability of the NEXT gut. Tier list mirrors the shop's tierDefs (function-scoped copy).
 	local dbgTiers = {
-		{name="Tiny Gut",maxPower=100,cost=0,robux=false}, {name="Small Gut",maxPower=182,cost=1600,robux=false},
-		{name="Medium Gut",maxPower=520,cost=3000,robux=false}, {name="Large Gut",maxPower=1075,cost=5200,robux=false},
-		{name="XL Gut",maxPower=2146,cost=8000,robux=false}, {name="Iron Gut",maxPower=3218,cost=11000,robux=false},
+		{name="Tiny Gut",maxPower=120,cost=0,robux=false}, {name="Small Gut",maxPower=270,cost=1000,robux=false},
+		{name="Medium Gut",maxPower=470,cost=2000,robux=false}, {name="Large Gut",maxPower=620,cost=4000,robux=false},
+		{name="XL Gut",maxPower=1080,cost=5000,robux=false}, {name="XXL Gut",maxPower=1710,cost=6000,robux=false},
+		{name="Iron Gut",maxPower=2600,cost=11500,robux=false},
 		{name="Infinite Gut",maxPower=9999,cost=499,robux=true},
 	}
 	task.delay(0.5, function()
@@ -3100,7 +3493,7 @@ local function stopFlying()
 	end)
 	dbgPrepPower = 0; dbgPrepCost = 0
 	if _G.checkMilestones then _G.checkMilestones() end
-	_G.peakHeight = 0; _G.ringsCollectedFlight = 0
+	_G.peakHeight = 0; _G.ringsCollectedFlight = 0; _G.gasBubblesPoppedFlight = 0
 	updateFartBtn()
 end
 _G.stopFlying = stopFlying
@@ -3119,8 +3512,18 @@ local function startFlying()
 	_G.flewSinceGrounded = true -- [LOGGING ACCURACY] a genuine fart-launch happened; only these count as attempts
 	playFartSound() -- random fart SFX on every ascent start (after the guards above pass)
 	startFlightLoop() -- looped flight bed underneath it; runs until the rise ends
+	-- THE FLIGHT HUM (see Haptics.client.luau). A kick on the launch itself, then a continuous loop whose
+	-- strength IS the remaining tank -- so the player feels the fuel running out without watching the meter,
+	-- and it dies under them as they start to fall. Called through _G so this file gains no upvalue.
+	if _G.hapticPulse then pcall(_G.hapticPulse, "bump") end
+	if _G.hapticLoop then
+		pcall(_G.hapticLoop, "thrust", function()
+			if not isFlying then return 0 end
+			return 0.12 + 0.40 * math.clamp(gasMeter / math.max(maxGasMeter, 1), 0, 1)
+		end)
+	end
 	flightStartTime = tick()
-	_G.peakHeight = hrp.Position.Y; _G.ringsCollectedFlight = 0
+	_G.peakHeight = hrp.Position.Y; _G.ringsCollectedFlight = 0; _G.gasBubblesPoppedFlight = 0
 	-- FLIGHT DEBUG: snapshot coins + tank at launch (after this flight's food was bought).
 	dbgCoinsBefore = (leaderstats and leaderstats:FindFirstChild("Coins") and leaderstats.Coins.Value) or 0
 	dbgTankPower = math.floor(currentPower)
@@ -3138,9 +3541,21 @@ local function startFlying()
 		end
 		_G.beamLaunchSnapshot = { power = currentPower, islandIndex = snapIdx }
 	end
-	-- Reset the per-flight height-coin counters (cap + debug) for the new flight.
+	-- Reset the per-flight coin counters for the new flight, then decide PREPAY: predict the peak from the
+	-- tank and compare it to the crossing in front of us (the nearest island above the launch island).
 	flightCoinsEarned = 0
 	dbgFlightRaw = 0
+	flightLastY = hrp.Position.Y
+	flightDescentOwed = 0
+	do
+		local launchIdx = (_G.beamLaunchSnapshot and _G.beamLaunchSnapshot.islandIndex) or 1
+		local here, nxt = ISLAND_POS[launchIdx], ISLAND_POS[launchIdx + 1]
+		flightGap = (here and nxt) and (nxt.y - here.y) or math.huge
+		local predicted = FlightTuning.climbFor(stomachMax, currentPower)
+		flightPrepaid = predicted < flightGap * FlightTuning.PREPAY_SAFETY
+		-- an already-full Infinite Gut is never "prepaid": it can always reach, so it pays the climb only
+		if player:GetAttribute("HasInfiniteGut") == true then flightPrepaid = false end
+	end
 	_G.ringBonusFlight = 0 -- ring-bonus coins earned this flight (for FLIGHT DEBUG); _G avoids adding a chunk local
 	_G.dbgIslandBefore = player:GetAttribute("HighestIsland") or 1 -- to detect LANDING on a new island this flight
 	-- [BALANCE LOGGING] per-flight timing + bird flags (all _G; no module-level locals added to CoreClient).
@@ -3148,6 +3563,7 @@ local function startFlying()
 	_G.dbgGroundTime = _G.dbgLastLandTime and (tick() - _G.dbgLastLandTime) or 0
 	_G.dbgSinceLastLaunch = _G.dbgLastLaunchTime and (tick() - _G.dbgLastLaunchTime) or 0
 	_G.dbgLastLaunchTime = tick()
+	_G.junkHitThisFlight = false     -- reset; applyJunkHit sets true if space junk ends this flight
 	_G.birdSpawnedThisFlight = false -- reset; EventClient sets true if a bird spawns this flight
 	_G.birdHitThisFlight = false     -- reset; EventClient sets true if a bird hits the player this flight
 
@@ -3175,6 +3591,7 @@ player.CharacterAdded:Connect(function(char)
 	if bodyVel then bodyVel:Destroy(); bodyVel = nil end
 	if glideVel then glideVel:Destroy(); glideVel = nil end -- a glide left on the OLD hrp would follow nothing; start clean
 	currentPower = 0; gasMeter = 0; hasBoughtFood = false; _G.hasLanded = true
+	flightDescentOwed = 0; flightPrepaid = false
 	-- LADDERS MUST ALWAYS WORK, on every island and at any height. Climbing is a humanoid STATE, and a single
 	-- SetStateEnabled(Climbing, false) anywhere -- including a baked-in script in the place that isn't in this
 	-- repo -- silently makes every truss in the game unclimbable with no error to trace. Re-assert it on every
@@ -3244,19 +3661,13 @@ player.CharacterAdded:Connect(function(char)
 end)
 if character then onLand(character) end -- no character yet on join (CharacterAutoLoads=false); runs via CharacterAdded on spawn
 
--- Y rise-speed by current (gas-scaled) power. Tuned so each stomach's full-tank CLIMB lands just past
--- ~2 islands (the next island sits at ~93-94% of the climb -> ~3-4 attempts), evening out the
--- per-island difficulty: Tiny->2,3,4 (gate 5), Small->5,6 (gate 7), Medium->7,8 (gate 9),
--- Large->9,10 (gate 11), XL->11,12 (gate 13), Iron->13,14. Thresholds align with the stomach maxPowers.
+-- Y rise-speed by current (gas-scaled) power -- FlightTuning owns it. The band is a fraction of YOUR OWN tank
+-- (8 bands, mild taper, mean exactly 1.0), so a full tank climbs exactly tier.climb studs: Tiny 853.5,
+-- Small 1279.5, Medium 1848, Large 2559, XL 3555, XXL 4977, Iron 7110. Every island gap is solved from
+-- those climbs (wall = previous climb * 1.020, stretch = own climb / 1.031), so a hand-edited speed here
+-- silently breaks a gate. Retime with FlightTuning's TIER_TIME instead -- that moves no gate.
 local function getFlightSpeed(power)
-	local base
-	if power <= 100 then base = 40 -- Tiny band: bumped 33->40 (real data: speed 33 only climbed ~830 from launch, short of island 3). 40 -> ~1006 climb: reaches 3 & 4 with effort, gates at 5.
-	elseif power <= 182 then base = 62
-	elseif power <= 611 then base = 84   -- was 68 (too close to Small's 62 -> Medium barely out-climbed Small). 84 -> Medium clears islands 7,8.
-	elseif power <= 1075 then base = 126 -- was 108 -> Large clears 9,10
-	elseif power <= 2146 then base = 144 -- was 129 -> XL clears 11,12
-	elseif power <= 3218 then base = 226 -- was 196 -> Iron clears 13,14
-	else base = 280 end                  -- was 250 (Infinite gut)
+	local base = FlightTuning.getFlightSpeed(power, stomachMax)
 	-- SHADY SAL'S ROCKET GAS: +35% for five minutes, bought for coins at the secret cave trader. The
 	-- attribute is a server-set expiry (SecretTrader.server.lua, server clock), so this client-side read
 	-- can only ever HONOUR a boost the server granted -- setting the attribute locally does not replicate.
@@ -3328,36 +3739,52 @@ RunService.Heartbeat:Connect(function(dt)
 				-- so they cannot replace eating. Fires whether the player is RISING or FALLING (this loop
 				-- runs OUTSIDE the isFlying block).
 				local sm = stomachMax
-				-- ===== THESE THRESHOLDS WERE A WHOLE TIER OUT OF DATE =====
-				-- They used to read 40 / 96 / 282 / 603 / 1425 / 2639 -- the gut maxPowers from an OLD
-				-- balance pass. The live tiers are 100 / 182 / 520 / 1075 / 2146 / 3218 (see stomachTiers
-				-- in PlayerStats, which is the authority), and because every real tier landed in the NEXT
-				-- stale bracket, EVERY gut was quietly being paid one step too much:
-				--     Tiny 100  -> fell in "<=282"  -> got 4    (intended 3)
-				--     Small 182 -> fell in "<=282"  -> got 4    (intended 3.5)
-				--     Medium 520-> fell in "<=603"  -> got 4.5  (intended 4)
-				--     Large 1075-> fell in "<=1425" -> got 5    (intended 4.5)
-				--     XL 2146   -> fell in "<=2639" -> got 5.5  (intended 5)
-				--     Iron 3218 -> fell through     -> got 6    (intended 5.5)
-				-- Only the Infinite Gut was ever correct, by accident. Worse, Tiny and Small had collapsed
-				-- into the SAME bracket, so the first upgrade bought no bubble improvement at all -- which
-				-- is exactly the progression this table exists to create.
+				-- ===== HOW BIG A GAS BUBBLE IS ALLOWED TO BE =====
+				-- The old flat +2 was 1.7% of a Tiny Gut and 0.08% of an Iron one: by the top of the tower a bubble
+				-- was a rounding error, which is exactly why detouring 110 studs for one felt pointless. The grant
+				-- now scales WITH the gut, so a bubble is the same slice of the tank at every tier.
 				--
-				-- Written as an explicit ordered list keyed to the real tiers, so the next balance change
-				-- shows up here as a name that no longer matches rather than as numbers that silently drift.
-				local BUBBLE_GAS_BOOST =
-					   (sm <= 100  and 3)     -- Tiny Gut
-					or (sm <= 182  and 3.5)   -- Small Gut
-					or (sm <= 520  and 4)     -- Medium Gut
-					or (sm <= 1075 and 4.5)   -- Large Gut
-					or (sm <= 2146 and 5)     -- XL Gut
-					or (sm <= 3218 and 5.5)   -- Iron Gut
-					or 6                      -- Infinite Gut (9999)
-				local gasBefore = gasMeter
-				gasMeter = math.min(maxGasMeter, gasMeter + BUBBLE_GAS_BOOST)
+				-- THE CEILING IS NOT A TASTE CALL. Every wall crossing is set at the previous gut's full climb x
+				-- 1.020: you get 98% of the way on a full tank and cannot land, and that missing 2% IS the 'buy a
+				-- gut' message. A gap holds TWO bubbles, so the PAIR has to stay inside that 2% -- otherwise a full
+				-- tank plus bubbles clears a wall the gut was never meant to clear and the ladder loses a rung.
+				-- MEASURED, not guessed: against the harness's own climb+coast figures, and charging a bubble at
+				-- SPEED_SHAPE's fastest band (1.058) because that is where its power can land, 0.75% each leaves
+				-- 6.9 / 8.4 / 10.4 studs of the wall margin unused on the Medium / Large / XL tanks. 0.8% cuts
+				-- that to ~5 and 0.9% goes NEGATIVE -- a full tank plus two bubbles clears a wall the gut was
+				-- never meant to clear, and the tower loses a rung. So 0.75% is not a preference, it is the top
+				-- of the range: do NOT raise it without re-checking those three numbers.
+				--
+				-- IN RAW POWER THIS ALREADY CLIMBS WITH YOU: 2 on a Tiny Gut, 3.5 on a Medium, 19.5 on an Iron.
+				-- As a fraction of the bar it has to stay flat, because the wall margin it must fit inside is
+				-- itself a flat ~1.9% of the climb at every tier.
+				local GRANT_POWER = math.max(2, sm * 0.0075)
+				local BUBBLE_GAS_BOOST = (sm > 0) and (GRANT_POWER / sm) * maxGasMeter or 0
+				local gasBefore, powerBefore = gasMeter, currentPower
+				-- effGasMax(), NOT maxGasMeter: with the 2x pass the tank legitimately fills past 100, and clamping
+				-- to 100 here would DELETE that overfill -- popping a bubble cost a 2x owner half their tank.
+				gasMeter = math.min(effGasMax(), gasMeter + BUBBLE_GAS_BOOST)
+				-- ...AND WRITE currentPower TOO. THIS is why bubbles felt dead down at Bean Farm. gasMeter is only
+				-- the source of truth while the thrust loop is running; startFlight rebuilds it FROM currentPower on
+				-- every launch. So a bubble popped while COASTING, FALLING or standing -- which is most of a short
+				-- low gap, where you overshoot on a fraction of the tank and let go -- was silently thrown away on
+				-- the next press, and the meter never twitched either (updateMeter draws the bar from currentPower,
+				-- not from gasMeter). Every other gas change in this file resyncs the pair: the bird drain, the junk
+				-- hit, rechargeFartMeter. This one did not. Higher up you hold the button for the whole climb, so
+				-- the pop usually landed inside the flight loop and DID stick -- hence 'only on the lower part'.
+				currentPower = (sm > 0) and (gasMeter / maxGasMeter) * sm or currentPower
 				updateMeter()
-				print(string.format("[BUBBLE] popped - gas before=%.1f, +%.1f (gut %d), gas after=%.1f", gasBefore, BUBBLE_GAS_BOOST, sm, gasMeter))
-				showFloatingText("+\xF0\x9F\x92\xA8 GAS BOOST!", Color3.fromRGB(0, 255, 100))
+				local gasGained = currentPower - powerBefore
+				-- ...AND IT PAYS COINS. Gas alone cannot be made big enough to feel worth the detour without
+				-- breaking the wall above, so the reward for actually going and getting one is paid in the
+				-- currency that has no flight gate on it: half a coin bubble, on top of the gas.
+				local gasCoins = math.floor(_G.pickupCoins("gas", hrp.Position.Y) * (_G.serverEventRingMult or 1))
+				_G.ringBonusFlight = (_G.ringBonusFlight or 0) + gasCoins -- FLIGHT DEBUG's bonus-coin total
+				if CoinEvent then pcall(function() CoinEvent:FireServer(gasCoins) end) end
+				print(string.format("[BUBBLE] popped - meter %.1f -> %.1f, power %.1f -> %.1f (+%.1f on a %d gut), +%d coins", gasBefore, gasMeter, powerBefore, currentPower, gasGained, sm, gasCoins))
+				_G.gasBubblesPoppedFlight = (_G.gasBubblesPoppedFlight or 0) + 1 -- ObjectiveHUD's bubble step counts BOTH kinds
+				showFloatingText(("\xF0\x9F\x92\xA8 +%d GAS   +%d \xF0\x9F\x92\xB0"):format(gasGained + 0.5, gasCoins), Color3.fromRGB(0, 255, 100))
+				if _G.hapticPulse then pcall(_G.hapticPulse, "coin") end -- the hum jumps with the refill
 				task.delay(45, function() if _G.spawnGasPocket then _G.spawnGasPocket(ppos) end end)
 			end
 		else table.remove(_G.activeGasPockets, i) end
@@ -3373,12 +3800,34 @@ RunService.Heartbeat:Connect(function(dt)
 				local rpos, rcol, ridx, rdir = r.pos, r.color, r.idx, r.dir
 				r.part:Destroy(); table.remove(_G.activeRings, i)
 				playRingSound() -- one clean play per ring hit
-				ringStreak = ringStreak + 1; ringMultiplier = 1 + ringStreak * 0.2
-				local bonus = math.floor(15 * ringMultiplier * _G.serverEventRingMult)
+				-- A SET AMOUNT, NOT A STREAK MULTIPLIER. ringStreak still counts -- the 5/10/20 haptic milestones
+				-- below read it -- but it no longer scales the payout: what a bubble is worth is decided by the
+				-- player's own island, not by how lucky their run of pickups has been.
+				ringStreak = ringStreak + 1
+				local bonus = math.floor(_G.pickupCoins("coin", hrp.Position.Y) * (_G.serverEventRingMult or 1))
+				-- PET: MOLTEN BEAN'S "MOLTEN COIN" (8%..40% chance). A CHANCE, not a flat rate, so the payoff is a
+				-- moment you actually see -- the bubble goes molten and pays triple -- rather than a percentage
+				-- quietly folded into a number nobody reads. Worst case at the summit is 460 x 3 x ringMult 10 =
+				-- 13,800, which CoinEvent would reject at its 8,000 single-grant cap, so the roll is skipped while
+				-- a ring event is running rather than silently robbing the player of the whole pickup.
+				if (_G.serverEventRingMult or 1) <= 1 and math.random() < (player:GetAttribute("PetAbil_bubbleGolden") or 0) then
+					bonus = bonus * 3
+					if _G.hapticPulse then pcall(_G.hapticPulse, "milestone") end
+					showFloatingText("MOLTEN! x3", Color3.fromRGB(255, 110, 40))
+				end
 				_G.ringsCollectedFlight = _G.ringsCollectedFlight + 1
 				_G.ringBonusFlight = (_G.ringBonusFlight or 0) + bonus -- track ring-bonus coins for FLIGHT DEBUG
 				if CoinEvent then pcall(function() CoinEvent:FireServer(bonus) end) end
-				showFloatingText("+" .. bonus .. " \xF0\x9F\x92\xB0 x" .. string.format("%.1f", ringMultiplier), Color3.fromRGB(255, 215, 0))
+				showFloatingText("+" .. bonus .. " \xF0\x9F\x92\xB0", Color3.fromRGB(255, 215, 0))
+				-- Every ring is a light pip; 5/10/20 in a row is a real celebration. Ranked above the pip in
+				-- Haptics, so on a streak ring the milestone plays and the pip is dropped rather than muddling it.
+				if _G.hapticPulse then
+					if ringStreak == 5 or ringStreak == 10 or ringStreak == 20 then
+						pcall(_G.hapticPulse, "milestone")
+					else
+						pcall(_G.hapticPulse, "coin")
+					end
+				end
 				task.delay(30, function() if _G.spawnRing then _G.spawnRing(rpos, rcol, ridx, rdir) end end)
 			end
 		else table.remove(_G.activeRings, i) end
@@ -3387,7 +3836,16 @@ RunService.Heartbeat:Connect(function(dt)
 	if isFlying and gasMeter > 0 then
 		-- Button held + gas left -> thrust straight up.
 		if not infiniteGut then
-			gasMeter = math.max(0, gasMeter - DRAIN_RATE * dt) -- normal drain; SKIPPED for Infinite Gut owners (never drains)
+			gasMeter = math.max(0, gasMeter - FlightTuning.drainRateFor(stomachMax) * (_G.serverEventGasDrainMult or 1) * dt) -- per-gut drain (100 / tankSecondsFor); SKIPPED for Infinite Gut owners (never drains)
+			-- ARRIVAL BLEED: inside the last 300 studs of the stand you are climbing to, the tank's ceiling
+			-- falls to zero with the distance, so you touch down empty. Untouched for the rest of the climb.
+			local bleed = arrivalBleedFrac(hrp.Position)
+			if bleed then
+				-- The floor is taken as math.min(gasMeter, ...) too, so it can only ever STOP the bleed early --
+				-- it can never hand fuel back to someone who was already under the buffer.
+				local floorGas = (stomachMax > 0) and (ARRIVAL_BUFFER_POWER / stomachMax) * maxGasMeter or 0
+				gasMeter = math.max(math.min(gasMeter, maxGasMeter * bleed), math.min(gasMeter, floorGas))
+			end
 		end
 		local scaledPower = (gasMeter / maxGasMeter) * stomachMax -- power scaled by remaining gas
 		currentPower = scaledPower
@@ -3427,27 +3885,25 @@ RunService.Heartbeat:Connect(function(dt)
 		if hrp.Position.Y > _G.peakHeight then _G.peakHeight = hrp.Position.Y end
 		checkPeakUnlock(hrp.Position.Y) -- no-op now: islands unlock on physical landing (server-side)
 
-		_G.gui.flightStatsFrame.Visible = true
-		_G.gui.fsHeight.Text = "\xF0\x9F\x93\x8F Height: " .. math.floor(hrp.Position.Y)
-		_G.gui.fsRings.Text = "\xF0\x9F\x92\x8D Rings: " .. _G.ringsCollectedFlight .. " (x" .. string.format("%.1f", ringMultiplier) .. ")"
-		_G.gui.fsAir.Text = "\xe2\x8f\xb1 Air: " .. math.floor(tick() - flightStartTime) .. "s"
+		-- (Height / Bubbles / Air were written here every frame -- panel removed, see the note where it
+		-- used to be built)
 
-		-- COINS: every 0.5s add height * 0.0044 * serverEventCoinMult (default 1, becomes 2 during
-		-- COIN_RUSH so "Double Coins" actually doubles). Server floors/accumulates. No (height/500)^2.
+		-- COINS: per STUD climbed, every COIN_TICK. 1x the climb, or 3x when the flight was prepaid at launch
+		-- (the tank could not reach PREPAY_SAFETY of the gap, so the fall is certain and is paid as we rise).
+		-- serverEventCoinMult is 2 during COIN_RUSH so "Double Coins" actually doubles. Server floors/accumulates.
 		coinTimer = coinTimer + dt
-		if coinTimer >= 0.5 then
+		if coinTimer >= FlightTuning.COIN_TICK then
 			coinTimer = 0
-			local height = math.max(1, hrp.Position.Y)
-			local tickCoins = height * 0.0044 * (_G.serverEventCoinMult or 1)
-			dbgFlightRaw = dbgFlightRaw + tickCoins
-			-- Cap height earnings per flight at max(FLIGHT_COIN_CAP, peakHeight*CAP_PER_HEIGHT), so flying
-			-- higher raises the ceiling and pays out much more. peakHeight only rises, so the cap never
-			-- shrinks mid-descent. Only pay the remaining headroom this tick. Rings are separate + uncapped.
-			local dynCap = math.max(FLIGHT_COIN_CAP, (_G.peakHeight or height) * CAP_PER_HEIGHT)
-			local pay = math.min(tickCoins, dynCap - flightCoinsEarned)
-			if pay > 0 then
+			local climbed = hrp.Position.Y - flightLastY
+			flightLastY = hrp.Position.Y
+			if climbed > 0 then
+				dbgFlightRaw = dbgFlightRaw + climbed
+				-- Void Tithe applies ONLY on a prepaid (already-doomed) flight -- that is the descent payout being
+				-- settled up front. A successful crossing pays 1x and the pet must not touch it.
+				local mult = flightPrepaid and ((1 + DESCENT_PAY_MULT) * (player:GetAttribute("PetAbil_coinFall") or 1)) or 1
+				local pay = climbed * COIN_PER_STUD * mult * (_G.serverEventCoinMult or 1)
 				flightCoinsEarned = flightCoinsEarned + pay
-				pcall(function() CoinEvent:FireServer(pay * 0.70) end) -- [BALANCE] pay out 70% of the capped flight coins (after cap; ring bonus + food cost unaffected)
+				pcall(function() CoinEvent:FireServer(pay) end)
 			end
 		end
 
@@ -3461,6 +3917,10 @@ RunService.Heartbeat:Connect(function(dt)
 		-- Gas just emptied this frame: stop thrusting so the player falls under gravity.
 		if gasMeter <= 0 then
 			currentPower = 0
+			-- OUT OF GAS: three dying coughs that end in silence. The ABSENCE is the message -- the hum the
+			-- player has had in their hand for the whole climb stops, and they are falling. Fired before
+			-- stopFlying() so the loop is still running under the first cough rather than after the cut.
+			if _G.hapticPulse then pcall(_G.hapticPulse, "sputter") end
 			updateMeter()
 			stopFlying()
 		end
@@ -3468,6 +3928,30 @@ RunService.Heartbeat:Connect(function(dt)
 		-- Not thrusting -> guarantee no upward BodyVelocity; fall under gravity.
 		if isFlying then stopFlying() end
 		if bodyVel then bodyVel:Destroy(); bodyVel = nil end
+
+		-- THE DESCENT PAYOUT (non-prepaid flights). Every stud fallen below the peak pays DESCENT_PAY_MULT x
+		-- COIN_PER_STUD, down to the altitude we launched from. A flight that LANDS on the next island stops
+		-- falling at once and owes ~nothing; a flight that drops all the way back pays exactly 2x its climb --
+		-- the 3x-for-a-failure total, streamed rather than lumped so no single tick is a silly number.
+		if not flightPrepaid and flightDescentOwed > 0 then
+			coinTimer = coinTimer + dt
+			if coinTimer >= FlightTuning.COIN_TICK then
+				coinTimer = 0
+				local fell = flightLastY - hrp.Position.Y
+				if fell > 0 then
+					flightLastY = hrp.Position.Y
+					local studs = math.min(fell, flightDescentOwed)
+					flightDescentOwed = flightDescentOwed - studs
+					local pay = studs * COIN_PER_STUD * DESCENT_PAY_MULT * (_G.serverEventCoinMult or 1)
+						-- PET: VOID DRAGON'S "VOID TITHE" (+10%..+50%). Pays you for the half of the loop nothing else
+						-- rewards -- the flight that did not make it. Read from the server-written PetAbil_ attribute,
+						-- so the client cannot invent it, and the total still passes CoinEvent's cap and budget.
+						pay = pay * (player:GetAttribute("PetAbil_coinFall") or 1)
+					flightCoinsEarned = flightCoinsEarned + pay
+					pcall(function() CoinEvent:FireServer(pay) end)
+				end
+			end
+		end
 
 		-- ===== AIR CONTROL (also covers every ORDINARY JUMP, so it must not fight the jump) =====
 		-- This block runs on any airborne frame with no fuel -- falling from a flight AND hopping up a step --
@@ -3973,7 +4457,56 @@ do
 		return false
 	end
 
+	-- ===== THE STUCK-HUD BUG: A MENU THAT CLOSED WITHOUT SAYING SO =====
+	-- MainMenuManager.current is bookkeeping, and bookkeeping goes stale. A panel closed by anything that
+	-- does not call notifyClosed -- an outside click that falls through to poking Visible, a BACK button, a
+	-- hub that rebuilt its own ScreenGui, a stale duplicate script -- leaves `current` naming a menu that is
+	-- no longer on screen. This loop then dutifully keeps the bottom HUD off FOREVER: no gut pill, no gas
+	-- meter, no fart button, and nothing on screen to bring them back. Opening and closing any menu properly
+	-- fixes it, which is exactly why it reads as "I clicked around and it came back".
+	--
+	-- So `current` is no longer taken at its word. Before hiding the HUD on its say-so, we look for a menu
+	-- ACTUALLY ON THE SCREEN. Nothing there -> the flag is stale, it gets cleared, and the HUD comes back.
+	--
+	-- What counts as "a menu is up": an enabled ScreenGui holding a visible card at least MIN_W x MIN_H with
+	-- a mostly-OPAQUE background. That last clause is what separates a menu from the full-screen effect
+	-- layers (WarpEffect, FlashGui, StormGui, the banner StackBoxes) -- those are all transparency 1, which
+	-- is what they are FOR, so they can never be mistaken for a card. It needs no list of menu names and so
+	-- cannot rot the way one would; the only names below are the handful of always-on HUD surfaces.
+	--
+	-- The check can only ever RESTORE the HUD, never hide it -- if it were somehow fooled the result is the
+	-- status quo, not a new way to lose the bar.
 	task.spawn(function()
+		local MIN_W, MIN_H = 380, 260
+		local NOT_A_MENU = {   -- always-on HUD + cinematic layers; everything else is fair game
+			BottomStackGui = true, CoinGui = true, SidebarGui = true, RightPanelGui = true,
+			GasMeterGui = true, NotifyHero = true, NotifySocial = true, ClimbRaceBar = true,
+			LoadingScreen = true, EventChipGui = true, QuestTrackerHud = true, PetQuestUI = true,
+		}
+		local function showing(o, gui)          -- visible all the way up to its ScreenGui
+			local n = o
+			while n and n ~= gui do
+				if not (n:IsA("GuiObject") and n.Visible) then return false end
+				n = n.Parent
+			end
+			return n == gui
+		end
+		local function menuOnScreen()
+			for _, gui in ipairs(PlayerGui:GetChildren()) do
+				if gui:IsA("ScreenGui") and gui.Enabled and not NOT_A_MENU[gui.Name]
+					and gui.Name:sub(1, 11) ~= "GardenIntro" then
+					for _, d in ipairs(gui:GetDescendants()) do
+						if d:IsA("GuiObject") and d.Visible and d.BackgroundTransparency <= 0.6
+							and d.AbsoluteSize.X >= MIN_W and d.AbsoluteSize.Y >= MIN_H
+							and showing(d, gui) then
+							return true
+						end
+					end
+				end
+			end
+			return false
+		end
+
 		while true do
 			task.wait(0.25)
 			pcall(function()
@@ -3982,6 +4515,13 @@ do
 				if not (g and g:IsA("ScreenGui")) then return end
 				local mm = _G.MainMenuManager
 				local menuOpen = mm ~= nil and mm.current ~= nil   -- no exceptions: the food stand hides it too
+				if menuOpen and not menuOnScreen() then
+					-- Stale. Clear it so the NEXT open still switches menus correctly (notifyOpened would
+					-- otherwise try to hide a menu that is already gone), and let the HUD back.
+					warn("[HUD] '" .. tostring(mm.current) .. "' was still flagged open with nothing on screen "
+						.. "-- clearing it and restoring the bottom HUD (a panel closed without notifyClosed)")
+					mm.current, menuOpen = nil, false
+				end
 				local want = not (menuOpen or anyHold() or roasting())
 				if g.Enabled ~= want then g.Enabled = want end
 			end)

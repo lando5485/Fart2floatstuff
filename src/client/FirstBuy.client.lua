@@ -91,7 +91,7 @@ local function celebrate()
 	local NC = _G.NotifyCenter
 	if NC then
 		local spec = {
-			text = "\xF0\x9F\xAB\x98  FIRST MEAL!  Hold the fart button to fly \xE2\x86\x91",
+			text  = "FIRST MEAL -- NOW FLY UP!",
 			sub  = "Food IS fuel \xE2\x80\x94 the fuller the meter, the higher you climb",
 			color = Color3.fromRGB(255, 206, 92),
 			exclusive = true,

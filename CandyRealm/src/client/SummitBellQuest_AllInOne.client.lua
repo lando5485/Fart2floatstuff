@@ -69,20 +69,37 @@ local WARNING_TIME             = 3
 local BLIZZARD_MIN, BLIZZARD_MAX = 5, 8
 local CLEAR_MIN, CLEAR_MAX     = 8, 12
 
--- Wind DRIFT speed (studs/sec) it slides you at, by height. Default walkspeed is ~16, so:
--- low is easily out-walked, mid is a slow forward fight, high edges close to walkspeed so
--- near the summit you can just hold ground -- but stand still anywhere and it carries you off.
+-- Wind DRIFT speed (studs/sec) it slides you at, by height. Default walkspeed is ~16.
+--
+-- ⚠ PUSH_HIGH WAS 15 AGAINST A WALKSPEED OF 16 -- i.e. the blizzard, the quest's headline
+-- hazard, could be beaten by walking forward at any height. The header promises a decision
+-- ("push on, or duck behind cover and lose eight seconds") that the numbers never posed:
+-- there was no wind speed at which cover was worth the detour. 19 at the top means the last
+-- third of the climb genuinely pushes you BACKWARDS during a storm, so the shelter huts and
+-- the COVER_NAMES lookup below finally do something. Low and mid stay walkable on purpose --
+-- the climb should only get scary near the summit.
 local PUSH_LOW       = 6
-local PUSH_MID       = 11
-local PUSH_HIGH      = 15
+local PUSH_MID       = 12
+local PUSH_HIGH      = 19
 
 -- cover: anything solid between you and the wind shelters you. Parts named "cover"
 -- (or rock/cabin/windbreak) always count, whatever their shape.
 local COVER_NAMES    = { "cover", "windbreak", "snowwall" }
 local COVER_REACH    = 12            -- how far upwind we look for something to hide behind
 
--- rolling candy rocks (middle third)
+-- rolling candy rocks (from the middle of the climb up)
+--
+-- ⚠ THIS HAZARD HAD NEVER SPAWNED A SINGLE ROCK. The spawn test read
+--     if frac >= ROCK_START and frac < WIND_START
+-- with ROCK_START = 0.3 and WIND_START = 0.25 -- "at least 0.3 AND below 0.25", which is
+-- unsatisfiable for every possible value of frac. The 5-second ROCK_EVERY loop has been
+-- running since the file was written and has always fallen through. One of the quest's two
+-- advertised hazards did not exist.
+--
+-- ROCK_END replaces the WIND_START mis-use: rocks run from the middle of the climb to the
+-- top of the last stretch, which is what the "(middle third)" comment meant all along.
 local ROCK_START     = 0.3
+local ROCK_END       = 0.92
 local ROCK_EVERY     = 5
 
 -- audio -- YOUR OWN ids. "" = silent, nothing is created for an empty id.
@@ -220,22 +237,25 @@ end
 
 local function bannerText()
 	if rung then return "\xF0\x9F\x8F\x94 You rang the Summit Bell!" end
-	if not accepted then return "\xF0\x9F\x8F\x94 Climb the mountain and ring the Victory Bell!" end
+	if not accepted then
+		return "\xF0\x9F\x8F\x94 Talk to the Candy NPC, then climb up and ring the Victory Bell!"
+	end
 	local frac = climbFrac()
 	if frac >= 0.95 then return "\xF0\x9F\x94\x94 The bell is right there -- RING IT!" end
 	if phase == "blizzard" then
 		return sheltered
-			and ("\xF0\x9F\x8F\x94 Sheltered -- wait it out.  %d%% up"):format(math.floor(frac * 100))
-			or  ("\xF0\x9F\x8C\xA8 BLIZZARD! Find cover!  %d%% up"):format(math.floor(frac * 100))
+			and ("\xF0\x9F\x8F\x94 You're safe! Stay behind cover until it passes.  %d%% up"):format(math.floor(frac * 100))
+			or  ("\xF0\x9F\x8C\xA8 BLIZZARD! Get behind a rock or ledge NOW!  %d%% up"):format(math.floor(frac * 100))
 	end
 	if phase == "warning" then
-		return ("\xE2\x9A\xA0 Blizzard incoming -- get behind something!  %d%% up"):format(math.floor(frac * 100))
+		return ("\xE2\x9A\xA0 Blizzard incoming -- find a rock or ledge to hide behind!  %d%% up"):format(math.floor(frac * 100))
 	end
 	local bl = brokenLeft()
 	if bl > 0 then
-		return ("\xF0\x9F\x94\xA8 Fix the broken stairs to climb!  %d%% up"):format(math.floor(frac * 100))
+		return ("\xF0\x9F\x94\xA8 Press Fix the stairs on the broken steps to keep going!  %d%% up")
+			:format(math.floor(frac * 100))
 	end
-	return ("\xF0\x9F\x8F\x94 Keep climbing!  %d%% up"):format(math.floor(frac * 100))
+	return ("\xF0\x9F\x8F\x94 Keep climbing to the bell at the top!  %d%% up"):format(math.floor(frac * 100))
 end
 local function refreshBanner() label.Text = bannerText() end
 
@@ -458,17 +478,53 @@ end
 -- "snow" exists -- it does NOT wait on the bell, the NPC or anything else, so missing
 -- one of those never stops the snow from falling.
 task.spawn(function()
-	local part = pollFor(function()
+	-- ALL OF THEM, AND ISLAND4'S FIRST. Two bugs lived in the three lines this replaced:
+	--
+	--   1. It returned the FIRST BasePart named "snow" anywhere in Workspace. Thirteen islands
+	--      share one Workspace and "snow" is not a rare name, so WHICH one it grabbed was luck --
+	--      the same name-is-not-an-address bug that put a poison-gas sign on the hay bale factory
+	--      and fired the cold breath on Gumtree Park.
+	--   2. Only that ONE part was ever made pass-through, and only inside buildSnow(). Every OTHER
+	--      part named "snow" kept its CanCollide -- and a shower volume is a big slab hanging in
+	--      the air over the peak, so that is an invisible wall you fly straight into. Exactly the
+	--      thing you cannot see to avoid.
+	--
+	-- So: gather every candidate, prefer the ones actually inside island4, make ALL of the chosen
+	-- ones pass-through, and hang the emitters on the LARGEST (the shower volume, not a snowdrift).
+	local parts = pollFor(function()
+		local isle = Workspace:FindFirstChild(ISLAND_NAME)
+		local mine, any = {}, {}
 		for _, d in ipairs(Workspace:GetDescendants()) do
-			if d:IsA("BasePart") and norm(d.Name) == "snow" then return d end
+			if d:IsA("BasePart") and norm(d.Name) == "snow" then
+				any[#any + 1] = d
+				if isle and d:IsDescendantOf(isle) then mine[#mine + 1] = d end
+			end
 		end
-		return nil
+		-- island4's own win outright. The loose ones are only a fallback for a place where the
+		-- part was never parented under the island model -- without it, moving the part out of
+		-- island4 would silently kill the snow instead of merely misplacing it.
+		if #mine > 0 then return mine end
+		return (#any > 0) and any or nil
 	end, 120)
-	if not part then
+	if not parts then
 		warn("[Summit] no part named 'snow' found anywhere -- no snow will fall")
 		return
 	end
-	snowSource = part
+
+	local best, bestArea = nil, -1
+	for _, p in ipairs(parts) do
+		-- An emitter volume is SCENERY, never geometry: invisible, non-solid, and unqueryable so
+		-- it cannot be mistaken for ground by anything that raycasts down (the reed placer, the
+		-- shelter check, the model-seating script).
+		p.Transparency = 1; p.CanCollide = false; p.CanQuery = false; p.CastShadow = false
+		local a = p.Size.X * p.Size.Z
+		if a > bestArea then best, bestArea = p, a end
+		-- named individually so a part you actually WALK on turning up here is obvious in the log
+		print(("[Summit] snow volume '%s' %.0f x %.0f at (%.0f, %.0f, %.0f) -- now pass-through")
+			:format(p.Name, p.Size.X, p.Size.Z, p.Position.X, p.Position.Y, p.Position.Z))
+	end
+	print(("[Summit] %d snow part(s) made pass-through; emitting from the largest"):format(#parts))
+	snowSource = best
 	buildSnow()
 end)
 
@@ -538,6 +594,10 @@ end
 
 -- ---- weather visuals -----------------------------------------------------
 local function setWeather(level)   -- 0 calm .. 1 full blizzard
+	-- claim the sky off SkyByAltitude for the duration of the blizzard -- it pins Brightness and
+	-- OutdoorAmbient every frame, which is exactly the pair the whiteout needs to move
+	local claims = _G.questSkyClaims; if not claims then claims = {}; _G.questSkyClaims = claims end
+	claims.summit = (level > 0) or nil
 	if not skySaved then
 		skySaved = { fogStart = Lighting.FogStart, fogEnd = Lighting.FogEnd, fogColor = Lighting.FogColor,
 			bright = Lighting.Brightness, amb = Lighting.OutdoorAmbient }
@@ -552,6 +612,7 @@ local function setWeather(level)   -- 0 calm .. 1 full blizzard
 	}):Play()
 end
 local function clearWeather()
+	if _G.questSkyClaims then _G.questSkyClaims.summit = nil end
 	if not skySaved then return end
 	TweenService:Create(Lighting, TweenInfo.new(2), {
 		FogStart = skySaved.fogStart, FogEnd = skySaved.fogEnd, FogColor = skySaved.fogColor,
@@ -775,7 +836,9 @@ task.spawn(function()
 		task.wait(ROCK_EVERY)
 		if accepted and not rung then
 			local frac = climbFrac()
-			if frac >= ROCK_START and frac < WIND_START then
+			-- was `frac < WIND_START` (0.25) against ROCK_START (0.3) -- never true, so no rock
+			-- ever spawned. See the ROCK_END note at the top of the file.
+			if frac >= ROCK_START and frac < ROCK_END then
 				local hrp = hrpOf()
 				if hrp then
 					local from = hrp.Position + Vector3.new((math.random() - 0.5) * 26, 42, (math.random() - 0.5) * 26)
@@ -827,7 +890,7 @@ local function winBanner()
 	local msg = "\xF0\x9F\x94\x94 YOU RANG THE SUMMIT BELL! \xF0\x9F\x8F\x86"
 	if _G.NotifyCenter and _G.NotifyCenter.push then
 		pcall(function() _G.NotifyCenter.push({
-			top      = "â¨ QUEST COMPLETE",
+			top      = "\xE2\x9C\xA8 QUEST COMPLETE",
 			text     = msg,
 			color    = GOLD,
 			priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT or nil,
@@ -935,15 +998,17 @@ local function questPages()
 	if accepted then
 		local bl = brokenLeft()
 		local pages = { ("You're %d%% of the way up!"):format(math.floor(climbFrac() * 100)) }
-		if bl > 0 then pages[#pages + 1] = ("%d flight(s) of stairs still need fixing."):format(bl) end
-		pages[#pages + 1] = "Mind the wind once you're above the clouds."
+		if bl > 0 then
+			pages[#pages + 1] = ("%d stairs broken. Press Fix the stairs."):format(bl)
+		end
+		pages[#pages + 1] = "Blizzard hits? Get behind cover and wait."
 		return pages
 	end
 	return {
-		"See that bell at the top? Nobody's rung it in years.",
-		"Half the stairs have rotted through -- you'll have to fix them as you climb.",
-		"Higher up there's wind that'll knock you clean off. Wait it out on the ledges.",
-		"Get to the summit and RING IT.",
+		"See that bell? Nobody's rung it in years.",
+		"Press Fix the stairs on each broken flight.",
+		"When the blizzard hits, hide behind a rock.",
+		"Reach the summit and RING THAT BELL!",
 	}
 end
 
@@ -968,7 +1033,7 @@ local function wireNPC(head)
 	end
 
 	prompt.Triggered:Connect(function()
-		if index == 0 then pages = questPages() end
+		if index == 0 then pages = (_G.capBubble and _G.capBubble(questPages())) or questPages() end
 		index += 1
 		if not pages or index > #pages then closeDialogue(); return end
 		if index == 2 and not accepted then
@@ -1088,6 +1153,9 @@ end)
 -- /complete -- test command (only near the bell)
 -- ============================================================================
 local function onCommand(msg)
+	-- DEV ONLY. QuestDevGate publishes this; read at command time so load order cannot matter,
+	-- and nil (gate not up yet) refuses. Without it any player could type their way to the whole realm.
+	if not _G.questDevOK then return end
 	local text = tostring(msg or ""):lower()
 
 	-- /blizzard -- kick off a storm right now (only if you're on the mountain, quest live)

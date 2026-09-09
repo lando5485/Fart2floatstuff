@@ -1,13 +1,14 @@
 -- ============================================================================================
 -- GLOBAL LEADERBOARDS (server) -- physical boards in the world, backed by OrderedDataStore.
 --
--- Three boards stand on Bean Farm (island 1), so EVERY player walks past them, including brand-new
+-- Four boards stand on Bean Farm (island 1), so EVERY player walks past them, including brand-new
 -- ones -- a leaderboard nobody sees motivates nobody:
 --     1. FASTEST CLIMB   -> highest island reached, ranked by HOW LONG it took you to get there
 --     2. OG FARTERS      -> the first 100 people ever to play the game. Permanent, and unwinnable once it fills.
 --     3. MOST PLAYTIME   -> total hours played across every session
+--     4. MOST REBIRTHS   -> the Rebirths leaderstat; only players who have actually rebirthed appear
 --
--- The three are deliberately different KINDS of achievement, so they are not the same race three times over:
+-- They are deliberately different KINDS of achievement, so they are not the same race four times over:
 -- FASTEST CLIMB rewards skill, OG FARTERS rewards being early (and can never be taken from you), MOST PLAYTIME
 -- rewards loyalty. A player who is hopeless at the game can still top the last two.
 --
@@ -18,9 +19,11 @@
 -- would publish a number a cheater can simply lie about, and the #1 slot would be a fabricated one
 -- within a day. Coins/island/pets are all written by the server, so they can't be spoofed.
 --
--- Data flow: PlayerStats calls _G.leaderboardSubmit(player) from savePlayerData (autosave + on leave),
--- so a player's entry is only ever written from data the server already trusted enough to persist.
--- Boards re-read the top 10 every REFRESH_SECONDS and redraw.
+-- Data flow: this service owns the submit cadence -- once the player's stats have finished loading, again
+-- every SUBMIT_SECONDS while they are in the server, and once more as they leave. (PlayerStats also calls
+-- _G.leaderboardSubmit from savePlayerData; that call is a bonus, not the mechanism -- see the SUBMIT
+-- section for why relying on it left every board empty.) Boards re-read the top TOP_N every
+-- REFRESH_SECONDS, plus an early redraw of any board a submit just wrote to.
 --
 -- Everything is pcall'd: no DataStore (e.g. Studio with API access off) simply means the boards render
 -- an empty "no scores yet" state and submissions no-op. It can never break the join/save path.
@@ -122,6 +125,22 @@ local BOARDS = {
 		end,
 		fmt = function(n) return n .. (n == 1 and " rebirth" or " rebirths") end,
 	},
+	{
+		-- THE SECRET ONE. Not in the arc: it stands BEHIND the second board, facing the colonnade, so you
+		-- only find it by walking round the back of the Hall of Fame. Pure nonsense to compete on -- every
+		-- real flight ever launched -- which is exactly why people will. `secret` keeps it out of the arc
+		-- layout and the front-facing count; everything else (store, submit, refresh) treats it as a board.
+		key    = "farts",
+		store  = "LB_MostFarts_v1",
+		title  = "\xF0\x9F\x92\xA8 MOST FARTS",
+		color  = Color3.fromRGB(150, 230, 120),
+		secret = true,
+		read   = function(player)
+			local n = _G.playerFartTotal and _G.playerFartTotal[player]
+			return (type(n) == "number" and n > 0) and math.floor(n) or 0
+		end,
+		fmt = function(n) return n .. (n == 1 and " fart" or " farts") end,
+	},
 }
 
 -- open the stores (guarded: Studio with API access off leaves these nil and everything below no-ops)
@@ -171,31 +190,108 @@ local function claimOGNumber(player)
 	return n
 end
 
-Players.PlayerAdded:Connect(function(player)
-	task.spawn(function()
-		claimOGNumber(player)
-		if _G.leaderboardSubmit then pcall(_G.leaderboardSubmit, player) end -- get them onto the board immediately
-	end)
-end)
-Players.PlayerRemoving:Connect(function(player) _G.playerOGNumber[player] = nil end)
-
 -- ===== SUBMIT ===============================================================================
--- Called by PlayerStats from savePlayerData (autosave + leave). SetAsync (not Increment) because
--- every value here is an absolute lifetime total, so re-submitting the same number is harmless and
--- a re-submit after a rollback corrects the board rather than double-counting.
-_G.leaderboardSubmit = function(player)
+-- SetAsync (not Increment) because every value here is an absolute lifetime total, so re-submitting
+-- the same number is harmless and a re-submit after a rollback corrects the board rather than
+-- double-counting.
+--
+-- THE SUBMIT CADENCE IS OWNED HERE, NOT BY THE SAVE PATH. It used to be two calls, and BOTH were dead
+-- ends -- which is why every board sat on "No scores yet" forever:
+--   * PlayerStats called _G.leaderboardSubmit at the BOTTOM of savePlayerData. That function returns
+--     early when DISABLE_SAVE_FOR_TESTING is on, and again for every account in ALLOWED_TEST_USERS --
+--     in both cases BEFORE reaching the submit line. On this place both are true, so nothing was
+--     ever submitted by anybody.
+--   * the other call fired the instant PlayerAdded did, which RACES THE LOAD: leaderstats and the
+--     HighestIsland attribute do not exist yet at that moment, so all four reads returned 0, and 0 is
+--     deliberately never written. Even with saving on, that call could only ever write the OG number.
+-- So the service now waits for the player's stats to be real, submits, re-submits on a timer while
+-- they play (playtime and island both climb during a session), and submits a last time on the way
+-- out. PlayerStats' call is left where it is: submitting is idempotent, so it costs nothing when
+-- saving is switched back on.
+local SUBMIT_SECONDS = 120  -- how often a player in the server re-submits their live totals
+
+-- Boards whose store has been written since the last redraw. The refresh loop redraws just these,
+-- early, so a score you just set does not appear to be ignored for the best part of a minute.
+local dirtyKeys = {}
+
+local function submit(player)
 	if not (player and player.UserId) then return end
 	local key = tostring(player.UserId)
 	for _, b in ipairs(BOARDS) do
 		if b.ods then
 			local ok, err = pcall(function()
 				local v = b.read(player)
-				if type(v) == "number" and v > 0 then b.ods:SetAsync(key, math.floor(v)) end
+				if type(v) == "number" and v > 0 then
+					b.ods:SetAsync(key, math.floor(v))
+					dirtyKeys[b.key] = true
+				end
 			end)
 			if not ok then warn("[Leaderboard] submit failed (" .. b.key .. "): " .. tostring(err)) end
 		end
 	end
 end
+_G.leaderboardSubmit = submit
+
+-- ===== THE FART COUNT =====================================================================
+-- One per REAL flight (CoreClient's LandingEvent says which landings were genuine launches with airtime, the
+-- same gate PlayerStats uses for its attempt counters). The lifetime total lives in the MOST FARTS ordered
+-- store itself -- an OrderedDataStore is a DataStore, so GetAsync gives the base back on join -- and the
+-- session's launches are added on top. Not restored while the fresh-player test flag is on, like every
+-- other per-player store in this place.
+_G.playerFartTotal = _G.playerFartTotal or {}
+local fartBoard
+for _, b in ipairs(BOARDS) do if b.key == "farts" then fartBoard = b end end
+
+local function loadFartBase(player)
+	task.wait(2) -- PlayerStats publishes _G.FRESH_PLAYER_TESTING at boot
+	if _G.FRESH_PLAYER_TESTING or not (fartBoard and fartBoard.ods) then return end
+	local ok, n = pcall(function() return fartBoard.ods:GetAsync(tostring(player.UserId)) end)
+	if ok and type(n) == "number" and n > 0 and player.Parent then
+		_G.playerFartTotal[player] = (_G.playerFartTotal[player] or 0) + n
+	end
+end
+
+task.spawn(function()
+	local ev = game:GetService("ReplicatedStorage"):WaitForChild("LandingEvent", 60)
+	if not ev then warn("[Leaderboard] LandingEvent never appeared -- MOST FARTS will not count"); return end
+	ev.OnServerEvent:Connect(function(player, _, _, realAttempt)
+		if realAttempt then _G.playerFartTotal[player] = (_G.playerFartTotal[player] or 0) + 1 end
+	end)
+end)
+Players.PlayerRemoving:Connect(function(player) task.delay(5, function() _G.playerFartTotal[player] = nil end) end)
+
+-- PlayerStats sets the HighestIsland attribute at the END of its load, so it is the one honest signal
+-- that says "this player's leaderstats are real now" -- and it is set on the no-save path too (the load
+-- returns brand-new DEFAULTS rather than skipping the setup), so this works while testing as well.
+local function statsReady(player)
+	for _ = 1, 120 do -- up to 60s; a load still unfinished after that has failed, not stalled
+		if not player.Parent then return false end
+		if player:GetAttribute("HighestIsland") ~= nil and player:FindFirstChild("leaderstats") then return true end
+		task.wait(0.5)
+	end
+	return false
+end
+
+Players.PlayerAdded:Connect(function(player)
+	task.spawn(function()
+		claimOGNumber(player) -- needs no leaderstats, so it happens first and cannot be delayed by the wait
+		task.spawn(loadFartBase, player)
+		if not statsReady(player) then
+			warn(("[Leaderboard] %s: leaderstats never arrived -- nothing submitted for them"):format(player.Name))
+			return
+		end
+		submit(player)
+		while player.Parent do
+			task.wait(SUBMIT_SECONDS)
+			if player.Parent then submit(player) end
+		end
+	end)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	submit(player) -- final totals. BEFORE the OG number is dropped -- the OG board reads that table.
+	_G.playerOGNumber[player] = nil
+end)
 
 -- ===== PLACEMENT + GEOMETRY =================================================================
 -- Vertical maths, spelled out so it is checkable rather than guessed:
@@ -439,7 +535,7 @@ local function beam(plaza, cf, name, x1, z1, x2, z2, y, h, d, color)
 	if len < 0.01 then return end
 	newPart(plaza, name, Vector3.new(len + EMBED * 2, h, d), color,
 		cf * CFrame.new((x1 + x2) / 2, y, (z1 + z2) / 2) * CFrame.Angles(0, math.atan2(-dz, dx), 0),
-		Enum.Material.Plastic)
+		Enum.Material.SmoothPlastic)
 	return len
 end
 
@@ -453,11 +549,11 @@ local function brazier(plaza, cf, x, z)
 	-- it now uses the Community Garden's material (Plastic) and its three tan tones, so the monument reads
 	-- as the same stone as the garden rather than as grey concrete dropped next to it.
 	local STONE = Color3.fromRGB(168, 142, 104)
-	newPart(plaza, "BrazierBase",   Vector3.new(1.7, 0.6, 1.7), STONE, cf * CFrame.new(x, 0.3, z), Enum.Material.Plastic) -- 0.0 .. 0.6
-	newPart(plaza, "BrazierPost",   Vector3.new(0.95, 3.4, 0.95), STONE, cf * CFrame.new(x, 1.9, z), Enum.Material.Plastic) -- 0.2 .. 3.6
-	newPart(plaza, "BrazierCollar", Vector3.new(1.4, 0.45, 1.4), STONE, cf * CFrame.new(x, 3.55, z), Enum.Material.Plastic) -- 3.325 .. 3.775
+	newPart(plaza, "BrazierBase",   Vector3.new(1.7, 0.6, 1.7), STONE, cf * CFrame.new(x, 0.3, z), Enum.Material.SmoothPlastic) -- 0.0 .. 0.6
+	newPart(plaza, "BrazierPost",   Vector3.new(0.95, 3.4, 0.95), STONE, cf * CFrame.new(x, 1.9, z), Enum.Material.SmoothPlastic) -- 0.2 .. 3.6
+	newPart(plaza, "BrazierCollar", Vector3.new(1.4, 0.45, 1.4), STONE, cf * CFrame.new(x, 3.55, z), Enum.Material.SmoothPlastic) -- 3.325 .. 3.775
 	pillarCyl(plaza, "BrazierBowl", cf * CFrame.new(x, 3.95, z), 1.1, 3,
-		Color3.fromRGB(196, 170, 130), Enum.Material.Plastic)          -- 3.4 .. 4.5, seated on the collar
+		Color3.fromRGB(196, 170, 130), Enum.Material.SmoothPlastic)          -- 3.4 .. 4.5, seated on the collar
 	-- the glowing coals: a ROUND disc (matches the round bowl), not a square block, sunk into the bowl
 	local coals = pillarCyl(plaza, "BrazierCoals", cf * CFrame.new(x, 4.55, z), 0.5, 2.2,
 		Color3.fromRGB(255, 140, 40), Enum.Material.Neon)
@@ -517,12 +613,12 @@ local function buildPlaza(parent, cf)
 	-- that is what stops the boards floating or sinking, so do not raise it without raising ANCHOR_LIFT too.
 	local floor = newPart(plaza, "PlazaFloor", Vector3.new(1, PLAZA_R * 2, PLAZA_R * 2),
 		Color3.fromRGB(196, 170, 130), cf * CFrame.new(0, -0.5, 0) * CFrame.Angles(0, 0, math.rad(90)),
-		Enum.Material.Plastic)
+		Enum.Material.SmoothPlastic)
 	floor.Shape = Enum.PartType.Cylinder
 
 	local rim = newPart(plaza, "PlazaRim", Vector3.new(0.8, PLAZA_R * 2 + 1.6, PLAZA_R * 2 + 1.6),
 		Color3.fromRGB(196, 170, 96), cf * CFrame.new(0, -0.9, 0) * CFrame.Angles(0, 0, math.rad(90)),
-		Enum.Material.Metal)
+		Enum.Material.SmoothPlastic)
 	rim.Shape = Enum.PartType.Cylinder
 
 	-- BRICK COURSING around the plaza edge -- the same skin the Community Garden wraps its stone in.
@@ -549,7 +645,7 @@ local function buildPlaza(parent, cf)
 				newPart(plaza, "Brick", Vector3.new(0.5, ROW_H * 0.86, BW * 0.9),
 					((i + r) % 2 == 0) and Color3.fromRGB(196, 170, 130) or Color3.fromRGB(178, 150, 110),
 					cf * CFrame.new(math.cos(a) * bR, y, math.sin(a) * bR) * CFrame.Angles(0, -a, 0),
-					Enum.Material.Plastic)
+					Enum.Material.SmoothPlastic)
 			end
 		end
 		print(string.format("[HallOfFame] brick course: %d bricks x %d rows around r=%.1f (garden coursing)", n, ROWS, bR))
@@ -565,10 +661,10 @@ local function buildPlaza(parent, cf)
 		cf * CFrame.new(0, 0.0, 0) * CFrame.Angles(0, 0, math.rad(90)), Enum.Material.Neon)
 	ember.Shape = Enum.PartType.Cylinder; ember.CanCollide = false; ember.Transparency = 0.55
 	local gold = newPart(plaza, "InlayRing", Vector3.new(0.3, 44, 44), Color3.fromRGB(214, 180, 96),
-		cf * CFrame.new(0, 0.05, 0) * CFrame.Angles(0, 0, math.rad(90)), Enum.Material.Metal)
+		cf * CFrame.new(0, 0.05, 0) * CFrame.Angles(0, 0, math.rad(90)), Enum.Material.SmoothPlastic)
 	gold.Shape = Enum.PartType.Cylinder; gold.CanCollide = false
 	local disc = newPart(plaza, "InlayDisc", Vector3.new(0.4, 40, 40), Color3.fromRGB(96, 92, 86),
-		cf * CFrame.new(0, 0.10, 0) * CFrame.Angles(0, 0, math.rad(90)), Enum.Material.Plastic)
+		cf * CFrame.new(0, 0.10, 0) * CFrame.Angles(0, 0, math.rad(90)), Enum.Material.SmoothPlastic)
 	disc.Shape = Enum.PartType.Cylinder; disc.CanCollide = false
 
 	-- ATMOSPHERE: gold motes drifting across the whole plaza, emitted from an invisible volume overhead. This is
@@ -613,7 +709,7 @@ local function buildPlaza(parent, cf)
 	for i = 1, 3 do
 		local slab = newPart(plaza, "Approach", Vector3.new(ROAD_HALF * 2, 0.4, SLAB_D),
 			Color3.fromRGB(196, 170, 130),
-			cf * CFrame.new(0, 0.05, -(PLAZA_R + 1.5 + (i - 1) * SLAB_D)), Enum.Material.Plastic)
+			cf * CFrame.new(0, 0.05, -(PLAZA_R + 1.5 + (i - 1) * SLAB_D)), Enum.Material.SmoothPlastic)
 		slab.CanCollide = false
 	end
 
@@ -624,9 +720,9 @@ local function buildPlaza(parent, cf)
 	for _, sx in ipairs({ -1, 1 }) do
 		local kx = sx * (WALK_HALF + 1.0)
 		newPart(plaza, "Kerb", Vector3.new(1.2, 1, ROAD_LEN), Color3.fromRGB(196, 170, 130),
-			cf * CFrame.new(kx, 0.3, ROAD_MID), Enum.Material.Plastic)          -- -0.2 .. 0.8
+			cf * CFrame.new(kx, 0.3, ROAD_MID), Enum.Material.SmoothPlastic)          -- -0.2 .. 0.8
 		newPart(plaza, "KerbCap", Vector3.new(1.5, 0.3, ROAD_LEN), Color3.fromRGB(196, 170, 96),
-			cf * CFrame.new(kx, 0.8, ROAD_MID), Enum.Material.Metal)          -- 0.65 .. 0.95
+			cf * CFrame.new(kx, 0.8, ROAD_MID), Enum.Material.SmoothPlastic)          -- 0.65 .. 0.95
 		-- LANTERNS standing ON the kerb, well outside the corridor.
 		--
 		-- The first pass was a bare neon ball on a stick: it read as a floating dot, and because a Neon part is
@@ -642,28 +738,28 @@ local function buildPlaza(parent, cf)
 			local METAL = Color3.fromRGB(88, 80, 68)
 			local GOLD  = Color3.fromRGB(196, 170, 96)
 			local CAGE  = Color3.fromRGB(58, 52, 44)
-			newPart(plaza, "LampBase",  Vector3.new(1.5, 0.7, 1.5), METAL, cf * CFrame.new(kx, 0.35, lz), Enum.Material.Metal) -- 0.0 .. 0.7
-			newPart(plaza, "LampPost",  Vector3.new(0.6, 4.1, 0.6), METAL, cf * CFrame.new(kx, 2.35, lz), Enum.Material.Metal) -- 0.3 .. 4.4
-			newPart(plaza, "LampCollar",Vector3.new(1.1, 0.5, 1.1), METAL, cf * CFrame.new(kx, 4.4,  lz), Enum.Material.Metal) -- 4.15 .. 4.65
+			newPart(plaza, "LampBase",  Vector3.new(1.5, 0.7, 1.5), METAL, cf * CFrame.new(kx, 0.35, lz), Enum.Material.SmoothPlastic) -- 0.0 .. 0.7
+			newPart(plaza, "LampPost",  Vector3.new(0.6, 4.1, 0.6), METAL, cf * CFrame.new(kx, 2.35, lz), Enum.Material.SmoothPlastic) -- 0.3 .. 4.4
+			newPart(plaza, "LampCollar",Vector3.new(1.1, 0.5, 1.1), METAL, cf * CFrame.new(kx, 4.4,  lz), Enum.Material.SmoothPlastic) -- 4.15 .. 4.65
 
 			-- glass housing seated on a base plate; the flame lives inside it
-			newPart(plaza, "LanternBase", Vector3.new(1.9, 0.3, 1.9), GOLD, cf * CFrame.new(kx, 4.75, lz), Enum.Material.Metal) -- 4.6 .. 4.9
+			newPart(plaza, "LanternBase", Vector3.new(1.9, 0.3, 1.9), GOLD, cf * CFrame.new(kx, 4.75, lz), Enum.Material.SmoothPlastic) -- 4.6 .. 4.9
 			local glass = newPart(plaza, "LanternGlass", Vector3.new(1.6, 1.7, 1.6), Color3.fromRGB(255, 236, 190),
-				cf * CFrame.new(kx, 5.75, lz), Enum.Material.Glass)            -- 4.9 .. 6.6, sits on the base plate
+				cf * CFrame.new(kx, 5.75, lz), Enum.Material.SmoothPlastic)            -- 4.9 .. 6.6, sits on the base plate
 			glass.Transparency = 0.6; glass.CanCollide = false
 			-- four thin cage bars on the glass edges -> reads as a real lantern frame, not a floating cube
 			for _, corner in ipairs({ {0.73, 0.73}, {0.73, -0.73}, {-0.73, 0.73}, {-0.73, -0.73} }) do
 				newPart(plaza, "LanternBar", Vector3.new(0.14, 1.7, 0.14), CAGE,
-					cf * CFrame.new(kx + corner[1], 5.75, lz + corner[2]), Enum.Material.Metal).CanCollide = false
+					cf * CFrame.new(kx + corner[1], 5.75, lz + corner[2]), Enum.Material.SmoothPlastic).CanCollide = false
 			end
 			local core = newPart(plaza, "LanternFlame", Vector3.new(0.75, 0.9, 0.75), Color3.fromRGB(255, 214, 150),
 				cf * CFrame.new(kx, 5.75, lz), Enum.Material.Neon)             -- inside the glass
 			core.CanCollide = false
 
-			newPart(plaza, "LanternCap",  Vector3.new(2.0, 0.35, 2.0), GOLD, cf * CFrame.new(kx, 6.75, lz), Enum.Material.Metal) -- 6.575 .. 6.925, caps the glass (top 6.6)
-			newPart(plaza, "LanternRoof", Vector3.new(1.3, 0.5, 1.3),  METAL, cf * CFrame.new(kx, 7.05, lz), Enum.Material.Metal) -- 6.8 .. 7.3, overlaps the cap
+			newPart(plaza, "LanternCap",  Vector3.new(2.0, 0.35, 2.0), GOLD, cf * CFrame.new(kx, 6.75, lz), Enum.Material.SmoothPlastic) -- 6.575 .. 6.925, caps the glass (top 6.6)
+			newPart(plaza, "LanternRoof", Vector3.new(1.3, 0.5, 1.3),  METAL, cf * CFrame.new(kx, 7.05, lz), Enum.Material.SmoothPlastic) -- 6.8 .. 7.3, overlaps the cap
 			local finial = newPart(plaza, "LanternFinial", Vector3.new(0.55, 0.55, 0.55),
-				Color3.fromRGB(214, 180, 96), cf * CFrame.new(kx, 7.5, lz), Enum.Material.Metal)
+				Color3.fromRGB(214, 180, 96), cf * CFrame.new(kx, 7.5, lz), Enum.Material.SmoothPlastic)
 			finial.Shape = Enum.PartType.Ball; finial.CanCollide = false     -- 7.225 .. 7.775, sits on the roof
 
 			local ll = Instance.new("PointLight")
@@ -676,7 +772,7 @@ local function buildPlaza(parent, cf)
 	-- THRESHOLD: a gold strip laid across the gateway line. It is the moment you cross INTO the Hall of Fame, and
 	-- it is deliberately the only thing allowed on the walkway -- flat, 0.4 studs proud, you walk straight over it.
 	newPart(plaza, "Threshold", Vector3.new(30, 0.5, 1.6), Color3.fromRGB(214, 180, 96),
-		cf * CFrame.new(0, 0.15, ARCH_Z), Enum.Material.Metal).CanCollide = false
+		cf * CFrame.new(0, 0.15, ARCH_Z), Enum.Material.SmoothPlastic).CanCollide = false
 
 	-- COLONNADE: columns around the rim with an architrave beam spanning each pair -- a real back wall for the
 	-- boards to stand against. The gateway span is deliberately LEFT OPEN (no column in the doorway), and no beam
@@ -693,11 +789,11 @@ local function buildPlaza(parent, cf)
 		if not inGate then
 			cols[#cols + 1] = a
 			newPart(plaza, "ColumnBase", Vector3.new(2.8, 1.6, 2.8), Color3.fromRGB(196, 170, 130),
-				ring(cf, a, COL_R, 0.5), Enum.Material.Plastic) -- -0.3..1.3: sunk into the floor
+				ring(cf, a, COL_R, 0.5), Enum.Material.SmoothPlastic) -- -0.3..1.3: sunk into the floor
 			pillarCyl(plaza, "Column", ring(cf, a, COL_R, 1 + COL_H / 2), COL_H, 2,
-				Color3.fromRGB(178, 150, 110), Enum.Material.Plastic)
+				Color3.fromRGB(178, 150, 110), Enum.Material.SmoothPlastic)
 			newPart(plaza, "ColumnCap", Vector3.new(2.6, 0.9, 2.6), Color3.fromRGB(212, 184, 108),
-				ring(cf, a, COL_R, CAP_Y), Enum.Material.Metal)
+				ring(cf, a, COL_R, CAP_Y), Enum.Material.SmoothPlastic)
 		end
 	end
 
@@ -722,16 +818,16 @@ local function buildPlaza(parent, cf)
 	--   base -0.3..1.3 | pillar 1.0..17.0 | cap 16.8..17.8 | lintel 17.6..21.0 | lintel cap 20.85..21.55
 	for _, sx in ipairs({ -16, 16 }) do
 		newPart(plaza, "PillarBase", Vector3.new(3.6, 1.6, 3.6), Color3.fromRGB(196, 170, 130),
-			cf * CFrame.new(sx, 0.5, ARCH_Z), Enum.Material.Plastic)
+			cf * CFrame.new(sx, 0.5, ARCH_Z), Enum.Material.SmoothPlastic)
 		newPart(plaza, "Pillar", Vector3.new(2.2, 16, 2.2), Color3.fromRGB(178, 150, 110),
-			cf * CFrame.new(sx, 9, ARCH_Z), Enum.Material.Plastic)
+			cf * CFrame.new(sx, 9, ARCH_Z), Enum.Material.SmoothPlastic)
 		newPart(plaza, "PillarCap", Vector3.new(3, 1, 3), Color3.fromRGB(212, 184, 108),
-			cf * CFrame.new(sx, 17.3, ARCH_Z), Enum.Material.Metal)
+			cf * CFrame.new(sx, 17.3, ARCH_Z), Enum.Material.SmoothPlastic)
 	end
 	local lintel = newPart(plaza, "Lintel", Vector3.new(36, 3.4, 2.4), Color3.fromRGB(178, 166, 144),
-		cf * CFrame.new(0, 19.3, ARCH_Z), Enum.Material.Plastic)
+		cf * CFrame.new(0, 19.3, ARCH_Z), Enum.Material.SmoothPlastic)
 	newPart(plaza, "LintelCap", Vector3.new(37.5, 0.7, 3), Color3.fromRGB(212, 184, 108),
-		cf * CFrame.new(0, 21.2, ARCH_Z), Enum.Material.Metal)
+		cf * CFrame.new(0, 21.2, ARCH_Z), Enum.Material.SmoothPlastic)
 
 	-- STRUTS: tie the two ends of the colonnade into the arch, so the stonework is ONE CLOSED RING rather than a
 	-- colonnade and an arch that merely stand near each other with a 9.6-stud hole between them. Each strut runs at
@@ -774,9 +870,9 @@ local function buildPlaza(parent, cf)
 	--     entirely. It now hangs at ARCH_Z + 1.0, inside the lintel's own depth.
 	for _, bx in ipairs({ -12, 12 }) do
 		newPart(plaza, "Banner", Vector3.new(3.6, 7.8, 0.25), Color3.fromRGB(128, 34, 44),
-			cf * CFrame.new(bx, 13.9, ARCH_Z + 1.0), Enum.Material.Fabric).CanCollide = false -- 10.0..17.8
+			cf * CFrame.new(bx, 13.9, ARCH_Z + 1.0), Enum.Material.SmoothPlastic).CanCollide = false -- 10.0..17.8
 		newPart(plaza, "BannerTrim", Vector3.new(3.6, 0.6, 0.35), Color3.fromRGB(212, 184, 108),
-			cf * CFrame.new(bx, 10.2, ARCH_Z + 1.0), Enum.Material.Metal).CanCollide = false  -- 9.9..10.5
+			cf * CFrame.new(bx, 10.2, ARCH_Z + 1.0), Enum.Material.SmoothPlastic).CanCollide = false  -- 9.9..10.5
 	end
 
 	-- ===== PROPS -- ALL OF THEM OFF THE WALKWAY ==========================================================
@@ -888,7 +984,7 @@ local function buildBoard(parent, board, cf)
 	-- Gold cap along the top edge, tying the three boards together as a set. At +0.6 its underside sat at 7.2 --
 	-- a fifth of a stud ABOVE the panel's 7.0 top edge, so it floated. At +0.3 it grips the panel by 0.1.
 	newPart(model, "Cap", Vector3.new(PANEL_W + 1.4, 0.8, 1.4), Color3.fromRGB(212, 184, 108),
-		cf * CFrame.new(0, PANEL_H / 2 + 0.3, 0.1), Enum.Material.Metal)  -- 6.9 .. 7.7
+		cf * CFrame.new(0, PANEL_H / 2 + 0.3, 0.1), Enum.Material.SmoothPlastic)  -- 6.9 .. 7.7
 	model.PrimaryPart = panel
 
 	-- a soft light in the board's OWN colour, so each board owns a pool of coloured light instead of all three
@@ -980,11 +1076,25 @@ local function nameOf(userId)
 	return n
 end
 
+-- Said ONCE, the first time a store read fails. Every one of these boards is backed by an
+-- OrderedDataStore, so in Studio they are all empty and all silent unless Game Settings -> Security ->
+-- "Enable Studio Access to API Services" is on. That is by far the most common reason the monument
+-- stands there with four "No scores yet" panels, and it is not something the code can fix for you.
+local warnedNoApi = false
+
 local function refreshBoard(board, list)
 	if not (board.ods and list and list.Parent) then return end
 	-- ascending = true only for OG FARTERS, where the LOWEST number (OG #1) is the top of the board.
 	local ok, pages = pcall(function() return board.ods:GetSortedAsync(board.ascending == true, TOP_N) end)
-	if not ok then warn("[Leaderboard] read failed (" .. board.key .. "): " .. tostring(pages)); return end
+	if not ok then
+		warn("[Leaderboard] read failed (" .. board.key .. "): " .. tostring(pages))
+		if not warnedNoApi then
+			warnedNoApi = true
+			warn("[Leaderboard] the boards cannot reach their DataStores. In Studio: Game Settings -> "
+				.. "Security -> Enable Studio Access to API Services. Live servers do not need this.")
+		end
+		return
+	end
 	local okPage, rows = pcall(function() return pages:GetCurrentPage() end)
 	if not okPage then return end
 
@@ -1010,6 +1120,7 @@ local function refreshBoard(board, list)
 
 	for i, entry in ipairs(rows) do
 		local top = (i <= 3)
+		local uid = tonumber(entry.key) or 0
 		local accent = MEDAL_COLOR[i] or Color3.fromRGB(140, 158, 190)
 
 		local row = Instance.new("Frame")
@@ -1033,12 +1144,41 @@ local function refreshBoard(board, list)
 		rank.TextSize = top and 32 or 24; rank.TextColor3 = accent
 		rank.Text = MEDAL[i] or ("#" .. i); rank.Parent = row
 
+		-- ===== THE PLAYER'S OWN FACE =====
+		-- A name on a board is a string; a face is a person, and half the point of a hall of fame is
+		-- recognising somebody you have actually flown past. The podium rows get a bigger portrait ringed in
+		-- their medal colour, everyone below gets the same circle a size down.
+		--
+		-- rbxthumb://, NOT GetUserThumbnailAsync. The async call yields, throws on a bad id and would have to
+		-- be cached by hand -- thirty of them per refresh, on a board that refreshes every two minutes, on the
+		-- SERVER. The content-URL form is a plain string: Roblox resolves and caches it per client, an id
+		-- that no longer exists just renders blank, and the whole thing costs no request from this script.
+		local FACE = top and 44 or 34
+		local face = Instance.new("ImageLabel")
+		face.Name = "Face"
+		face.AnchorPoint = Vector2.new(0, 0.5)
+		face.Position = UDim2.new(0, 62, 0.5, 0)
+		face.Size = UDim2.fromOffset(FACE, FACE)
+		face.BackgroundColor3 = Color3.fromRGB(18, 22, 36)   -- shows while the thumbnail loads
+		face.BorderSizePixel = 0
+		face.Image = ("rbxthumb://type=AvatarHeadShot&id=%d&w=48&h=48"):format(uid)
+		face.Parent = row
+		Instance.new("UICorner", face).CornerRadius = UDim.new(1, 0)
+		do
+			local ring = Instance.new("UIStroke")
+			ring.Color = accent
+			ring.Thickness = top and 3 or 2
+			ring.Transparency = top and 0 or 0.35
+			ring.Parent = face
+		end
+
 		local nm = Instance.new("TextLabel")
-		nm.Size = UDim2.new(1, -240, 1, 0); nm.Position = UDim2.new(0, 62, 0, 0)
+		nm.Size = UDim2.new(1, -240 - (FACE + 12), 1, 0)
+		nm.Position = UDim2.new(0, 62 + FACE + 12, 0, 0)
 		nm.BackgroundTransparency = 1; nm.Font = Enum.Font.GothamBold
 		nm.TextSize = top and 25 or 21; nm.TextColor3 = Color3.new(1, 1, 1)
 		nm.TextXAlignment = Enum.TextXAlignment.Left; nm.TextTruncate = Enum.TextTruncate.AtEnd
-		nm.Text = nameOf(tonumber(entry.key) or 0); nm.Parent = row
+		nm.Text = nameOf(uid); nm.Parent = row
 
 		-- wider than it used to be: "Island 12 · 4h 07m" does not fit in the 130px the old coin counts needed
 		local val = Instance.new("TextLabel")
@@ -1052,6 +1192,18 @@ end
 
 -- ===== STARTUP ==============================================================================
 task.spawn(function()
+	-- ONE MONUMENT PER SERVER. Rojo only ever ADDS, so a stale copy of this script baked into the place
+	-- runs alongside the synced one (the place file currently carries two Scripts named
+	-- LeaderboardService) -- and a second copy would build a second plaza inside the first, z-fighting
+	-- every part, and run a second refresh loop that doubles the GetSortedAsync spend for nothing.
+	-- The flag is set with no yield between the test and the write, so the two copies cannot both pass.
+	if _G.__hallOfFameBuilding then
+		warn("[Leaderboard] a second copy of LeaderboardService is running -- this one will NOT build "
+			.. "(delete the duplicate Script baked into the place; see the BootCheck log)")
+		return
+	end
+	_G.__hallOfFameBuilding = true
+
 	-- wait for the islands to be POSITIONED before anchoring to them: PlayerStats moves Island_1 to its
 	-- final Y after startup, so building against its pre-move pivot would leave the boards floating in
 	-- the sky. StandsReady is the same flag PetSystem waits on for its markers.
@@ -1087,8 +1239,10 @@ task.spawn(function()
 	-- front face (-Z) ends up pointing back through the plaza centre -- so every board automatically angles inward
 	-- at whoever is standing at the gateway. No extra flip is needed, and adding one is what broke it before.
 	local lists = {}
-	local middle = (#BOARDS + 1) / 2
-	for i, board in ipairs(BOARDS) do
+	local front = {}
+	for _, board in ipairs(BOARDS) do if not board.secret then front[#front + 1] = board end end
+	local middle = (#front + 1) / 2
+	for i, board in ipairs(front) do
 		local angle = math.rad((i - middle) * ARC_SPREAD)
 		local cf = anchor
 			* CFrame.Angles(0, angle, 0)             -- swing around the plaza centre
@@ -1097,19 +1251,60 @@ task.spawn(function()
 		if okB then lists[board.key] = list
 		else warn("[Leaderboard] board build failed (" .. board.key .. "): " .. tostring(list)) end
 	end
+	-- THE SECRET BOARD: directly behind the second front board, SECRET_SETBACK studs further out, turned to face
+	-- AWAY from the plaza. From the front the board in front of it hides it completely (same panel size); walk
+	-- round the back of the arc and there it is, facing you.
+	local SECRET_SETBACK = 3.2
+	for _, board in ipairs(BOARDS) do
+		if board.secret then
+			local behind = math.min(2, #front)
+			local angle = math.rad((behind - middle) * ARC_SPREAD)
+			local cf = anchor
+				* CFrame.Angles(0, angle, 0)
+				* CFrame.new(0, ANCHOR_LIFT, ARC_RADIUS + SECRET_SETBACK)
+				* CFrame.Angles(0, math.pi, 0)       -- about-face: its front (-Z) now points outward
+			local okB, list = pcall(buildBoard, folder, board, cf)
+			if okB then lists[board.key] = list
+			else warn("[Leaderboard] secret board build failed (" .. board.key .. "): " .. tostring(list)) end
+		end
+	end
 	local chord = 2 * ARC_RADIUS * math.sin(math.rad(ARC_SPREAD) / 2)
 	print(("[Leaderboard] %d board(s) + plaza at %s | arc %ddeg / %d studs -> %.1f stud gap between %d-wide boards"
-		.. " (must exceed panel width), plaza radius %d")
-		:format(#BOARDS, tostring(anchor.Position), ARC_SPREAD, ARC_RADIUS, chord, PANEL_W, PLAZA_R))
+		.. " (must exceed panel width), plaza radius %d; %d secret board(s) round the back")
+		:format(#front, tostring(anchor.Position), ARC_SPREAD, ARC_RADIUS, chord, PANEL_W, PLAZA_R, #BOARDS - #front))
 
-	-- refresh forever. Each board is pcall'd separately so one failing store can't stall the others.
+	-- Refresh forever. Each board is pcall'd separately so one failing store can't stall the others.
+	--
+	-- Between full passes the loop watches dirtyKeys and redraws ONLY the boards a submit has just
+	-- written. That is what makes the boards feel live -- walk up, land an island, see yourself -- without
+	-- blowing the read budget: GetSortedAsync allows 5 + 2 per player per minute, a full pass costs one
+	-- call per board, and an early pass costs one call per CHANGED board, no more often than every
+	-- EARLY_MIN_SECONDS.
+	local EARLY_MIN_SECONDS = 15
+	local lastEarly = 0
 	while true do
 		for _, board in ipairs(BOARDS) do
 			pcall(refreshBoard, board, lists[board.key])
 		end
-		task.wait(REFRESH_SECONDS)
+		dirtyKeys = {}
+
+		local waited = 0
+		while waited < REFRESH_SECONDS do
+			task.wait(1)
+			waited = waited + 1
+			if next(dirtyKeys) and (os.clock() - lastEarly) >= EARLY_MIN_SECONDS then
+				lastEarly = os.clock()
+				for _, board in ipairs(BOARDS) do
+					if dirtyKeys[board.key] then
+						dirtyKeys[board.key] = nil
+						pcall(refreshBoard, board, lists[board.key])
+					end
+				end
+			end
+		end
 	end
 end)
 
-print(("[Leaderboard] service ready -- FASTEST CLIMB / OG FARTERS (first %d ever) / MOST PLAYTIME; top %d each, "
-	.. "scrollable; submit on join + autosave + leave"):format(OG_LIMIT, TOP_N))
+print(("[Leaderboard] service ready -- %d boards (FASTEST CLIMB / OG FARTERS, first %d ever / MOST PLAYTIME / "
+	.. "MOST REBIRTHS, plus the secret MOST FARTS round the back); top %d each, scrollable; submit once stats load, then every %ds, then on leave")
+	:format(#BOARDS, OG_LIMIT, TOP_N, SUBMIT_SECONDS))

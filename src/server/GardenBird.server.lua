@@ -117,7 +117,9 @@ local function gatherPerches()
 			end
 		end
 	end
-	local sign = Workspace:FindFirstChild("CommunityGardenSign") -- the main board lives in Workspace, not the build
+	-- The "Community Garden" plank board was retired, so this usually finds nothing now -- kept because it
+	-- costs one lookup and a bird perched on that board was a nice shot if it ever comes back.
+	local sign = Workspace:FindFirstChild("CommunityGardenSign")
 	if sign and sign:IsA("BasePart") then tryAdd(topOfPart(sign), "CommunityGardenSign", sign) end
 	return list
 end

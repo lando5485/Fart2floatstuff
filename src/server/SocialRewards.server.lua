@@ -16,7 +16,11 @@ local Players          = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local DataStoreService  = game:GetService("DataStoreService")
 
-local GROUP_ID    = 758781978 -- MLR Studios (same group RewardsService rewards)
+-- Group id + the LIVE membership lookup come from the shared module, so this file and RewardsService can
+-- never disagree about who is a member (they used to: both cached Player:IsInGroup on join, which meant
+-- joining the group in-game granted neither perk until you rejoined the server).
+local GroupMembership = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("GroupMembership"))
+local GROUP_ID    = GroupMembership.GROUP_ID -- MLR Studios (same group RewardsService rewards)
 local LEVELS      = 5         -- levels granted per social reward
 local REWARDS     = { like = true, favorite = true, group = true } -- valid claim keys
 
@@ -62,10 +66,25 @@ remote.OnServerEvent:Connect(function(player, action, which)
 		return
 	end
 
-	-- GROUP is the one we can actually verify.
+	-- GROUP is the one we can actually verify. Re-read it LIVE at claim time rather than trusting the answer
+	-- cached on join: the player has very likely just pressed JOIN GROUP and come straight back, and making
+	-- them rejoin the server to collect a reward they have already earned is the bug this used to have.
 	if which == "group" and not groupMember[player] then
-		pcall(function() remote:FireClient(player, "result", which, false, "Join the group first, then rejoin!") end)
-		return
+		local isMember, status = GroupMembership.isMember(player)
+		if not isMember and status == "cooldown" then
+			-- RewardsService's poll asked a moment ago and we hit the module's rate limit -- that is "ask
+			-- again", NOT "not a member". Waiting it out once is the difference between the reward landing
+			-- and a real member being told to go join a group they are already in.
+			task.wait(5)
+			isMember = GroupMembership.isMember(player)
+		end
+		if isMember then
+			groupMember[player] = true
+		else
+			pcall(function() remote:FireClient(player, "result", which, false, "Join the group first -- then press this again!") end)
+			pushState(player)
+			return
+		end
 	end
 
 	-- pick the pet to level: the one they have EQUIPPED. No pet equipped -> tell them.
@@ -90,10 +109,9 @@ end)
 
 local function onAdded(player)
 	load(player)
-	-- IsInGroup caches per session, so someone who joins mid-session must rejoin to be seen as a member.
+	-- Checked on join, and re-checked live at claim time (above) so joining mid-session needs no rejoin.
 	task.spawn(function()
-		local ok, inGroup = pcall(function() return player:IsInGroup(GROUP_ID) end)
-		groupMember[player] = ok and inGroup or false
+		groupMember[player] = GroupMembership.isMember(player)
 		task.wait(3) -- let the client build its UI
 		pushState(player)
 	end)
@@ -101,6 +119,6 @@ end
 
 Players.PlayerAdded:Connect(onAdded)
 for _, p in ipairs(Players:GetPlayers()) do onAdded(p) end
-Players.PlayerRemoving:Connect(function(p) claimed[p] = nil; groupMember[p] = nil end)
+Players.PlayerRemoving:Connect(function(p) claimed[p] = nil; groupMember[p] = nil; GroupMembership.forget(p) end)
 
 print(("[Social] rewards ready -- like / favourite / group, +%d pet levels each, one-time"):format(LEVELS))

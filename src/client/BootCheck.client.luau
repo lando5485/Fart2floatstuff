@@ -60,18 +60,22 @@ local REPORT_AFTER = 20   -- seconds. Long enough for the intro, the loading scr
 -- game reads as MISSING, and a script in the game that is not here is simply not checked. Regenerate it
 -- whenever you add or remove a client script.
 local EXPECTED = {
-	"AmbientSmoke", "AmbientWildlife", "BellyPuff", "BlackBarKiller", "ButtonTextStyle", "Campfire",
-	"CoinMagnet", "CommunityGarden", "CoreClient", "CrateClient", "DailyTasks", "EventClient",
+	"AFKFarmClient", "AmbientSmoke", "AmbientWildlife", "AntiIdle", "BellyPuff", "BlackBarKiller", "ButtonTextStyle", "Campfire",
+	"ClimbRaceBar", "CoinMagnet", "CommunityGarden", "CoreClient", "CrateClient", "DailyTasks", "EventClient",
 	"EventSoundPreload", "FarmerTutorial", "FlightFeedback", "FoodRealmHud", "GardenChestClient",
 	"GardenDonationClient", "GardenGuideTrail", "GardenIntro", "GardenerChat", "GardenerLife",
-	"GutSkinClient", "HeldItemSync", "LandingImpact", "MenuBackButton", "MenuBackdropGuard",
+	"GnomeHomeMenu", "PetTricks", "GutSkinClient", "Haptics", "HeldItemSync", "UiHaptics", "LandingImpact", "MenuBackButton", "MenuBackdropGuard",
 	"MeteorImpactSound", "MeteorUI", "MusicClient", "MusicDucking", "NotifyCenter", "NotifyOptIn",
 	"NpcGuideArrow", "NpcLife", "NpcWaypointArrow", "ObjectiveHUD", "OfflineEarnings", "PetFollow",
 	"PetSkinLook", "RailGuard", "RainbowBeamUI", "RealmPortalsHub", "RebirthClient", "RebirthTag",
 	"RemotePets", "RewardsClient", "RewardsHub", "RocketBuildPreload", "RocketSounds", "RocketUI",
 	"SeasonPass", "SeasonalPetsChest", "SecretCave", "SettingsMenu", "ShopClient",
 	"SkinCrateClient", "SkyByAltitude", "SocialRewards", "TitleTags", "TokenHud", "TopCenterStack",
-	"VipClient", "WarpEffect", "WorldClient", "WormholeClient",
+	"VipClient", "WorldClient", "WormholeClient",
+	-- NOTE: WarpEffect is deliberately NOT here. src/client/WarpEffect.luau has no ".client" in its
+	-- name, so Rojo syncs it as a ModuleScript, and the sweep below only counts LocalScript/Script.
+	-- Listing it made it report NEVER ARRIVED on every boot while it was present and working.
+	-- Same goes for any other module you put in StarterPlayerScripts: modules do not belong here.
 }
 
 -- THE ARTIFACTS: things that must EXIST once the scripts have run. This is the half that catches a script

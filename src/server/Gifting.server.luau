@@ -158,8 +158,8 @@ GiftSend.OnServerEvent:Connect(function(sender, targetUserId, amount)
 	local function fail(msg) pcall(function() GiftResult:FireClient(sender, false, msg) end) end
 
 	if not targetUserId or targetUserId <= 0 then return fail("Pick someone to gift to.") end
-	if amount < MIN_GIFT then return fail(("Gifts start at %d tokens."):format(MIN_GIFT)) end
-	if amount > MAX_GIFT then return fail(("You can gift up to %d tokens at once."):format(MAX_GIFT)) end
+	if amount < MIN_GIFT then return fail(("Gifts start at %d tickets."):format(MIN_GIFT)) end
+	if amount > MAX_GIFT then return fail(("You can gift up to %d tickets at once."):format(MAX_GIFT)) end
 	if targetUserId == sender.UserId then return fail("You can't gift yourself!") end
 
 	local now = os.clock()
@@ -182,13 +182,13 @@ GiftSend.OnServerEvent:Connect(function(sender, targetUserId, amount)
 		end
 		local ok, why = _G.giftSkinTokens(sender, target, amount)
 		if not ok then
-			return fail(why == "not enough tokens" and "You don't have that many tokens."
+			return fail(why == "not enough tickets" and "You don't have that many tickets."
 				or ("Couldn't send: " .. tostring(why)))
 		end
 		lastGift[sender] = now
 		sentCount[sender] = (sentCount[sender] or 0) + 1
 		pcall(function()
-			GiftResult:FireClient(sender, true, ("Sent %d tokens to %s!"):format(amount, target.DisplayName or target.Name))
+			GiftResult:FireClient(sender, true, ("Sent %d tickets to %s!"):format(amount, target.DisplayName or target.Name))
 		end)
 		pcall(function() GiftReceived:FireClient(target, sender.DisplayName or sender.Name, amount, false) end)
 		print(("[Gifting] %s gifted %d tokens to %s (online)"):format(sender.Name, amount, target.Name))
@@ -205,7 +205,7 @@ GiftSend.OnServerEvent:Connect(function(sender, targetUserId, amount)
 
 	-- The NAME is resolved server-side rather than taken from the client. A client-supplied name would let
 	-- anyone post a gift that appears to come from someone else, which is a ready-made social-engineering
-	-- hook ("look, a mod sent you tokens"). It is also just cheap to look up.
+	-- hook ("look, a mod sent you tickets"). It is also just cheap to look up.
 	local targetName
 	local okName = pcall(function() targetName = Players:GetNameFromUserIdAsync(targetUserId) end)
 	if not (okName and targetName) then
@@ -215,7 +215,7 @@ GiftSend.OnServerEvent:Connect(function(sender, targetUserId, amount)
 	-- DEBIT FIRST. See the header: the reverse order is a minting bug, not a stylistic choice.
 	local debited, whyNot = _G.debitSkinTokensForGift(sender, amount)
 	if not debited then
-		return fail(whyNot == "not enough tokens" and "You don't have that many tokens."
+		return fail(whyNot == "not enough tickets" and "You don't have that many tickets."
 			or ("Couldn't send: " .. tostring(whyNot)))
 	end
 
@@ -230,14 +230,14 @@ GiftSend.OnServerEvent:Connect(function(sender, targetUserId, amount)
 		-- silently cost the sender anything.
 		pcall(_G.addSkinTokens, sender, amount, "refund: offline gift could not be posted")
 		print(("[Gifting] refunded %d tokens to %s -- mailbox write failed"):format(amount, sender.Name))
-		return fail(reason or "Couldn't send that right now -- your tokens are safe.")
+		return fail(reason or "Couldn't send that right now -- your tickets are safe.")
 	end
 
 	lastGift[sender] = now
 	sentCount[sender] = (sentCount[sender] or 0) + 1
 	pcall(function()
 		GiftResult:FireClient(sender, true,
-			("Sent %d tokens to %s -- they'll get it next time they play!"):format(amount, targetName))
+			("Sent %d tickets to %s -- they'll get it next time they play!"):format(amount, targetName))
 	end)
 	print(("[Gifting] %s gifted %d tokens to %s (OFFLINE, queued)"):format(sender.Name, amount, targetName))
 end)

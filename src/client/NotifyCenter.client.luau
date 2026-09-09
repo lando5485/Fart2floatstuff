@@ -119,7 +119,93 @@ local RANK = {
 	STATUS   = 30,
 }
 
-local HERO_SHOWN  = UDim2.new(0.5, 0, 0, 10)
+--======================================================================
+-- THE BANNER BUDGET: WHAT IS ALLOWED TO TAKE THE TOP-CENTRE SLOT
+--======================================================================
+-- Every banner in the game comes through this file, so the decision about how MANY of them a player sees
+-- belongs here and nowhere else. The rule is one line: the hero lane is for things that happened to YOU, or
+-- that you have to act on. Everything else is other people's news.
+--
+-- Other people's news is not deleted -- it is DEMOTED to the social lane (small pills, top-left, up to three
+-- stacked), which is where "<player> reached Broccoli Bluff!" already lived. It still shows, it just stops
+-- interrupting. A busy server used to fire a rebirth, a rare hatch, somebody else's gamepass and a skin
+-- collect through the same 3-4 second slot the player's own island arrival needs.
+--
+-- MUTED means gone: a line that fired on a timer or on every flight, said nothing the HUD was not already
+-- showing, and whose only effect was to make the next real banner feel like more of the same.
+--
+-- Callers opt in by passing `kind`. An untagged push is unaffected -- so the default for anything new is
+-- still "you get your banner", and taking one away is a deliberate, greppable line in this table.
+-- The whole rule in one number. A banner is read at a glance, out of the corner of an eye, by someone who is
+-- mid-flight or mid-tap: it is a road sign. Five words is the top of that, not a target -- most of the good
+-- ones are three ("BROCCOLI BLUFF!", "FIRST MEAL -- NOW FLY UP!").
+local WORD_CAP = 5
+
+-- THE RULE IS ENFORCED, NOT REQUESTED. A character count only ever produced a warning in a log nobody was
+-- reading at the moment the banner drew, and the long ones kept coming: banner text is built by concatenation
+-- in thirty-odd files ("+" .. n .. " Tickets this session"), so no amount of tidying the string literals keeps
+-- it short. The cap is applied to the FINISHED string, which is the only place that sees what the player sees.
+--
+-- Emoji are free -- they are the icon, not the sentence. Everything past the fifth word is cut and the full
+-- original goes to the log, so whoever wrote it can author a proper short line instead of living with the
+-- machine's cut. Truncation is the backstop, not the plan.
+--
+-- HERO ONLY. Social pills are the overflow lane -- top-left, small, three at a time, and deliberately where
+-- the longer "you need 42 tickets for that" explanations were sent to live. Capping those would strip the
+-- detail that is the whole reason they were moved there.
+--
+-- Both doors call it: push() for news, pin() for a standing instruction. A pinned direction sits on screen far
+-- longer than any banner, so it is the last place a paragraph belongs.
+local function fitText(spec)
+	if spec.lane == "social" then return end
+	local n, cut, out = 0, false, {}
+	for word in tostring(spec.text or ""):gmatch("%S+") do
+		-- A "word" has to carry a letter or a digit. A bare emoji, a bullet or an arrow is punctuation wearing
+		-- a space, and counting those would spend the budget on decoration.
+		if word:find("[%w]") then n = n + 1 end
+		if n > WORD_CAP then cut = true; break end
+		out[#out + 1] = word
+	end
+	if cut then
+		warn("[NotifyCenter] banner over " .. WORD_CAP .. " words -- CUT. Shorten it at the source: " .. spec.text)
+		spec.text = table.concat(out, " ")
+	end
+end
+
+local MUTED = {
+	flight_pass = true,  -- "Passed another player!" -- fired mid-flight, several times a flight, at the exact
+	                     -- moment the player is watching the world go by rather than the top of the screen
+	rival_pass  = true,  -- "PASSED <name>'S BEST THIS ROUND" -- same beat, same flight, same non-event
+}
+
+local DEMOTE = {
+	other_rebirth    = true, -- "<name> just rebirthed!"
+	other_purchase   = true, -- "<name> bought <thing>!" -- still useful social proof, at pill size
+	other_hatch      = true, -- "<name> HATCHED <pet> -- 1 IN 5,000!"
+	other_collection = true, -- somebody else completed a skin collection (YOUR own still gets the hero lane)
+	dev_arrival      = true, -- a developer joined
+	sal_restock      = true, -- Shady Sal restocked -- server-wide, on a timer, and the stand is not going away
+}
+
+-- ===== THE BANNER SITS 11px LOWER ON A PHONE =====
+-- The climb race bar rides in the strip above this card: a 3px line at y 14 with the player faces on it,
+-- reaching y 25 at their largest. On a desktop screen the card's own top padding is enough clearance -- its
+-- first line of text does not start until y 18 and the faces are small. On a phone the whole HUD is scaled
+-- and that margin closes, so the faces and the banner's top edge touch.
+--
+-- 11px is the whole fix: it clears the markers with a little air left over, and it costs a phone nothing
+-- because the space it moves into is the notch strip nothing else draws in. Desktop is untouched -- moving
+-- both would push the card down the screen for players who never had the problem.
+--
+-- Measured, not guessed from TouchEnabled: that is true in a Studio emulator and on any touchscreen laptop.
+local HERO_Y = 10
+do
+	local cam = game:GetService("Workspace").CurrentCamera
+	local vp = cam and cam.ViewportSize
+	if vp and vp.X < 900 then HERO_Y = 21 end
+end
+
+local HERO_SHOWN  = UDim2.new(0.5, 0, 0, HERO_Y)
 local HERO_HIDDEN = UDim2.new(0.5, 0, 0, -100)
 
 -- ===== HERO lane: top-centre, one at a time =====
@@ -385,6 +471,18 @@ local function presentHero(spec)
 	token = token + 1
 	local mine = token
 
+	-- ===== THE MOMENT GETS A BEAT =====
+	-- Hooked HERE rather than at each celebration's own call site, because every one of them already comes
+	-- through this function: first food bought, an achievement, a badge, a tutorial milestone. One hook means
+	-- the next one somebody writes is felt too, without anybody remembering to wire it.
+	--
+	-- Gated at TUTORIAL and above so it stays a CELEBRATION. Island arrivals, purchases, event notices and
+	-- reward nags all come through here as well, and a controller that buzzes every time a banner slides in
+	-- is a controller the player wants to throw.
+	if spec.priority and spec.priority >= (PRIORITY.TUTORIAL or 150) and _G.hapticPulse then
+		pcall(_G.hapticPulse, "milestone")
+	end
+
 	paintHero(spec)
 	slideHeroIn()
 
@@ -547,6 +645,8 @@ end
 --- re-animation), which is how a pin changes its wording as the player's situation changes.
 --- spec.rank picks the tier (RANK.QUEST default, RANK.TUTORIAL for the onboarding directions).
 local function pin(id, spec)
+	spec.sub = nil   -- a standing instruction obeys the same rule, and needs it more: it stays on screen
+	fitText(spec)    -- for as long as the job takes, so a paragraph there is a paragraph you cannot dismiss
 	if type(spec) ~= "table" or not spec.text then return end
 	local rank = tonumber(spec.rank) or RANK.QUEST
 
@@ -603,13 +703,101 @@ end
 
 --- push a notification.
 --- spec = { text, top?, sub?, color?, priority?, duration?, lane? ("hero"|"social"), sound? (fn),
+---          kind? (string -- see the MUTED / DEMOTE banner budget near the top of this file),
 ---          progress? (0..1 -> shows the fill), progressColor?, progressTrack?, exclusive? }
+--======================================================================
+-- QUEST HUDS OWN THE SCREEN WHILE THEY ARE UP
+--======================================================================
+-- The fishing, dig, coconut, film-reel and broccoli minigames are MODALS: they dim the world, take every
+-- tap, and sit at DisplayOrder 97 -- above this file's hero lane at 95. Raising them fixed banners drawing
+-- straight THROUGH the card, but it created a second, quieter problem: a banner would still play, now
+-- completely hidden behind an opaque panel, and the player would simply never see the reward they earned.
+--
+-- So while any ScreenGui carrying the QuestHud attribute is enabled, ordinary banners are HELD and replayed
+-- the moment it closes. Nothing is dropped and nothing is shown to an empty room.
+--
+-- Detected by ATTRIBUTE rather than by name or DisplayOrder: a name list would rot the day somebody adds a
+-- sixth minigame, and a DisplayOrder test would sweep up the 100-tier menus too -- and a player parked in
+-- the Shop should still get their island banner.
+--
+-- QUEST tier (the garden watering directions) is deliberately NOT held: it outranks everything by design.
+local questHold, questFlushing = {}, false
+
+-- ===== AND THE STARTER-PET WELCOME HOLDS THE LANE TOO =====
+-- The very first thing a new player is shown is the "YOUR FIRST PET! Bean Buddy is yours" card, and it is
+-- the one moment in the game with no competition by design -- the intro has just ended, they have not moved
+-- yet, and this is the game introducing itself. A trade request or a garden banner landing on top of it (the
+-- boot log caught exactly that) turns the introduction into noise.
+--
+-- So it uses the same HOLD the quest minigames use: banners queue while the card is up and play the instant
+-- it closes. Nothing is lost -- the 30s bound below applies to this too, so a card that somehow never closes
+-- cannot swallow a player's rewards. ObjectiveHUD already waited for this card by hand before pinning its
+-- directions; this makes the rule general instead of one file's good manners.
+local function starterCardUp(): boolean
+	local sg = playerGui:FindFirstChild("StarterPetWelcome")
+	if not (sg and sg:IsA("ScreenGui") and sg.Enabled) then return false end
+	for _, d in ipairs(sg:GetChildren()) do
+		if d:IsA("GuiObject") and d.Visible then return true end
+	end
+	return false
+end
+
+local function questHudUp(): boolean
+	if starterCardUp() then return true end
+	for _, g in ipairs(playerGui:GetChildren()) do
+		if g:IsA("ScreenGui") and g.Enabled and g:GetAttribute("QuestHud") then return true end
+	end
+	return false
+end
+
 local function push(spec)
 	if type(spec) ~= "table" or not spec.text then return end
 	-- EXCLUSIVE = a tutorial / milestone moment. It defaults into the TUTORIAL tier, which is what puts it
 	-- above every ordinary banner and below the garden watering quest.
 	if spec.exclusive and not spec.priority then spec.priority = PRIORITY.TUTORIAL end
 	spec.priority = spec.priority or PRIORITY.REWARD
+
+	-- THE FOUR-TO-FIVE WORD RULE. A banner is read at a glance, out of the corner of an eye, by someone who is
+	-- mid-flight or mid-tap -- it is a road sign, not a paragraph. So the subtitle is dropped here for every
+	-- caller rather than trimmed file by file: it was where the second and third sentence always ended up, it
+	-- doubled the height of the card in the most expensive strip on the screen, and nobody has time to read it.
+	-- Anything that genuinely needs a sentence has a panel to put it in.
+	--
+	-- Dropped, not banned: callers may still pass sub (dozens do), it simply never draws. That keeps this one
+	-- line the whole switch, and stops a stale copy of some other file quietly reintroducing two-line banners.
+	spec.sub = nil
+	fitText(spec)   -- ...and no more than WORD_CAP words (see fitText)
+
+	-- The banner budget (see MUTED / DEMOTE above). Applied before anything else so a muted line costs
+	-- nothing at all and a demoted one takes the social path below like any other pill.
+	if spec.kind then
+		if MUTED[spec.kind] then return end
+		if DEMOTE[spec.kind] then
+			spec.lane      = "social"
+			spec.priority  = PRIORITY.SOCIAL
+			spec.exclusive = nil
+		end
+	end
+
+	-- HELD while a quest minigame owns the screen (see the block above this function).
+	if spec.priority < PRIORITY.QUEST and questHudUp() then
+		questHold[#questHold + 1] = spec
+		if not questFlushing then
+			questFlushing = true
+			task.spawn(function()
+				-- Bounded at 30s. If a HUD is ever destroyed without its attribute going with it, or a minigame
+				-- wedges, the held banners still come out -- late and behind the card is bad, but losing a
+				-- player's reward notification permanently is worse.
+				local waited = 0
+				while questHudUp() and waited < 30 do task.wait(0.25); waited += 0.25 end
+				questFlushing = false
+				local batch = questHold
+				questHold = {}
+				for _, held in ipairs(batch) do pcall(push, held) end
+			end)
+		end
+		return
+	end
 
 	if spec.lane == "social" or spec.priority <= PRIORITY.SOCIAL then
 		-- Social pills live top-LEFT and normally never compete with the hero lane -- that is the whole
@@ -644,7 +832,33 @@ local function push(spec)
 		--      island (100) -- simply preempts it and hands the lane back afterwards.
 		-- Either way the pin YIELDS rather than being cancelled: it is restored the moment the lane runs dry,
 		-- so a status that was mid-sentence comes back mid-sentence.
-		if (spec.exclusive and pinRank < RANK.QUEST) or spec.priority > pinRank then
+		--   3. ANY RANKED BANNER briefly stepping over the STANDING DIRECTIONS. The onboarding pin
+		--      ("Talk to the Gardener", "Follow the arrows") sits at RANK.TUTORIAL (150), above EVENT (80)
+		--      and ISLAND (100) -- so on rank alone a new player's first minutes would swallow every other
+		--      banner in the game. That was first fixed for EVENT and up; the floor is now gone entirely.
+		--
+		--      ===== WHY EVERY RANK, NOT JUST THE BIG ONES =====
+		--      The directions are PERMANENT and the news is not. An event is time-boxed; a purchase
+		--      confirmation answers "did my Robux go through?"; even a REWARD nudge ("Daily Reward Ready")
+		--      is a thing the player can act on now and will not be told about again for hours. The
+		--      instruction, by contrast, is still sitting there the moment the borrowed banner finishes --
+		--      that is the whole point of a pin. Ranking the standing hint above the news meant the news
+		--      lost, permanently, for the exact players least able to work out what they missed.
+		--
+		--      So ANY hero push now takes the lane for its run and the pin YIELDS. Because pinYield sets
+		--      autoRestore, settle() hands the directions straight back the moment the lane runs dry -- the
+		--      banner is borrowed for a few seconds, never cancelled, and a new player always ends up back
+		--      on their instruction. "Override briefly, prioritise the tutorial ultimately."
+		--
+		--      Two things this deliberately does NOT loosen:
+		--        * `pinRank < RANK.QUEST` keeps the garden watering directions untouchable, exactly as
+		--          before -- that pin is an active task with a held watering can, not a standing hint.
+		--        * social-lane traffic never reaches here at all (it is routed away above), so "any rank"
+		--          means any rank of REAL news, not another player's arrival pill.
+		-- Reads as: anything at all may borrow a standing hint (rules 1 and 3); only an OUTRANKING banner
+		-- may take the lane from the watering quest (rule 2).
+		local borrows = pinRank < RANK.QUEST
+		if borrows or spec.priority > pinRank then
 			enqueue(spec)
 			pinYield(activePin)
 			return
@@ -741,6 +955,8 @@ task.spawn(function()
 end)
 
 print("[NotifyCenter] ready -- HERO lane (top-centre, priority queue + ranked pinned instructions) + SOCIAL lane (top-left)")
+print("[NotifyCenter] the onboarding directions pin now YIELDS to a banner of ANY rank and is handed " ..
+	"straight back afterwards -- only the garden watering quest (QUEST 200) holds the lane against everything")
 print("[NotifyCenter] priority order ACTIVE: garden watering directions (QUEST 200) > tutorial/achievement " ..
 	"exclusive banners (TUTORIAL 150) > island 100 / purchase 90 / event 80 / reward 40. One owner at a time; " ..
 	"equal fires queue in order -- never overlapping, never stacked.")

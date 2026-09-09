@@ -13,9 +13,15 @@
 --     timer, or any visual rigging. The reel must land on the reward the server actually rolled.
 --
 -- HOW THE ROLL WORKS (exactly as specified):
---   1. Roll the RARITY from RARITY_ODDS (Common 79.92% ... Gold 0.08%).
+--   1. Roll the RARITY from RARITY_ODDS (Common 79.92% ... Legendary).
 --   2. Pick UNIFORMLY at random from that rarity's entries in the crate.
---   3. Roll the TRAIT separately -- see PetTraits.roll(). Independent of rarity.
+--   3. Roll the TRAIT separately -- see PetTraits.roll(). Independent of the skin roll, so EVERY pull is
+--      1 Skin + 1 Trait, and Legendary Skin + Common Trait / Common Skin + Legendary Trait are both live.
+--
+-- SKIN CRATES USE FIVE BANDS. Skins top out at Legendary (see PetSkins); the Gold band belongs to the PET
+-- crate and the level crate, where it is the jackpot pet rarity. A skin entry's band must MATCH its skin's
+-- own tier -- asserted below -- so the reel colour, the inventory stripe and the Overall Tier maths can
+-- never disagree about what rarity a skin is.
 --
 -- A rarity band with NO entries in a crate is skipped and its weight redistributed to the bands that do have
 -- entries (see roll()), so a half-filled crate is still openable while you're building it out.
@@ -24,6 +30,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local PetSkins = require(Shared:WaitForChild("PetSkins"))
+local PetTraits = require(Shared:WaitForChild("PetTraits"))
 
 local SkinCrates = {}
 
@@ -33,13 +40,17 @@ local SkinCrates = {}
 -- tiers DO override it (that's what makes them worth more tokens) -- but an override is asserted to sum to 100
 -- too, and the odds panel always prints the same table the roll reads, so no crate can be quietly stingier
 -- than what it advertises.
+-- Commons drop normally -- but the DEFAULT Classic skin is stocked by NO crate (fullBands filters it out).
+-- Every player already owns Classic the moment they unlock the pet, so a crate handing it out would be a
+-- paid pull that grants nothing new. The only Classic a crate ever produces is the Trait Crate's ride-along
+-- pet (the trait is the prize there, and Classic is the neutral body it arrives on).
 SkinCrates.RARITY_ODDS = {
 	Common    = 79.92,
 	Uncommon  = 16.00,
 	Rare      =  3.20,
 	Epic      =  0.64,
-	Legendary =  0.16,
-	Gold      =  0.08,
+	Legendary =  0.24,
+	Gold      =  0.00, -- skin crates never roll Gold (no skin is Gold); the pet/level crates override this
 }
 -- Roll order, lowest to highest. Also the display order in the odds panel.
 SkinCrates.RARITY_ORDER = { "Common", "Uncommon", "Rare", "Epic", "Legendary", "Gold" }
@@ -75,6 +86,65 @@ local PET_CRATE_SPECIES = {
 	{ pet = "SunflowerBee"     }, { pet = "MapleFox"     }, { pet = "FrostPenguin"     },
 	{ pet = "BlossomBunny"     },
 }
+
+-- ---- SKIN CRATE STOCKING ------------------------------------------------------------------------------------
+-- The 17 approved skins, grouped by their own tier (the band a skin sits in MUST match PetSkins.tierOf --
+-- asserted at the bottom). Contents are generated as pets x skins rather than hand-typed pairs: with 17 skins
+-- across 11 species a curated list either misses combinations (making the Collection Book unfinishable) or
+-- runs to hundreds of hand-maintained lines. cross() keeps a crate's collection describable in one line.
+local SKINS_BY_TIER = {
+	Common    = { "Classic", "Pastel", "Muddy", "Arctic" },
+	Uncommon  = { "Candy", "Jungle", "Desert", "Ocean" },
+	Rare      = { "Lava", "Toxic", "Crystal", "Robot" },
+	Epic      = { "Golden", "Shadow", "Ancient" },
+	Legendary = { "Cosmic", "Rainbow" },
+}
+
+local function cross(pets, skins)
+	local out = {}
+	for _, p in ipairs(pets) do
+		for _, s in ipairs(skins) do out[#out + 1] = { pet = p, skin = s } end
+	end
+	return out
+end
+
+-- Every pet x every skin of each tier, for the crates that stock a whole collection. Classic is skipped:
+-- it's the default look every pet already ships with, so a crate stocking it would sell pulls that grant
+-- nothing. The Common band keeps its real skins (Arctic/Muddy/Pastel).
+local function fullBands(pets)
+	local bands = {}
+	for tier, skins in pairs(SKINS_BY_TIER) do
+		local pool = {}
+		for _, s in ipairs(skins) do
+			if s ~= "Classic" then pool[#pool + 1] = s end
+		end
+		if #pool > 0 then bands[tier] = cross(pets, pool) end
+	end
+	return bands
+end
+
+-- WHO STOCKS WHOM: Starter carries half the roster, Premium the other half, Elite the Pizza Dragon (the
+-- secret 10/10 pet keeps its skins behind the expensive crate), and the limited Mythic carries everyone at
+-- the best odds. Between them every (pet, skin) pair is obtainable EXCEPT Classic -- which is not a crate
+-- prize at all: every pet ships wearing it, and the Trait Crate's ride-alongs arrive in it. No Collection
+-- Book page is a dead end.
+local STARTER_PETS = { "BeanBuddy", "BroccoliPet", "ButterDuck", "BlossomBunny", "MapleFox" }
+local PREMIUM_PETS = { "CoconutCrab", "PopcornSheep", "BurritoArmadillo", "FrostPenguin", "SunflowerBee" }
+local ALL_SKIN_PETS = { "BeanBuddy", "BroccoliPet", "ButterDuck", "BlossomBunny", "MapleFox",
+	"CoconutCrab", "PopcornSheep", "BurritoArmadillo", "FrostPenguin", "SunflowerBee", "PizzaDragon" }
+
+-- The Trait Crate's shelves: EVERY trait, banded by its own tier -- generated from PetTraits so a new trait
+-- stocks itself. Entries are { trait = traitId }; kind = "trait" tells the roll, the validator and the reel
+-- which shape to expect (the same contract kind = "levels" and kind = "pets" follow).
+local function traitBands()
+	local bands = {}
+	for tier, list in pairs(PetTraits.ByTier) do
+		local out = {}
+		for _, t in ipairs(list) do out[#out + 1] = { trait = t.id } end
+		bands[tier] = out
+	end
+	return bands
+end
 
 SkinCrates.CRATES = {
 	-- THE PET LEVEL CRATE. Replaces the Robux Pet Wheel, which is gone: this is where pet levels come from
@@ -140,33 +210,31 @@ SkinCrates.CRATES = {
 			Gold      = PET_CRATE_SPECIES,
 		},
 	},
+	-- ===== THE TRAIT CRATE -- the TRAIT is the prize ==========================================================
+	-- kind = "trait": entries are { trait = traitId } and the band the reel lands on IS the trait's own
+	-- rarity (asserted below, same rule as skin bands). A trait can't live alone in the inventory -- entries
+	-- are pet|skin|trait -- so the server rolls a RIDE-ALONG pet + skin at the shared baseline odds
+	-- (rollRideAlong below) and the pull lands as a perfectly ordinary entry: equippable, tradable, saved.
+	--
+	-- PRICE is deliberately mid-level: above the Pet Crate (160), below Premium (250). This is the crate for
+	-- chasing a specific LOOK layer -- "I want King" -- so it pays better trait odds than any skin crate's
+	-- independent trait roll (Legendary trait here is 1.5% vs the baseline 2%-of-everything spread), while
+	-- the cosmetic value of the ride-along skin stays at baseline.
+	{
+		id = "Traits", displayName = "Trait Crate",
+		blurb = "The trait is the prize. It arrives on a random pet and skin, ready to wear.",
+		price = 200, color = Color3.fromRGB(170, 110, 240), icon = "\xF0\x9F\x8E\xA9", -- top hat
+		kind = "trait", -- entries are { trait = traitId }, NOT { pet, skin }
+		odds = { Common = 55.00, Uncommon = 25.00, Rare = 13.00, Epic = 5.50, Legendary = 1.50, Gold = 0.00 },
+		contents = traitBands(),
+	},
+
 	{
 		id = "Starter", displayName = "Starter Crate",
 		blurb = "Cheap and cheerful. Mostly Common, but every tier is in here.",
 		price = 100, color = Color3.fromRGB(64, 120, 245), icon = "\xF0\x9F\x93\xA6", -- box
 		-- no `odds` field -> the shared baseline. This is the crate players learn the odds from.
-		contents = {
-			Common = {
-				{ pet = "BeanBuddy", skin = "Stone" }, { pet = "BlossomBunny", skin = "Sand" },
-				{ pet = "BroccoliPet", skin = "Moss" }, { pet = "ButterDuck", skin = "Mud" },
-				{ pet = "SunflowerBee", skin = "Chocolate" }, { pet = "MapleFox", skin = "Honey" },
-			},
-			Uncommon = {
-				{ pet = "FrostPenguin", skin = "Ice" }, { pet = "BeanBuddy", skin = "Emerald" },
-				{ pet = "ButterDuck", skin = "Coral" }, { pet = "BroccoliPet", skin = "Gilded" },
-				{ pet = "BlossomBunny", skin = "Crystal" },
-			},
-			Rare = {
-				{ pet = "MapleFox", skin = "Neon" }, { pet = "SunflowerBee", skin = "Toxic" },
-				{ pet = "BurritoArmadillo", skin = "Magma" }, { pet = "PizzaDragon", skin = "Gilded" },
-			},
-			Epic = {
-				{ pet = "PizzaDragon", skin = "Galaxy" }, { pet = "ButterDuck", skin = "Rainbow" },
-				{ pet = "MapleFox", skin = "Cyber" },
-			},
-			Legendary = { { pet = "PizzaDragon", skin = "Shadow" }, { pet = "PopcornSheep", skin = "Celestial" } },
-			Gold      = { { pet = "PizzaDragon", skin = "Cosmic" } },
-		},
+		contents = fullBands(STARTER_PETS),
 	},
 
 	{
@@ -174,84 +242,32 @@ SkinCrates.CRATES = {
 		blurb = "Better odds across the board. Half the Commons of a Starter.",
 		price = 250, color = Color3.fromRGB(72, 200, 120), icon = "\xF0\x9F\x8E\x81", -- gift
 		-- BETTER ODDS: Common roughly halved, everything above it lifted. Still sums to 100 (asserted below).
-		odds = { Common = 58.00, Uncommon = 30.00, Rare = 9.00, Epic = 2.20, Legendary = 0.60, Gold = 0.20 },
-		contents = {
-			Common = {
-				{ pet = "CoconutCrab", skin = "Stone" }, { pet = "PopcornSheep", skin = "Sand" },
-				{ pet = "BurritoArmadillo", skin = "Mud" }, { pet = "FrostPenguin", skin = "Chocolate" },
-			},
-			Uncommon = {
-				{ pet = "CoconutCrab", skin = "Coral" }, { pet = "PopcornSheep", skin = "Ice" },
-				{ pet = "MapleFox", skin = "Crystal" }, { pet = "SunflowerBee", skin = "Gilded" },
-				{ pet = "BurritoArmadillo", skin = "Emerald" },
-			},
-			Rare = {
-				{ pet = "FrostPenguin", skin = "Neon" }, { pet = "ButterDuck", skin = "Toxic" },
-				{ pet = "BroccoliPet", skin = "Magma" }, { pet = "BeanBuddy", skin = "Neon" },
-			},
-			Epic = {
-				{ pet = "BurritoArmadillo", skin = "Galaxy" }, { pet = "BeanBuddy", skin = "Cyber" },
-				{ pet = "PopcornSheep", skin = "Rainbow" },
-			},
-			Legendary = { { pet = "CoconutCrab", skin = "Shadow" }, { pet = "BlossomBunny", skin = "Celestial" } },
-			Gold      = { { pet = "CoconutCrab", skin = "Cosmic" } },
-		},
+		odds = { Common = 58.00, Uncommon = 30.00, Rare = 9.00, Epic = 2.20, Legendary = 0.80, Gold = 0.00 },
+		contents = fullBands(PREMIUM_PETS),
 	},
 
 	{
 		id = "Elite", displayName = "Elite Crate",
-		blurb = "Expensive. Rare or better more often than not.",
+		blurb = "The Pizza Dragon collection. Rare or better more often than not.",
 		price = 600, color = Color3.fromRGB(248, 150, 56), icon = "\xF0\x9F\x92\x8E", -- gem
-		-- HIGH CHANCE OF RARE+: Rare/Epic/Legendary/Gold together are 55% of this crate.
-		odds = { Common = 20.00, Uncommon = 25.00, Rare = 34.00, Epic = 15.00, Legendary = 5.00, Gold = 1.00 },
-		contents = {
-			Common   = { { pet = "PizzaDragon", skin = "Stone" }, { pet = "CoconutCrab", skin = "Moss" } },
-			Uncommon = {
-				{ pet = "PizzaDragon", skin = "Crystal" }, { pet = "FrostPenguin", skin = "Emerald" },
-				{ pet = "BurritoArmadillo", skin = "Gilded" },
-			},
-			Rare = {
-				{ pet = "PizzaDragon", skin = "Neon" }, { pet = "CoconutCrab", skin = "Toxic" },
-				{ pet = "PopcornSheep", skin = "Magma" }, { pet = "BlossomBunny", skin = "Neon" },
-			},
-			Epic = {
-				{ pet = "CoconutCrab", skin = "Galaxy" }, { pet = "FrostPenguin", skin = "Cyber" },
-				{ pet = "SunflowerBee", skin = "Rainbow" }, { pet = "MapleFox", skin = "Galaxy" },
-			},
-			Legendary = {
-				{ pet = "ButterDuck", skin = "Shadow" }, { pet = "MapleFox", skin = "Celestial" },
-				{ pet = "BeanBuddy", skin = "Shadow" },
-			},
-			Gold = { { pet = "ButterDuck", skin = "Cosmic" }, { pet = "MapleFox", skin = "Cosmic" } },
-		},
+		-- HIGH CHANCE OF RARE+: Rare/Epic/Legendary together are 55% of this crate. The dragon itself stays a
+		-- collection reward -- this crate only ever sells its wardrobe.
+		odds = { Common = 20.00, Uncommon = 25.00, Rare = 34.00, Epic = 15.00, Legendary = 6.00, Gold = 0.00 },
+		contents = fullBands({ "PizzaDragon" }),
 	},
 
 	{
 		id = "Mythic", displayName = "Mythic Crate",
 		blurb = "Limited collection. Events, Season Pass and Robux bundles only.",
 		price = 1200, color = Color3.fromRGB(240, 96, 180), icon = "\xE2\x9C\xA8", -- sparkles
-		-- The event crate: no Commons at all, and the best Gold rate in the game.
-		odds = { Common = 0.00, Uncommon = 18.00, Rare = 40.00, Epic = 28.00, Legendary = 11.00, Gold = 3.00 },
+		-- The event crate: no Commons at all, every species, and the best Legendary rate in the game.
+		odds = { Common = 0.00, Uncommon = 18.00, Rare = 40.00, Epic = 28.00, Legendary = 14.00, Gold = 0.00 },
 		limited = true, -- flagged for the UI: not bought with tokens in the normal shop
-		contents = {
-			Uncommon = { { pet = "PizzaDragon", skin = "Ice" }, { pet = "BeanBuddy", skin = "Crystal" } },
-			Rare = {
-				{ pet = "PizzaDragon", skin = "Toxic" }, { pet = "BlossomBunny", skin = "Magma" },
-				{ pet = "SunflowerBee", skin = "Neon" },
-			},
-			Epic = {
-				{ pet = "PizzaDragon", skin = "Cyber" }, { pet = "BlossomBunny", skin = "Galaxy" },
-				{ pet = "FrostPenguin", skin = "Rainbow" }, { pet = "CoconutCrab", skin = "Cyber" },
-			},
-			Legendary = {
-				{ pet = "SunflowerBee", skin = "Shadow" }, { pet = "BurritoArmadillo", skin = "Celestial" },
-				{ pet = "FrostPenguin", skin = "Shadow" },
-			},
-			Gold = {
-				{ pet = "BlossomBunny", skin = "Cosmic" }, { pet = "SunflowerBee", skin = "Cosmic" },
-				{ pet = "BroccoliPet", skin = "Cosmic" },
-			},
-		},
+		contents = (function()
+			local bands = fullBands(ALL_SKIN_PETS)
+			bands.Common = nil -- no Commons at all: the whole point of the limited crate
+			return bands
+		end)(),
 	},
 
 }
@@ -284,11 +300,11 @@ SkinCrates.SINGLE_TOKEN_ROBUX = 0.25
 -- exact pattern storefront policy keeps tightening around. Clean value with a real bulk discount is the
 -- version that survives a parent looking at it.
 SkinCrates.TOKEN_PACKS = {
-	{ id = "tok100",  productId = 3699250369, tokens =  100, robux =  25,                    label = "100 Tokens"   },
-	{ id = "tok300",  productId = 3699255106, tokens =  300, robux =  59, tag = "Popular",    label = "300 Tokens"   },
-	{ id = "tok700",  productId = 3699261145, tokens =  700, robux = 129,                    label = "700 Tokens"   },
-	{ id = "tok1500", productId = 3699268487, tokens = 1500, robux = 239,                    label = "1,500 Tokens" },
-	{ id = "tok4400", productId = 3699282826, tokens = 4400, robux = 549, tag = "Best Value", label = "4,400 Tokens" },
+	{ id = "tok100",  productId = 3699250369, tokens =  100, robux =  25,                    label = "100 Tickets"   },
+	{ id = "tok300",  productId = 3699255106, tokens =  300, robux =  59, tag = "Popular",    label = "300 Tickets"   },
+	{ id = "tok700",  productId = 3699261145, tokens =  700, robux = 129,                    label = "700 Tickets"   },
+	{ id = "tok1500", productId = 3699268487, tokens = 1500, robux = 239,                    label = "1,500 Tickets" },
+	{ id = "tok4400", productId = 3699282826, tokens = 4400, robux = 549, tag = "Best Value", label = "4,400 Tickets" },
 }
 
 -- ---- TEST MODE (no Robux) -----------------------------------------------------------------------------------
@@ -312,13 +328,13 @@ SkinCrates.TEST_MODE = false
 -- the inventory just accumulates; with it every duplicate is 1/10th of a step up the ladder.
 SkinCrates.TRADE_UP = {
 	COST = 10, -- how many same-rarity skins one contract consumes
-	-- What each rarity trades UP into. Gold is deliberately absent: it's the top, so it has nothing to become.
+	-- What each rarity trades UP into. Legendary is deliberately absent: it is the top SKIN tier (skins never
+	-- reach Gold -- that band belongs to pet rarity), so it has nothing to become.
 	NEXT = {
-		Common    = "Uncommon",
-		Uncommon  = "Rare",
-		Rare      = "Epic",
-		Epic      = "Legendary",
-		Legendary = "Gold",
+		Common   = "Uncommon",
+		Uncommon = "Rare",
+		Rare     = "Epic",
+		Epic     = "Legendary",
 	},
 }
 
@@ -361,10 +377,18 @@ function SkinCrates.isPetCrate(crateOrId)
 	return c ~= nil and c.kind == "pets"
 end
 
--- A crate that pays out anything other than a skin. The skin-only machinery -- trade-up contracts, the
--- Collection Book, the Gold skin announcement -- must skip these, because there is no skin to operate on.
+-- Does this crate pay out a TRAIT (with a ride-along pet + skin) instead of a curated skin?
+function SkinCrates.isTraitCrate(crateOrId)
+	local c = type(crateOrId) == "table" and crateOrId or SkinCrates.getCrate(crateOrId)
+	return c ~= nil and c.kind == "trait"
+end
+
+-- A crate whose CONTENTS are curated (pet, skin) pairs. The skin-only machinery -- trade-up pools, the
+-- Collection Book's roster sweep -- must skip everything else: level and pet crates have no skin at all,
+-- and a trait crate's entries carry no pet to enumerate.
 function SkinCrates.isSkinCrate(crateOrId)
-	return not (SkinCrates.isLevelCrate(crateOrId) or SkinCrates.isPetCrate(crateOrId))
+	return not (SkinCrates.isLevelCrate(crateOrId) or SkinCrates.isPetCrate(crateOrId)
+		or SkinCrates.isTraitCrate(crateOrId))
 end
 
 function SkinCrates.getCrate(id)
@@ -387,7 +411,7 @@ function SkinCrates.flatContents(crateId)
 	if not crate then return out end
 	for _, rarity in ipairs(SkinCrates.RARITY_ORDER) do
 		for _, e in ipairs(crate.contents[rarity] or {}) do
-			out[#out + 1] = { pet = e.pet, skin = e.skin, levels = e.levels, rarity = rarity }
+			out[#out + 1] = { pet = e.pet, skin = e.skin, levels = e.levels, trait = e.trait, rarity = rarity }
 		end
 	end
 	return out
@@ -476,18 +500,31 @@ function SkinCrates.roll(rng, crateId, luck)
 	-- 3) the entry's index in the flattened list, for the client's reel
 	local idx = 0
 	local isLevels = SkinCrates.isLevelCrate(crate)
+	local isTrait = SkinCrates.isTraitCrate(crate)
 	for i, e in ipairs(SkinCrates.flatContents(crateId)) do
-		-- Match on whichever payload this crate uses. A level crate has no pet/skin, so comparing those would
-		-- compare nil to nil, match the FIRST entry of the band every time, and land the reel on the wrong cell.
+		-- Match on whichever payload this crate uses. A level or trait crate has no pet/skin, so comparing
+		-- those would compare nil to nil, match the FIRST entry of the band every time, and land the reel on
+		-- the wrong cell.
 		local same = false
 		if e.rarity == chosen then
 			if isLevels then same = (e.levels == entry.levels)
+			elseif isTrait then same = (e.trait == entry.trait)
 			else same = (e.pet == entry.pet and e.skin == entry.skin) end
 		end
 		if same then idx = i; break end
 	end
 
 	return chosen, entry, idx
+end
+
+-- ---- THE TRAIT CRATE'S RIDE-ALONG ---------------------------------------------------------------------------
+-- A pulled trait needs a pet + skin to live on (inventory entries are pet|skin|trait). The species is a
+-- uniform pick over every skin-crate species, and the skin is ALWAYS the default Classic -- the TRAIT is
+-- the prize here, so it arrives on the neutral body rather than diluting the skin crates' loot.
+SkinCrates.ALL_SKIN_PETS = ALL_SKIN_PETS
+function SkinCrates.rollRideAlong(rng)
+	local pet = ALL_SKIN_PETS[rng:NextInteger(1, #ALL_SKIN_PETS)]
+	return pet, "Classic"
 end
 
 -- ---- REQUIRE-TIME VALIDATION --------------------------------------------------------------------------------
@@ -521,12 +558,31 @@ do
 						string.format("[SkinCrates] crate '%s' / %s: pet entries must not carry a skin (got '%s') "
 							.. "-- a pull grants the PET, and a stray skin here would be silently discarded",
 							crate.id, rarity, tostring(e.skin)))
+				elseif SkinCrates.isTraitCrate(crate) then
+					-- a trait entry is a trait and NOTHING else, and its band must be the trait's own tier --
+					-- the same band-honesty rule the skin crates follow, for the same reason: the reel colour
+					-- and the hidden score maths must agree on what rarity the prize is.
+					assert(PetTraits.exists(e.trait) and not PetTraits.isNone(e.trait),
+						string.format("[SkinCrates] crate '%s' / %s: trait '%s' is not in PetTraits.TRAITS",
+							crate.id, rarity, tostring(e.trait)))
+					assert(PetTraits.tierOf(e.trait) == rarity,
+						string.format("[SkinCrates] crate '%s': trait '%s' is %s but sits in the %s band",
+							crate.id, tostring(e.trait), tostring(PetTraits.tierOf(e.trait)), rarity))
+					assert(e.pet == nil and e.skin == nil,
+						string.format("[SkinCrates] crate '%s' / %s: trait entries must not carry a pet/skin "
+							.. "-- the ride-along is rolled at open time, a curated one here would be discarded",
+							crate.id, rarity))
 				else
 					assert(type(e.pet) == "string" and e.pet ~= "",
 						string.format("[SkinCrates] crate '%s' / %s has an entry with no pet", crate.id, rarity))
 					assert(PetSkins.exists(e.skin),
 						string.format("[SkinCrates] crate '%s' / %s: skin '%s' is not in PetSkins.Skins",
 							crate.id, rarity, tostring(e.skin)))
+					-- The band a skin sits in IS its rarity everywhere else in the game (inventory stripe, reel
+					-- colour, hidden score), so a skin filed under the wrong band would lie in all of them.
+					assert(PetSkins.tierOf(e.skin) == rarity,
+						string.format("[SkinCrates] crate '%s': skin '%s' is %s but sits in the %s band",
+							crate.id, tostring(e.skin), PetSkins.tierOf(e.skin), rarity))
 				end
 				count = count + 1
 			end

@@ -9,13 +9,13 @@ local ProximityPromptService = game:GetService("ProximityPromptService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
+-- FOUR SLIDES, EIGHT WORDS EACH -- see the food realm's copy of this file. Six lines of 7 to 15 words
+-- became TEN slides once capWords split them; four that cannot split say the same thing.
 local LINES = {
 	"\xC2\xA1Hola, amigo! Welcome to Fart to Float!",
-	"Buy food from the stand to fill your GAS METER.",
-	"Then hit the FART button to blast off and fly up!",
-	"Land on the next island to unlock it and keep climbing.",
-	"Earn coins by flying high \xE2\x80\x94 save up for a BIGGER STOMACH to fly even higher!",
-	"Good luck, partner! See you at the top!",
+	"Buy food, then HOLD the FART button.",
+	"Land higher to unlock the next island.",
+	"Coins buy bigger guts. Good luck, partner!",
 }
 
 -- ===== dialog UI (built once, hidden until triggered) =====

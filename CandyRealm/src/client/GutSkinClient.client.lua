@@ -19,6 +19,17 @@ local GetGutSkins    = RS:WaitForChild("GetGutSkins", 60)
 local GutSkinState   = RS:WaitForChild("GutSkinState", 60)
 local GutSkinUnlocked= RS:WaitForChild("GutSkinUnlocked", 60)
 
+-- ⚠ THIS REALM HAS NO GUT-SKIN SERVER. Every one of the four lookups above is a bounded
+-- WaitForChild, so after 60s they simply return nil -- and the first `GutSkinState.OnClientEvent`
+-- below then threw "attempt to index nil with 'OnClientEvent'" in the log on every single boot.
+-- A missing feature must go quiet, not crash: say which remotes are absent, once, and stop.
+if not (EquipGutSkin and GetGutSkins and GutSkinState and GutSkinUnlocked) then
+	warn("[GutSkin] no gut-skin remotes in ReplicatedStorage (EquipGutSkin / GetGutSkins / "
+		.. "GutSkinState / GutSkinUnlocked) -- this realm ships no gut-skin server, so the skin "
+		.. "grid is inactive. Nothing else is affected.")
+	return
+end
+
 local SKINTONE = Color3.fromRGB(255, 204, 153)
 local localEquipped = "Default"
 local localPlaytimeSec = 0 -- mirrors the server total; ticks up locally for live progress, re-synced on state events

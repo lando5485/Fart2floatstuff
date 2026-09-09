@@ -6,3 +6,10 @@ CandyRealm_MoreBackends_x/
 
 # Rojo binary (download separately)
 rojo.exe
+
+# Studio lock files (present only while the place is open)
+*.rbxl.lock
+*.rbxlx.lock
+
+# Python bytecode from tools/
+__pycache__/

@@ -1,18 +1,28 @@
 --======================================================================
 -- CookieRepairQuest_AllInOne.client.lua  (LocalScript)
 --======================================================================
--- ISLAND-3 QUEST: "Fix the Giant Cookie."
+-- ISLAND-3 QUEST: "Feed the Monster" (fix the Giant Cookie the only way that works)
 --   * The GiantCookie you built in Studio already has chocolate chips in it. On
 --     load this script HIDES them (leaving faint dents), so the cookie shows up
---     bare -- its chocolate has gone missing.
+--     bare -- the Chocolate Monster ate its chocolate.
 --       -> name those chips choc/chip/chunk/morsel in Studio for exact control;
 --          otherwise they're auto-detected (small + dark parts on the big biscuit).
---   * 6 blocks named "chunk" are hidden around island3 -> each becomes a shiny
---     chocolate chunk you collect (E). Per-player (client-side).
---   * The Candy Npc on island3 gives the quest + receives the chunks. Collect all
---     6, bring them to her, and the cinematic plays: camera pans to the cookie,
---     the chocolates rain back into their dents and pop solid, shockwave + shake,
---     fireworks, and a "You fixed the Giant Cookie!" banner.
+--   * The blocks named "chunk" around island3 become BAIT SPOTS: glowing plates.
+--     The Candy Npc hands you TOTAL bait cookies with the job.
+--   * THE LOOP. The monster hunts you the whole time and you cannot fight him --
+--     but he is greedy. Drop a bait cookie on a plate and he drops everything to go
+--     eat it (this script publishes _G.chocoLure; the lure branch in
+--     ChocolateMonster_AllInOne walks him over and calls _G.chocoLureEaten). A fed
+--     monster coughs one chunk straight back up -- grab it in the quiet before he
+--     re-aggros. Bait is finite, so where you put him is a real decision.
+--   * Collect them all, bring them to her, and the cinematic plays: camera pans to
+--     the cookie, the chocolates rain back into their dents and pop solid,
+--     shockwave + shake, fireworks, "You fixed the Giant Cookie!"
+--
+--   (This replaced a hunt for six chunks, each opened with a five-tap panel that had
+--    no timer and no fail state -- thirty identical clicks, while the one tense thing
+--    on the island, the chase, was something the quest worked around. The monster is
+--    the quest now.)
 --
 -- Self-contained (matches CandyGumballQuest). Everything is scoped to island3 so
 -- it never touches island1's same-named "Candy Npc".
@@ -32,17 +42,20 @@ local PlayerGui = player:WaitForChild("PlayerGui")
 -- CONFIG
 -- ============================================================================
 local ISLAND_NAME      = "island3"
-local TOTAL            = 6
--- CHIP PRY: the per-chunk minigame. FIVE TAPS AND THE CHUNK IS OUT -- no timer, no
--- rising ceiling. It used to be a 6-second bar that mashing could not beat (the realm's
--- standard anti-mash rule, just tuned short); it is now a plain click count, so the panel
--- is open for about a second. The Chocolate Monster is hunting you the whole time, and the
--- chase is what paces this island -- the modal was only ever in the way of it.
-local PRY_CLICKS       = 5       -- taps to lever one chunk loose
--- If the monster gets this close the panel BAILS instead of trapping you in it. Slightly
--- wider than its own SHOVE_RANGE (12) so you get out before it can land the shove.
-local PRY_MONSTER_BAIL = 16
-local CHUNK_NAME       = "chunk"                       -- brick name (case-insensitive)
+-- ⚠ 6 -> 4. Each one is now a full bait-and-collect cycle (drop, he walks over, he eats, he
+-- coughs it up, you grab it while he re-aggros) rather than a five-tap panel, so four of them
+-- is longer in play AND shorter in tedium than six of the old ones. It is also the bait count
+-- the NPC hands you, so the two can never disagree.
+local TOTAL            = 4
+-- (PRY_CLICKS and PRY_MONSTER_BAIL are gone with the pry panel -- see the note further down.
+--  Chunks come back up out of the monster now; nothing is levered out of anything, so there
+--  is no modal left to bail out of when he closes in.)
+local CHUNK_NAME       = "chunk"                       -- marker name (case-insensitive).
+                                                       -- These are BAIT SPOTS now: each one
+                                                       -- becomes a glowing plate you may put
+                                                       -- a cookie on. The name is unchanged so
+                                                       -- island 3's existing Studio markers
+                                                       -- keep working untouched.
 -- names below are compared with norm(): lowercase, spaces/underscores/hyphens removed.
 -- So "Candy Npc" and "Giant Cookie" match "candynpc" / "giantcookie".
 local NPC_NAMES        = { "candynpc" }
@@ -160,6 +173,7 @@ end
 -- OBJECTIVE BANNER (top-center, proximity-gated to island3)
 -- ============================================================================
 local collected     = 0
+local baitLeft      = 0     -- bait cookies in hand; the NPC hands over TOTAL when you accept
 local questAccepted  = false
 local delivered      = false
 _G.cookieQuestComplete = false -- island-3 Cookie Stand (Shop_AllInOne) stays LOCKED until this is true
@@ -179,10 +193,21 @@ do local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 22; sz.Pare
    local pad = Instance.new("UIPadding"); pad.PaddingLeft = UDim.new(0, 14); pad.PaddingRight = UDim.new(0, 14); pad.Parent = objLabel end
 
 local function baseObjectiveText()
-	if delivered then return "\xF0\x9F\x8D\xAA You fixed the Giant Cookie!" end
-	if not questAccepted then return "\xF0\x9F\x8D\xAA Go talk to the Candy NPC on Island 3!" end
-	if collected >= TOTAL then return "\xF0\x9F\x8D\xAA Bring the chunks to the Candy NPC!" end
-	return ("\xF0\x9F\x8D\xAB Find the chocolate chunks!  %d/%d"):format(collected, TOTAL)
+	if delivered then return "\xF0\x9F\x8D\xAA The Giant Cookie is fixed -- the Cookie Stand is open!" end
+	if not questAccepted then
+		return "\xF0\x9F\x8D\xAA Talk to the Candy NPC to start -- follow the green arrows!"
+	end
+	if collected >= TOTAL then
+		return ("\xF0\x9F\x8D\xAA You have all %d! Carry the chunks back to the Candy NPC."):format(TOTAL)
+	end
+	-- the line names whichever half of the loop you are in: bait is down and he is walking to
+	-- it, or the plate is empty and it is on you to put a cookie on one
+	if _G.chocoLure then
+		return ("\xF0\x9F\x8D\xAB He's coming for the bait -- grab the chunk when he brings it up!  %d/%d")
+			:format(collected, TOTAL)
+	end
+	return ("\xF0\x9F\x8D\xAA Drop Bait on a glowing plate to lure him off you  (%d bait left)  %d/%d")
+		:format(baitLeft, collected, TOTAL)
 end
 local flashToken = 0
 local npcHead     -- assigned below
@@ -220,6 +245,7 @@ end)
 -- around the island are those very chips -- they fly back in at the end.
 local cookie                -- the GiantCookie instance (Model or BasePart)
 local chocolates = {}       -- [i] = { part=, transparency=, size=, collide= }  the chips we hid
+local biscuitPart           -- the big dough slab; the fly-in measures chips against it
 local sockets    = {}       -- faint dents left behind where each chip was
 
 local function mkPart(props)
@@ -291,6 +317,7 @@ local hidden = {}   -- [part] = true, so a re-run never double-registers a chip
 local function hideChocolates(quiet)
 	if not cookie or not cookie.Parent then return end
 	local found, how, biscuit = findChocolates(cookie)
+	biscuitPart = biscuit or biscuitPart
 
 	-- HAS IT ACTUALLY STREAMED IN YET? An empty Model replicates immediately; its Parts only arrive when a
 	-- player is near them. So a cookie with ZERO BaseParts is not a badly-named cookie, it is a cookie nobody
@@ -368,6 +395,34 @@ local function hideChocolates(quiet)
 end
 
 -- put them back: each chip drops in from above, lands in its dent, and pops solid
+--======================================================================
+-- A SLAB ARRIVES AS PIECES, NOT AS ONE LUMP
+--======================================================================
+-- The fly-in built ONE flyer at rec.size and dropped it on the dent. That is right for a cookie
+-- whose chips are chip-sized, and wrong for this one: island3's Giant Cookie has a single MeshPart
+-- called 'missing cholcolate' measuring 38.6 x 39.2 against a 78.7 x 68.1 biscuit -- 28% of the
+-- whole cookie in one piece. So the payoff shot was a slab half the size of the cookie falling out
+-- of the sky and smacking it flat. One object, one thud, no sense of chocolate being put back.
+--
+-- Now the SIZE of the chip decides how it arrives. Anything covering 5% or more of the biscuit's
+-- top comes in as REVEAL_PIECES smaller chunks, spread across the footprint it is filling and
+-- landing a beat apart, so the reveal reads as chocolate raining back in. A genuinely small chip
+-- (a 6x6 morsel is 0.7% of that biscuit) still arrives as itself -- this does not turn a cookie
+-- with six proper chips into eighteen crumbs.
+--
+-- The real part is untouched: the pieces are throwaway flyers, and the authored MeshPart still
+-- un-hides underneath with its pop. Nothing about the cookie you built in Studio changes.
+local REVEAL_PIECES = 3
+local SLAB_FRACTION = 0.05
+
+local function flyPieces(rec)
+	if not (biscuitPart and rec.size) then return 1 end
+	local biscuitArea = biscuitPart.Size.X * biscuitPart.Size.Z
+	if biscuitArea <= 0 then return 1 end
+	local chipArea = rec.size.X * rec.size.Z
+	return (chipArea / biscuitArea >= SLAB_FRACTION) and REVEAL_PIECES or 1
+end
+
 -- sockets[i] belongs to chocolates[i] -- both are appended in lockstep by hideChocolates()
 local function restoreChocolates()
 	for i, rec in ipairs(chocolates) do
@@ -375,15 +430,16 @@ local function restoreChocolates()
 		if p and p.Parent then
 			task.delay((i - 1) * 0.09, function()
 				if not (p and p.Parent) then return end
-				local land  = p.CFrame
-				local flyer = mkPart({ Name = "ChocoFlyIn", Size = rec.size, Color = CHOC,
-					Material = Enum.Material.SmoothPlastic, Reflectance = 0.06 })
-				flyer.CFrame = land * CFrame.new(0, 26 + i * 3, 0) * CFrame.Angles(0, math.rad(i * 47), math.rad(15))
-				flyer.Parent = Workspace
+				local land = p.CFrame
+				local n    = flyPieces(rec)
 
-				local drop = TweenService:Create(flyer, TweenInfo.new(0.42, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { CFrame = land })
-				drop.Completed:Connect(function()
-					flyer:Destroy()
+				-- THE REVEAL RUNS ONCE, AFTER THE LAST PIECE LANDS -- not per piece. Un-hiding the
+				-- real part on the first landing would leave the other two dropping onto a chip that
+				-- was already whole.
+				local landed = 0
+				local function onLanded()
+					landed += 1
+					if landed < n then return end
 					local sock = sockets[i]                     -- the dent this chip is filling
 					if sock then pcall(function() sock:Destroy() end); sockets[i] = nil end
 					if not (p and p.Parent) then return end
@@ -395,13 +451,42 @@ local function restoreChocolates()
 						TweenService:Create(p, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = rec.size }):Play()
 					end
 					sparkleAt(land.Position)
-				end)
-				drop:Play()
+				end
+
+				-- each piece is a chunk of the slab, a little taller than flat so it reads as a
+				-- broken-off lump rather than a tile
+				local pieceSize = (n == 1) and rec.size
+					or Vector3.new(rec.size.X / n * 0.86, math.max(rec.size.Y, 1.1) * 1.15, rec.size.Z * 0.52)
+
+				for k = 1, n do
+					-- symmetric about the dent's centre: for n = 3 that is -1/3, 0, +1/3 of the width,
+					-- with a small alternating nudge in Z so they do not sit in a dead straight line
+					local spread = (n == 1) and Vector3.new(0, 0, 0)
+						or Vector3.new(((k - (n + 1) * 0.5) / n) * rec.size.X, 0,
+							(((k % 2) == 0) and 1 or -1) * rec.size.Z * 0.16)
+					local target = land * CFrame.new(spread)
+					task.delay((k - 1) * 0.13, function()
+						local flyer = mkPart({ Name = "ChocoFlyIn", Size = pieceSize, Color = CHOC,
+							Material = Enum.Material.SmoothPlastic, Reflectance = 0.06 })
+						flyer.CFrame = target * CFrame.new(0, 26 + i * 3 + k * 2, 0)
+							* CFrame.Angles(0, math.rad(i * 47 + k * 31), math.rad(15))
+						flyer.Parent = Workspace
+						local drop = TweenService:Create(flyer,
+							TweenInfo.new(0.42, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { CFrame = target })
+						drop.Completed:Connect(function()
+							flyer:Destroy()
+							if n > 1 then sparkleAt(target.Position) end   -- each piece puffs where it lands
+							onLanded()
+						end)
+						drop:Play()
+					end)
+				end
 			end)
 		end
 	end
 	-- safety sweep: clear any dent whose chip never made it back (streamed out, deleted, etc.)
-	task.delay(#chocolates * 0.09 + 0.9, function()
+	-- Allows for the staggered pieces: (REVEAL_PIECES - 1) * 0.13 + the 0.42 drop, plus headroom.
+	task.delay(#chocolates * 0.09 + 1.8, function()
 		for _, s in pairs(sockets) do pcall(function() s:Destroy() end) end
 		sockets = {}
 	end)
@@ -453,7 +538,7 @@ local function winBanner()
 	local msg = "\xF0\x9F\x8D\xAA You fixed the Giant Cookie! \xF0\x9F\x8E\x86"
 	if _G.NotifyCenter and _G.NotifyCenter.push then
 		pcall(function() _G.NotifyCenter.push({
-			top      = "â¨ QUEST COMPLETE",
+			top      = "\xE2\x9C\xA8 QUEST COMPLETE",
 			text     = msg,
 			color    = STROKE,
 			priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT or nil,
@@ -615,135 +700,16 @@ local function nextHint()
 end
 
 -- ============================================================================
--- CHIP PRY -- the per-chunk minigame (short, because you're being chased)
+-- THE CHIP PRY PANEL IS GONE (island 3 is "Feed the Monster" now)
 -- ============================================================================
--- Tap to lever the chunk out of whatever it's set into. PRY_CLICKS taps, straight
--- count -- no rising ceiling, unlike the rest of the realm's minigames. The anti-mash
--- ceiling exists to stop a timed bar being cheated, and there is no timed bar here
--- any more: the tap count IS the cost, so mashing it is simply playing it.
+-- It was a modal with PRY_CLICKS taps, no timer, no fail state and no rising ceiling:
+-- identical clicks per chunk, thirty across the quest at its original tuning, and its own
+-- header conceded the thing was "only ever in the way" of the chase. Chunks are not pried
+-- out of scenery any more -- the monster ate them, and he coughs one up for every bait
+-- cookie you put down, so the pressure comes from HIM standing over you, not a tap counter.
 --
--- The monster watch is the reason this one isn't a plain copy of the gumball panel:
--- a modal that traps you in place while something is charging you is a trap, not a
--- minigame. Getting bailed out costs you nothing -- the chunk stays, the prompt
--- re-arms, you run and come back.
-local pryOpen = false
-local function monsterDistance()
-	local mon = Workspace:FindFirstChild("ChocolateMonster")
-	local body = mon and mon:FindFirstChild("Body")
-	local char = player.Character
-	local hrp = char and char:FindFirstChild("HumanoidRootPart")
-	if not (body and hrp) then return math.huge end
-	return (body.Position - hrp.Position).Magnitude
-end
-
-local function openPry(chunkModel, onDone)
-	if pryOpen then return end
-	pryOpen = true
-
-	-- NOTE: do NOT drive main.CFrame here. spawnChunk runs a PivotTo bob loop on the whole
-	-- model every 0.03s, so any CFrame we set is overwritten on the next tick. Size and the
-	-- light are ours alone, so the chunk reacts through those instead.
-	local main = chunkModel and chunkModel:FindFirstChild("Choco")
-	local baseSize = main and main.Size
-	local light = main and main:FindFirstChildWhichIsA("PointLight")
-
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "ChipPry"; gui.ResetOnSpawn = false; gui.IgnoreGuiInset = true
-	gui.DisplayOrder = 90; gui.Parent = PlayerGui
-
-	local film = Instance.new("Frame")
-	film.Size = UDim2.fromScale(1, 1); film.BackgroundColor3 = Color3.new(0, 0, 0)
-	film.BackgroundTransparency = 0.5; film.BorderSizePixel = 0; film.Parent = gui
-
-	local panel = Instance.new("Frame")
-	panel.Size = UDim2.fromOffset(400, 250); panel.Position = UDim2.fromScale(0.5, 0.5)
-	panel.AnchorPoint = Vector2.new(0.5, 0.5)
-	panel.BackgroundColor3 = Color3.fromRGB(25, 90, 185); panel.BorderSizePixel = 0; panel.Parent = gui
-	-- HOUSE PANEL: every task HUD is the Pet Hub's 700x520 card in the Pet Hub's spot, and the
-	-- bottom buttons hide while it is up. The panel keeps its own size and every child keeps its
-	-- own pixel coordinates -- it is centred in the house shell and scaled to fit, so nothing
-	-- inside it moves. One call does both jobs -- see HousePanel.client.luau.
-	pcall(_G.housePanel, panel)   -- island3 chip pry
-	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 14)
-	local ps = Instance.new("UIStroke", panel); ps.Color = Color3.new(1, 1, 1); ps.Thickness = 3
-
-	local title = Instance.new("TextLabel")
-	title.BackgroundTransparency = 1; title.Size = UDim2.new(1, -60, 0, 40); title.Position = UDim2.fromOffset(18, 12)
-	title.Font = Enum.Font.GothamBold; title.TextSize = 22; title.TextXAlignment = Enum.TextXAlignment.Left
-	title.TextColor3 = Color3.fromRGB(255, 215, 0); title.Text = "Pry it out!"; title.Parent = panel
-
-	local hint = Instance.new("TextLabel")
-	hint.BackgroundTransparency = 1; hint.Size = UDim2.new(1, -36, 0, 22); hint.Position = UDim2.fromOffset(18, 48)
-	hint.Font = Enum.Font.Gotham; hint.TextSize = 14; hint.TextXAlignment = Enum.TextXAlignment.Left
-	hint.TextColor3 = Color3.new(1, 1, 1); hint.Parent = panel
-	-- Says the actual cost. "Tap fast" was honest when a 6s ceiling meant speed mattered; with a flat count it
-	-- would be a lie, and a kid who cannot see the end of a bar taps at random.
-	hint.Text = ("%d taps -- and keep an ear out"):format(PRY_CLICKS)
-
-	local close = Instance.new("TextButton")
-	close.Size = UDim2.fromOffset(34, 34); close.Position = UDim2.new(1, -44, 0, 12)
-	close.BackgroundColor3 = Color3.fromRGB(220, 70, 70); close.Text = "X"; close.TextColor3 = Color3.new(1, 1, 1)
-	close.Font = Enum.Font.GothamBold; close.TextSize = 18; close.Parent = panel
-	Instance.new("UICorner", close).CornerRadius = UDim.new(0, 8)
-
-	local track = Instance.new("Frame")
-	track.Size = UDim2.new(1, -36, 0, 26); track.Position = UDim2.fromOffset(18, 84)
-	track.BackgroundColor3 = Color3.fromRGB(12, 50, 110); track.BorderSizePixel = 0; track.Parent = panel
-	Instance.new("UICorner", track).CornerRadius = UDim.new(0, 8)
-	local fillBar = Instance.new("Frame")
-	fillBar.Size = UDim2.fromScale(0, 1); fillBar.BackgroundColor3 = Color3.fromRGB(255, 210, 120)
-	fillBar.BorderSizePixel = 0; fillBar.Parent = track
-	Instance.new("UICorner", fillBar).CornerRadius = UDim.new(0, 8)
-
-	local pry = Instance.new("TextButton")
-	pry.Size = UDim2.new(1, -36, 0, 92); pry.Position = UDim2.fromOffset(18, 130)
-	pry.BackgroundColor3 = Color3.fromRGB(214, 92, 158); pry.Text = "PRY"
-	pry.TextColor3 = Color3.new(1, 1, 1); pry.Font = Enum.Font.GothamBold; pry.TextSize = 34; pry.Parent = panel
-	Instance.new("UICorner", pry).CornerRadius = UDim.new(0, 10)
-	local pst = Instance.new("UIStroke", pry); pst.Color = Color3.new(1, 1, 1); pst.Thickness = 2
-
-	local clicks = 0
-	local finished = false
-	local conn
-	local function progress() return math.min(1, clicks / PRY_CLICKS) end
-
-	local function shut(result)   -- "win" | "bail" | "monster"
-		if finished then return end
-		finished = true; pryOpen = false
-		if conn then conn:Disconnect() end
-		-- put the prop back however we leave: won, bailed, or chased off
-		if main and main.Parent and baseSize then main.Size = baseSize end
-		if light and light.Parent then light.Brightness = 1.4 end
-		gui:Destroy()
-		onDone(result)
-	end
-
-	pry.Activated:Connect(function()
-		if finished then return end
-		clicks += 1
-		-- Win resolved HERE, not in the render loop: at five taps the last one has to land the moment it is
-		-- pressed. Waiting a frame for the loop to notice reads as a dropped tap on a count this short.
-		if clicks >= PRY_CLICKS then
-			fillBar.Size = UDim2.fromScale(1, 1)
-			shut("win")
-			return
-		end
-		hint.Text = ("%d more tap%s"):format(PRY_CLICKS - clicks, (PRY_CLICKS - clicks) == 1 and "" or "s")
-	end)
-	close.Activated:Connect(function() shut("bail") end)
-
-	conn = RunService.RenderStepped:Connect(function()
-		if finished then return end
-		if monsterDistance() <= PRY_MONSTER_BAIL then shut("monster"); return end
-		local fill = progress()
-		fillBar.Size = UDim2.fromScale(fill, 1)
-		-- the chunk judders harder and glows hotter the closer it is to coming free
-		if main and main.Parent and baseSize then
-			main.Size = baseSize * (1 + math.sin(os.clock() * 30) * 0.06 * fill)
-		end
-		if light and light.Parent then light.Brightness = 1.4 + fill * 2.2 end
-	end)
-end
+-- monsterDistance() and pryOpen went with it (the panel's bail-out watcher was the only
+-- caller). PRY_CLICKS / PRY_MONSTER_BAIL are removed from CONFIG for the same reason.
 
 -- ============================================================================
 -- CHUNK COLLECTIBLES -- hide the "chunk" brick, spawn a shiny chocolate chunk
@@ -768,8 +734,30 @@ local function spotKey(d)
 	return ("%d,%d,%d"):format(math.round(pos.X), math.round(pos.Y), math.round(pos.Z))
 end
 
+-- ============================================================================
+-- FEED THE MONSTER -- what the chunk hunt is now
+-- ============================================================================
+-- It used to be: find a chunk, open a five-tap panel with no timer and no fail state, repeat
+-- six times, while a monster you could always outrun made noise in the background. Thirty
+-- identical clicks, and the one genuinely tense thing on the island -- the chase -- was
+-- something the quest worked AROUND rather than with.
+--
+-- Now the monster IS the quest, and the reason is in the fiction: he ate the chocolate. You
+-- cannot fight him and you cannot outsmart him, but he is greedy, so you can BUY him. Each
+-- marker is a bait spot; dropping a bait cookie publishes _G.chocoLure, which pulls him off
+-- your back (see the lure branch in ChocolateMonster_AllInOne) and walks him over to eat --
+-- and a fed monster coughs one chunk straight back up.
+--
+-- The loop that makes: sprint to the next spot with him on you -> drop bait -> he breaks off
+-- -> you get a few seconds of quiet to collect the chunk -> he comes back. The bait is a tool
+-- for managing the chase, so every drop is a real decision about where you want him standing.
+-- (`baitLeft` lives up in STATE with `collected`: the objective banner reads it and sits ~700
+--  lines above here, and a Lua local is invisible above its own declaration -- declared here
+--  it would resolve to a nil GLOBAL in the banner and throw on the first refresh.)
+
 local function spawnChunk(src, idx, key)
-	-- src is the user's "chunk" marker: a BasePart, or a Model containing one
+	-- src is the user's "chunk" marker: a BasePart, or a Model containing one.
+	-- It is a BAIT SPOT now: the chunk that appears here is coughed up, not pried loose.
 	local part = src:IsA("BasePart") and src or src:FindFirstChildWhichIsA("BasePart", true)
 	if not part then return end
 	local pos = part.Position
@@ -780,24 +768,32 @@ local function spawnChunk(src, idx, key)
 		src.Transparency = 1; src.CanCollide = false; src.CanQuery = false; src.Anchored = true
 	end
 
-	local model = Instance.new("Model"); model.Name = "ChocoPickup" -- NOT "chunk", so the scanner can't self-match
-	local base = CFrame.new(pos + Vector3.new(0, 1.3, 0))
-	local main = mkPart({ Name = "Choco", Size = Vector3.new(1.7, 1.0, 1.7), Color = CHOC, Material = Enum.Material.SmoothPlastic, Reflectance = 0.06, CanQuery = true })
-	main.CFrame = base; main.Parent = model; model.PrimaryPart = main
-	local top = mkPart({ Name = "ChocoTop", Size = Vector3.new(1.1, 0.7, 1.1), Color = CHOC_HI, Material = Enum.Material.SmoothPlastic })
-	top.CFrame = base * CFrame.new(0.2, 0.6, -0.15) * CFrame.Angles(0, math.rad(20), 0); top.Parent = model
-	local hl = Instance.new("Highlight"); hl.FillTransparency = 1; hl.OutlineColor = Color3.fromRGB(255, 210, 120); hl.OutlineTransparency = 0.2; hl.DepthMode = Enum.HighlightDepthMode.Occluded; hl.Adornee = main; hl.Parent = model
-	local glow = Instance.new("PointLight"); glow.Color = Color3.fromRGB(255, 200, 110); glow.Brightness = 1.4; glow.Range = 8; glow.Parent = main
+	-- THE BAIT SPOT: a flat, faintly glowing plate on the ground. It is not a collectible --
+	-- it is a place you may choose to put a cookie down, so it reads as a marked spot rather
+	-- than as loot (which is what the old bobbing chunk read as, on a marker you had not
+	-- earned yet).
+	local model = Instance.new("Model"); model.Name = "BaitSpot" -- NOT "chunk", so the scanner can't self-match
+	local base = CFrame.new(pos + Vector3.new(0, 0.2, 0))
+	local main = mkPart({ Name = "Plate", Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new(0.25, 5.5, 5.5), Color = Color3.fromRGB(255, 226, 170),
+		Material = Enum.Material.Neon, Transparency = 0.55, CanQuery = true })
+	main.CFrame = base * CFrame.Angles(0, 0, math.rad(90)); main.Parent = model; model.PrimaryPart = main
+	local glow = Instance.new("PointLight"); glow.Color = Color3.fromRGB(255, 200, 110); glow.Brightness = 1.1; glow.Range = 10; glow.Parent = main
 	model.Parent = Workspace
 	liveChunks[model] = main.Position   -- so the NPC can hint toward the nearest one
 
+	-- the plate breathes so it reads as live; it does NOT bob (it is on the floor)
 	task.spawn(function()
-		local b = model:GetPivot(); local t = idx * 0.7
-		while model.Parent do t += 0.06; model:PivotTo(b * CFrame.new(0, math.sin(t) * 0.35, 0) * CFrame.Angles(0, t * 0.5, 0)); task.wait(0.03) end
+		local t = idx * 0.7
+		while model.Parent do
+			t += 0.06
+			main.Transparency = 0.5 + math.sin(t) * 0.12
+			task.wait(0.05)
+		end
 	end)
 
 	local prompt = Instance.new("ProximityPrompt")
-	prompt.ActionText = "Pry Loose"; prompt.ObjectText = "Chocolate Chunk"; prompt.HoldDuration = 0.4
+	prompt.ActionText = "Drop Bait"; prompt.ObjectText = "Bait Spot"; prompt.HoldDuration = 0.2
 	prompt.MaxActivationDistance = COLLECT_DISTANCE; prompt.RequiresLineOfSight = false; prompt.Parent = main
 
 	local done = false
@@ -849,45 +845,130 @@ local function spawnChunk(src, idx, key)
 			end
 			return
 		end
+		-- ONE BAIT DOWN AT A TIME. Two lures would fight over _G.chocoLure and the monster would
+		-- pinball between them; and the basket is finite, so a second drop is also a wasted cookie.
+		if _G.chocoLure then
+			flashBanner("\xF0\x9F\x8D\xAA There's already a cookie down -- let him get to it!", 2.5)
+			return
+		end
+		if baitLeft <= 0 then
+			flashBanner("\xF0\x9F\x8D\xAA Out of bait! Go and see the Candy NPC.", 2.5)
+			return
+		end
 		prompt.Enabled = false
-		openPry(model, function(result)
-			if result == "win" then
-				award()
-			else
-				if result == "monster" then
-					flashBanner("\xF0\x9F\x8D\xAB The monster's on you! Run -- the chunk will keep.", 2.5)
+		baitLeft -= 1
+		refreshBanner()
+
+		-- the cookie on the plate: what he is coming for
+		local bait = mkPart({ Name = "BaitCookie", Shape = Enum.PartType.Cylinder,
+			Size = Vector3.new(0.5, 3.0, 3.0), Color = Color3.fromRGB(214, 168, 108),
+			Material = Enum.Material.SmoothPlastic, CanQuery = false })
+		bait.CFrame = base * CFrame.new(0, 0.5, 0) * CFrame.Angles(0, 0, math.rad(90))
+		bait.Parent = Workspace
+		for i = 1, 5 do
+			local chip = mkPart({ Name = "Chip", Size = Vector3.new(0.42, 0.3, 0.42), Color = CHOC })
+			local a = (i / 5) * math.pi * 2
+			chip.CFrame = bait.CFrame * CFrame.new(0.3, math.cos(a) * 0.9, math.sin(a) * 0.9)
+			chip.Parent = bait
+		end
+		sparkleAt(bait.Position)
+
+		-- HE COMES. The monster script watches this global; it drops whatever it was chasing.
+		_G.chocoLure = bait.Position
+		flashBanner("\xF0\x9F\x8D\xAA Bait's down -- he's coming for it! Stand back.", 3)
+		if npcHead then showBubble(npcHead, "That's it -- let him smell it!", false) end
+
+		-- ...and when he reaches it, he eats and brings a chunk back up.
+		_G.chocoLureEaten = function()
+			_G.chocoLureEaten = nil
+			if bait.Parent then
+				for _, p in ipairs(bait:GetChildren()) do
+					if p:IsA("BasePart") then TweenService:Create(p, TweenInfo.new(0.25), { Transparency = 1 }):Play() end
 				end
-				-- re-arm behind the same guard the trigger uses, so a taken chunk can't re-arm
-				if not done and prompt.Parent then prompt.Enabled = true end
+				TweenService:Create(bait, TweenInfo.new(0.25), { Transparency = 1, Size = Vector3.new(0.5, 0.4, 0.4) }):Play()
+				Debris:AddItem(bait, 0.4)
 			end
-		end)
+			sparkleAt(pos + Vector3.new(0, 2, 0))
+			flashBanner("\xF0\x9F\x8D\xAB GULP -- and up comes a chunk! Grab it, quick!", 3)
+
+			-- the coughed-up chunk: the old pickup prop, but taken with one instant press.
+			-- No panel. The monster is standing right there and will be hunting again in a
+			-- second, so the pressure comes from HIM, not from a tap counter.
+			local cm = Instance.new("Model"); cm.Name = "ChocoPickup"; cm.Parent = Workspace
+			local cbase = CFrame.new(pos + Vector3.new(0, 1.3, 0))
+			local cmain = mkPart({ Name = "Choco", Size = Vector3.new(1.7, 1.0, 1.7), Color = CHOC,
+				Material = Enum.Material.SmoothPlastic, Reflectance = 0.06, CanQuery = true })
+			cmain.CFrame = cbase; cmain.Parent = cm; cm.PrimaryPart = cmain
+			local ctop = mkPart({ Name = "ChocoTop", Size = Vector3.new(1.1, 0.7, 1.1), Color = CHOC_HI,
+				Material = Enum.Material.SmoothPlastic })
+			ctop.CFrame = cbase * CFrame.new(0.2, 0.6, -0.15) * CFrame.Angles(0, math.rad(20), 0); ctop.Parent = cm
+			local chl = Instance.new("Highlight"); chl.FillTransparency = 1
+			chl.OutlineColor = Color3.fromRGB(255, 210, 120); chl.OutlineTransparency = 0.2
+			chl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop; chl.Adornee = cmain; chl.Parent = cm
+			local cglow = Instance.new("PointLight"); cglow.Color = Color3.fromRGB(255, 200, 110)
+			cglow.Brightness = 1.6; cglow.Range = 10; cglow.Parent = cmain
+			liveChunks[cm] = cmain.Position
+			task.spawn(function()
+				local b, t = cm:GetPivot(), idx * 0.7
+				while cm.Parent do
+					t += 0.06
+					cm:PivotTo(b * CFrame.new(0, math.sin(t) * 0.35, 0) * CFrame.Angles(0, t * 0.5, 0))
+					task.wait(0.03)
+				end
+			end)
+
+			local gp = Instance.new("ProximityPrompt")
+			gp.ActionText = "Grab"; gp.ObjectText = "Chocolate Chunk"; gp.HoldDuration = 0
+			gp.MaxActivationDistance = COLLECT_DISTANCE; gp.RequiresLineOfSight = false; gp.Parent = cmain
+			gp.Triggered:Connect(function()
+				if done then return end
+				gp.Enabled = false
+				liveChunks[cm] = nil
+				liveChunks[model] = nil
+				for _, p in ipairs(cm:GetDescendants()) do
+					if p:IsA("BasePart") then
+						TweenService:Create(p, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+							{ Size = p.Size * 1.5, Transparency = 1 }):Play()
+					end
+				end
+				Debris:AddItem(cm, 0.4)
+				-- the spot is spent: plate off, so the island shows what is left to do
+				if model.Parent then
+					TweenService:Create(main, TweenInfo.new(0.4), { Transparency = 1 }):Play()
+					Debris:AddItem(model, 0.5)
+				end
+				award()
+			end)
+		end
 	end)
 end
 
 -- ============================================================================
--- NPC DIALOGUE (accept the quest; deliver when all 6 are collected)
+-- NPC DIALOGUE (accept the quest; deliver when every chunk is back)
 -- ============================================================================
 local function questPages()
 	if delivered then
 		return {
 			"Thank you! The Giant Cookie is whole again! \xF0\x9F\x8D\xAA",
-			"Go on, the Cookie Stand's open now. You earned it.",
+			"The Cookie Stand's open. You earned it.",
 		}
 	end
 	if collected >= TOTAL then
-		return { ("All %d! You beautiful genius!"):format(TOTAL), "Hand them over -- let me fix the Giant Cookie..." }
+		return { ("All %d! You beautiful genius!"):format(TOTAL), "Hand them over. I'll fix the Cookie..." }
 	end
 	if questAccepted then
-		local pages = { "Still missing some chunks!", ("Found: %d of %d."):format(collected, TOTAL) }
+		local pages = { ("You've got %d of %d chunks back."):format(collected, TOTAL),
+			("Drop bait on a glowing plate. (%d left)")
+				:format(baitLeft) }
 		local hint = nextHint()
 		if hint then pages[#pages + 1] = hint end
 		return pages
 	end
 	return {
-		"Disaster! Look at my Giant Cookie -- all the chocolate is GONE!",
-		"Every last chunk popped out and rolled off across the island.",
-		"Find all 6 and bring them back to me.",
-		"Do that, and I'll put my cookie -- and my Cookie Stand -- back together!",
+		"Disaster! That MONSTER ate my Giant Cookie's chocolate!",
+		"Never wrestle it off him. He's greedy...",
+		("Take %d bait cookies for the glowing plates."):format(TOTAL),
+		"He drops a chunk -- grab it!",
 	}
 end
 
@@ -914,11 +995,16 @@ local function wireNPC(head)
 	end
 
 	prompt.Triggered:Connect(function()
-		if index == 0 then pages = questPages() end
+		if index == 0 then pages = (_G.capBubble and _G.capBubble(questPages())) or questPages() end
 		index += 1
 		if not pages or index > #pages then closeDialogue(); return end
 		if index == 2 then
-			if not questAccepted then questAccepted = true; _G.cookieQuestStarted = true; refreshBanner() end
+			if not questAccepted then
+				questAccepted = true
+				_G.cookieQuestStarted = true
+				baitLeft = TOTAL          -- the basket of bait cookies comes with the job
+				refreshBanner()
+			end
 			-- deliver: reading past page 1 of the "you found them all" state fixes the cookie.
 			-- show her last line, hand the dialogue off, and let the cinematic take over.
 			if collected >= TOTAL and not delivered then
@@ -929,9 +1015,10 @@ local function wireNPC(head)
 			end
 		end
 		local last = index >= #pages
-		local footer = last and "[E] close" or ("[E] more  (%d/%d)"):format(index, #pages)
-		showBubble(head, pages[index], true, footer)
-		prompt.ActionText = last and "Close" or "Continue"
+		-- no "[E] ..." badge in the bubble: the ProximityPrompt IS the E prompt, and the page
+		-- count rides its ActionText instead of a second floating HUD over the NPC's head
+		showBubble(head, pages[index], true, nil)
+		prompt.ActionText = last and "Close" or ("Continue  (%d/%d)"):format(index, #pages)
 		startWatcher()
 	end)
 	prompt.PromptHidden:Connect(function() if index ~= 0 then closeDialogue() end end)
@@ -975,7 +1062,26 @@ task.spawn(function()
 
 	npcHead = pollFor(function() return findNPCNear(cookiePos) end, 45)
 	if npcHead then wireNPC(npcHead); wantVisible = true
-	else warn("[CookieQuest] no 'Candy Npc' found near the cookie") end
+	else
+		-- SHE IS NOT OPTIONAL HERE EITHER. completeQuest() is reachable from exactly one place --
+		-- page 2 of her "you found them all" dialogue -- so without her you can collect all six
+		-- chunks and then have nowhere to take them, and island3's Cookie Stand (locked behind
+		-- _G.cookieQuestComplete in Shop_AllInOne) never opens. Same 180s late watch island1 and
+		-- the crystal mine use; the build below sets questBuilt_cookie either way, so the retainer
+		-- will not re-run this one for us.
+		warn("[CookieQuest] no 'Candy Npc' found near the cookie in 45s -- still watching for her")
+		task.spawn(function()
+			npcHead = pollFor(function() return findNPCNear(cookiePos) end, 180)
+			if npcHead then
+				wireNPC(npcHead); wantVisible = true; refreshBanner()
+				print("[CookieQuest] Candy Npc streamed in late -- wired")
+			else
+				warn("[CookieQuest] no 'Candy Npc' near the cookie after 180s -- the six chunks can be "
+					.. "collected but not handed in, so island3's Cookie Stand stays locked. Check island3 "
+					.. "has a model named exactly 'Candy Npc' with a Head, near the GiantCookie.")
+			end
+		end)
+	end
 
 	-- chunks STREAM IN as the player nears island3 (StreamingEnabled) -- island3 is far
 	-- from the island-1 spawn, so a one-time scan finds nothing. Keep scanning and spawn a
@@ -1049,6 +1155,9 @@ end)
 -- /complete -- test command: instantly finish the cookie quest (fix + firework)
 -- ============================================================================
 local function onCommand(msg)
+	-- DEV ONLY. QuestDevGate publishes this; read at command time so load order cannot matter,
+	-- and nil (gate not up yet) refuses. Without it any player could type their way to the whole realm.
+	if not _G.questDevOK then return end
 	if tostring(msg or ""):lower():sub(1, 9) ~= "/complete" then return end
 	-- only completes when you're standing on island3 (near ITS NPC). If that NPC isn't found
 	-- yet, do nothing -- never complete on a "maybe", or /complete on another island fires this.

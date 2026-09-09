@@ -32,6 +32,8 @@ local TweenService      = game:GetService("TweenService")
 local Lighting          = game:GetService("Lighting")
 local Workspace         = game:GetService("Workspace")
 local SoundService      = game:GetService("SoundService")
+local RunService        = game:GetService("RunService")
+local Debris            = game:GetService("Debris")
 
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -45,7 +47,10 @@ local FADE_TIME        = 0.35
 
 local doorPart, switchPart, caveModel, savedLighting
 local isOpen, busy, inside = false, false, false
-local doorRunes, leverArm   -- built props: the glowing cracks on the cliff, and the lever handle that swings
+local doorRunes, leverArm, leverGrip -- built props: the cliff cracks, the lever handle that swings, its grip band
+-- The arm's REAL hinge (the pivot bolt through the housing) and the arm's pose relative to it. Captured in
+-- buildLever so pullLever can swing the arm about the bolt instead of about its own middle -- see there.
+local leverPivot, leverArmLocal
 
 --======================================================================
 -- helpers
@@ -74,6 +79,71 @@ local function part(parent, name, size, cf, color, mat)
 end
 
 --======================================================================
+-- SHAKE AND DUST  (shared by the lever and the door -- deliberately)
+--======================================================================
+-- The lever and the doorway are ONE machine, and the player is almost never able to see both at once: pull
+-- the lever and the cliff that answers is usually behind them. Sharing the jolt and the grit is what carries
+-- the connection across that gap -- the ground moves in both places, the same dust comes up in both places,
+-- so the thing that happened over there is obviously the thing they just did over here.
+--
+-- The falloff is MeteorUI's cameraShake curve over a much shorter range. A lever is not a meteor: 220 studs,
+-- not 800, so somebody on the far side of the island feels nothing at all. The connection self-disconnects
+-- on its own duration -- a shake that outlives itself is a camera that never stops jittering.
+local function cameraShake(atPos, intensity, seconds)
+	local cam = Workspace.CurrentCamera
+	if not cam then return end
+	local scale = 1
+	local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	if hrp and typeof(atPos) == "Vector3" then
+		scale = math.clamp(1 - (hrp.Position - atPos).Magnitude / 220, 0, 1)
+	end
+	if scale <= 0 then return end
+
+	local amp = (intensity or 0.3) * scale
+	local dur = seconds or 0.35
+	local t0  = os.clock()
+	local conn
+	conn = RunService.RenderStepped:Connect(function()
+		local elapsed = os.clock() - t0
+		if elapsed >= dur then conn:Disconnect(); return end
+		local decay = 1 - elapsed / dur
+		cam.CFrame = cam.CFrame * CFrame.new(
+			(math.random() - 0.5) * amp * decay,
+			(math.random() - 0.5) * amp * decay, 0)
+	end)
+end
+
+-- A one-shot puff of grit, on a THROWAWAY host part that Debris clears. Emitters attached to the prop itself
+-- would leave a dead emitter on the lever and on the doorway for the rest of the session, one per pull.
+local function dustBurst(cf, count, colour, size)
+	local host = Instance.new("Part")
+	host.Size = Vector3.new(0.2, 0.2, 0.2); host.CFrame = cf
+	host.Transparency = 1; host.Anchored = true
+	host.CanCollide = false; host.CanQuery = false; host.CastShadow = false
+	host.Parent = Workspace
+
+	local at = Instance.new("Attachment"); at.Parent = host
+	local e = Instance.new("ParticleEmitter")
+	e.Texture      = "rbxassetid://241876945"
+	e.Rate         = 0                                  -- burst only; Emit() below is the whole life of it
+	e.Lifetime     = NumberRange.new(0.6, 1.5)
+	e.Speed        = NumberRange.new(3, 10)
+	e.Size         = NumberSequence.new(size or 1.4)
+	e.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.25), NumberSequenceKeypoint.new(1, 1),
+	})
+	e.Color        = ColorSequence.new(colour or Color3.fromRGB(152, 142, 126))
+	e.LightEmission = 0.2
+	e.SpreadAngle  = Vector2.new(70, 70)
+	e.Acceleration = Vector3.new(0, -6, 0)              -- grit falls; smoke would float and read as magic
+	e.Rotation     = NumberRange.new(0, 360)
+	e.Parent       = at
+	e:Emit(count or 18)
+
+	Debris:AddItem(host, 3)
+end
+
+--======================================================================
 -- THE VISIBLE LEVER  (built on your 'switch' Part, always visible)
 --======================================================================
 -- This is the ONLY thing a player can see before the secret is found, and that is deliberate: it is the
@@ -83,6 +153,12 @@ end
 --
 -- Your 'switch' Part stays invisible and is used purely as a POSITION. Building the lever instead of just
 -- un-hiding your block means it reads as a machine you operate, whatever size or shape you drew the marker.
+--
+-- EVERY SURFACE ON IT IS PLASTIC. It was built out of Slate, Metal and CorrodedMetal, which is realistic and
+-- wrong for this game: those materials go grey and grainy at distance and the whole prop sank into the cliff
+-- behind it. Flat plastic holds its colour and its edges at any range, which is what a breadcrumb has to do,
+-- and it matches the rest of the game's look. The colours are untouched -- only the finish changed. The two
+-- Neon parts stay Neon: they are lights, not surfaces.
 local function buildLever(marker)
 	-- ===== IT IS BUILT EXACTLY ON YOUR BLOCK, AND IT STAYS THERE =====
 	-- The lever's POSITION is your marker's position, full stop -- the base plate is centred on it, so where
@@ -102,91 +178,158 @@ local function buildLever(marker)
 
 	local m = Instance.new("Model"); m.Name = "SecretLever"
 
-	-- stone footing, CENTRED ON THE MARKER so the lever sits on the exact spot rather than beside it
-	local foot = part(m, "LeverBase", Vector3.new(3.2, 1, 3.2), base,
-		Color3.fromRGB(88, 84, 78), Enum.Material.Slate)
-	foot.CanCollide = true
+	-- ===== THE LOOK: A BRIGHT PLASTIC MACHINE, NOT A RUSTY ONE =====
+	-- The palette lives in these four names so the whole prop re-tints from one place. It is the house
+	-- scheme -- blue body, cream trim, gold caps -- because the old colours were picked back when this was
+	-- Slate and CorrodedMetal, and greys and rust-browns go to MUD the moment the material becomes flat
+	-- plastic: no specular, no grain, nothing left but the hue. Saturated and high-contrast instead, so the
+	-- thing still reads from across the clearing, which is the entire job of a breadcrumb.
+	local BLUE, BLUE_DK = Color3.fromRGB(58, 122, 214), Color3.fromRGB(30, 74, 146)
+	local CREAM, GOLD   = Color3.fromRGB(248, 246, 238), Color3.fromRGB(255, 206, 64)
 
-	-- the housing the arm pivots in
-	part(m, "LeverHousing", Vector3.new(1.6, 1.2, 1.6), base * CFrame.new(0, 0.9, 0),
-		Color3.fromRGB(62, 58, 54), Enum.Material.Metal)
+	-- An UPRIGHT cylinder. A Cylinder part's axis is its X, so the size goes in as (height, dia, dia) and
+	-- the frame is rolled 90 degrees to stand it up. Worth the helper: round shapes are most of what makes
+	-- this read as machined rather than as a stack of blocks.
+	local function cyl(name, dia, height, cf, colour)
+		local p = part(m, name, Vector3.new(height, dia, dia), cf * CFrame.Angles(0, 0, math.rad(90)),
+			colour, Enum.Material.SmoothPlastic)
+		p.Shape = Enum.PartType.Cylinder
+		p.CanCollide = false
+		return p
+	end
+
+	-- ===== THE PLINTH: ROUND, TIERED, WITH A FOOT =====
+	-- The old base was one square slab, which from any angle but head-on reads as a crate the lever was
+	-- dropped on. Three stacked discs of falling diameter read as a machined pedestal, and the gold rim
+	-- underneath gives it a FOOT so it sits ON the ground instead of sinking into it.
+	--
+	-- LeverBase keeps its name, its square 3.2 size and its collision, because the sound host and the
+	-- prompt geometry both look it up by name -- it is just invisible now, with the cylinders doing the
+	-- looking and the middle disc carrying the collision you can stand on.
+	local foot = part(m, "LeverBase", Vector3.new(3.2, 1, 3.2), base, BLUE_DK, Enum.Material.SmoothPlastic)
+	foot.Transparency = 1
+	cyl("PlinthRim", 4.30, 0.26, base * CFrame.new(0, -0.36, 0), GOLD)
+	local disc = cyl("Plinth", 3.90, 0.92, base * CFrame.new(0, 0, 0), BLUE)
+	disc.CanCollide = true
+	cyl("PlinthTop", 3.05, 0.20, base * CFrame.new(0, 0.52, 0), CREAM)
+
+	-- the housing the arm pivots in, with a gold cap so the top edge is a line rather than a blur
+	part(m, "LeverHousing", Vector3.new(1.7, 1.25, 1.7), base * CFrame.new(0, 1.05, 0),
+		BLUE, Enum.Material.SmoothPlastic)
+	part(m, "HousingCap", Vector3.new(1.9, 0.18, 1.9), base * CFrame.new(0, 1.76, 0),
+		GOLD, Enum.Material.SmoothPlastic).CanCollide = false
 
 	-- ===== THE FRAME AND THE RATCHET =====
-	-- A stick in a box reads as debris; a lever held in a rusted frame with a toothed quadrant reads as
-	-- MACHINERY -- visibly wired to something. The ratchet teeth are the detail that promises consequences:
-	-- levers with ratchets are levers that stay thrown.
-	for _, fx in ipairs({ -0.9, 0.9 }) do
-		part(m, "LeverFrame", Vector3.new(0.45, 3.2, 0.45), base * CFrame.new(fx, 1.6, 0),
-			Color3.fromRGB(96, 74, 52), Enum.Material.CorrodedMetal)
+	-- A stick in a box reads as debris; a lever held in a frame with a toothed quadrant reads as MACHINERY --
+	-- visibly wired to something. The ratchet teeth are the detail that promises consequences: levers with
+	-- ratchets are levers that stay thrown.
+	--
+	-- The posts are ROUND and capped with cream balls. A cut-off square post looks unfinished from every
+	-- angle; a finial ends the line deliberately, and it is the cheapest possible way to make a prop look
+	-- designed rather than assembled.
+	for _, fx in ipairs({ -0.95, 0.95 }) do
+		cyl("LeverFrame", 0.42, 3.3, base * CFrame.new(fx, 1.7, 0), GOLD)
+		local knobTop = part(m, "FrameFinial", Vector3.new(0.62, 0.62, 0.62),
+			base * CFrame.new(fx, 3.42, 0), CREAM, Enum.Material.SmoothPlastic)
+		knobTop.Shape = Enum.PartType.Ball; knobTop.CanCollide = false
 	end
-	part(m, "LeverFrameBar", Vector3.new(2.3, 0.4, 0.4), base * CFrame.new(0, 3.2, 0),
-		Color3.fromRGB(96, 74, 52), Enum.Material.CorrodedMetal)
+	part(m, "LeverFrameBar", Vector3.new(2.4, 0.34, 0.34), base * CFrame.new(0, 3.3, 0),
+		GOLD, Enum.Material.SmoothPlastic).CanCollide = false
 	for i = 0, 3 do
 		local a = math.rad(-46 + i * 26)   -- a quarter-arc of teeth in the arm's swing plane
-		local tooth = part(m, "RatchetTooth", Vector3.new(0.5, 0.3, 0.22),
-			base * CFrame.new(0, 1.3 + math.cos(a) * 1.15, math.sin(a) * 1.15) * CFrame.Angles(a, 0, 0),
-			Color3.fromRGB(120, 116, 108), Enum.Material.Metal)
+		local tooth = part(m, "RatchetTooth", Vector3.new(0.52, 0.30, 0.22),
+			base * CFrame.new(0, 1.35 + math.cos(a) * 1.2, math.sin(a) * 1.2) * CFrame.Angles(a, 0, 0),
+			CREAM, Enum.Material.SmoothPlastic)
 		tooth.CanCollide = false
 	end
 
 	-- The mechanical dressing that takes it from "shaped like a lever" to "built like one" -- still all
-	-- blocks and cylinders, no meshes: a pivot bolt run right through the housing with hex-ish heads on
-	-- both sides, gussets bracing the frame to the footing, and a little junction box with a live LED and a
-	-- wire disappearing into the ground. The wire is the storytelling part: THIS is how the lever reaches
-	-- the door.
-	local bolt = part(m, "PivotBolt", Vector3.new(2.1, 0.45, 0.45), base * CFrame.new(0, 1.3, 0),
-		Color3.fromRGB(140, 140, 148), Enum.Material.Metal)
-	bolt.Shape = Enum.PartType.Cylinder
-	bolt.CanCollide = false
-	for _, bx in ipairs({ -1.12, 1.12 }) do
-		part(m, "BoltHead", Vector3.new(0.28, 0.62, 0.62), base * CFrame.new(bx, 1.3, 0)
-			* CFrame.Angles(math.rad(30), 0, 0), Color3.fromRGB(120, 120, 128), Enum.Material.Metal)
-			.CanCollide = false
+	-- blocks and cylinders, no meshes: a pivot bolt run right through the housing with heads on both sides,
+	-- gussets bracing the frame to the plinth, and a junction box with a live LED and a wire disappearing
+	-- into the ground. The wire is the storytelling part: THIS is how the lever reaches the door.
+	cyl("PivotBolt", 0.46, 2.2, base * CFrame.new(0, 1.35, 0) * CFrame.Angles(0, 0, math.rad(-90)), GOLD)
+	for _, bx in ipairs({ -1.16, 1.16 }) do
+		local head = part(m, "BoltHead", Vector3.new(0.66, 0.66, 0.66), base * CFrame.new(bx, 1.35, 0),
+			CREAM, Enum.Material.SmoothPlastic)
+		head.Shape = Enum.PartType.Ball; head.CanCollide = false
 	end
-	for _, g in ipairs({ { -0.9, 35 }, { 0.9, -35 } }) do
-		part(m, "FrameGusset", Vector3.new(0.32, 1.1, 0.32),
-			base * CFrame.new(g[1] * 1.35, 0.6, 0) * CFrame.Angles(0, 0, math.rad(g[2])),
-			Color3.fromRGB(96, 74, 52), Enum.Material.CorrodedMetal).CanCollide = false
+	for _, g in ipairs({ { -0.95, 34 }, { 0.95, -34 } }) do
+		part(m, "FrameGusset", Vector3.new(0.30, 1.2, 0.30),
+			base * CFrame.new(g[1] * 1.3, 0.95, 0) * CFrame.Angles(0, 0, math.rad(g[2])),
+			BLUE_DK, Enum.Material.SmoothPlastic).CanCollide = false
 	end
-	local jbox = part(m, "JunctionBox", Vector3.new(0.55, 0.75, 0.38), base * CFrame.new(0.9, 2.35, 0.42),
-		Color3.fromRGB(70, 74, 66), Enum.Material.Metal)
+	local jbox = part(m, "JunctionBox", Vector3.new(0.58, 0.78, 0.40), base * CFrame.new(0.95, 2.45, 0.42),
+		CREAM, Enum.Material.SmoothPlastic)
 	jbox.CanCollide = false
-	local jled = part(m, "JunctionLed", Vector3.new(0.14, 0.14, 0.06), base * CFrame.new(0.9, 2.55, 0.63),
-		Color3.fromRGB(120, 255, 140), Enum.Material.Neon)
+	local jled = part(m, "JunctionLed", Vector3.new(0.16, 0.16, 0.07), base * CFrame.new(0.95, 2.66, 0.64),
+		Color3.fromRGB(140, 255, 150), Enum.Material.Neon)
 	jled.CanCollide = false; jled.CastShadow = false
-	part(m, "JunctionWire", Vector3.new(0.1, 2.6, 0.1), base * CFrame.new(0.98, 1.05, 0.5)
-		* CFrame.Angles(0, 0, math.rad(-4)), Color3.fromRGB(34, 32, 36), Enum.Material.SmoothPlastic)
+	part(m, "JunctionWire", Vector3.new(0.11, 2.8, 0.11), base * CFrame.new(1.03, 1.15, 0.5)
+		* CFrame.Angles(0, 0, math.rad(-4)), Color3.fromRGB(38, 44, 54), Enum.Material.SmoothPlastic)
 		.CanCollide = false
 
-	-- caution stripe on the footing, and the gang's ring-and-slash chalked on the housing -- the SAME mark
-	-- the door wears. A kid who finds the lever has already met the symbol when the doorway reveals it,
-	-- which is what makes the two read as one machine owned by one crew.
-	part(m, "LeverStripe", Vector3.new(3.3, 0.25, 0.25), base * CFrame.new(0, 0.45, 1.55),
-		Color3.fromRGB(245, 205, 48), Enum.Material.SmoothPlastic).CanCollide = false
+	-- Gold hazard band around the plinth, and the gang's ring-and-slash on the housing -- the SAME mark the
+	-- door wears. A kid who finds the lever has already met the symbol when the doorway reveals it, which is
+	-- what makes the two read as one machine owned by one crew. The band is four short arcs rather than one
+	-- bar so it follows the round plinth instead of sticking out past it at the corners.
+	for i = 0, 5 do
+		local a = (i / 6) * math.pi * 2
+		part(m, "LeverStripe", Vector3.new(1.05, 0.20, 0.16),
+			base * CFrame.new(math.cos(a) * 1.9, 0.20, math.sin(a) * 1.9) * CFrame.Angles(0, -a, 0),
+			GOLD, Enum.Material.SmoothPlastic).CanCollide = false
+	end
 	for i = 0, 7 do
 		if i ~= 2 then   -- one gap, same hurried scrawl as the door's ring
 			local a = (i / 8) * math.pi * 2
-			local segm = part(m, "LeverMark", Vector3.new(0.28, 0.07, 0.04),
-				base * CFrame.new(math.cos(a) * 0.5, 0.9 + math.sin(a) * 0.5, 0.84)
+			local segm = part(m, "LeverMark", Vector3.new(0.30, 0.08, 0.04),
+				base * CFrame.new(math.cos(a) * 0.52, 1.05 + math.sin(a) * 0.52, 0.89)
 					* CFrame.Angles(0, 0, a + math.pi * 0.5),
-				Color3.fromRGB(238, 234, 220), Enum.Material.SmoothPlastic)
+				CREAM, Enum.Material.SmoothPlastic)
 			segm.CanCollide = false; segm.CastShadow = false
 		end
 	end
-	part(m, "LeverMarkSlash", Vector3.new(0.07, 1.3, 0.04),
-		base * CFrame.new(0, 0.9, 0.84) * CFrame.Angles(0, 0, math.rad(38)),
-		Color3.fromRGB(238, 234, 220), Enum.Material.SmoothPlastic).CanCollide = false
+	part(m, "LeverMarkSlash", Vector3.new(0.08, 1.35, 0.04),
+		base * CFrame.new(0, 1.05, 0.89) * CFrame.Angles(0, 0, math.rad(38)),
+		CREAM, Enum.Material.SmoothPlastic).CanCollide = false
+
+	-- RETURN SPRING. Six flat gold rings stacked behind the housing. A lever with a visible spring is a lever
+	-- that is HELD somewhere -- it explains why the arm sits at rest and why throwing it takes effort, which is
+	-- the one bit of the mechanism the frame and the ratchet do not already tell you. Rings rather than a real
+	-- helix because a helix of blocks reads as a stack of blocks at any distance a player actually sees this
+	-- from, and this prop is looked at from across a clearing.
+	for i = 0, 5 do
+		cyl("SpringCoil", 0.62, 0.10, base * CFrame.new(0, 0.72 + i * 0.16, -0.72), GOLD)
+	end
 
 	-- THE ARM. Anchored and CFrame-driven rather than hinged: a real HingeConstraint would need unanchored
 	-- parts, and an unanchored prop on a cliff edge is a prop that eventually falls off the island.
-	leverArm = part(m, "LeverArm", Vector3.new(0.5, 4.2, 0.5),
-		base * CFrame.new(0, 2.8, 0) * CFrame.Angles(math.rad(-28), 0, 0),
-		Color3.fromRGB(120, 78, 42), Enum.Material.SmoothPlastic)
+	-- CREAM and slimmer than before: a pale shaft separates from the blue body behind it, where the old
+	-- brown one merged into everything. It stays a BLOCK on purpose -- pullLever swings it by rotating its
+	-- CFrame about the local X, and rolling a cylinder upright would bake a rotation into that frame and
+	-- send both the swing and the knob offset off their axes.
+	leverArm = part(m, "LeverArm", Vector3.new(0.42, 4.3, 0.42),
+		base * CFrame.new(0, 2.9, 0) * CFrame.Angles(math.rad(-28), 0, 0),
+		CREAM, Enum.Material.SmoothPlastic)
 	leverArm.CanCollide = false
 
+	-- ===== WHERE IT HINGES =====
+	-- The bolt through the housing, not the middle of the stick. Rotating the arm about its own CFrame (what
+	-- it used to do) swings the BOTTOM half forward as far as the top half goes back -- so the butt of the
+	-- lever ploughed straight through the housing and out the front of the plinth on every pull. Rotating
+	-- about the bolt is what a lever actually does, and it also gives the knob a much wider arc, which is the
+	-- part of the throw the player is watching.
+	leverPivot = base * CFrame.new(0, 1.35, 0)
+	leverArmLocal = leverPivot:Inverse() * leverArm.CFrame
+
+	-- A gold grip band where a hand would go. It RIDES THE ARM, so pullLever tweens it alongside the knob;
+	-- anchored parts do not follow a parent, and a band left behind mid-air would be worse than no band.
+	leverGrip = part(m, "LeverGrip", Vector3.new(0.56, 0.52, 0.56),
+		leverArm.CFrame * CFrame.new(0, 1.35, 0), GOLD, Enum.Material.SmoothPlastic)
+	leverGrip.CanCollide = false
+
 	-- a bright knob on top -- the bit the eye actually lands on from a distance
-	local knob = part(m, "LeverKnob", Vector3.new(1.1, 1.1, 1.1),
-		leverArm.CFrame * CFrame.new(0, 2.2, 0), Color3.fromRGB(255, 96, 72), Enum.Material.Neon)
+	local knob = part(m, "LeverKnob", Vector3.new(1.25, 1.25, 1.25),
+		leverArm.CFrame * CFrame.new(0, 2.25, 0), Color3.fromRGB(255, 96, 72), Enum.Material.Neon)
 	knob.Shape = Enum.PartType.Ball
 	knob.CanCollide = false
 	local kl = Instance.new("PointLight")
@@ -204,21 +347,53 @@ local function buildLever(marker)
 	sparks.SpreadAngle = Vector2.new(180, 180)
 	sparks.Parent = knob
 
+	-- ===== THE POOL OF LIGHT ON THE GROUND =====
+	-- A flat neon disc under the plinth. Its job is RANGE: a PointLight on a knob is invisible in daylight
+	-- past about thirty studs, but a bright ring on the grass is a shape, and shapes survive distance. This
+	-- is the difference between a lever you find because you walked into it and one you walk TOWARDS.
+	-- pullLever re-tints it green with the knob, so the ground says "thrown" as loudly as the lever does.
+	local pool = cyl("LeverPool", 9.5, 0.08, base * CFrame.new(0, -0.42, 0), Color3.fromRGB(255, 138, 96))
+	pool.Transparency = 0.72
+	pool.CastShadow = false
+	pool.CanQuery = false
+
 	-- ===== THE IDLE HEARTBEAT =====
 	-- Until pulled, the knob breathes red. A small PULSING light catches the eye from far further away than
 	-- a static one -- this is the breadcrumb doing its own advertising across the island. The loop ends the
 	-- moment the lever is thrown (the Pulled attribute, set in pullLever) and the glow goes steady green.
+	-- ===== AND IT NOTICES YOU =====
+	-- The heartbeat used to run at one fixed speed whatever the player did, so the lever looked identical from
+	-- eighty studs away and from arm's length -- it advertised, but it never ACKNOWLEDGED. Walking up to a
+	-- machine that visibly wakes as you approach is most of what makes a prop feel operable rather than
+	-- decorative, and it costs one distance check per beat.
+	--
+	-- NO FLOATING BADGE. There was a bobbing "?" marker over the knob and it is gone: a UI element pinned over
+	-- a world prop is the one thing that makes a secret read as a quest objective, and this lever is supposed
+	-- to be FOUND. The prop advertises itself with light instead -- the pool on the ground carries across the
+	-- clearing, and the breath rate below does the noticing.
+	--
+	-- Two bands now:
+	--   far   -- slow red breath: something is over there
+	--   near  -- twice the rate, brighter: you are being noticed
 	task.spawn(function()
 		while m.Parent and not knob:GetAttribute("Pulled") do
-			TweenService:Create(kl, TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			local dist = hrp and (hrp.Position - knob.Position).Magnitude or math.huge
+			local beat = (dist < 45) and 0.5 or 0.95
+			local hi   = (dist < 45) and 2.1 or 1.4
+
+			TweenService:Create(kl, TweenInfo.new(beat, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
 				{ Brightness = 0.5 }):Play()
-			TweenService:Create(knob, TweenInfo.new(0.9), { Transparency = 0.35 }):Play()
-			task.wait(1)
-			TweenService:Create(kl, TweenInfo.new(0.9), { Brightness = 1.4 }):Play()
-			TweenService:Create(knob, TweenInfo.new(0.9), { Transparency = 0 }):Play()
-			task.wait(1)
+			TweenService:Create(knob, TweenInfo.new(beat), { Transparency = 0.35 }):Play()
+			task.wait(beat + 0.1)
+			TweenService:Create(kl, TweenInfo.new(beat, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+				{ Brightness = hi }):Play()
+			TweenService:Create(knob, TweenInfo.new(beat), { Transparency = 0 }):Play()
+			task.wait(beat + 0.1)
 		end
-		knob.Transparency = 0   -- never end mid-fade half-ghosted
+		-- Never end mid-fade half-ghosted -- and by TWEEN, not assignment: the loop can exit with its own
+		-- fade still in flight, and a plain write would be overwritten by that tween a frame later.
+		TweenService:Create(knob, TweenInfo.new(0.25), { Transparency = 0 }):Play()
 	end)
 
 	m.Parent = Workspace
@@ -282,36 +457,144 @@ end)
 -- arcing: the moment feels ELECTRICAL, like something distant just switched on. Which it did.
 local function pullLever(knob)
 	if not leverArm then return end
+	local m = leverArm.Parent
+	local host = (m and m:FindFirstChild("LeverBase")) or leverArm
 
-	-- Fired FIRST, before the tweens: the clunk should land on the frame the arm starts moving, not after
-	-- the 0.45s swing has finished. Sound leads the animation or the lever feels unresponsive.
-	pcall(function()
-		local host = leverArm.Parent and leverArm.Parent:FindFirstChild("LeverBase") or leverArm
-		local s = Instance.new("Sound")
-		s.Name = "SecretLeverPull"
-		s.SoundId = LEVER_SOUND_ID
-		s.Volume = LEVER_VOLUME
-		s.RollOffMinDistance = LEVER_ROLLOFF_MIN
-		s.RollOffMaxDistance = LEVER_ROLLOFF_MAX
-		s.Parent = host
-		s:Play()
-		-- Debris rather than Sound.Ended: an asset that fails to load never fires Ended, and the instance
-		-- would sit on the lever forever. 10s is well past any plausible clip length for a switch throw.
-		game:GetService("Debris"):AddItem(s, 10)
+	-- ===== SOUND LEADS THE ANIMATION, AND IT IS TWO SOUNDS =====
+	-- One clip, played twice at different speeds, so no second asset is needed and nothing can be missing at
+	-- runtime: a fast quiet CREAK under the wind-up, then the same clip dropped to a heavy CLUNK on the frame
+	-- the arm hits the bottom of its travel. A single sound fired at the start left the impact silent, which
+	-- is the half of a lever throw that actually sells the weight.
+	local function clip(speed, vol, delay)
+		task.delay(delay or 0, function()
+			pcall(function()
+				local sfx = Instance.new("Sound")
+				sfx.Name = "SecretLeverPull"
+				sfx.SoundId = LEVER_SOUND_ID
+				sfx.Volume = vol
+				sfx.PlaybackSpeed = speed
+				sfx.RollOffMinDistance = LEVER_ROLLOFF_MIN
+				sfx.RollOffMaxDistance = LEVER_ROLLOFF_MAX
+				sfx.Parent = host
+				sfx:Play()
+				-- Debris rather than Sound.Ended: an asset that fails to load never fires Ended, and the
+				-- instance would sit on the lever forever. 10s is past any plausible switch-throw clip.
+				Debris:AddItem(sfx, 10)
+			end)
+		end)
+	end
+	clip(1.45, LEVER_VOLUME * 0.45, 0)      -- the creak, under the wind-up
+	clip(0.55, LEVER_VOLUME, 0.22)          -- the clunk, on the landing
+
+	-- ===== THE THROW: WIND UP, SLAM, RATCHET SETTLE =====
+	-- The old version was a single 0.45s Back tween, which reads as a stick politely rotating. Real switches
+	-- move in three beats and this one now does too: it eases BACK a few degrees first (anticipation is what
+	-- makes an animation look driven by a hand rather than by code), SLAMS through the swing on an In curve
+	-- so it is fastest at the moment of impact, then bounces off the ratchet and settles into it.
+	--
+	-- Everything stuck to the arm is swung on the SAME tweens. These parts are anchored, and anchored parts
+	-- do not follow a parent -- anything not tweened here is left hanging in the air where the arm used to be.
+	-- Poses are struck about the BOLT (captured in buildLever), so the arm hinges where the hardware says it
+	-- hinges. The fallback keeps the old about-its-own-centre behaviour if the pivot was never captured --
+	-- an ugly swing beats a lever that does not move at all.
+	local rest = leverArm.CFrame
+	local function poseAt(deg)
+		if leverPivot and leverArmLocal then
+			return leverPivot * CFrame.Angles(math.rad(deg), 0, 0) * leverArmLocal
+		end
+		return rest * CFrame.Angles(math.rad(deg), 0, 0)
+	end
+	local wind, down, bounce = poseAt(-11), poseAt(56), poseAt(48)
+	local function swing(cf, time, style, dir)
+		local ti = TweenInfo.new(time, style, dir)
+		TweenService:Create(leverArm, ti, { CFrame = cf }):Play()
+		if leverGrip then
+			TweenService:Create(leverGrip, ti, { CFrame = cf * CFrame.new(0, 1.35, 0) }):Play()
+		end
+		if knob then
+			TweenService:Create(knob, ti, { CFrame = cf * CFrame.new(0, 2.25, 0) }):Play()
+		end
+	end
+
+	-- Pulled ends the idle red heartbeat, but only at the TOP of its loop -- so right now that loop can be
+	-- mid-fade with a tween still running on this light. That is why every brightness change below is made by
+	-- TWEEN and never by assignment: a new tween on the same property supersedes the one in flight, where a
+	-- plain write loses to it and the lever ends up thrown with a dim red glow.
+	local kl = knob and knob:FindFirstChildOfClass("PointLight")
+	if knob then knob:SetAttribute("Pulled", true) end
+
+	task.spawn(function()
+		swing(wind, 0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		task.wait(0.12)
+		swing(down, 0.16, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+		task.wait(0.16)
+
+		-- IMPACT. Everything that says "this was heavy" lands on this one frame.
+		cameraShake(leverArm.Position, 0.32, 0.34)
+		dustBurst(host.CFrame * CFrame.new(0, -0.3, 0), 16, Color3.fromRGB(158, 148, 130), 1.2)
+		local sparks = knob and knob:FindFirstChildOfClass("ParticleEmitter")
+		if sparks then sparks:Emit(28) end
+
+		swing(bounce, 0.09, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)   -- kick off the ratchet
+		task.wait(0.09)
+		swing(down, 0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.In)      -- and drop into the tooth
 	end)
 
-	local down = leverArm.CFrame * CFrame.Angles(math.rad(56), 0, 0)
-	TweenService:Create(leverArm, TweenInfo.new(0.45, Enum.EasingStyle.Back), { CFrame = down }):Play()
+	-- ===== RED -> GREEN, EVERYWHERE AT ONCE =====
+	-- Knob, its light, the pool on the ground and the junction LED all flip together. One part changing colour
+	-- reads as a bulb; the whole machine changing colour reads as POWER ARRIVING -- which is the thing the
+	-- player needs to understand, because the consequence is happening somewhere they cannot see.
+	local LIVE = Color3.fromRGB(120, 255, 140)
 	if knob then
-		knob:SetAttribute("Pulled", true)      -- ends the idle red heartbeat (see buildLever)
-		TweenService:Create(knob, TweenInfo.new(0.45, Enum.EasingStyle.Back),
-			{ CFrame = down * CFrame.new(0, 2.2, 0) }):Play()
-		TweenService:Create(knob, TweenInfo.new(0.6), { Color = Color3.fromRGB(120, 255, 140) }):Play()
-		local kl = knob:FindFirstChildOfClass("PointLight")
-		if kl then kl.Color = Color3.fromRGB(120, 255, 140); kl.Brightness = 1.4 end
-		local sparks = knob:FindFirstChildOfClass("ParticleEmitter")
-		if sparks then sparks:Emit(24) end
+		TweenService:Create(knob, TweenInfo.new(0.5), { Color = LIVE }):Play()
 	end
+	if kl then
+		kl.Color = LIVE
+		kl.Range = 16
+		TweenService:Create(kl, TweenInfo.new(0.3), { Brightness = 2.2 }):Play()
+	end
+	if m then
+		local pool = m:FindFirstChild("LeverPool")
+		if pool then
+			TweenService:Create(pool, TweenInfo.new(0.6),
+				{ Color = LIVE, Transparency = 0.62 }):Play()
+		end
+		local led = m:FindFirstChild("JunctionLed")
+		if led then
+			-- The LED was already green (the box was live, waiting). It goes WHITE-HOT for a moment as the
+			-- current goes through, which is the only way a part this small registers at all.
+			led.Color = Color3.fromRGB(255, 255, 255)
+			TweenService:Create(led, TweenInfo.new(0.9), { Color = LIVE }):Play()
+		end
+		local wire = m:FindFirstChild("JunctionWire")
+		if wire then
+			-- The wire is the story: the pull goes INTO THE GROUND and travels to the cliff. Flashing it is
+			-- how the player is told the two ends are connected without a line being drawn on screen.
+			wire.Material = Enum.Material.Neon
+			wire.Color = LIVE
+			TweenService:Create(wire, TweenInfo.new(1.1), { Color = Color3.fromRGB(38, 44, 54) }):Play()
+			task.delay(1.2, function()
+				if wire.Parent then wire.Material = Enum.Material.SmoothPlastic end
+			end)
+		end
+	end
+
+	-- ===== THE SPENT LEVER STILL BREATHES =====
+	-- Before, the heartbeat simply stopped and the knob sat at a flat green forever -- which reads as a prop
+	-- that has been switched OFF, the opposite of what happened. A slow, shallow green pulse (half the depth
+	-- and twice the period of the red one) says the machine is RUNNING now: quieter than the come-find-me
+	-- state, but alive.
+	task.spawn(function()
+		task.wait(0.5)   -- let the 0.3s ramp above finish, or the two tweens fight over the first beat
+		while m and m.Parent and kl do
+			TweenService:Create(kl, TweenInfo.new(1.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+				{ Brightness = 1.5 }):Play()
+			task.wait(1.7)
+			TweenService:Create(kl, TweenInfo.new(1.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+				{ Brightness = 2.2 }):Play()
+			task.wait(1.7)
+		end
+	end)
 end
 
 --======================================================================
@@ -427,6 +710,10 @@ local function revealDoor(marker)
 	pulse.CanCollide = false; pulse.CanQuery = false; pulse.CastShadow = false
 	pulse.Parent = m
 	task.spawn(function()
+		-- HELD until the opening animation has finished. The pulse rewrites Size and Transparency on every
+		-- beat; started early it would fight the iris open, snapping the doorway to full width on its first
+		-- tick and throwing away the one moment this whole prop exists for.
+		while m.Parent and not m:GetAttribute("Opened") do task.wait(0.1) end
 		while m.Parent do
 			-- reset, then swell outward and fade -- reads as a beat coming from INSIDE
 			pulse.Size = sz * 1.02
@@ -462,6 +749,7 @@ local function revealDoor(marker)
 	motes.LightEmission = 0.85
 	motes.SpreadAngle = Vector2.new(35, 35)
 	motes.Acceleration = Vector3.new(0, 1.2, 0)
+	motes.Enabled = false            -- nothing breathes out of a cliff that has not cracked yet
 	motes.Parent = moteAt
 
 	-- 4. CRYSTAL SHARDS around the rim, in the SAME palette as the ones inside the cave. That continuity is
@@ -552,6 +840,46 @@ local function revealDoor(marker)
 		r.CanCollide = false; r.CastShadow = false
 	end
 
+	--==================================================================
+	-- IT OPENS. IT DOES NOT APPEAR.
+	--==================================================================
+	-- Every piece above was built at its FINISHED size, and the old code then parented the lot in one frame:
+	-- a fully-formed glowing doorway blinked into a cliff face. That is the single biggest moment in this
+	-- whole system -- the payoff for finding a hidden lever -- and it was costing one frame and no sound.
+	--
+	-- So the finished state is recorded here and everything is collapsed to a SEAM: a hairline crack in the
+	-- rock, dark, silent. The sequence below then drives it open. Recorded by walking the model rather than
+	-- by threading a target through every builder above, so anything added to the doorway later is carried
+	-- by the animation automatically instead of being the one part that pops.
+	pl.Brightness = 0          -- the glow climbs WITH the crack; a lit cliff before it opens gives it away
+	local finalSize, finalCF, finalTrans = {}, {}, {}
+	for _, d in ipairs(m:GetDescendants()) do
+		if d:IsA("BasePart") then
+			finalSize[d], finalCF[d], finalTrans[d] = d.Size, d.CFrame, d.Transparency
+		end
+	end
+	for d in pairs(finalSize) do
+		if d.Name == "Rubble" then
+			-- The rubble has not fallen yet -- it is still part of the cliff. It starts tucked back inside
+			-- the rock face and drops out as the crack widens, which is what makes the opening read as
+			-- something that BROKE rather than something that faded in.
+			d.Transparency = 1
+			d.CFrame = finalCF[d] * CFrame.new(0, 2.2, -1.4)
+		elseif d.Name == "RimShard" then
+			d.Transparency = 1                                  -- the crystals light up last
+			d.Size = finalSize[d] * 0.2
+		elseif d.Name:sub(1, 4) == "Mark" then
+			d.Transparency = 1                                  -- chalk on a door nobody can see yet
+		else
+			-- The opening, the halo, the throat layers, the pulse ring: squeezed to a vertical hairline. The
+			-- Z axis is the block's DEPTH and is left alone -- squeezing that would pull the crack out of the
+			-- rock face and hang it in front of the cliff.
+			local v = finalSize[d]
+			d.Size = Vector3.new(math.max(v.X * 0.04, 0.06), math.max(v.Y * 0.22, 0.1), v.Z)
+			d.CFrame = finalCF[d]                               -- resizing keeps the centre; restate it anyway
+		end
+	end
+
 	m.Parent = Workspace
 
 	-- ANCHOR, RE-ASSERTED AFTER PARENTING -- same reason as the lever. part() anchors on creation, but that
@@ -566,12 +894,89 @@ local function revealDoor(marker)
 		:format(marker.Position.X, marker.Position.Y, marker.Position.Z, sz.X, sz.Y, sz.Z,
 			marker.ClassName .. (marker:IsA("Part") and ("/" .. marker.Shape.Name) or ""), off))
 
-	-- fade the seams in, then keep them breathing so the opening never looks like a static decal
-	for _, seam in ipairs(doorRunes) do
-		TweenService:Create(seam, TweenInfo.new(0.9), { Transparency = 0.15 }):Play()
-	end
+
+	--==================================================================
+	-- THE OPENING SEQUENCE
+	--==================================================================
+	-- Sound first, then the shove, then the light. Same order as the lever, for the same reason: audio that
+	-- arrives after the movement makes the movement look like it happened for no reason.
+	--
+	-- The grind is the LEVER'S OWN CLIP dropped to a third speed. One asset doing both jobs means there is no
+	-- second id that can be missing, unapproved, or silently 404 at the exact moment the game needs it -- and
+	-- pitched down that far a switch-throw is a very good slab of rock moving.
 	task.spawn(function()
-		-- gated on m.Parent so this thread dies with the model instead of looping forever
+		pcall(function()
+			local grind = Instance.new("Sound")
+			grind.Name = "SecretDoorGrind"
+			grind.SoundId = LEVER_SOUND_ID
+			grind.Volume = 1
+			grind.PlaybackSpeed = 0.32
+			grind.RollOffMinDistance = 20
+			grind.RollOffMaxDistance = 260   -- wider than the lever's: the player is usually stood at the lever
+			grind.Parent = mouth
+			grind:Play()
+			Debris:AddItem(grind, 12)
+		end)
+
+		-- The cliff takes it first: a jolt and a sheet of dust off the face, BEFORE anything is visibly open.
+		cameraShake(mouth.Position, 0.5, 0.7)
+		dustBurst(cf * CFrame.new(0, -rimY * 0.6, sz.Z * 0.5 + 0.6), 26, Color3.fromRGB(146, 136, 120),
+			math.clamp(math.min(sz.X, sz.Y) * 0.16, 1, 4))
+
+		-- THE IRIS. Quint/Out: it tears open fast and then eases into place, which is how a heavy thing that
+		-- was shoved actually moves. The seam widens into the doorway over the same 1.05s that the glow
+		-- climbs, so the light looks like it is coming FROM the opening rather than being switched on over it.
+		local irisInfo = TweenInfo.new(1.05, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+		for d, target in pairs(finalSize) do
+			if d.Name ~= "Rubble" and d.Name:sub(1, 4) ~= "Mark" then
+				TweenService:Create(d, irisInfo, { Size = target }):Play()
+			end
+		end
+		for _, seam in ipairs(doorRunes) do
+			TweenService:Create(seam, TweenInfo.new(1.05), { Transparency = 0.15 }):Play()
+		end
+		-- ===== THE HALO FINALLY GETS TO EXIST =====
+		-- It was built at Transparency 1 and nothing anywhere ever faded it in, so the rim glow this doorway
+		-- was designed around has been invisible since the day it was written. It flares white-hot on the
+		-- crack and settles to a mostly-transparent ember red, which is what the build comment describes.
+		halo.Color = Color3.fromRGB(255, 236, 210)
+		halo.Transparency = 0.2
+		TweenService:Create(halo, TweenInfo.new(1.4),
+			{ Color = Color3.fromRGB(196, 68, 34), Transparency = 0.55 }):Play()
+		TweenService:Create(pl, TweenInfo.new(1.4), { Brightness = 2.5 }):Play()
+
+		task.wait(0.35)
+		-- The rubble comes out mid-swing, once there is a gap for it to come out OF.
+		for d in pairs(finalSize) do
+			if d.Name == "Rubble" then
+				d.Transparency = finalTrans[d]
+				TweenService:Create(d, TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+					{ CFrame = finalCF[d] }):Play()
+			end
+		end
+		dustBurst(cf * CFrame.new(0, -rimY, sz.Z * 0.5 + 0.4), 14, Color3.fromRGB(120, 112, 100), 1.1)
+
+		task.wait(0.45)
+		-- Crystals, chalk and the breath of motes come in last -- the doorway is open, and now it is INHABITED.
+		for d in pairs(finalSize) do
+			if d.Name == "RimShard" or d.Name:sub(1, 4) == "Mark" then
+				TweenService:Create(d, TweenInfo.new(0.6), { Transparency = finalTrans[d] }):Play()
+			end
+		end
+		motes.Enabled = true
+
+		-- Released only once the 1.05s iris has actually finished (0.35 + 0.45 + 0.3). The pulse loop's first
+		-- beat REWRITES the size of the opening and the throat layers, so flipping this early would snap the
+		-- door to full width with a fifth of the swing still to run.
+		task.wait(0.3)
+		m:SetAttribute("Opened", true)
+	end)
+
+	-- keep the seams breathing so the opening never settles into a static decal
+	task.spawn(function()
+		-- gated on m.Parent so this thread dies with the model instead of looping forever, and held until
+		-- the sequence above has finished -- a breathing seam during the open would fight the fade-in
+		while m.Parent and not m:GetAttribute("Opened") do task.wait(0.1) end
 		while m.Parent do
 			for _, seam in ipairs(doorRunes) do
 				TweenService:Create(seam, TweenInfo.new(1.3), { Transparency = 0.45 }):Play()
@@ -1965,9 +2370,14 @@ local function buildCave()
 	-- boolean puts the old E-to-trade behaviour back, since its Triggered wiring is left connected below.
 	local shopPrompt = Instance.new("ProximityPrompt")
 	shopPrompt.ActionText = "Trade"; shopPrompt.ObjectText = "Shady Sal"
-	shopPrompt.HoldDuration = 0; shopPrompt.MaxActivationDistance = 14
+	-- 20, matching the walk-up radius. At 14 the backstop had exactly the failure it exists to cover for:
+	-- measured from Sal's own body, behind his counter, it was out of reach from where players actually stand.
+	shopPrompt.HoldDuration = 0; shopPrompt.MaxActivationDistance = 20
 	shopPrompt.RequiresLineOfSight = false
-	shopPrompt.Enabled = false        -- walk-up opening replaces it; see the proximity loop in the SHOP UI section
+	-- Starts disabled and is switched on by the wiring loop at the foot of this file, the moment its Triggered
+	-- handler is actually connected -- an enabled prompt wired to nothing is a button that does nothing. From
+	-- then on the walk-up loop owns it, hiding it whenever the panel is already open.
+	shopPrompt.Enabled = false
 	shopPrompt.Parent = body
 
 	-- EXIT. Its own alcove on the far side, so leaving is a deliberate walk rather than something you trip on
@@ -2507,7 +2917,7 @@ function renderRows()
 
 			-- ===== STREET PRICE vs SAL'S PRICE =====
 			-- The struck-through "up top" number is what sells every row as contraband: the same goods, the
-			-- legal price, and the number Sal actually wants under it. RichText <s> does the strikethrough;
+			-- legal price (in TICKETS, like everything on the shelf), and the number Sal actually wants under it. RichText <s> does the strikethrough;
 			-- a street price of 0 means nobody knows what it is worth up top, which gets '???'.
 			local streetLbl = Instance.new("TextLabel")
 			streetLbl.Size = UDim2.fromOffset(150, 22); streetLbl.Position = UDim2.new(1, -164, 0, 10)
@@ -2516,7 +2926,7 @@ function renderRows()
 			streetLbl.TextXAlignment = Enum.TextXAlignment.Right
 			streetLbl.TextColor3 = MUTED
 			streetLbl.Text = street > 0
-				and ("up top: <s>" .. street .. " \u{1FA99}</s>")
+				and ("up top: <s>" .. street .. " \u{1F3AB}</s>")  -- tickets: Sal's whole shelf is tickets since 2026-09-06
 				or "up top: ???"
 			streetLbl.Parent = row
 
@@ -2593,12 +3003,14 @@ end)
 -- swallowed by a daily-reward nudge, and it must not shove an island landing off the screen.
 if restockEvent then
 	restockEvent.OnClientEvent:Connect(function(headline)
+		-- The shelf list used to be appended here ("2x Coins (5 min), The Fat Sack, ...") and made a 90-char
+		-- banner out of a four-word event. What restocked is on the shelf; the pill only says that it did.
 		local text = "\u{1F56F} SHADY SAL RESTOCKED!"
-		if type(headline) == "string" and headline ~= "" then
-			text = text .. "  " .. headline
-		end
 		if _G.NotifyCenter and _G.NotifyCenter.push then
 			pcall(_G.NotifyCenter.push, {
+				-- Demoted to a top-left pill by the banner budget (kind = "sal_restock"). It fires server-wide on
+				-- Sal's own timer, for a stand that is not going anywhere -- the definition of news that can wait.
+				kind     = "sal_restock",
 				text     = text,
 				color    = Color3.fromRGB(255, 176, 92),   -- Sal's amber, so the banner is recognisably his
 				priority = (_G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT) or 80,
@@ -2629,22 +3041,52 @@ end
 --
 -- The walk-away close is the one sanctioned exception to this game's "panels only close on X" rule: it is not
 -- a stray-tap close, it is the shopkeeper rule -- you left the counter, the deal is off.
-local SAL_OPEN_RADIUS  = 12                     -- matches ShopClient's STAND_TRIGGER_RADIUS
-local SAL_CLOSE_RADIUS = SAL_OPEN_RADIUS * 3    -- 3x: the panel survives anything short of actually leaving
+-- ===== WHY IT MEASURES TO THE COUNTER AS WELL AS TO SAL =====
+-- The distance used to be to Sal's HumanoidRootPart alone, and Sal stands four studs BEHIND a reinforced
+-- counter with posts, a bolted front panel and a fuel drum shoring up one end. A player who walks up to the
+-- stall the way the room invites them to -- up to the counter and no further -- stops with the desk between
+-- them and the only part being measured, and the panel never opens. The shop was there; the trigger was
+-- behind the furniture.
+--
+-- So it measures to the NEAREST of Sal and his counter, and the open radius is 18 rather than 12. Eighteen is
+-- deliberately short of the 21 studs from the arrival clearing to the desk: you still arrive in the room and
+-- see it before anything opens over the top of it, which is the whole reason this is walk-up and not automatic.
+local SAL_OPEN_RADIUS  = 18
+local SAL_CLOSE_RADIUS = 34     -- hysteresis, but still well inside a 90-stud room so walking off does close it
 
 task.spawn(function()
+	local warnedNoAnchor, announced = false, false
 	while true do
 		task.wait(0.1)
-		pcall(function()
-			local salPrompt = builtRefs and builtRefs.shop
-			local salPart   = salPrompt and salPrompt.Parent
-			if not (salPart and salPart:IsA("BasePart")) then return end
+		-- ===== FAILURES ARE REPORTED, NOT SWALLOWED =====
+		-- This loop used to be a bare pcall. Anything that threw inside it -- a half-built panel, a missing
+		-- remote, a nil row -- vanished silently a hundred times a second and the only symptom the player
+		-- ever saw was a shop that would not open. It still cannot be allowed to die (this thread is the only
+		-- way to trade), but now it says so, once, with the actual error.
+		local ok, err = pcall(function()
+			local refs = builtRefs
+			if not refs then return end
+
+			-- Sal's body part, and his counter. Either one being in reach counts as being at the stall.
+			local salPart = refs.shop and refs.shop.Parent
+			if not (salPart and salPart:IsA("BasePart")) then
+				if not warnedNoAnchor then
+					warnedNoAnchor = true
+					warn("[SecretCave] Sal's shop prompt has no BasePart parent -- the walk-up trigger has "
+						.. "nothing to measure to and the trade panel cannot open on approach.")
+				end
+				return
+			end
+			local desk = refs.model and refs.model:FindFirstChild("DeskTop")
 
 			local char = player.Character
 			local hrp  = char and char:FindFirstChild("HumanoidRootPart")
 			if not hrp then return end
 
 			local dist = (hrp.Position - salPart.Position).Magnitude
+			if desk then
+				dist = math.min(dist, (hrp.Position - desk.Position).Magnitude)
+			end
 
 			if dist <= SAL_OPEN_RADIUS then
 				-- Deliberately NOT gated on being grounded (the way the island stands are). Those stands sit
@@ -2652,7 +3094,13 @@ task.spawn(function()
 				-- no-fly flag set, so there is no fly-by to guard against.
 				if not playerClosedShop then
 					local g = buildShop()
-					if not g.Enabled then g.Enabled = true end
+					if not g.Enabled then
+						g.Enabled = true
+						if not announced then
+							announced = true
+							print(("[SecretCave] Sal's trade panel opened on approach (%.1f studs)"):format(dist))
+						end
+					end
 				end
 			elseif dist > SAL_CLOSE_RADIUS then
 				if shopGui and shopGui.Enabled then shopGui.Enabled = false end
@@ -2660,7 +3108,23 @@ task.spawn(function()
 				-- shop again. Without this, closing it once would keep it shut for the rest of the visit.
 				playerClosedShop = false
 			end
+
+			-- ===== THE PROMPT IS THE BACKSTOP, AND IT HIDES ITSELF =====
+			-- Walking up is the intended way in and stays the intended way in. But the panel is the only
+			-- reason the cave exists, and "stand in the right spot" is a single point of failure for it --
+			-- an odd rig, a body part that streams strangely, a player wedged behind the barricade. E to
+			-- Trade is always there underneath. It is suppressed while the panel is open so the two never
+			-- appear at once, which is what made it clutter the first time round.
+			-- Gated on Wired: the wiring loop at the foot of this file connects Triggered on its own poll, and
+			-- showing an E prompt before that connection exists is a button that visibly does nothing.
+			if refs.shop and refs.shop:GetAttribute("Wired") then
+				refs.shop.Enabled = not (shopGui and shopGui.Enabled)
+			end
 		end)
+		if not ok and not warnedNoAnchor then
+			warnedNoAnchor = true    -- one report, not one per tick
+			warn("[SecretCave] the walk-up shop trigger errored: " .. tostring(err))
+		end
 	end
 end)
 
@@ -3009,7 +3473,10 @@ task.spawn(function()
 	sp.Name = "PushSecretSwitch"
 	sp.ActionText = "Pull"; sp.ObjectText = "Strange Lever"
 	sp.HoldDuration = 0.6
-	sp.MaxActivationDistance = 12
+	-- 16, not 12. The plinth is nearly 4 studs across and you approach a lever by standing AT it, not inside
+	-- it -- at 12 the prompt only appeared once you were close enough to be clipping the prop, which reads as
+	-- the lever being scenery right up until it suddenly is not.
+	sp.MaxActivationDistance = 16
 	sp.RequiresLineOfSight = false
 	sp.Parent = promptHost
 	sp.Triggered:Connect(function()
@@ -3044,14 +3511,22 @@ end)
 task.spawn(function()
 	while true do
 		task.wait(0.5)
-		if caveRefs and caveRefs.shop and not caveRefs.shop:GetAttribute("Wired") then
-			caveRefs.shop:SetAttribute("Wired", true)
-			caveRefs.shop.Triggered:Connect(function()
+		-- Keyed off builtRefs, not caveRefs. caveRefs is assigned in enterCave AFTER buildCave returns, so
+		-- wiring off it left a window where the trade prompt existed, was enabled by the walk-up loop, and
+		-- was connected to nothing -- E did nothing for the first half-second in the room. builtRefs is set
+		-- inside buildCave itself, so the prompts are live the instant they exist.
+		local refs = builtRefs
+		if refs and refs.shop and not refs.shop:GetAttribute("Wired") then
+			refs.shop:SetAttribute("Wired", true)
+			refs.shop.Triggered:Connect(function()
+				-- An explicit press is an explicit request: it clears an earlier X, or the panel would flash
+				-- open and be shut again by nothing the player can see.
+				playerClosedShop = false
 				local g = buildShop()
 				g.Enabled = true
 			end)
-			caveRefs.exit:SetAttribute("Wired", true)
-			caveRefs.exit.Triggered:Connect(leaveCave)
+			refs.exit:SetAttribute("Wired", true)
+			refs.exit.Triggered:Connect(leaveCave)
 		end
 	end
 end)

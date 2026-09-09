@@ -25,10 +25,24 @@ local STANDS_READY_TIMEOUT = 30  -- seconds to wait for stand setup before givin
 -- the bubble text is swapped on a ~4s loop). Keep each line BRIEF so it doesn't crowd the screen. Easy to edit.
 local FARMER_LINES = {
 	"Howdy! Welcome to Fart to Float!",
-	"Stock up on beans here \xE2\x80\x94 they're what get you airborne!",
-	"Once you're fueled up, go explore the islands above!",
-	"And don't be a stranger \xE2\x80\x94 our farm friends in the garden love visitors!",
+	"Stock up on beans. They get you airborne!",
+	"Fueled up? Go explore the islands above!",
+	"Our farm friends love visitors. Say hello!",
 }
+
+-- EIGHT WORDS A LINE. The bubble swaps text on a 4s loop, so a long line is one long flash you cannot
+-- finish reading; split, the same words arrive as two slides you can. Defensive require -- a missing module
+-- must cost you long lines, not a silent Farmer.
+local capWords = function(lines) return lines end
+do
+	local ok, mod = pcall(function()
+		return require(game:GetService("ReplicatedStorage"):WaitForChild("Shared", 10):WaitForChild("BubbleWords", 10))
+	end)
+	if ok and type(mod) == "table" and mod.cap then capWords = mod.cap end
+end
+
+FARMER_LINES = capWords(FARMER_LINES)
+
 local FARMER_LINE_SECS = 4 -- seconds each line shows (matches the Gardener's cycle)
 
 -- BOTH farmers (Farmer + Farmer2) are shifted by this SAME world-space offset, so they keep their exact

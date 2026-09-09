@@ -59,14 +59,18 @@ local function catchUp(player)
 		if sync and entry and entry.isRunning and entry.isRunning() then
 			if entry.currentPhase then
 				-- EXACT replay (state recorded by the manager): base "start" setup, then the live phase.
-				pcall(function() sync:FireClient(player, "start", entry.startPayload) end) -- NEW player ONLY
+				-- THE THIRD ARGUMENT IS "THIS IS A REPLAY". Handlers that re-apply state (sky, particles,
+				-- buttons) ignore it and rebuild everything as normal; handlers that ANNOUNCE something --
+				-- the meteor intro alarm -- use it to stay quiet, because for this player the event did not
+				-- just start, they just arrived. Older handlers taking (phase, payload) simply drop it.
+				pcall(function() sync:FireClient(player, "start", entry.startPayload, true) end) -- NEW player ONLY
 				if entry.currentPhase ~= "start" then
-					pcall(function() sync:FireClient(player, entry.currentPhase, entry.currentPayload) end)
+					pcall(function() sync:FireClient(player, entry.currentPhase, entry.currentPayload, true) end)
 				end
 			else
 				-- Fallback: phase not recorded yet -> best-effort recipe, nil payload (handlers default safely).
 				for _, phase in ipairs(CATCHUP[key] or { "start" }) do
-					pcall(function() sync:FireClient(player, phase) end)
+					pcall(function() sync:FireClient(player, phase, nil, true) end)
 				end
 			end
 		end

@@ -43,10 +43,10 @@ IslandConfig.ISLANDS = {
 	{
 		name = "Candy Cane Court", slot = 1, island = 1,
 		-- questId stays "candy": IslandTaskWatcher, CrateTokens.ISLAND_TASK and the save ledger
-		-- all key off it, so renaming the id would orphan every existing player's rung. Only the
-		-- NAME changed -- island 1 runs the Bridge Toll now (CandyTrollBridge_AllInOne), and the
-		-- retired Gumball Hunt handed the same `_G.candyQuestComplete` flag over to the troll.
-		questId = "candy", questName = "Bridge Toll",
+		-- all key off it, so renaming the id would orphan every existing player's rung. Island 1
+		-- is the Gumball Hunt again (CandyGumballQuest_AllInOne); the Bridge Toll that briefly
+		-- replaced it is disabled at the top of CandyTrollBridge_AllInOne.
+		questId = "candy", questName = "Gumball Hunt",
 		food = { name = "Candy Canes", cost = 1280, power = 32 },
 	},
 	{

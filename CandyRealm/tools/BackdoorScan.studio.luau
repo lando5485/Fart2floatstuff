@@ -57,7 +57,7 @@ local IGNORED_ROOTS = {
 }
 
 -- ============================ GENERATED MANIFEST ============================
--- 116 script instances, from CandyRealm/default.project.json + src/ on disk.
+-- 117 script instances, from CandyRealm/default.project.json + src/ on disk.
 local MANIFEST = {
 	["ReplicatedStorage.Shared.CandyData"] = true,
 	["ReplicatedStorage.Shared.Constants"] = true,
@@ -123,6 +123,7 @@ local MANIFEST = {
 	["StarterPlayer.StarterPlayerScripts.GardenerChat"] = true,
 	["StarterPlayer.StarterPlayerScripts.GardenerLife"] = true,
 	["StarterPlayer.StarterPlayerScripts.GutSkinClient"] = true,
+	["StarterPlayer.StarterPlayerScripts.GutGrowCinematic"] = true,
 	["StarterPlayer.StarterPlayerScripts.IslandCard"] = true,
 	["StarterPlayer.StarterPlayerScripts.IslandTeleport"] = true,
 	["StarterPlayer.StarterPlayerScripts.JellyTowerQuest_AllInOne"] = true,

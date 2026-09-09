@@ -183,13 +183,30 @@ end
 
 -- ---- HAND TOOLS ----------------------------------------------------------
 -- These hang off the RIGHT HAND, not the root, because that is where their owner's copy is: the
--- Smores axe and the tunnel pickaxe are both welded to the hand so the arm's swing animation
--- carries them. Animations replicate, so a viewer's copy swings with the chop for free.
-local function buildAxe(m)
-	p(m, "Shaft", Vector3.new(0.22, 3.0, 0.22), CFrame.new(0, 0, 0), Color3.fromRGB(146, 102, 58), nil, Enum.Material.Wood)
-	p(m, "Head",  Vector3.new(0.32, 0.9, 1.1), CFrame.new(0, 1.35, 0.35), IRON, nil, Enum.Material.Metal)
-	p(m, "Blade", Vector3.new(0.16, 0.95, 0.45), CFrame.new(0, 1.35, 0.95), Color3.fromRGB(196, 198, 204), nil, Enum.Material.Metal)
-	p(m, "Butt",  Vector3.new(0.28, 0.22, 0.28), CFrame.new(0, -1.45, 0), IRON_D)
+-- Smores chainsaw and the tunnel drill are both welded to the hand so the arm's animation
+-- carries them. Animations replicate, so a viewer's copy moves with the work for free.
+
+-- THE CAMP S'MORES CHAINSAW, as everybody ELSE sees it. It is deliberately the same shape and
+-- the same offsets as the one CampSmoresQuest builds for its owner (see the fallback build
+-- there), because the one thing a viewer's copy must never be is a DIFFERENT tool from the one
+-- the player is holding on their own screen.
+-- ⚠ NO MOVING CHAIN HERE, ON PURPOSE. The owner's copy drives 22 teeth round the bar every
+-- frame; doing that for every other player on the island is the same cost multiplied by the
+-- server's population, for motion nobody can resolve at the distance you see somebody else's
+-- hands from. A static cutter stripe down the bar reads the same from ten studs away.
+local function buildChainsaw(m)
+	p(m, "Body",    Vector3.new(0.9, 1.0, 1.45), CFrame.new(0, 0.16, 1.0), Color3.fromRGB(255, 156, 56))
+	p(m, "Cover",   Vector3.new(0.94, 0.5, 0.88), CFrame.new(0, 0.5, 0.75), Color3.fromRGB(232, 236, 240))
+	p(m, "Grip",    Vector3.new(0.34, 0.42, 0.85), CFrame.new(0, 0, 0.1), Color3.fromRGB(44, 44, 50))
+	p(m, "HandleT", Vector3.new(0.7, 0.16, 0.16), CFrame.new(0, 0.95, 0.55), Color3.fromRGB(44, 44, 50))
+	p(m, "HandleF", Vector3.new(0.16, 0.5, 0.16), CFrame.new(0, 0.75, 0.05), Color3.fromRGB(44, 44, 50))
+	p(m, "Guard",   Vector3.new(0.88, 0.6, 0.14), CFrame.new(0, 0.55, -0.22), Color3.fromRGB(232, 236, 240))
+	p(m, "Bar",     Vector3.new(0.14, 0.5, 3.4), CFrame.new(0, 0.08, -1.6), IRON, nil, Enum.Material.Metal)
+	p(m, "Chain",   Vector3.new(0.17, 0.62, 3.0), CFrame.new(0, 0.08, -1.6), IRON_D, nil, Enum.Material.Metal)
+	-- the cutters ride the top and bottom EDGES of the bar, which is where a chain actually
+	-- sits. One bright strip down the middle reads as a groove cut into the bar instead.
+	p(m, "CutterT", Vector3.new(0.19, 0.14, 2.9), CFrame.new(0, 0.33, -1.6), Color3.fromRGB(226, 230, 236), nil, Enum.Material.Metal)
+	p(m, "CutterB", Vector3.new(0.19, 0.14, 2.9), CFrame.new(0, -0.17, -1.6), Color3.fromRGB(226, 230, 236), nil, Enum.Material.Metal)
 end
 
 -- A HANDHELD ROCK DRILL -- what the tunnel miner actually carries now. Same hold angle as the
@@ -270,7 +287,11 @@ local KINDS = {
 
 	-- `limb` hangs the prop off a body part instead of the root, and the offsets match the hold
 	-- angle each quest welds its own copy at. The arm animation does the rest.
-	axe      = { limb = "RightHand", off = CFrame.new(0, -0.35, 0) * CFrame.Angles(math.rad(-110), 0, math.rad(-10)), build = buildAxe },
+	-- ⚠ THE CHAINSAW IS NOT HUNG AT THE AXE'S -110. An axe hangs down the leg; a chainsaw is
+	-- held out in FRONT of you, which is what the near-zero pitch says. These angles mirror
+	-- SAW_PITCH / SAW_ROLL in CampSmoresQuest -- change one and change the other, or the saw a
+	-- viewer sees points somewhere the owner's never does.
+	chainsaw = { limb = "RightHand", off = CFrame.new(0, -0.45, -0.1) * CFrame.Angles(math.rad(-12), 0, math.rad(-8)), build = buildChainsaw },
 	pickaxe  = { limb = "RightHand", off = CFrame.new(0, -0.35, 0) * CFrame.Angles(math.rad(-110), 0, math.rad(-10)), build = buildPickaxe },
 	drill    = { limb = "RightHand", off = CFrame.new(0, -0.35, 0) * CFrame.Angles(math.rad(-110), 0, math.rad(-10)), build = buildDrill },
 	dynamite = { limb = "RightHand", off = CFrame.new(0, -2.4, -0.4), build = buildDynamite },

@@ -302,7 +302,11 @@ local function setOpen(o)
 end
 _G.toggleRebirth = function() setOpen(not panel.Visible) end
 closeBtn.MouseButton1Click:Connect(function() setOpen(false) end)
-dim.MouseButton1Click:Connect(function() setOpen(false) end)
+-- BACKDROP TAPS CLOSE NOTHING. This is the realm's one banned menu behaviour: a panel must only
+-- ever be shut by its X. The button stays (it swallows the click so it cannot reach the world or
+-- the buttons behind the panel) -- it just does not act on it. Losing a full-screen menu to a
+-- mis-aimed tap, mid-scroll or mid-read, is indistinguishable from the menu crashing.
+dim.MouseButton1Click:Connect(function() end)
 
 doBtn.Activated:Connect(function()
 	if not S.canRebirth then return end

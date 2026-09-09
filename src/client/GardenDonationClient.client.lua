@@ -245,9 +245,18 @@ local activeChest
 -- DONATE rather than on whichever tab you happened to close it on.
 local resetTabs
 
-local function closePanel()
+-- THE SEASONAL PETS TAB IS A DETOUR, NOT A CLOSE.
+-- Tapping it hides this panel and opens the Seasonal one, and the BACK button in there brings you straight
+-- back -- so the old code fired the lid's CLOSE cue on the way out and its OPEN cue on the way in, and you
+-- heard the chest slam and re-open every time you looked at a tab you never left the chest for. This flag
+-- makes the whole round trip silent AND leaves the lid standing open, which is also the truth: you did not
+-- close the chest. The cues now belong to exactly two moments -- opening the chest, and shutting it with X.
+local seasonalDetour = false
+local seasonalWatch  = nil   -- one connection, armed the first time the detour is taken
+
+local function closePanel(keepLid)
 	if gui then gui.Enabled = false end
-	closeLid()
+	if not keepLid then closeLid() end
 end
 
 function setNotice(text)
@@ -435,7 +444,8 @@ function buildHUD()
 	end
 
 	local function openSeasonal()
-		closePanel()
+		seasonalDetour = true
+		closePanel(true)   -- leave the lid up and silent: this is a tab, not a close
 		local opener = _G.openSeasonalPets or _G.openLocker
 		if type(opener) == "function" then pcall(opener) end
 		local g = PlayerGui:FindFirstChild("LockerGui")
@@ -443,6 +453,24 @@ function buildHUD()
 			g.Enabled = true    -- harmless if the opener already did it; required if there was none
 			local b = ensureSeasonalBack()
 			if b then b.Visible = true end
+			-- SHUTTING THE SEASONAL PANEL SHUTS THE CHEST, the same as the X on the donate panel.
+			-- The detour above deliberately leaves the lid standing open, which is correct while you are
+			-- still inside the chest's own tabs. But if you close the Seasonal panel outright -- its X, or
+			-- a click on empty space now that ClickOutside owns LockerGui -- you have left the chest, and
+			-- the lid has to drop with its cue like it does everywhere else. Otherwise it stands open in
+			-- the garden until something unrelated happens to close it.
+			-- BACK is the one exception: it re-opens the donate panel, so wait a frame and only drop the
+			-- lid if it did NOT come back. One connection, armed once, never stacked.
+			if not seasonalWatch then
+				seasonalWatch = g:GetPropertyChangedSignal("Enabled"):Connect(function()
+					if g.Enabled or not seasonalDetour then return end
+					task.defer(function()
+						if gui and gui.Enabled then return end   -- BACK: still inside the chest
+						seasonalDetour = false
+						closeLid()
+					end)
+				end)
+			end
 			-- The panel rebuilds its season cards on every refresh, so one sweep is not enough: run it
 			-- now, again once the refresh has landed, and keep watching while the panel is up.
 			local host = g:FindFirstChild("Frame")
@@ -574,7 +602,10 @@ function openHUD(promptPart, chestModel)
 	-- blinking into existence
 	panel.Size = UDim2.new(0, 660, 0, 490)
 	TweenService:Create(panel, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = UDim2.new(0, 700, 0, 520) }):Play()
-	if chestModel then pcall(function() openLid(chestModel) end) end
+	-- Coming back from the Seasonal detour the lid is still standing open, so re-opening it would replay the
+	-- cue for a chest that never shut. Consume the flag and leave it alone.
+	if chestModel and not seasonalDetour then pcall(function() openLid(chestModel) end) end
+	seasonalDetour = false
 	if promptPart then pcall(function() sparkle(promptPart.Position) end) end
 end
 

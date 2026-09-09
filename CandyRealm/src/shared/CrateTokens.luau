@@ -80,7 +80,17 @@ CrateTokens.DAILY_CAPS = {
 -- Clear every island quest and you have earned a real crate session -- the identical promise the Food and
 -- Space realms make, so a player moving between realms meets the same deal.
 --
--- Slot 8 (island11) hosts TWO quests, so it splits its 80 into 40 each rather than paying double.
+-- Slot 9 (island4) hosts TWO quests -- Campfire Freeze and Summit Bell, both on Frostbell Peak -- so it
+-- splits its 85 into 45 + 40 rather than paying double. Every other slot has exactly one quest.
+--
+-- (!) THE SLOTS BELOW ARE THE VERIFIED ONES. Until now this table read `summit` as slot 6 (island8) and
+-- `crystal` as slot 8 (island11) -- the same swap DoneCommand.client.luau documents and works around. Read
+-- the quests themselves and SummitBellQuest is ISLAND_NAME = "island4" (slot 9) while CrystalMineQuest is
+-- ISLAND_NAME = "island8" (slot 6). Because this table is keyed by quest id and not by island, the swap never
+-- misrouted a payout -- it MISPRICED four of them. Crystal, the sixth island you reach, paid 40 (half of a
+-- twin slot it is not on); Tunnel, alone on slot 8, paid 40 instead of the full 80; and island4 collected
+-- 85 + 65 = 150 for its two quests, nearly twice what its rung is worth. Corrected below, and the ladder
+-- still totals exactly 750.
 --
 -- ===== RESCALED WITH THE CRATE PRICES =====
 -- This ladder totalled 1,850 while Starter cost 250 and Premium 600. Those are now 100 and 250, so the same
@@ -97,18 +107,27 @@ CrateTokens.ISLAND_TASK = {
 	cookie   =  50,  -- slot 3  (island3)  Cookie Repair
 	park     =  55,  -- slot 4  (island13) Ancient Tree
 	storm    =  60,  -- slot 5  (island5)  Taffy Storm
-	summit   =  65,  -- slot 6  (island8)  Summit Bell
-	jelly    =  75,  -- slot 7  (island2)  Jelly Tower
-	tunnel   =  40,  -- slot 8  (island11) Tunnel Blast   \_ one slot, two quests, 80 split evenly
-	crystal  =  40,  -- slot 8  (island11) Crystal Mine   /
-	campfire =  85,  -- slot 9  (island4)  Campfire Freeze
+	crystal  =  65,  -- slot 6  (island8)  Crystal Mine
+	-- OFF THE LADDER NOW: the Jelly Tower was removed from island2, so this id is never
+	-- claimed any more. Kept (rather than deleted) so a save that already recorded it stays
+	-- readable, and so the quest can be dropped back in without re-solving anything.
+	jelly    =  75,  -- island2 (no slot) Jelly Tower -- REMOVED FROM THE WORLD
+	tunnel   =  80,  -- slot 8  (island11) Tunnel Blast
+	campfire =  45,  -- slot 9  (island4)  Campfire Freeze  \_ one slot, two quests, 85 split
+	summit   =  40,  -- slot 9  (island4)  Summit Bell      /
 	smores   =  90,  -- slot 10 (island14) Camp S'mores
-	bakery   = 110,  -- slot 11 (island15) The Great Bake-Off
+	bakery   = 100,  -- slot 8 (island15) The Great Bake-Off -- moved down when the quarry took the summit; swapped amounts with candymine so the climb's solved total is unchanged
 	-- OFF THE LADDER, so it is not part of the slot solve above and does not disturb it: island18
 	-- is reached by command/wormhole, not by a crossing. Priced above the summit because it is the
 	-- longest quest in the realm (five fetches, a boss chase, then eight more fetches under fire).
 	pancake  = 120,  -- island18 (no slot) Wake the Pancake Monster
 	tractor  = 115,  -- island19 (no slot) Broken Tractor
+	-- island16 is off the ladder too (EXTRA_PERSIST in IslandStreaming, reached by /island16 or the
+	-- wormhole). It was the one quest in the realm with a completion flag and no reward: DoneCommand
+	-- already listed it, but this table did not, so awardIslandTask returned 0 and finishing it paid
+	-- nothing at all. Priced BELOW pancake and tractor because it is much the shorter job -- five
+	-- fetches and a blast, no boss and no second act.
+	candymine = 110, -- slot 13 (island16) Candy Mine Explosion -- THE ENDING ISLAND's finale reward
 }
 
 -- What the celebration card calls each quest. Kept beside the amounts rather than passed up from the client,
@@ -129,6 +148,7 @@ CrateTokens.ISLAND_TASK_NAME = {
 	bakery   = "The Great Bake-Off",
 	pancake  = "Wake the Pancake Monster",
 	tractor  = "Broken Tractor",
+	candymine = "Candy Mine Explosion",
 }
 
 -- A FART-POWER TOP-UP on top of the tokens, for the quests that promise one. Paid through the

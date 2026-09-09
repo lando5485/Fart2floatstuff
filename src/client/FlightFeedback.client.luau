@@ -151,8 +151,40 @@ local passHideAt = 0
 local function announcePass()
 	passCount += 1
 
-	-- Passing two people in one climb must not stack two toasts on top of each other -- the second REPLACES the
-	-- first and re-arms the timer, and the text switches to a count so the information is not lost.
+	-- Passing two people in one climb must not stack two callouts -- the second REPLACES the first and the text
+	-- switches to a count, so the information is not lost.
+	local text = (passCount > 1)
+		and ("\xF0\x9F\x9A\x80  Passed %d players!"):format(passCount)
+		or  "\xF0\x9F\x9A\x80  Passed another player!"
+
+	-- ===== THE BANNER SPOT, NOT THE CORNER =====
+	-- This used to be a bespoke toast docked under the stats panel, top-right. That is the worst place on the
+	-- screen for it: you pass someone while climbing, which means you are looking UP at the sky and at the gas
+	-- bar -- not at a small card tucked beside a panel you have already stopped reading. It shares the hero lane
+	-- with every other banner now, so there is exactly ONE place in this game where "something just happened"
+	-- appears, and the player only has to learn to look at one thing.
+	--
+	-- REWARD is the lowest hero rank on purpose: an island landing (100), a purchase (90) or an event (80) all
+	-- preempt it. Passing someone is good news, but it is never the news you stopped flying to read.
+	if _G.NotifyCenter and _G.NotifyCenter.push then
+		-- MUTED by the banner budget (kind = "flight_pass", see NotifyCenter's MUTED table). Passing people is
+		-- something you do several times in a single climb, and the banner said nothing the world outside the
+		-- window was not already showing. The sound and the pass counter below are untouched -- only the
+		-- top-of-screen card went. Still routed through push so the one table decides, not this file.
+		pcall(_G.NotifyCenter.push, {
+			kind     = "flight_pass",
+			text     = text,
+			color    = Color3.fromRGB(40, 120, 70),
+			priority = (_G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.REWARD) or 40,
+			duration = 2.5, -- the same beat the old toast held for
+		})
+		print("[FlightFeedback] passed another player (" .. passCount .. " this flight) -> muted by banner budget")
+		return
+	end
+
+	-- FALLBACK: NotifyCenter missing (it is a separate LocalScript and could lose a boot race). The original
+	-- docked toast is kept intact below for exactly this case -- a callout in the wrong corner still beats no
+	-- callout at all, and this path costs nothing when NotifyCenter is present.
 	passLbl.Text = (passCount > 1)
 		and ("Passed %d players!"):format(passCount)
 		or "Passed another player!"
@@ -179,7 +211,7 @@ local function announcePass()
 	TweenService:Create(passLbl, IN, { TextTransparency = 0 }):Play()
 	TweenService:Create(passLblStroke, IN, { Transparency = 0 }):Play()
 
-	print("[FlightFeedback] passed another player (" .. passCount .. " this flight)")
+	print("[FlightFeedback] passed another player (" .. passCount .. " this flight) -- NotifyCenter missing, used the docked toast")
 end
 
 -- auto-hide, and keep it glued to the stats panel while it is up (the panel can move on a viewport change)
@@ -287,4 +319,4 @@ pcall(function()
 	player.Chatted:Connect(onCommand)
 end)
 
-print("[FlightFeedback] ready -- 'passed another player' callout under the stats panel (/passed)")
+print("[FlightFeedback] ready -- 'passed another player' callout in the hero banner lane (/passed)")

@@ -20,13 +20,23 @@ local Workspace = game:GetService("Workspace")
 local Players   = game:GetService("Players")
 
 -- \xE2\x9A\xA0 PLACEHOLDER SOUNDS -- REPLACE WITH REAL ASSET IDS BEFORE LAUNCH. Left "" (silent, no broken-id spam).
-local MOO_SOUND_ID  = "" -- \xE2\x9A\xA0 REPLACE WITH MOO SOUND
+-- â  THE MOO HAS NEVER HAD A SOUND. This has been "" since the cow was written, so `moo()`
+-- has always printed "[EasterEgg] moo", bobbed the cow, and played an EMPTY Sound. Put a real
+-- rbxassetid here and the moo works everywhere at once -- the wander loop, feeding, and the intro.
+local MOO_SOUND_ID  = ""
 local UFO_SOUND_ID  = "" -- \xE2\x9A\xA0 REPLACE WITH UFO HUM SOUND
 local BEAM_SOUND_ID = "" -- \xE2\x9A\xA0 REPLACE WITH ABDUCTION BEAM SOUND
 
 -- motion tuning
 local STEP        = 0.05          -- seconds per animation frame
-local COW_SPEED   = 4             -- studs/sec (slow + deliberate -> the steps read)
+local COW_SPEED   = 4             -- studs/sec grazing about its field (slow + deliberate -> the steps read)
+-- ===== IT HAS SOMEWHERE TO BE AT NIGHT =====
+-- The daytime amble is 4 studs/sec because a cow pottering around its own field should look like it has
+-- all day. The walk to the story fire is ~250 studs across the island, which at 4 is over a minute of a
+-- player watching a cow cross a field -- and it is a minute of the night's stories not happening. At 11
+-- the crossing is under 20 seconds: still plainly a walk, still leaves the pig a moment alone at the fire
+-- to say its waiting lines, but it arrives while somebody is still interested in watching it arrive.
+local COW_NIGHT_SPEED = 14        -- studs/sec on the way to the fire -- see the note above
 local STRIDE      = 1.5           -- studs of travel per half leg-cycle (ties leg speed to ground speed)
 local SWING_ANGLE = math.rad(26)  -- how far the legs swing fore/aft (planted feet, no body lift)
 local BOB_HEIGHT  = 0.08          -- TINY body bob (upper body only) -- feet stay grounded, no float
@@ -172,7 +182,11 @@ local function buildCow(rootCF)
 	addLeg( 0.95,  1.45, 0)       -- back-right
 
 	-- moo sound (placeholder) on the body
-	local moo = Instance.new("Sound"); moo.Name = "MooSound"; moo.SoundId = MOO_SOUND_ID -- \xE2\x9A\xA0 REPLACE WITH MOO SOUND
+	local moo = Instance.new("Sound"); moo.Name = "MooSound"; moo.SoundId = MOO_SOUND_ID
+	if MOO_SOUND_ID == "" then
+		warn("[EasterEgg] MOO_SOUND_ID is empty -- the cow bobs but is SILENT. Set it at the top of "
+			.. "EasterEggManager.server.lua to a real rbxassetid.")
+	end
 	moo.Volume = 0.6; moo.RollOffMinDistance = 12; moo.RollOffMaxDistance = 130; moo.Parent = rig.body
 
 	-- [COLLISION] make the cow's body SOLID so players bump into it instead of passing through. The whole cow is
@@ -270,16 +284,36 @@ local function glide(model, toCF, duration, stop)
 end
 -- drive the COW rig from its current pose to toCF; if `moving`, legs step (gait tied to distance -> no
 -- foot-slide) + the upper body bobs/waddles; if not, the legs straighten (amp -> 0). Feet stay planted.
-local function driveCow(rig, toCF, duration, moving, stop)
+-- `blocked` is an optional predicate, checked four times a second while the cow is actually travelling.
+-- WHY A CALLBACK AND NOT A RaycastParams: the ray helpers are defined further down this file, so driveCow
+-- cannot call them directly without a forward declaration. Handing it a closure keeps the ordering honest.
+--
+-- ===== CHECKING ONCE IS NOT ENOUGH =====
+-- pickClearCowTarget tests the path at the MOMENT a leg begins and never again, so anything that arrives
+-- afterwards is walked straight through: the food box (placed seconds after the animals spawn), the pig,
+-- a garden rebuild, a player-dropped prop. The cow is anchored and CFrame-driven, so nothing physical
+-- stops it either -- the only thing that can is a check while it moves.
+-- `linear` skips the ease-in-out. That curve is right for a single deliberate step -- it starts and stops the
+-- cow gently -- but a JOURNEY is a chain of legs, and easing every one of them means accelerating from a
+-- standstill and braking to a stop at every waypoint. Over a 250-stud walk that IS most of the walk, which is
+-- why it still read as plodding after the speed went up. Travel legs pass linear = true and run flat out, so
+-- consecutive legs flow into one continuous walk instead of a row of little lunges.
+local function driveCow(rig, toCF, duration, moving, stop, blocked, linear)
 	if not rig.model.Parent then return end
 	local fromCF = rig.poseCF
 	local t = 0
+	local look = 0
 	while t < duration do
 		if stop and stop() then return end
 		if not rig.model.Parent then return end
+		look = look + STEP
+		if blocked and look >= 0.25 then
+			look = 0
+			if blocked() then return end   -- stop where it stands; the wander loop picks a fresh target
+		end
 		t = math.min(duration, t + STEP)
 		local a = t / duration
-		local newCF = fromCF:Lerp(toCF, (math.sin((a - 0.5) * math.pi) + 1) / 2)
+		local newCF = fromCF:Lerp(toCF, linear and a or ((math.sin((a - 0.5) * math.pi) + 1) / 2))
 		local dpos = (newCF.Position - rig.poseCF.Position).Magnitude
 		if moving then rig.phase = rig.phase + (dpos / STRIDE) * math.pi end
 		rig.amp = rig.amp + ((moving and 1 or 0) - rig.amp) * 0.25
@@ -325,8 +359,8 @@ end
 -- Three parallel rays -- centre plus both shoulders -- so the cow's WIDTH is tested, not a hairline down
 -- its middle. A single centre ray is what lets an animal clip a fence post with its flank while its nose
 -- passes cleanly by. Cast at body height, so the ground itself is never a hit.
-local COW_AVOID_HALFWIDTH = 2.6  -- ~half the cow's body width; its shoulders have to clear too
-local COW_AVOID_RAYHEIGHT = 1.2  -- chest height: sees fences/props/walls, ignores the floor
+-- (COW_AVOID_HALFWIDTH / COW_AVOID_RAYHEIGHT are gone: the path is swept with the cow's whole silhouette
+-- now -- bodySweepHit below -- because a ray at one "chest height" sat ABOVE the food box and the fences.)
 local COW_AVOID_TRIES     = 18   -- random targets tested for a clear path before giving up this leg
 local COW_NOSE_BUFFER     = 3.5  -- the path must stay clear this far PAST the target, so the head stops short
 
@@ -342,15 +376,50 @@ local function cowRayParams(rig)
 	return params
 end
 
-local function cowPathClear(fromPos, toPos, params)
+-- ===== BODY SWEEP, NOT HAIRLINE RAYS =====
+-- Three rays at one fixed height were the previous test, and one fixed height is why the animals still
+-- walked through things: the cow's ray sat 3.2 studs up -- above the 2.4-stud food box, above the fence
+-- rails, above every planter -- so none of those ever registered, and the pig's missed anything under
+-- 1.4 studs or over its shoulder line. This sweeps a slab the size of the animal's own silhouette (its
+-- bounding box, minus ankle height so grass tufts are stepped over rather than steered around) along
+-- the intended path. Anything the body would pass through, at any height from shin to back, is a hit.
+-- Invisible non-collidable bricks (hidden markers) are skipped, so a helper part never becomes an
+-- invisible wall. `params` supplies the exclusion list (the animal itself, players).
+local function bodySweepHit(model, fromPos, dir, dist, params)
+	local flat = Vector3.new(dir.X, 0, dir.Z)
+	if flat.Magnitude < 0.05 or dist <= 0 then return nil end
+	flat = flat.Unit
+	local ok, cf, size = pcall(function() return model:GetBoundingBox() end)
+	if not ok or not size then return nil end
+	local LIFT = 0.5 -- shin height: things this low are walked over, not around
+	local slab = Vector3.new(math.max(1, size.X), math.max(0.5, size.Y - LIFT), 0.5)
+	local centre = Vector3.new(fromPos.X, cf.Position.Y + LIFT * 0.5, fromPos.Z)
+	local start = CFrame.lookAt(centre, centre + flat)
+	local ghosts = {}
+	for _ = 1, 6 do
+		local p = RaycastParams.new()
+		p.FilterType = Enum.RaycastFilterType.Exclude
+		p.IgnoreWater = true
+		local list = table.clone(params.FilterDescendantsInstances)
+		for _, g in ipairs(ghosts) do list[#list + 1] = g end
+		p.FilterDescendantsInstances = list
+		local hit = workspace:Blockcast(start, slab, flat * dist, p)
+		if not hit then return nil end
+		local inst = hit.Instance
+		if inst and inst:IsA("BasePart") and inst.Transparency >= 0.95 and not inst.CanCollide then
+			ghosts[#ghosts + 1] = inst -- a hidden marker: look past it
+		else
+			return hit
+		end
+	end
+	return nil
+end
+
+-- true if the cow's whole body can travel from `fromPos` to `toPos` without passing through anything.
+local function cowPathClear(rig, fromPos, toPos, params)
 	local dir = Vector3.new(toPos.X - fromPos.X, 0, toPos.Z - fromPos.Z)
 	if dir.Magnitude < 0.05 then return true end
-	local origin = Vector3.new(fromPos.X, fromPos.Y + COW_AVOID_RAYHEIGHT, fromPos.Z)
-	local right = Vector3.new(-dir.Unit.Z, 0, dir.Unit.X)
-	for _, off in ipairs({ -COW_AVOID_HALFWIDTH, 0, COW_AVOID_HALFWIDTH }) do
-		if Workspace:Raycast(origin + right * off, dir, params) then return false end
-	end
-	return true
+	return bodySweepHit(rig.model, fromPos, dir, dir.Magnitude, params) == nil
 end
 
 -- A wander target the cow can actually REACH. Two passes: normal legs first, then short shuffles, so a cow
@@ -365,7 +434,7 @@ local function pickClearCowTarget(rig, center, radius, baseY, stop)
 			local cand = avoidHallOfFame(randomPoint(center, radius * scale, baseY), baseY)
 			local dir = Vector3.new(cand.X - fromPos.X, 0, cand.Z - fromPos.Z)
 			local checkTo = (dir.Magnitude > 0.05) and (cand + dir.Unit * COW_NOSE_BUFFER) or cand
-			if cowPathClear(fromPos, checkTo, params) then return cand end
+			if cowPathClear(rig, fromPos, checkTo, params) then return cand end
 		end
 	end
 	return nil
@@ -377,8 +446,186 @@ local function walkTo(rig, baseY, target, stop)
 	local toPos = Vector3.new(target.X, baseY, target.Z)
 	local dir = toPos - Vector3.new(fromPos.X, baseY, fromPos.Z)
 	local toCF = (dir.Magnitude > 0.1) and CFrame.lookAt(toPos, toPos + dir) or rig.poseCF
-	driveCow(rig, toCF, math.clamp(dir.Magnitude / COW_SPEED, 0.5, 8), true, stop)
+	-- LIVE CHECK: re-test a short stretch ahead of wherever the cow has actually got to, so a leg aborts
+	-- the moment something moves into it. Reusing COW_NOSE_BUFFER means the cow stops the same distance
+	-- short of an obstacle whether the picker caught it up front or this caught it mid-walk.
+	local params = cowRayParams(rig)
+	local blocked = function()
+		local here = rig.poseCF.Position
+		local ahead = rig.poseCF.LookVector
+		ahead = Vector3.new(ahead.X, 0, ahead.Z)
+		if ahead.Magnitude < 0.05 then return false end
+		return not cowPathClear(rig, here, here + ahead.Unit * COW_NOSE_BUFFER, params)
+	end
+	driveCow(rig, toCF, math.clamp(dir.Magnitude / COW_SPEED, 0.5, 8), true, stop, blocked)
 end
+-- ===== NIGHT: WALK TO THE FIRE =====
+-- Campfire.server publishes BeanFarmNight and StoryFirePos. At night the cow leaves its patch and walks all the
+-- way across Bean Farm to a spot GATHER_BACK studs from the flame on the side AWAY from the pig's field, then
+-- stands facing the fire.
+--
+-- WHY PATHFINDING AND NOT THE BODY SWEEP. The first build picked a heading straight at the fire, tested it with
+-- the body sweep, and fell back to +-35/70/105 degrees. That works for the pig -- its fenced field touches the
+-- fire, so the walk is a few studs. The cow starts at CowSpot roughly 250 STUDS away with the hall-of-fame
+-- plaza and the garden wall between it and the flames, and a cow-sized slab swept 18 studs finds SOMETHING in
+-- all seven headings almost everywhere along that route. So the cow stood still all night, which is exactly
+-- what happened in testing: the pig arrived, the cow never left.
+--
+-- PathfindingService is the right tool for "get across the island around the buildings". It is asked once per
+-- night for a route (agent sized like the cow so it refuses gaps the body cannot fit), and the walk is then a
+-- list of waypoints -- no per-leg guessing, and no way to stall in a corner. If it fails (no route, or the
+-- route runs out) the cow falls back to heading straight at the fire, which at worst clips a fence for a
+-- moment instead of standing in a field all night doing nothing.
+--
+-- One call = ONE STEP of that behaviour: a leg toward the next waypoint, or a second of standing at the fire.
+local PathfindingService = game:GetService("PathfindingService")
+local GATHER_BACK = 8
+
+local function nightSpot(firePos, baseY)
+	-- Away from the pig: the pig's field sits +X/-Z of the fire, so the cow takes the opposite side.
+	local dir = Vector3.new(-1, 0, 1).Unit
+	return Vector3.new(firePos.X + dir.X * GATHER_BACK, baseY, firePos.Z + dir.Z * GATHER_BACK)
+end
+
+-- Ask for a route and keep it on the rig. Waypoints are flattened to baseY: the cow is anchored and
+-- CFrame-driven at one height, and Bean Farm is flat, so the path's own Y would only make it bob.
+local function planNightPath(rig, from, goal, baseY)
+	local ok, path = pcall(function()
+		return PathfindingService:CreatePath({
+			-- 18, not 10: every waypoint is one driveCow leg, and the per-leg set-up is what the walk pays for.
+			AgentRadius = 5, AgentHeight = 7, AgentCanJump = false, WaypointSpacing = 18,
+		})
+	end)
+	if not (ok and path) then return false end
+	-- START OUTSIDE THE COW'S OWN BODY. Its 29 parts are CanCollide anchored solids and pathfinding reads
+	-- collision geometry with no way to exclude a model, so asking for a route FROM the cow's centre asks to
+	-- start inside a wall -- which is why the first live test printed "no path" every time. Beginning a few
+	-- studs toward the goal clears the shell; the cow walks that first stretch itself.
+	local flat = Vector3.new(goal.X - from.X, 0, goal.Z - from.Z)
+	local start = (flat.Magnitude > 12) and (from + flat.Unit * 9) or from
+	local okC = pcall(function() path:ComputeAsync(start, goal) end)
+	if not (okC and path.Status == Enum.PathStatus.Success) then return false end
+	local pts = {}
+	for i, wp in ipairs(path:GetWaypoints()) do
+		if i > 1 then pts[#pts + 1] = Vector3.new(wp.Position.X, baseY, wp.Position.Z) end -- [1] is where we stand
+	end
+	if #pts == 0 then return false end
+	rig.nightPath, rig.nightIdx = pts, 1
+	print(("[EasterEgg] cow route to the story fire: %d waypoint(s) over %.0f studs"):format(#pts, (goal - from).Magnitude))
+	return true
+end
+
+local function gatherAtFire(rig, baseY, firePos, stop)
+	local here = rig.poseCF.Position
+	local goal = nightSpot(firePos, baseY)
+
+	-- ARRIVED: face the flames and listen. Re-checked every call, so a story that runs past sunrise still
+	-- leaves the cow pointing the right way.
+	if (Vector3.new(goal.X - here.X, 0, goal.Z - here.Z)).Magnitude <= 3 then
+		rig.nightPath, rig.nightIdx, rig.nightStalls = nil, nil, 0
+		local face = Vector3.new(firePos.X - here.X, 0, firePos.Z - here.Z)
+		if face.Magnitude > 0.1 then
+			local at = Vector3.new(here.X, baseY, here.Z)
+			local want = CFrame.lookAt(at, at + face)
+			if (rig.poseCF.LookVector - want.LookVector).Magnitude > 0.2 then driveCow(rig, want, 0.9, false, stop) end
+		end
+		interruptibleWait(1, stop)
+		return
+	end
+
+	-- Plan once, then follow. Re-planned if the route ran out without arriving (the goal moved, or the cow was
+	-- shoved), and at most once every 5s so a permanently unroutable goal cannot spin the CPU.
+	if not rig.nightPath then
+		local now = os.clock()
+		if (rig.nightPlanAt or 0) + 5 > now then interruptibleWait(0.5, stop); return end
+		rig.nightPlanAt = now
+		if not planNightPath(rig, here, goal, baseY) then
+			-- NO ROUTE. Head straight at it rather than stand still -- see the note above.
+			warn("[EasterEgg] no path to the story fire; the cow walks straight at it")
+			rig.nightPath, rig.nightIdx = { goal }, 1
+		end
+	end
+
+	local wp = rig.nightPath[rig.nightIdx]
+	if not wp then rig.nightPath = nil; return end
+	local d = Vector3.new(wp.X - here.X, 0, wp.Z - here.Z)
+	if d.Magnitude <= 2.5 then
+		rig.nightIdx += 1
+		if rig.nightIdx > #rig.nightPath then rig.nightPath = nil end
+		return
+	end
+
+	-- ===== CAP THE LEG, OR THE COW TELEPORTS =====
+	-- driveCow lerps from A to B over a DURATION, so the leg's length is what sets the speed. The duration was
+	-- clamped to 6s and the length was not -- so the straight-at-it fallback, whose "waypoint" is the fire 250
+	-- studs away, slid the cow the whole way in six seconds at ~40 studs/sec. In testing it crossed the island
+	-- in one glide and a story started 7 seconds after sunset. Legs are cut to MAX_LEG studs, so duration and
+	-- distance stay in step and the walk always reads at a steady speed.
+
+	-- ===== PREFER A CLEAR HEADING, BUT NEVER LET THE SWEEP STOP THE WALK =====
+	-- The route from PathfindingService is already computed against collision geometry, so it does not need the
+	-- body sweep to be legal -- the sweep is only here to dodge what has moved onto the route SINCE it was
+	-- planned (the pig, a player, a rebuilt garden). It tries the waypoint heading first, then fans to either
+	-- side, and takes the first clear one.
+	--
+	-- ===== THE SWEEP MUST NOT BE ABLE TO VETO A LEG FOREVER =====
+	-- First build of this let a failed sweep drop the route and re-plan. That produced exactly one behaviour in
+	-- testing: "cow route to the story fire: 30 waypoint(s) over 245 studs" every five seconds, forever, with
+	-- the distance never falling -- plan, sweep fails on the first leg, drop, re-plan, repeat. A cow-sized slab
+	-- swept out of a fenced field fails on the fence no matter which of the seven headings it takes, and no
+	-- amount of re-planning changes that, because the route was never the problem.
+	--
+	-- So a stall is now COUNTED, not obeyed. Two stalls in a row and the cow takes the planned leg as-is, with
+	-- no sweep and no abort predicate: the waypoint came from pathfinding, so walking it is the correct move and
+	-- standing in the field all night is not. The counter resets the moment it actually moves.
+	local MAX_LEG = 20
+	local params = cowRayParams(rig)
+	local stalls = rig.nightStalls or 0
+	local step, target, guard
+
+	if stalls >= 2 then
+		-- FORCED: straight at the waypoint, capped, no sweep, no blocked predicate.
+		local len = math.min(d.Magnitude, MAX_LEG)
+		step   = d.Unit * len
+		target = Vector3.new(here.X + step.X, baseY, here.Z + step.Z)
+	else
+		for _, deg in ipairs({ 0, 25, -25, 50, -50, 80, -80 }) do
+			local dir = CFrame.Angles(0, math.rad(deg), 0) * d.Unit
+			local len = math.min(d.Magnitude, MAX_LEG)
+			local cand = Vector3.new(here.X + dir.X * len, baseY, here.Z + dir.Z * len)
+			-- COW_NOSE_BUFFER past the end too, so it stops short of a wall rather than with its face in one.
+			if cowPathClear(rig, here, cand + dir * COW_NOSE_BUFFER, params) then
+				step, target = dir * len, cand
+				break
+			end
+		end
+		if not step then
+			-- Boxed in this instant. KEEP the route -- re-planning cannot help, and the next tick's forced leg
+			-- is what actually gets the cow out. Just stand still for a beat first.
+			rig.nightStalls = stalls + 1
+			interruptibleWait(0.5, stop)
+			return
+		end
+		-- The `blocked` predicate catches something that moves into the leg AFTER it starts -- the sweep above
+		-- only proves the way was clear at the moment the leg began. Dropped entirely on a forced leg.
+		guard = function()
+			local at = rig.poseCF.Position
+			local ahead = rig.poseCF.LookVector
+			ahead = Vector3.new(ahead.X, 0, ahead.Z)
+			if ahead.Magnitude < 0.05 then return false end
+			return not cowPathClear(rig, at, at + ahead.Unit * COW_NOSE_BUFFER, params)
+		end
+	end
+
+	local toCF = CFrame.lookAt(target, target + step)
+	driveCow(rig, toCF, math.clamp(step.Magnitude / COW_NIGHT_SPEED, 0.2, 6), true, stop, guard, true)
+	if (rig.poseCF.Position - here).Magnitude < 0.4 then
+		rig.nightStalls = stalls + 1   -- aborted on the first frame, or something is holding it
+	else
+		rig.nightStalls = 0            -- moving again: earn the sweep back
+	end
+end
+
 local function graze(rig, baseY, stop)
 	if not rig.model.Parent then return end
 	local upright = rig.poseCF
@@ -469,7 +716,14 @@ local function attachTalkBubble(rig)
 	bb.SizeOffset = Vector2.new(0, 0)
 	bb.StudsOffset = Vector3.new(0, 3.3, 0)    -- local StudsOffset (NOT StudsOffsetWorldSpace) for the height above the head
 	bb.LightInfluence = 0                      -- ignore world lighting -> constant look near/far
-	bb.AlwaysOnTop = true; bb.MaxDistance = 20; bb.Enabled = false; bb.Parent = host; print("[BUBBLE RANGE] cow MaxDistance=20") -- only visible within 20 studs (Roblox auto-hides the BillboardGui beyond MaxDistance)
+	-- ===== READ FROM 100 STUDS, NOT 20 =====
+	-- MaxDistance is the range the bubble is VISIBLE at, not its size -- past it Roblox simply stops drawing
+	-- the BillboardGui. At 20 you had to be standing on top of the cow, which is fine for "Got any hay?" and
+	-- useless for the fireside stories: the banner tells a player night has fallen, they walk over, and the
+	-- exchange they came for is invisible until they are nose to nose with a cow. 100 studs covers the whole
+	-- fire clearing, so the stories can be read from wherever you happen to stop.
+	bb.AlwaysOnTop = true; bb.MaxDistance = 100; bb.Enabled = false; bb.Parent = host
+	print("[BUBBLE RANGE] cow MaxDistance=100")
 	print("[BUBBLE FIX] cow offset-locked"); print(string.format("[BUBBLE DIAG] TalkBubble SizeOffset=%s StudsOffsetWorldSpace=%s hasUIScale=%s", tostring(bb.SizeOffset), tostring(bb.StudsOffsetWorldSpace), (bb:FindFirstChildWhichIsA("UIScale", true) or bb:FindFirstChildWhichIsA("UISizeConstraint", true)) and "y" or "n"))
 	local frame = Instance.new("Frame")
 	frame.Size = UDim2.fromOffset(230, 64); frame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
@@ -519,12 +773,18 @@ local function runEggTalk(rig, cfg)
 	print("[COW TALK] bubble wired"); print("[BUBBLE SPEAK] cow method=reuses spawn bubble")
 	-- register for the GardenFeeding mini-feature: lets it find the cow's body + make it speak (reusing THIS bubble)
 	_G.gardenAnimals = _G.gardenAnimals or {}
-	_G.gardenAnimals.cow = { body = bubble.gui.Adornee, say = function(m) bubbleSay(bubble, m, 7) end }
+	-- `hold` is optional (7s for an ambient line). Fireside stories pass a shorter one -- see the pig.
+	_G.gardenAnimals.cow = { body = bubble.gui.Adornee, say = function(m, hold) bubbleSay(bubble, m, hold or 7) end }
 	local i = 1 -- CYCLE the short lines in order (loop), starting on line 1
 	while rig.model.Parent do
 		interruptibleWait(math.random(cfg.talkMin or 12, cfg.talkMax or 18), function() return not rig.model.Parent end)
 		if not rig.model.Parent then break end
-		if isPlayerNear(rig, COW_TALK_RANGE) then
+		-- SILENT AT NIGHT. The idle one-liners share the ONE speech bubble the fireside stories are told
+		-- through, so an ambient "Moo!" landing mid-story overwrites a line and the exchange stops making
+		-- sense. Campfire.server owns BeanFarmNight; the chatter comes back on its own at sunrise.
+		if Workspace:GetAttribute("BeanFarmNight") == true then
+			print("[COW TALK] quiet -- night, the fireside story owns the bubble")
+		elseif isPlayerNear(rig, COW_TALK_RANGE) then
 			local line = lines[i]
 			i = (i % #lines) + 1
 			bubbleSay(bubble, line, 7) -- readable pace
@@ -567,15 +827,21 @@ local function runEgg(cfg)
 		-- overhead chat bubble (cosmetic): its own task, tied to THIS rig -> dies when this cow despawns/abducts
 		if cfg.talkLines then task.spawn(function() runEggTalk(rig, cfg) end) end
 
+
 		local interval = math.random(cfg.abductMin, cfg.abductMax)
 		print("[EasterEgg] next abduction in " .. interval .. "s")
 		local deadline = os.clock() + interval
 		local nextMoo  = os.clock() + math.random(cfg.mooMin, cfg.mooMax)
 
 		-- WANDER (open area near CowSpot) / GRAZE / MOO until abduction time (or /abductcow forces it)
-		while os.clock() < deadline and not forceAbduct[cfg.name] and rig.model.Parent do
+		-- (the abduction waits for daylight: a cow beamed up mid-story leaves the pig talking to itself)
+		while (os.clock() < deadline or Workspace:GetAttribute("BeanFarmNight") == true)
+			and not forceAbduct[cfg.name] and rig.model.Parent do
 			if os.clock() >= nextMoo then moo(rig, stop); nextMoo = os.clock() + math.random(cfg.mooMin, cfg.mooMax) end
-			if math.random() < 0.3 then
+			local firePos = Workspace:GetAttribute("StoryFirePos")
+			if Workspace:GetAttribute("BeanFarmNight") == true and typeof(firePos) == "Vector3" then
+				gatherAtFire(rig, baseY, firePos, stop)   -- night: one step toward / at the fire
+			elseif math.random() < 0.3 then
 				graze(rig, baseY, stop)
 			else
 				-- Only walk somewhere the body can actually get to. If every direction is blocked (backed

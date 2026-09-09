@@ -2629,6 +2629,10 @@ end
 -- that's owned by the sign system.)
 local STALE_BUILD_NAMES = {
 	CommunityGardenBuild = true, GardenHardscape = true, CommunityGardenPlants = true, SunflowerCenterpiece = true,
+	-- The retired "Community Garden" plank board and its two posts. They were parented to WORKSPACE, so a copy
+	-- saved into the place file would go on standing forever after the code that built them was deleted --
+	-- these three names are what removes it for real rather than just stopping the next one being made.
+	CommunityGardenSign = true, GardenSignPostL = true, GardenSignPostR = true,
 	Soil = true, Border = true, Segment = true, Flower = true, Bush = true, Foliage = true, Tuft = true,
 	MiniSunflowerPetals = true, DaisyPetals = true, Leaf = true, LeafTip = true, LeafVein = true, Celebrate = true,
 	Step = true, Pillar = true, Cap = true, CapTip = true, DaisLower = true, DaisUpper = true,
@@ -2658,7 +2662,8 @@ local function clearPreviousBuild(island, marker)
 				if CONTAINERS[d.Name] then pcall(function() d:Destroy() end); cleared = cleared + 1
 				elseif string.lower(d.Name) == "community garden" then
 					-- stray decorative sign named "Community Garden" (with a space) lying flat in the concrete path.
-					-- NOT the field marker "CommunityGarden" (no space) nor the script's "CommunityGardenSign".
+					-- NOT the field marker "CommunityGarden" (no space). The script's own "CommunityGardenSign"
+					-- board is retired and swept by name in STALE_BUILD_NAMES above.
 					pcall(function() d:Destroy() end); cleared = cleared + 1
 				end
 			end
@@ -2748,32 +2753,20 @@ local function buildGarden(island)
 	if not okHS then warn("[Garden] buildHardscape ERROR -> " .. tostring(errHS)) end -- surface silent failures (signs/stone/etc.)
 	ensureWaterSpot(island) -- (re)create + reposition the persistent WaterSpot at the base of the front steps (rotated origin)
 
-	-- SIGN: a board at GardenSignSpot facing the garden, with a SurfaceGui (title + subtitle + progress bar + text)
+	-- ===== THE "COMMUNITY GARDEN" BOARD IS GONE =====
+	-- A 12x6.5 plank sign used to be built here at the GardenSignSpot marker, reading "Community Garden /
+	-- Grown by the Fart to Float community" over a progress bar. Removed by request: it stood wherever that
+	-- marker happens to sit rather than as part of the garden's own architecture, so it read as a stray
+	-- billboard in the field -- and everything on it is already said better inside the garden. The GrowthDial
+	-- on the path shows the same live percentage, Sign_TR shows TIMES WATERED, and the arch overhead says
+	-- GLOBAL GARDEN as you walk in.
+	--
+	-- The MARKER itself is still hidden (not destroyed): it is someone's Studio part, the sunflower head
+	-- tilts its face toward it via `signPos` above, and destroying a marker is how a future rebuild loses a
+	-- position it cannot get back. `signLabels` simply stays nil, which refreshSign() already handles -- it
+	-- returns immediately when there is nothing to write to.
 	if signM then
-		local scf = ((signM:IsA("BasePart")) and signM.CFrame or select(1, signM:GetBoundingBox())) + GARDEN_SHIFT -- [GARDENSHIFT] move the sign with the rest of the garden (same +4 X / +5 Z)
 		pcall(function() if signM:IsA("BasePart") then signM.Transparency = 1; signM.CanCollide = false end end)
-		local facing = CFrame.lookAt(scf.Position, Vector3.new(fieldCenter.X, scf.Position.Y, fieldCenter.Z)) -- Front (-Z) faces the garden
-		local board = newPart(Workspace, "CommunityGardenSign", BLK, Vector3.new(12, 6.5, 0.5), Color3.fromRGB(120,82,48), facing * CFrame.new(0, 0, 0))
-		newPart(Workspace, "GardenSignPostL", CYL, Vector3.new(4, 0.5, 0.5), Color3.fromRGB(96,64,38), facing * CFrame.new(-4.5, -5, 0) * CFrame.Angles(0,0,math.rad(90)))
-		newPart(Workspace, "GardenSignPostR", CYL, Vector3.new(4, 0.5, 0.5), Color3.fromRGB(96,64,38), facing * CFrame.new( 4.5, -5, 0) * CFrame.Angles(0,0,math.rad(90)))
-		local sg = Instance.new("SurfaceGui"); sg.Name = "GardenSignUI"; sg.Face = Enum.NormalId.Front
-		sg.CanvasSize = Vector2.new(600, 325); sg.Parent = board
-		local function lbl(txt, posY, sizeY, ts, color, bold)
-			local l = Instance.new("TextLabel"); l.BackgroundTransparency = 1; l.Size = UDim2.new(1,-20,sizeY,0); l.Position = UDim2.new(0,10,posY,0)
-			l.Font = bold and Enum.Font.FredokaOne or Enum.Font.GothamBold; l.TextScaled = true; l.Text = txt; l.TextColor3 = color or Color3.new(1,1,1)
-			l.Parent = sg; local s = Instance.new("UIStroke", l); s.Thickness = 2; s.Color = Color3.fromRGB(40,26,14); return l
-		end
-		lbl("\xF0\x9F\x8C\xB1 Community Garden", 0.04, 0.2, nil, Color3.fromRGB(190,255,170), true)
-		lbl("Grown by the Fart to Float community", 0.27, 0.1, nil, Color3.fromRGB(235,225,205))
-		-- progress bar
-		local barBG = Instance.new("Frame"); barBG.Size = UDim2.new(0.9,0,0.16,0); barBG.Position = UDim2.new(0.05,0,0.44,0)
-		barBG.BackgroundColor3 = Color3.fromRGB(40,30,18); barBG.BorderSizePixel = 0; barBG.Parent = sg
-		Instance.new("UICorner", barBG).CornerRadius = UDim.new(0,10)
-		local fill = Instance.new("Frame"); fill.Size = UDim2.new(0,0,1,0); fill.BackgroundColor3 = Color3.fromRGB(110,210,90); fill.BorderSizePixel = 0; fill.Parent = barBG
-		Instance.new("UICorner", fill).CornerRadius = UDim.new(0,10)
-		local pctL   = lbl("0% grown", 0.64, 0.16, nil, Color3.fromRGB(200,255,180), true)
-		local countL = lbl("0 / " .. GOAL, 0.84, 0.12, nil, Color3.fromRGB(235,225,205))
-		signLabels = { pct = pctL, count = countL, fill = fill }
 	end
 	return true
 end
@@ -2866,33 +2859,47 @@ local function buildWateringCan()
 	tool.CanBeDropped    = false
 	tool.RequiresHandle  = true
 	-- Sit it in the hand as if being carried by the top handle, tipped slightly forward to pour.
-	tool.Grip            = CFrame.new(0, -0.1, 0) * CFrame.Angles(math.rad(-10), 0, 0)
+	tool.Grip            = CFrame.new(0, -0.075, 0) * CFrame.Angles(math.rad(-10), 0, 0)
+
+	-- ===== 25% SMALLER, IN ONE NUMBER =====
+	-- Every size and every offset below is authored at the ORIGINAL scale and multiplied through by S, rather
+	-- than 40 hand-shrunk numbers that would drift apart the first time one of them was retuned. Scaling the
+	-- OFFSETS as well as the sizes is what keeps it a smaller can instead of the same can with gaps in it:
+	-- shrink the parts alone and the spout detaches from the body.
+	local S = 0.75
 
 	local GALV     = Color3.fromRGB(158, 166, 176)  -- galvanised steel
 	local GALV_DK  = Color3.fromRGB(116, 124, 136)  -- shaded/rolled edges
 	local ROSE_C   = Color3.fromRGB(196, 202, 210)
+	local PAINT    = Color3.fromRGB(58, 122, 214)   -- the house blue: a painted band, the way real cans are
 
 	-- The Handle IS the carry bar: it's what Roblox welds into the hand, so making it the thing a person would
 	-- actually grab means the can hangs correctly instead of floating off the fingertips.
 	local handle = Instance.new("Part")
 	handle.Name       = "Handle"
-	handle.Size       = Vector3.new(0.28, 0.28, 2.0)
+	handle.Size       = Vector3.new(0.28, 0.28, 2.0) * S
 	handle.Color      = GALV_DK
 	handle.Material   = Enum.Material.Metal
 	handle.CanCollide = false
 	handle.Massless   = true
 	handle.Parent     = tool
 
+	-- Scale a CFrame's TRANSLATION while leaving its rotation alone: CFrame - Vector3 strips the position,
+	-- so this is "same angle, closer in".
+	local function scaled(cf)
+		return CFrame.new(cf.Position * S) * (cf - cf.Position)
+	end
+
 	local function piece(name, shape, size, color, offset, material)
 		local p = Instance.new("Part")
 		p.Name        = name
 		p.Shape       = shape
-		p.Size        = size
+		p.Size        = size * S
 		p.Color       = color
 		p.Material    = material or Enum.Material.Metal
 		p.CanCollide  = false
 		p.Massless    = true
-		p.CFrame      = handle.CFrame * offset
+		p.CFrame      = handle.CFrame * scaled(offset)
 		p.TopSurface    = Enum.SurfaceType.Smooth
 		p.BottomSurface = Enum.SurfaceType.Smooth
 		p.Parent      = tool
@@ -2918,9 +2925,19 @@ local function buildWateringCan()
 	piece("Foot", CYL, Vector3.new(0.20, 2.42, 2.42), GALV_DK, CFrame.new(0, bodyY - 1.02, 0.15) * UP) -- foot ring
 	piece("Band", CYL, Vector3.new(0.10, 2.30, 2.30), GALV_DK, CFrame.new(0, bodyY - 0.10, 0.15) * UP) -- seam band
 
+	-- PAINTED BAND. Bare galvanised grey from top to bottom reads as a fire extinguisher at arm's length; one
+	-- painted stripe in the house blue is what makes it a garden tool at a glance, and it is the only colour
+	-- on the prop so it also tells you which end is which.
+	piece("PaintBand", CYL, Vector3.new(0.62, 2.26, 2.26), PAINT, CFrame.new(0, bodyY + 0.30, 0.15) * UP,
+		Enum.Material.SmoothPlastic)
+	piece("PaintEdge", CYL, Vector3.new(0.08, 2.28, 2.28), GALV_DK, CFrame.new(0, bodyY + 0.62, 0.15) * UP)
+	piece("PaintEdge", CYL, Vector3.new(0.08, 2.28, 2.28), GALV_DK, CFrame.new(0, bodyY - 0.02, 0.15) * UP)
+
 	-- CARRY HANDLE: two uprights meeting the bar the hand holds, so it arches over the body.
+	-- ROUND legs, not square. A 0.2 cube upright catches the light as a hard grey stripe from every angle;
+	-- a cylinder of the same width reads as bent wire, which is what a can handle actually is.
 	for _, sz in ipairs({ -0.82, 0.82 }) do
-		piece("HandleLeg", BLK, Vector3.new(0.2, 0.95, 0.2), GALV_DK, CFrame.new(0, -0.5, 0.15 + sz))
+		piece("HandleLeg", CYL, Vector3.new(0.95, 0.2, 0.2), GALV_DK, CFrame.new(0, -0.5, 0.15 + sz) * UP)
 	end
 
 	-- REAR GRIP: the second handle at the back that you tip the can with.
@@ -2940,16 +2957,39 @@ local function buildWateringCan()
 	piece("RoseLip",  CYL, Vector3.new(0.10, 1.42, 1.42), GALV_DK,
 		roseCF * CFrame.new(0, 0, -0.32) * CFrame.Angles(0, math.rad(90), 0))
 
+	-- THE HOLES. A rose is a perforated plate and without the perforations it is just a disc -- the one detail
+	-- that says "this sprinkles" rather than "this pours". Two rings of nine plus a centre, sunk a hair proud
+	-- of the face so they read as holes rather than as dots painted on it.
+	do
+		local HOLE = Color3.fromRGB(58, 64, 74)
+		piece("RoseHole", CYL, Vector3.new(0.06, 0.13, 0.13), HOLE,
+			roseCF * CFrame.new(0, 0, -0.36) * CFrame.Angles(0, math.rad(90), 0))
+		for ring, radius in ipairs({ 0.32, 0.55 }) do
+			for i = 1, 9 do
+				local a = (i / 9) * math.pi * 2 + ring * 0.35 -- offset the outer ring so they do not line up
+				piece("RoseHole", CYL, Vector3.new(0.06, 0.13, 0.13), HOLE,
+					roseCF * CFrame.new(math.cos(a) * radius, math.sin(a) * radius, -0.36)
+						* CFrame.Angles(0, math.rad(90), 0))
+			end
+		end
+	end
+
+	-- BRACE. Real cans carry the spout on a stay back to the body, or the weight of a full rose would fold it.
+	-- Without one the spout looks stuck on; with it the whole thing reads as assembled.
+	piece("SpoutBrace", CYL, Vector3.new(1.5, 0.12, 0.12), GALV_DK,
+		CFrame.new(0, bodyY + 0.55, -1.35) * CFrame.Angles(math.rad(-34), 0, 0)
+			* CFrame.Angles(0, math.rad(90), 0))
+
 	-- WATER. Off by default; giveCan switches it on for a moment when you actually pour.
 	local spray = Instance.new("ParticleEmitter")
 	spray.Name         = "Spray"
 	spray.Enabled      = false
 	spray.Rate         = 140
 	spray.Lifetime     = NumberRange.new(0.5, 0.9)
-	spray.Speed        = NumberRange.new(7, 11)
+	spray.Speed        = NumberRange.new(7 * S, 11 * S) -- a smaller rose throws a shorter arc
 	spray.SpreadAngle  = Vector2.new(11, 11)
 	spray.Acceleration = Vector3.new(0, -42, 0) -- water FALLS; without gravity it reads as a gas jet
-	spray.Size         = NumberSequence.new(0.16)
+	spray.Size         = NumberSequence.new(0.16 * S)
 	spray.Transparency = NumberSequence.new({
 		NumberSequenceKeypoint.new(0, 0.2),
 		NumberSequenceKeypoint.new(1, 1),
@@ -3166,8 +3206,12 @@ end)
 --   /resetgarden      -> reset progress to 0 AND clear the caller's water cooldown
 --   /forceharvest     -> trigger the harvest->reward->new-season cycle immediately (test the cycle without filling)
 --======================================================================
-local function hookGardenChat(plr)
-	plr.Chatted:Connect(function(msg)
+-- The command body lives OUT here rather than inside the Chatted closure, so the TextChatService
+-- registration at the bottom can run exactly the same code. Player.Chatted does NOT fire under
+-- TextChatService (Roblox's current default, and what this place uses), so a Chatted-only command is a
+-- command that silently does nothing -- which is what every one of these was.
+local function handleGardenChat(plr, msg)
+	do
 		local lower = string.lower(msg)
 		if string.sub(lower, 1, 12) == "/watergarden" then
 			if not (_G.isAllowedTestUser and _G.isAllowedTestUser(plr)) then return end
@@ -3207,7 +3251,571 @@ local function hookGardenChat(plr)
 				print("[SEAMPOS] " .. plr.Name .. " has no HumanoidRootPart (not spawned?)")
 			end
 		end
-	end)
+	end
+end
+
+local function hookGardenChat(plr)
+	plr.Chatted:Connect(function(msg) handleGardenChat(plr, msg) end) -- legacy chat path
 end
 for _, p in ipairs(Players:GetPlayers()) do hookGardenChat(p) end
 Players.PlayerAdded:Connect(hookGardenChat)
+
+-- REAL SLASH COMMANDS, the same way PlayerStats/RealmPortals/DevCommands register theirs. Both paths call
+-- handleGardenChat, so there is one implementation. Harmless on the legacy chat (these simply never fire
+-- there, and Player.Chatted above covers that case).
+-- ⚠ TEST -- REMOVE BEFORE LAUNCH, along with the commands themselves.
+do
+	local ok, err = pcall(function()
+		local TextChatService = game:GetService("TextChatService")
+		local function reg(name, primary, secondary)
+			-- A stale copy of this script baked into the place would otherwise register a SECOND command on
+			-- the same alias, and /watergarden would quietly water twice per press.
+			for _, existing in ipairs(TextChatService:GetChildren()) do
+				if existing:IsA("TextChatCommand") and existing.PrimaryAlias == primary then return end
+			end
+			local c = Instance.new("TextChatCommand")
+			c.Name = name; c.PrimaryAlias = primary
+			if secondary then c.SecondaryAlias = secondary end
+			c.Parent = TextChatService
+			c.Triggered:Connect(function(source, text)
+				local plr = source and Players:GetPlayerByUserId(source.UserId)
+				-- printed BEFORE the allow-list check inside the handler, so the log separates 'never
+				-- reached the server' from 'server got it and refused'
+				print(string.format("[Garden] slash %q from %s", tostring(text), plr and plr.Name or "<unknown>"))
+				if plr then handleGardenChat(plr, text) end
+			end)
+		end
+		reg("GardenWaterCommand",   "/watergarden",  "/resetgarden")
+		reg("GardenHarvestCommand", "/forceharvest", "/grantpet")
+		reg("GardenSeamCommand",    "/seam")
+	end)
+	if ok then print("[Garden] chat commands registered with TextChatService (/watergarden /resetgarden /forceharvest /grantpet /seam)")
+	else warn("[Garden] TextChatService command registration failed: " .. tostring(err)) end
+end
+
+--======================================================================
+-- RAIN: THE SOIL BEDS TURN TO MUD, WITH WATER STANDING IN THEM
+--======================================================================
+-- The thunderstorm is the only weather that rains here, so it is the only thing that wets the ground.
+-- What gets wet is THE SOIL BEDS -- CenterBed / InnerBed / OuterBed, the same three parts the client
+-- pulses green while you are carrying the watering can (SOIL_PARTS in CommunityGarden.client.lua).
+-- They are the only bare earth in the garden; everything else underfoot is the paved stone surface,
+-- and stone does not turn to mud.
+--
+-- TWO THINGS ARE BUILT, and the split is what stops it reading as brown paint:
+--
+--   1. WET EARTH -- a thin SHELL cloned from each bed part, so it takes that bed's exact shape,
+--      size and orientation and sits a hair proud of it. Dark, matte, Mud material: the bed itself,
+--      soaked. Cloning is what makes this work on the ring beds -- they are not discs, and any
+--      hand-guessed radius would have covered the wrong ground. It also means a rebuilt garden with
+--      differently shaped beds is still covered correctly with no numbers to update.
+--
+--   2. STANDING WATER -- shallow pools RAYCAST onto the top surface of each bed, dark and HIGHLY
+--      REFLECTIVE. Reflectance is what makes water read as water in Roblox; the colour barely
+--      matters. Raycast rather than positioned by maths so a pool always lands ON the soil, whatever
+--      height and shape that bed happens to be.
+--
+-- Fades in with the storm, holds for the whole storm, lingers 20s after, then dries.
+--
+-- Driven by workspace ActiveServerEvent, not the client _G.thunderstormActive: every player must see
+-- the same wet ground, and that attribute is the signal the campfire already douses on.
+task.spawn(function()
+	-- The bed names, kept identical to SOIL_PARTS in CommunityGarden.client.lua. If a bed is ever
+	-- renamed, these two lists have to move together -- the green pulse and the mud are the same beds.
+	local BED_NAMES         = { CenterBed = true, InnerBed = true, OuterBed = true }
+	local POOLS_PER_BED     = 3
+	local LINGER_AFTER      = 20            -- seconds of wet ground after the storm ends
+	local FADE_IN, FADE_OUT = 1.5, 3.0      -- out is slower: ground dries, it does not switch off
+
+	-- ===== WAIT FOR THE GARDEN TO EXIST AND BE IN PLACE =====
+	-- An earlier version looked its anchor up the instant the server started, found the copy baked into
+	-- the place at its UNMOVED position, and built the effect 800 studs away under the realm portals,
+	-- where it stayed. The boot log said "ready at (790, -23, -779)" eight seconds BEFORE the islands
+	-- were positioned, which was the tell. Two gates close that race:
+	--   * StandsReady  -- set once PlayerStats has positioned all 14 islands.
+	--   * waterSpotPos -- set by ensureWaterSpot() at the END of the garden build.
+	local waited = 0
+	while not Workspace:GetAttribute("StandsReady") and waited < 120 do task.wait(0.5); waited = waited + 0.5 end
+	waited = 0
+	while not waterSpotPos and waited < 60 do task.wait(0.5); waited = waited + 0.5 end
+
+	-- Collect the beds. Retried, because the beds are built asynchronously with the rest of the garden.
+	local beds = {}
+	for _ = 1, 60 do
+		beds = {}
+		for _, d in ipairs(Workspace:GetDescendants()) do
+			if d:IsA("BasePart") and BED_NAMES[d.Name] then beds[#beds + 1] = d end
+		end
+		if #beds > 0 then break end
+		task.wait(1)
+	end
+	if #beds == 0 then
+		warn("[GardenMud] no soil beds (CenterBed/InnerBed/OuterBed) -- rain mud disabled")
+		return
+	end
+
+	local host = beds[1].Parent or Workspace
+	local old = Workspace:FindFirstChild("RainPuddles", true)
+	if old then old:Destroy() end   -- a stale set from a duplicate copy of this script
+
+	local folder = Instance.new("Model")
+	folder.Name = "RainPuddles"
+	folder.Parent = host
+
+	local pieces = {}   -- { part = Part, wet = <transparency while raining> }
+
+	-- ---- 1. WET EARTH: one shell per bed -------------------------------------------------------
+	-- Cloned so the shape is exact, then stripped and restyled. Scaled up by a whisker instead of
+	-- being laid on top as a slab: a slab has to know which way is up and how tall the bed is, and
+	-- gets both wrong on a rotated or ring-shaped bed. A shell just encloses whatever it copied.
+	for _, bed in ipairs(beds) do
+		local ok, shell = pcall(function() return bed:Clone() end)
+		if ok and shell then
+			shell:ClearAllChildren()   -- drop welds, prompts, decals, scripts: keep the shape only
+			shell.Name = "WetSoil"
+			shell.Anchored = true
+			shell.CanCollide = false
+			shell.CanQuery = false
+			shell.CanTouch = false
+			shell.Size = bed.Size * 1.006
+			shell.CFrame = bed.CFrame
+			shell.Color = Color3.fromRGB(58, 44, 30)
+			shell.Reflectance = 0.05
+			shell.Transparency = 1     -- dry by default; only rain shows any of this
+			pcall(function() shell.Material = Enum.Material.Mud end)
+			shell.Parent = folder
+			pieces[#pieces + 1] = { part = shell, wet = 0.08 }
+		end
+	end
+
+	-- ---- 2. STANDING WATER: pools dropped onto each bed's top face ------------------------------
+	-- Raycast DOWN from above the bed so the pool sits on the real surface at the real height. The
+	-- filter is set to hit only that bed, so a pool can never end up on a plant, the wall, or a shell
+	-- built a moment ago.
+	local rp = RaycastParams.new()
+	rp.FilterType = Enum.RaycastFilterType.Include
+	for _, bed in ipairs(beds) do
+		rp.FilterDescendantsInstances = { bed }
+		local span = math.max(bed.Size.X, bed.Size.Z) * 0.30
+		for i = 1, POOLS_PER_BED do
+			local ox = (math.random() - 0.5) * 2 * span
+			local oz = (math.random() - 0.5) * 2 * span
+			local from = bed.Position + Vector3.new(ox, bed.Size.Y * 0.5 + 4, oz)
+			local hit = Workspace:Raycast(from, Vector3.new(0, 12, 0) * -1, rp)
+			if hit then
+				local d = 2.2 + math.random() * 3.6   -- never the same size twice: one repeated circle
+				local p = Instance.new("Part")        -- is what makes a puddle look like a decal
+				p.Shape = Enum.PartType.Cylinder
+				p.Size = Vector3.new(0.12, d, d)
+				p.CFrame = CFrame.new(hit.Position + Vector3.new(0, 0.05, 0)) * CFrame.Angles(0, 0, math.rad(90))
+				p.Anchored = true
+				p.CanCollide = false
+				p.CanQuery = false
+				p.CanTouch = false
+				p.Color = Color3.fromRGB(28, 32, 34)
+				p.Reflectance = 0.62                  -- the reflection IS the water
+				p.Transparency = 1
+				pcall(function() p.Material = Enum.Material.Glass end)
+				p.Parent = folder
+				pieces[#pieces + 1] = { part = p, wet = 0.34 }
+			end
+		end
+	end
+
+	print(("[GardenMud] rain mud ready -- %d soil bed(s) skinned, %d layer(s) total; appears in a THUNDERSTORM, dries %ds after")
+		:format(#beds, #pieces, LINGER_AFTER))
+
+	-- One token per transition. A storm firing again while the last is still drying must cancel that
+	-- dry-out, or the ground would clear 20s into the NEW storm.
+	local token = 0
+	local function fadeTo(wet, secs, myToken)
+		local t0 = os.clock()
+		local from = {}
+		for i, e in ipairs(pieces) do from[i] = e.part.Transparency end
+		while os.clock() - t0 < secs do
+			if myToken ~= token then return end
+			local a = (os.clock() - t0) / secs
+			for i, e in ipairs(pieces) do
+				local target = wet and e.wet or 1
+				e.part.Transparency = from[i] + (target - from[i]) * a
+			end
+			task.wait(0.05)
+		end
+		if myToken ~= token then return end
+		for _, e in ipairs(pieces) do e.part.Transparency = wet and e.wet or 1 end
+	end
+
+	local function apply()
+		token = token + 1
+		local myToken = token
+		if Workspace:GetAttribute("ActiveServerEvent") == "THUNDERSTORM" then
+			print("[GardenMud] thunderstorm -- the soil beds turn to mud, water standing in them")
+			fadeTo(true, FADE_IN, myToken)
+		else
+			task.spawn(function()
+				task.wait(LINGER_AFTER)
+				if myToken ~= token then return end   -- another storm started while it was draining
+				print(("[GardenMud] %ds after the storm -- the beds dry out"):format(LINGER_AFTER))
+				fadeTo(false, FADE_OUT, myToken)
+			end)
+		end
+	end
+	Workspace:GetAttributeChangedSignal("ActiveServerEvent"):Connect(apply)
+	-- Catch-up for a server that started mid-storm. Only WETS: a fresh server with no storm must not
+	-- schedule a dry-out on ground that is already dry.
+	if Workspace:GetAttribute("ActiveServerEvent") == "THUNDERSTORM" then apply() end
+end)
+
+--======================================================================
+-- EASTER EGG: THE BURIED GNOME
+--======================================================================
+-- There are four gnomes standing in the garden. There is a fifth one buried up to its hat in a soil bed.
+--
+-- HE IS FINDABLE IN ANY WEATHER (2026-09-06). He used to be drawn ONLY while a thunderstorm had the beds
+-- wet -- a secret for the one player in fifty who happened to be standing in the garden in the rain. That
+-- made him the best thing in the first ten minutes of the game and the least likely to be seen in them.
+-- The dig -> carry -> tree-door chain is the "there is more here than I thought" moment for a new player,
+-- so now the hat tip is always above the soil, a faint gold sparkle drifts off it, and a "?" hangs over it
+-- from ~45 studs away. A kid on their second lap of Bean Farm walks over, digs, and the whole chain opens.
+-- The storm still matters -- wet beds make the red hat pop harder -- it just is not the gate any more.
+--
+-- Built where the mud is, on purpose: buried in a bed means the wet-earth shell that CommunityGarden lays
+-- over that bed passes right through the hat, which is exactly the look wanted -- a hat sitting IN mud.
+task.spawn(function()
+	-- Wait for the beds. Same two gates the rain mud uses -- the garden is built late and moved later, and
+	-- a gnome placed before either would end up buried in the wrong island.
+	local waited = 0
+	while not Workspace:GetAttribute("StandsReady") and waited < 120 do task.wait(0.5); waited = waited + 0.5 end
+	waited = 0
+	while not waterSpotPos and waited < 60 do task.wait(0.5); waited = waited + 0.5 end
+
+	local bed
+	for _ = 1, 60 do
+		for _, d in ipairs(Workspace:GetDescendants()) do
+			-- The OUTER ring by preference: it is the widest bed and the furthest from the path, so the hat
+			-- is somewhere you have to walk into the planting to be standing over.
+			if d:IsA("BasePart") and (d.Name == "OuterBed" or d.Name == "InnerBed") then bed = d; break end
+		end
+		if bed then break end
+		task.wait(1)
+	end
+	if not bed then
+		warn("[BuriedGnome] no soil bed found -- the fifth gnome stays unplanted")
+		return
+	end
+
+	local old = Workspace:FindFirstChild("BuriedGnome", true)
+	if old then old:Destroy() end   -- a stale one from a duplicate copy of this script
+
+	local m = Instance.new("Model")
+	m.Name = "BuriedGnome"
+	m.Parent = bed.Parent or Workspace
+
+	-- A FIXED SPOT, not a random one. Two players comparing notes have to be able to describe where it is,
+	-- and "somewhere in the outer bed" is not a secret, it is a chore. Derived from the bed's own CFrame so
+	-- it rides the garden's rotation and never needs updating if the layout moves.
+	--
+	-- ===== THE HEIGHT IS RAYCAST, NEVER Size.Y =====
+	-- The first version used bed.Position.Y + bed.Size.Y * 0.5 and planted him THIRTY-TWO STUDS IN THE AIR
+	-- (the log said "planted in InnerBed at (-110, 273, 18)" against a garden floor at 241). The ring beds
+	-- are CYLINDERS LYING FLAT, so their local Y size is a DIAMETER, not a height -- half of a 64-stud bed
+	-- is exactly the 32 studs he was floating by. Any part in this garden can be rotated, so no axis of
+	-- Size means "up" reliably. A ray does.
+	--
+	-- Several offsets are tried in order and the first that actually LANDS ON THE BED wins, because those
+	-- same diameters make an offset that suits a round bed overshoot a narrow one. Deterministic, so the
+	-- spot is still identical on every server.
+	local spot, top
+	local br = RaycastParams.new()
+	br.FilterType = Enum.RaycastFilterType.Include
+	br.FilterDescendantsInstances = { bed }
+	for _, f in ipairs({ 0.26, 0.18, 0.12, 0.06 }) do
+		-- Offset on the bed's local Y and Z. drum() builds these as Vector3.new(thickness, dia, dia) turned
+		-- 90 degrees, so Y and Z are the two DIAMETERS -- the flat face -- and local X is the half-stud
+		-- thickness. Offsetting on X, as the first version did, slid him along the thickness and got
+		-- nowhere. Y and Z are the axes that actually move you across the soil.
+		local cand = bed.CFrame * CFrame.new(0, bed.Size.Y * f, bed.Size.Z * (f * 0.73))
+		local hit = Workspace:Raycast(Vector3.new(cand.X, bed.Position.Y + 60, cand.Z),
+			Vector3.new(0, -120, 0), br)
+		if hit then spot, top = cand, hit.Position.Y; break end
+	end
+	if not spot then
+		warn("[BuriedGnome] could not find the top of " .. bed.Name .. " -- the fifth gnome stays unplanted")
+		m:Destroy()
+		return
+	end
+
+	-- ===== THE GNOME HIMSELF: THE SAME GNOME AS HIS BROTHER, BURIED WHOLE =====
+	-- He is a CLONE OF THE GARDEN GNOME TEMPLATE at the tree gnome's scale (0.55) with the tree gnome's
+	-- exact clean-up, so the two of them are literally the same model. The hand-built version looked like
+	-- a different species standing next to his brother. The source is the template the four garden
+	-- gnomes are cloned from (it lives in ServerStorage once the garden has built), or one of those
+	-- clones -- looked up in the same places, in the same order, that SecretTreeDoor uses.
+	local src = Workspace:FindFirstChild("GardenGnome", true) or Workspace:FindFirstChild("Gnome", true)
+		or game:GetService("ServerStorage"):FindFirstChild("Gnome", true)
+	if not (src and src:IsA("Model")) then
+		warn("[BuriedGnome] no gnome template to clone -- the fifth gnome stays unplanted")
+		m:Destroy()
+		return
+	end
+	m:Destroy()
+	m = src:Clone()
+	m.Name = "BuriedGnome"
+	local buried = {}   -- every part, so the dig can lift them as one
+	for _, d in ipairs(m:GetDescendants()) do
+		if d:IsA("BasePart") then
+			-- CanQuery OFF matters more than it looks: the cow and pig raycast for obstacles while they
+			-- walk, and a queryable gnome in a flowerbed is a wall they refuse to path past forever.
+			d.Anchored = true; d.CanCollide = false; d.CanQuery = false; d.CanTouch = false; d.CastShadow = false
+			d.Material = Enum.Material.SmoothPlastic
+			d.TopSurface = Enum.SurfaceType.Smooth; d.BottomSurface = Enum.SurfaceType.Smooth
+			d.LeftSurface = Enum.SurfaceType.Smooth; d.RightSurface = Enum.SurfaceType.Smooth
+			d.FrontSurface = Enum.SurfaceType.Smooth; d.BackSurface = Enum.SurfaceType.Smooth
+			if d:IsA("MeshPart") then d.TextureID = "" end
+			d.Transparency = 1   -- the hat tip is shown once he is measured and buried; see below
+			buried[#buried + 1] = d
+		elseif d:IsA("Decal") or d:IsA("Texture") or d:IsA("Humanoid") or d:IsA("Script")
+			or d:IsA("LocalScript") or d:IsA("ProximityPrompt") then
+			d:Destroy()
+		end
+	end
+	pcall(function() m:ScaleTo(0.55) end)   -- = SecretTreeDoor CONFIG.gnomeScale. The brothers MUST match.
+	m.Parent = bed.Parent or Workspace
+
+	-- Measure him, then bury him: the pivot goes wherever leaves exactly SHOW studs of hat above the soil.
+	-- Everything is measured off the model's own pivot and bounding box, so a re-modelled template with
+	-- a different height still buries to the tip and still stands on its feet when raised.
+	local bbCF, bbSize = m:GetBoundingBox()
+	local pivot0 = m:GetPivot()
+	local pivotToTop    = (bbCF.Position.Y + bbSize.Y / 2) - pivot0.Position.Y
+	local pivotToBottom = pivot0.Position.Y - (bbCF.Position.Y - bbSize.Y / 2)
+	local SHOW = 0.5    -- enough red above the soil to read as a hat tip once the "?" has brought you over
+	m:PivotTo(CFrame.new(spot.X, top + SHOW - pivotToTop, spot.Z) * pivot0.Rotation)
+
+	-- His shape, as offsets from the pivot, so every later pose (rise, carry, park by the door) is ONE
+	-- CFrame applied to the lot -- and he keeps his orientation through all of it.
+	local rel = {}
+	local buriedPivot = m:GetPivot()
+	for i, part in ipairs(buried) do rel[i] = buriedPivot:ToObjectSpace(part.CFrame) end
+	local function pose(cf) for i, part in ipairs(buried) do part.CFrame = cf * rel[i] end end
+
+	-- The hat is whichever part sits highest; the prompts hang off it.
+	local hat = buried[1]
+	for _, part in ipairs(buried) do if part.Position.Y > hat.Position.Y then hat = part end end
+	m.PrimaryPart = hat
+	local RISE = (top + pivotToBottom) - buriedPivot.Position.Y   -- exactly enough to put his feet ON the soil
+
+	-- ===== DIGGING HIM OUT =====
+	-- The find is the reward on its own, but there has to be something to DO once you have spotted it, or a
+	-- player stands over a hat with no way to prove they were there. So: a dig prompt, live from the moment
+	-- he is planted until the moment he is out.
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.Name = "DigGnome"
+	prompt.ActionText = "Dig"
+	prompt.ObjectText = "Something red in the soil"
+	prompt.HoldDuration = 1.5          -- digging should cost a moment; a tap would feel like picking up litter
+	prompt.MaxActivationDistance = 8
+	prompt.RequiresLineOfSight = false -- he is half underground: the soil itself blocks the line
+	prompt.Enabled = true
+	prompt.Parent = hat
+
+	-- ===== THE TELL: A SPARKLE AND A "?" =====
+	-- Faint, not a beacon. The sparkle is three motes a second drifting up off the hat tip, the kind of thing
+	-- you notice from the corner of your eye on the path; the "?" is small, gold, and only draws from 45
+	-- studs -- across the garden, not across the island. Both go the instant he is dug, so the spot does not
+	-- keep advertising a gnome who is no longer in it.
+	local tellAtt = Instance.new("Attachment")
+	tellAtt.Name = "GnomeTell"
+	tellAtt.Position = Vector3.new(0, hat.Size.Y / 2, 0)
+	tellAtt.Parent = hat
+
+	local sparkle = Instance.new("ParticleEmitter")
+	sparkle.Name = "GnomeSparkle"
+	sparkle.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	sparkle.Color = ColorSequence.new(Color3.fromRGB(255, 226, 120), Color3.fromRGB(255, 200, 60))
+	sparkle.LightEmission = 1
+	sparkle.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.28), NumberSequenceKeypoint.new(1, 0.08) })
+	sparkle.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.35), NumberSequenceKeypoint.new(0.7, 0.55), NumberSequenceKeypoint.new(1, 1),
+	})
+	sparkle.Lifetime = NumberRange.new(1.0, 1.6)
+	sparkle.Rate = 3
+	sparkle.Speed = NumberRange.new(0.35, 0.7)
+	sparkle.SpreadAngle = Vector2.new(35, 35)
+	sparkle.Acceleration = Vector3.new(0, 0.4, 0)
+	sparkle.Rotation = NumberRange.new(0, 360)
+	sparkle.RotSpeed = NumberRange.new(-40, 40)
+	sparkle.Parent = tellAtt
+
+	local tell = Instance.new("BillboardGui")
+	tell.Name = "GnomeQuestion"
+	tell.Size = UDim2.fromOffset(34, 34)
+	tell.StudsOffset = Vector3.new(0, 1.7, 0)
+	tell.MaxDistance = 45
+	tell.AlwaysOnTop = false
+	tell.LightInfluence = 0
+	tell.Parent = hat
+	local q = Instance.new("TextLabel")
+	q.Size = UDim2.fromScale(1, 1); q.BackgroundTransparency = 1
+	q.Font = Enum.Font.FredokaOne; q.TextScaled = true
+	q.Text = "?"; q.TextColor3 = Color3.fromRGB(255, 214, 90)
+	local qs = Instance.new("UIStroke"); qs.Color = Color3.fromRGB(60, 34, 10); qs.Thickness = 2; qs.Parent = q
+	q.Parent = tell
+	-- A slow bob so it reads as a marker and not a label. Ten updates a second replicates cheaply.
+	task.spawn(function()
+		local t0 = os.clock()
+		while tell.Parent do
+			tell.StudsOffset = Vector3.new(0, 1.7 + math.sin((os.clock() - t0) * 2.2) * 0.18, 0)
+			task.wait(0.1)
+		end
+	end)
+
+
+	-- ===== ONLY THE HAT TIP SHOWS =====
+	-- Everything below the soil line stays invisible the whole time he is buried: you cannot see through
+	-- soil. Only what actually BREAKS THE SURFACE is drawn -- measured, not named, because the template's
+	-- parts are called whatever the modeller called them. The rest waits underground until the dig lifts it.
+	local dug = false
+	for _, part in ipairs(buried) do
+		local surface = (part.Position.Y + part.Size.Y / 2) > top + 0.02
+		part.Transparency = surface and 0 or 1
+	end
+
+	prompt.Triggered:Connect(function(player)
+		if not player or player:GetAttribute("FoundBuriedGnome") then return end
+		player:SetAttribute("FoundBuriedGnome", true)
+
+		-- TOKENS VIA _G.addSkinTokens, never by touching a balance directly -- that is the one entry point
+		-- that logs, saves and replicates, and AFKTokenFarm says the same thing at its own payout.
+		if type(_G.addSkinTokens) == "function" then
+			pcall(_G.addSkinTokens, player, 25, "found the buried gnome")
+		end
+		-- A PERMANENT title, unlike the campfire ones. Those are worn at the fire because everyone there is
+		-- doing the same thing; this is worth wearing on Pizza Palms precisely because nobody up there has
+		-- any idea what it means.
+		if _G.grantTitle then pcall(_G.grantTitle, player, "Gnome Finder") end
+
+		-- ===== HE ACTUALLY COMES OUT =====
+		-- Once, for the whole server, and he STAYS out. Setting `dug` is what ends the wet-gate loop above,
+		-- and that is what stops it stuffing him back underground half a second later.
+		if not dug then
+			dug = true
+			-- The dig prompt is RETIRED. It used to turn into "Say hello", but two E-prompts on the same
+			-- part means Roblox shows only one -- and it was hiding "Pick up", so nobody could ever carry
+			-- him. The carry prompt below is now the only prompt on him, and it hands out the finder reward
+			-- to anyone who has not had it yet, so a second player still gets paid for finding him.
+			prompt.Enabled = false
+			-- The tell goes with the secret: no sparkle, no "?" over an empty bed.
+			pcall(function() sparkle.Enabled = false; sparkle:Destroy() end)
+			pcall(function() tell:Destroy() end)
+
+			for _, part in ipairs(buried) do part.Transparency = 0 end
+			-- Slow up out of the ground with a small overshoot: he is being PUSHED out by whatever he was
+			-- doing down there, not lifted on a string. 1.6s is long enough to watch and short enough that
+			-- nobody wanders off before it finishes.
+			local t0 = os.clock()
+			while os.clock() - t0 < 1.6 do
+				local a = (os.clock() - t0) / 1.6
+				local ease = 1 - (1 - a) * (1 - a)         -- quick out of the soil, easing into place
+				local pop = math.sin(a * math.pi) * 0.12   -- the overshoot, gone again by the end
+				-- The whole gnome turns once on the way up, feet and all, rather than the hat spinning on
+				-- its own -- that is what "pushed up out of the ground" looks like on a real model.
+				pose(CFrame.new(buriedPivot.Position + Vector3.new(0, (RISE * ease) + pop, 0))
+					* CFrame.Angles(0, a * math.pi * 2, 0) * buriedPivot.Rotation)
+				task.wait()
+			end
+			pose(buriedPivot + Vector3.new(0, RISE, 0))
+
+			-- A little bow, now that he is standing there.
+			for _, dy in ipairs({ 0.16, 0, 0.16, 0 }) do
+				pose(buriedPivot + Vector3.new(0, RISE + dy, 0))
+				task.wait(0.18)
+			end
+			print("[BuriedGnome] he is out of the ground and standing in the bed -- he stays up now")
+
+			-- ===== NOW HE CAN BE PICKED UP AND CARRIED =====
+			-- The tree gnome's hint says his BROTHER stayed out in the rain, so digging him up is only half
+			-- of it -- the other half is walking him home. Carrying is the whole second act: no waypoint, no
+			-- quest entry, just a gnome under your arm and the memory of where that hint came from.
+			--
+			-- Held by MOVING HIS PARTS, not by welding him to the character. He is anchored (he has to be --
+			-- an unanchored gnome in a flowerbed falls through the island the first time it streams out) and
+			-- an anchored part cannot be welded to anything that moves. A Heartbeat re-pose does the job and
+			-- replicates for free, because the server owns these parts.
+			local standPivot = buriedPivot + Vector3.new(0, RISE, 0)   -- where he goes back if you put him down
+
+			local carryPrompt = Instance.new("ProximityPrompt")
+			carryPrompt.Name = "CarryGnome"
+			carryPrompt.ActionText = "Pick up"
+			carryPrompt.ObjectText = "The fifth gnome"
+			carryPrompt.HoldDuration = 0.6
+			carryPrompt.MaxActivationDistance = 10   -- stays in range while carried, so it doubles as "put down"
+			carryPrompt.RequiresLineOfSight = false
+			carryPrompt.Parent = hat
+
+			local heldConn
+			local function putDown()
+				if heldConn then heldConn:Disconnect(); heldConn = nil end
+				local who = _G.gnomeCarrier
+				_G.gnomeCarrier = nil
+				if who then pcall(function() who:SetAttribute("CarryingGnome", false) end) end
+				pose(standPivot)   -- back to his bed, standing
+				carryPrompt.ActionText = "Pick up"
+			end
+
+			-- THE TREE DOOR CALLS THIS. It takes him off whoever is carrying him and parks him for good at
+			-- the CFrame it names, which is how he ends up standing beside his brother instead of in a bed.
+			-- Exposed as a _G function rather than replicated through a remote because both ends are server
+			-- scripts in the same place; a remote would be a round trip to nobody.
+			_G.gnomeReunite = function(atCF)
+				if heldConn then heldConn:Disconnect(); heldConn = nil end
+				local who = _G.gnomeCarrier
+				_G.gnomeCarrier = nil
+				if who then pcall(function() who:SetAttribute("CarryingGnome", false) end) end
+				-- Feet on atCF, facing the way it faces -- the same PivotTo semantics the tree gnome uses, so
+				-- the two of them stand the same way round.
+				pose(atCF * CFrame.new(0, pivotToBottom, 0))
+				carryPrompt:Destroy()   -- he is home; he does not get carried away again
+				prompt.Enabled = false
+				Workspace:SetAttribute("GnomeBrothersReunited", true)
+				print("[BuriedGnome] home at the tree door -- the brothers are back together")
+			end
+
+			carryPrompt.Triggered:Connect(function(player)
+				if _G.gnomeCarrier == player then putDown(); return end
+				if _G.gnomeCarrier then return end   -- somebody else has him
+				local char = player.Character
+				if not (char and char:FindFirstChild("HumanoidRootPart")) then return end
+				-- FINDER REWARD ON PICK-UP for anyone who has not had it: the dig prompt is gone once he is
+				-- out, so this is how the second, third, tenth player still gets paid for finding him.
+				if not player:GetAttribute("FoundBuriedGnome") then
+					player:SetAttribute("FoundBuriedGnome", true)
+					if type(_G.addSkinTokens) == "function" then
+						pcall(_G.addSkinTokens, player, 25, "found the buried gnome")
+					end
+					if _G.grantTitle then pcall(_G.grantTitle, player, "Gnome Finder") end
+				end
+				_G.gnomeCarrier = player
+				pcall(function() player:SetAttribute("CarryingGnome", true) end)
+				carryPrompt.ActionText = "Put down"
+				prompt.Enabled = false
+				-- Dying, respawning or leaving all drop him back in the bed rather than stranding him in the
+				-- air where a character used to be -- the same check covers all three, every frame.
+				heldConn = game:GetService("RunService").Heartbeat:Connect(function()
+					local c = player.Character
+					local root = c and c:FindFirstChild("HumanoidRootPart")
+					local hum = c and c:FindFirstChildOfClass("Humanoid")
+					if not (root and hum) or hum.Health <= 0 or not player.Parent then putDown(); return end
+					-- Cradled at your side and slightly ahead, where a person carries something this size.
+					local cradle = root.CFrame * CFrame.new(1.25, 0.35, -0.55)
+					pose(cradle * CFrame.new(0, pivotToBottom - 1.0, 0))
+				end)
+				print(("[BuriedGnome] %s picked him up -- he can be carried now"):format(player.Name))
+			end)
+		end
+		print(("[BuriedGnome] %s dug him out -- 25 tokens + the Gnome Finder title"):format(player.Name))
+	end)
+
+	print(("[BuriedGnome] planted in %s at (%.0f, %.0f, %.0f) -- hat tip showing in any weather, sparkle + '?' over it, Dig prompt live")
+		:format(bed.Name, spot.X, top, spot.Z))
+end)

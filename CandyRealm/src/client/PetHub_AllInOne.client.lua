@@ -48,6 +48,9 @@ local pg     = player:WaitForChild("PlayerGui")
 -- The PERMANENT rarity axis (Common..Gold) and the fusion cost ladder. Separate from the pet's AGE tier,
 -- which petTier() derives from level -- a pet's rarity never moves, its age always does.
 local PetRarity = require(RS:WaitForChild("Shared"):WaitForChild("PetRarity"))
+-- The QUESTS tab is built from the LADDER, not from a server payload -- see rebuildQuests below.
+local IslandOrder  = require(RS:WaitForChild("Shared"):WaitForChild("IslandOrder"))
+local IslandConfig = require(RS:WaitForChild("Shared"):WaitForChild("IslandConfig"))
 
 local function remote(name) return RS:FindFirstChild(name) end
 local PetEquipEvent      = remote("PetEquipEvent")
@@ -240,12 +243,48 @@ do
 	-- out means the page scripts never hard-code the panel's name or its content band -- if the hub
 	-- is re-laid-out, they follow it instead of silently sitting in the wrong place.
 	_G.PetHub.panel = panel
-	_G.PetHub.contentInset = { x = 10, y = 108, w = -20, h = -118 } -- below the 66+38 nav bar
+	-- h = -128, NOT -118: the band's bottom edge must clear the panel's ROUNDED corner, not just
+	-- its rectangle. ClipsDescendants cuts at the rectangle, but the outer frame is drawn with an
+	-- 18px UICorner + a 3px stroke -- content ending 10px above the bottom sat inside the corner
+	-- arc and visibly poked through the rounded outline. 108 + (520-128) = bottom at 500, i.e.
+	-- 20px of clearance: past the 18px arc and the stroke. Offsets scale uniformly under
+	-- ResponsiveUI's UIScale, so the clearance holds at every scale.
+	_G.PetHub.contentInset = { x = 10, y = 108, w = -20, h = -128 } -- below the 66+38 nav bar, above the corner arc
 	-- HEADER READOUTS, defined HERE and not down with the router: the pet grid calls
 	-- setProgress while the script is still LOADING, long before the router block runs.
-	_G.PetHub.setProgress = function(owned, total)
+	--======================================================================
+	-- THE HEADER TOTAL IS DERIVED, NEVER HANDED IN
+	--======================================================================
+	-- WHY THE HEADER AND THE TABS DISAGREED. setProgress took whatever number its one caller
+	-- passed, and that caller was the DEMO pet grid -- the hidden petsSection, whose totals come
+	-- from `latestInv.totalPets` on a pet server this realm does not have. So the header read
+	-- "4 / 5" out of dead data while the Dino tab, counting its real catalog, read "0 / 6". Two
+	-- different sources for one claim can only ever agree by accident.
+	--
+	-- Now every page REGISTERS its own (owned, total) and the header is the sum. The catalogs are
+	-- the single source of truth, so the header cannot drift from the tabs -- and adding a third
+	-- realm updates it with no change here.
+	_G.PetHub.realmProgress = {}
+	local function recomputeProgress()
+		local owned, total = 0, 0
+		for _, r in pairs(_G.PetHub.realmProgress) do
+			owned = owned + r.owned; total = total + r.total
+		end
 		local lbl = header:FindFirstChild("HubProgress")
-		if lbl then lbl.Text = tostring(owned) .. " / " .. tostring(total) .. " pets unlocked" end
+		if lbl then lbl.Text = ("%d / %d pets unlocked"):format(owned, total) end
+	end
+	_G.PetHub.setRealmProgress = function(tabId, owned, total)
+		if type(tabId) ~= "string" then return end
+		_G.PetHub.realmProgress[tabId] = {
+			owned = math.floor(tonumber(owned) or 0),
+			total = math.floor(tonumber(total) or 0),
+		}
+		recomputeProgress()
+	end
+	-- Kept so anything still calling it does not error, but it routes through the SAME registry
+	-- under one key rather than overwriting the whole readout.
+	_G.PetHub.setProgress = function(owned, total)
+		_G.PetHub.setRealmProgress("local", owned, total)
 	end
 	_G.PetHub.setTokens = function(n)
 		local chip = header:FindFirstChild("HubTokens")
@@ -309,36 +348,62 @@ local function makeSection(x, w, titleText)
 	local t = Instance.new("TextLabel"); t.Size = UDim2.new(1,-12,0,22); t.Position = UDim2.new(0,8,0,6)
 	t.BackgroundTransparency = 1; t.Font = Enum.Font.GothamBold; t.TextSize = 16; t.TextColor3 = Color3.fromRGB(255,215,0)
 	t.TextXAlignment = Enum.TextXAlignment.Left; t.Text = titleText; t.Parent = sec
-	local sc = Instance.new("ScrollingFrame"); sc.Size = UDim2.new(1,-12,1,-34); sc.Position = UDim2.new(0,6,0,30)
+	-- bottom offset -46 (not -34): the scroll's cut edge ends 16px above the section's bottom,
+	-- clear of the section's own 12px rounded corner -- a card cut mid-scroll can no longer sit
+	-- across the band's rounded border.
+	local sc = Instance.new("ScrollingFrame"); sc.Size = UDim2.new(1,-12,1,-46); sc.Position = UDim2.new(0,6,0,30)
 	sc.BackgroundTransparency = 1; sc.BorderSizePixel = 0; sc.ScrollBarThickness = 6; sc.ScrollBarImageColor3 = Color3.fromRGB(255,215,0)
-	sc.CanvasSize = UDim2.new(0,0,0,0); sc.Parent = sec
+	-- THE CANVAS MEASURES ITSELF (same fix as the Dino/Food pages): a hand-counted CanvasSize
+	-- bakes in a guess about columns and row height, and when the guess is short the bottom row
+	-- rides over the section border instead of scrolling to it.
+	sc.AutomaticCanvasSize = Enum.AutomaticSize.Y; sc.CanvasSize = UDim2.new(0,0,0,0)
+	sc.Parent = sec
+	-- The section is a bordered card (UICorner + UIStroke). Clip it, so nothing inside --
+	-- a card mid-scroll, a title, anything a future page parents here -- can ever paint
+	-- across its rounded border, whatever the inner geometry does.
+	sec.ClipsDescendants = true
 	return sec, sc
 end
 local petsSection, petsScroll = makeSection(12, 676, "\xF0\x9F\x90\xBe PETS")
--- y=110, not 68: the nav bar owns 66..104 directly under the header.
-petsSection.Size = UDim2.new(1, -24, 1, -116); petsSection.Position = UDim2.new(0, 12, 0, 110)
+-- y=110, not 68: the nav bar owns 66..104 directly under the header. Height -130 (not -116):
+-- bottom at 500, 20px above the panel edge, clear of the 18px rounded corner + 3px stroke.
+petsSection.Size = UDim2.new(1, -24, 1, -130); petsSection.Position = UDim2.new(0, 12, 0, 110)
 -- PERMANENTLY HIDDEN along with its tab: this grid only ever showed the DEMO inventory (Candy has no pet
 -- server), and its tab is gone -- the Dino and Food collection pages own the content band now. The section
 -- is built rather than deleted because the grid-refresh code below still writes into petsScroll; writing
 -- into an invisible frame is free, deleting it would mean touching every one of those call sites.
 petsSection.Visible = false
-local petsGrid = Instance.new("UIGridLayout"); petsGrid.CellSize = UDim2.new(0,322,0,252); petsGrid.CellPadding = UDim2.new(0,10,0,12)
+-- 310, NOT 322: the same trim CrossRealmPets documents in its GRID GEOMETRY block. At 322 the
+-- two-column row (2x322 + 10 = 654) only fits if the scrollbar gets no gutter -- the bar then
+-- draws ON the right column's border, which reads as the cards poking through the panel edge.
+-- 310 keeps two columns with the gutter in place.
+local petsGrid = Instance.new("UIGridLayout"); petsGrid.CellSize = UDim2.new(0,310,0,252); petsGrid.CellPadding = UDim2.new(0,10,0,12)
 petsGrid.HorizontalAlignment = Enum.HorizontalAlignment.Center; petsGrid.Parent = petsScroll
 do
 	local pad = Instance.new("UIPadding"); pad.Name = "PetsTopPad"
-	pad.PaddingTop = UDim.new(0,10); pad.PaddingLeft = UDim.new(0,4); pad.PaddingRight = UDim.new(0,4)
+	pad.PaddingTop = UDim.new(0,10); pad.PaddingLeft = UDim.new(0,4)
+	-- right pad = gutter + the 6px scrollbar, bottom pad so the last row never sits flush
+	-- against the section's border stroke
+	pad.PaddingRight = UDim.new(0,10); pad.PaddingBottom = UDim.new(0,10)
 	pad.Parent = petsScroll
 end
 
 -- QUESTS overlay
-local questsOverlay = Instance.new("Frame"); questsOverlay.Name = "QuestsOverlay"; questsOverlay.Size = UDim2.new(1,-24,1,-116); questsOverlay.Position = UDim2.new(0,12,0,110)
+local questsOverlay = Instance.new("Frame"); questsOverlay.Name = "QuestsOverlay"; questsOverlay.Size = UDim2.new(1,-24,1,-130); questsOverlay.Position = UDim2.new(0,12,0,110) -- -130: bottom clear of the panel's 18px rounded corner
 questsOverlay.BackgroundColor3 = Color3.fromRGB(140, 16, 81); questsOverlay.Visible = false; questsOverlay.Parent = panel; uicorner(questsOverlay, 12); uistroke(questsOverlay, Color3.fromRGB(100, 10, 55), 2)
+questsOverlay.ClipsDescendants = true -- nothing inside the band may cross its border stroke
 local qoTitle = Instance.new("TextLabel"); qoTitle.Size = UDim2.new(1,-120,0,28); qoTitle.Position = UDim2.new(0,12,0,8); qoTitle.BackgroundTransparency = 1
 qoTitle.Font = Enum.Font.GothamBold; qoTitle.TextSize = 18; qoTitle.TextColor3 = Color3.fromRGB(255,215,0); qoTitle.TextXAlignment = Enum.TextXAlignment.Left; qoTitle.Text = "\xF0\x9F\x97\xBA Pet Quests"; qoTitle.Parent = questsOverlay
 local qoBack = Instance.new("TextButton"); qoBack.Size = UDim2.new(0,100,0,28); qoBack.Position = UDim2.new(1,-108,0,8); qoBack.BackgroundColor3 = Color3.fromRGB(120,120,120)
 qoBack.Font = Enum.Font.GothamBold; qoBack.TextSize = 13; qoBack.TextColor3 = Color3.new(1,1,1); qoBack.Text = "\xE2\x97\x80 Pets"; qoBack.Parent = questsOverlay; uicorner(qoBack, 8)
-local questsScroll = Instance.new("ScrollingFrame"); questsScroll.Size = UDim2.new(1,-16,1,-46); questsScroll.Position = UDim2.new(0,8,0,42); questsScroll.BackgroundTransparency = 1; questsScroll.BorderSizePixel = 0
+local questsScroll = Instance.new("ScrollingFrame"); questsScroll.Size = UDim2.new(1,-16,1,-58); questsScroll.Position = UDim2.new(0,8,0,42); questsScroll.BackgroundTransparency = 1; questsScroll.BorderSizePixel = 0 -- -58: cut edge 16px above the band's 12px rounded corner
 questsScroll.ScrollBarThickness = 6; questsScroll.ScrollBarImageColor3 = Color3.fromRGB(255,215,0); questsScroll.CanvasSize = UDim2.new(0,0,0,0); questsScroll.Parent = questsOverlay
+questsScroll.ClipsDescendants = true
+questsScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y   -- 13 rows: never hand-count the canvas
+do  -- gutter for the scrollbar, so it stops sitting on the rows' right edge
+	local p = Instance.new("UIPadding"); p.PaddingRight = UDim.new(0, 6); p.PaddingBottom = UDim.new(0, 8)
+	p.Parent = questsScroll
+end
 local questsList = Instance.new("UIListLayout"); questsList.Padding = UDim.new(0,8); questsList.SortOrder = Enum.SortOrder.LayoutOrder; questsList.Parent = questsScroll
 local questsEmpty = Instance.new("TextLabel"); questsEmpty.Size = UDim2.new(1,-24,0,70); questsEmpty.Position = UDim2.new(0,12,0,46)
 questsEmpty.BackgroundTransparency = 1; questsEmpty.Font = Enum.Font.Gotham; questsEmpty.TextSize = 14; questsEmpty.TextWrapped = true
@@ -669,16 +734,148 @@ local function buildQuestEntry(q, order)
 	uicorner(qf, 8); uistroke(qf, Color3.fromRGB(100, 10, 55), 1)
 	local qn = Instance.new("TextLabel"); qn.Size = UDim2.new(1,-10,0,18); qn.Position = UDim2.new(0,6,0,4)
 	qn.BackgroundTransparency = 1; qn.Font = Enum.Font.GothamBold; qn.TextSize = 14; qn.TextColor3 = Color3.new(1,1,1); qn.TextXAlignment = Enum.TextXAlignment.Left; qn.Text = q.islandName or "?"; qn.Parent = qf
-	local statusCol = (q.status == "done") and Color3.fromRGB(120,255,120) or (q.status == "inprogress") and Color3.fromRGB(255,205,90) or Color3.fromRGB(255, 180, 232)
-	local statusTxt = (q.status == "done") and "Done \xE2\x9C\x94"
+	-- FOUR STATES, not three. "here" is the one this tab existed without: a list that tells you an
+	-- island has a quest but not that you are STOOD ON IT is a list you have to cross-reference
+	-- against the window. "locked" is likewise better than hiding the row -- a quest you cannot
+	-- start yet is still the thing you are working towards, and hiding it made the tab look empty.
+	local COL_DONE, COL_HERE = Color3.fromRGB(120,255,120), Color3.fromRGB(255,205,90)
+	local COL_OPEN, COL_LOCK = Color3.fromRGB(255,180,232), Color3.fromRGB(170,140,160)
+	local statusCol =
+		   (q.status == "done")   and COL_DONE
+		or (q.status == "here")   and COL_HERE
+		or (q.status == "locked") and COL_LOCK
+		or (q.status == "inprogress") and COL_HERE
+		or COL_OPEN
+	local statusTxt =
+		   (q.status == "done")   and "Complete \xE2\x9C\x94"
+		or (q.status == "here")   and "\xF0\x9F\x93\x8D YOU ARE HERE  \xE2\x80\xA2  not finished"
+		or (q.status == "locked") and "\xF0\x9F\x94\x92 Locked"
 		or (q.status == "inprogress") and ("In Progress  "..(q.found or 0).."/"..(q.total or 0).." "..(q.unit or ""))
 		or "Available"
+	-- the row you are stood on is lifted out of the list, so the tab answers "where am I" at a glance
+	if q.status == "here" then
+		qf.BackgroundColor3 = Color3.fromRGB(190, 34, 112)
+		local hs = qf:FindFirstChildWhichIsA("UIStroke"); if hs then hs.Color = COL_HERE; hs.Thickness = 2 end
+	elseif q.status == "locked" then
+		qf.BackgroundColor3 = Color3.fromRGB(122, 16, 72)
+	end
+	-- the quest's own name, right-aligned on the title row -- the island name alone never said what
+	-- the quest actually was
+	if q.questName then
+		local qq = Instance.new("TextLabel"); qq.Size = UDim2.new(0.5,-10,0,18); qq.Position = UDim2.new(0.5,0,0,4)
+		qq.BackgroundTransparency = 1; qq.Font = Enum.Font.Gotham; qq.TextSize = 12
+		qq.TextColor3 = Color3.fromRGB(255,215,0); qq.TextXAlignment = Enum.TextXAlignment.Right
+		qq.TextTruncate = Enum.TextTruncate.AtEnd; qq.Text = q.questName; qq.Parent = qf
+	end
 	local qs = Instance.new("TextLabel"); qs.Size = UDim2.new(1,-10,0,14); qs.Position = UDim2.new(0,6,0,22)
 	qs.BackgroundTransparency = 1; qs.Font = Enum.Font.GothamBold; qs.TextSize = 11; qs.TextColor3 = statusCol; qs.TextXAlignment = Enum.TextXAlignment.Left; qs.Text = statusTxt; qs.Parent = qf
 	local qd = Instance.new("TextLabel"); qd.Size = UDim2.new(1,-12,0,46); qd.Position = UDim2.new(0,6,0,38)
 	qd.BackgroundTransparency = 1; qd.Font = Enum.Font.Gotham; qd.TextSize = 11; qd.TextColor3 = Color3.fromRGB(255, 205, 230); qd.TextWrapped = true
 	qd.TextXAlignment = Enum.TextXAlignment.Left; qd.TextYAlignment = Enum.TextYAlignment.Top; qd.Text = q.desc or ""; qd.Parent = qf
 end
+
+--======================================================================
+-- THE QUESTS TAB LISTS EVERY ISLAND
+--======================================================================
+-- It used to be filled from `latestInv.quests`, which arrives on PetInventoryEvent -- a remote no
+-- server in this realm fires. So the tab showed the three hard-coded DEMO quests from another
+-- realm (Broccoli Bluff, Coconut Cove, Popcorn Pinnacle) or, once a real payload existed, the
+-- "Land on islands to discover pet quests!" empty state. Neither is a list of this realm's quests.
+--
+-- IslandConfig IS the list: thirteen rungs, each with its questId and questName, and it is the same
+-- table the food stands and the gut ladder gate on. Deriving from it means the tab cannot drift
+-- from the game, and a fourteenth rung appears here for free.
+local QUEST_FLAG_FIX = { candymine = "candyMine" }
+
+-- Finished? The same two-source rule the stands use: the session flag for the instant it completes,
+-- the persisted ledger for a player who did it on an earlier visit. Neither alone is enough --
+-- the flags reset on rejoin, and the attribute lags the moment of completion by a round trip.
+local function questDone(isle)
+	local key = QUEST_FLAG_FIX[isle.questId] or isle.questId
+	if _G[key .. "QuestComplete"] then return true end
+	return math.floor(tonumber(player:GetAttribute("UnlockedSlot")) or 0) > isle.slot
+end
+
+-- Which rung are you stood on? BY POSITION, never by name: thirteen islands share one Workspace
+-- and plenty of part names, and name-matching across them is the bug that keeps biting in this
+-- place. The tower separates consecutive slots by at least 1400 studs, so nearest SLOT_POS inside
+-- 600 is unambiguous.
+local function currentSlot()
+	local ch = player.Character
+	local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+	if not hrp then return nil end
+	local best, bestD = nil, 600
+	for slot = 1, IslandOrder.COUNT do
+		local p = IslandOrder.SLOT_POS[slot]
+		if p then
+			local d = (p - hrp.Position).Magnitude
+			if d < bestD then best, bestD = slot, d end
+		end
+	end
+	return best
+end
+
+-- REBUILD ONLY WHEN SOMETHING ACTUALLY CHANGED. The refresh loop below ticks once a second while
+-- the tab is open, and a rebuild DESTROYS all thirteen rows -- which throws away the scroll
+-- position with them. A player reading the bottom of the list would be snapped back to the top
+-- every second. The signature is everything a row can be drawn from, so an unchanged second costs
+-- one string compare and touches no instances.
+local lastQuestSig
+local function rebuildQuests()
+	local hereSlot = currentSlot()
+	local unlocked = math.max(1, math.floor(tonumber(player:GetAttribute("UnlockedSlot")) or 1))
+	local dones, sig = {}, tostring(hereSlot) .. "|" .. unlocked .. "|"
+	for i, isle in ipairs(IslandConfig.ISLANDS) do
+		dones[i] = questDone(isle)
+		sig = sig .. (dones[i] and "1" or "0")
+	end
+	if sig == lastQuestSig then return end
+	lastQuestSig = sig
+
+	for _, c in ipairs(questsScroll:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
+	local n, done = 0, 0
+	for i, isle in ipairs(IslandConfig.ISLANDS) do
+		local isDone = dones[i]
+		if isDone then done = done + 1 end
+		local status
+		if isDone then status = "done"
+		elseif hereSlot == isle.slot then status = "here"
+		elseif isle.slot <= unlocked then status = "available"
+		else status = "locked" end
+
+		local desc
+		if isDone then
+			desc = ("Finished. %s's stand is open and it funded your next gut."):format(isle.name)
+		elseif status == "here" then
+			desc = ("You are on %s now. Finish \"%s\" to open this island's food stand."):format(
+				isle.name, isle.questName)
+		elseif status == "available" then
+			desc = ("Fly to %s and finish \"%s\" to open its stand."):format(isle.name, isle.questName)
+		else
+			local prev = IslandConfig.ISLANDS[isle.slot - 1]
+			desc = ("Locked. Finish %s first."):format(prev and prev.name or "the island below")
+		end
+
+		n = n + 1
+		pcall(buildQuestEntry, {
+			islandName = ("%d. %s"):format(isle.slot, isle.name),
+			questName  = isle.questName,
+			status     = status,
+			desc       = desc,
+		}, n)
+	end
+	questsEmpty.Visible = false      -- there is always something to show now
+	qoTitle.Text = ("\xF0\x9F\x97\xBA Pet Quests   %d / %d"):format(done, n)
+end
+
+-- Refresh while the tab is open so "YOU ARE HERE" follows you rather than freezing at whatever was
+-- true when you opened it. Only while VISIBLE -- a closed tab costs nothing.
+task.spawn(function()
+	while true do
+		task.wait(1)
+		if questsOverlay.Visible then pcall(rebuildQuests) end
+	end
+end)
 
 local function rebuildInventory(payload)
 	local ok, err = pcall(function()
@@ -706,14 +903,17 @@ local function rebuildInventory(payload)
 			local em = Instance.new("Frame"); em.Name = "PetsEmpty"; em.Size = UDim2.new(1,-20,0,90); em.Position = UDim2.new(0,10,0,8); em.BackgroundTransparency = 1; em.Parent = petsScroll
 			local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1,0,1,0); lbl.BackgroundTransparency = 1; lbl.Font = Enum.Font.GothamBold; lbl.TextSize = 20; lbl.TextWrapped = true; lbl.TextColor3 = Color3.fromRGB(255, 190, 221); lbl.Text = "No Pets Unlocked\nComplete pet quests on the islands to hatch your first pet!"; lbl.Parent = em
 		end
-		-- header readout: "X / Y pets unlocked" (Y = the catalog size the server reports)
-		pcall(function() _G.PetHub.setProgress(ownedCount, latestInv.totalPets or 0) end)
-		petsScroll.CanvasSize = UDim2.new(0,0,0, math.ceil(ownedCount / 2) * 264 + 20)
-		for _, c in ipairs(questsScroll:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
-		local qCount = 0
-		for _, q in pairs(quests) do qCount = qCount + 1; pcall(buildQuestEntry, q, qCount) end
-		questsEmpty.Visible = (qCount == 0)
-		questsScroll.CanvasSize = UDim2.new(0,0,0, qCount * 100 + 8)
+		-- DELIBERATELY NOT TOUCHING THE HEADER. This grid is the hidden demo inventory
+		-- (petsSection.Visible = false) and `latestInv.totalPets` is whatever a pet server this
+		-- realm does not run happened to send -- which is exactly where the bogus "4 / 5" came
+		-- from. The header is the sum of the registered realm catalogs now; see setRealmProgress.
+		-- No CanvasSize maths here any more -- petsScroll runs AutomaticCanvasSize now (see
+		-- makeSection), and a manual Y write would fight it. The hand count also under-measured
+		-- (it ignored the top pad), which let the bottom row ride over the section border.
+		-- The quests tab is built from IslandConfig, not from `quests` in this payload -- see
+		-- rebuildQuests. Left unused rather than deleted because the payload shape is the source
+		-- realm's and this file is a verbatim lift of it.
+		pcall(rebuildQuests)
 	end)
 	if not ok then warn("[PetInv] ERROR building inventory: " .. tostring(err)) end
 end
@@ -767,8 +967,9 @@ end
 -- "TradeOverlay" and intercepts showPage("trade") before this file's router sees it. The rename matters
 -- beyond tidiness: TradeRequests.client.luau attaches its FRIENDS tab to Panel:FindFirstChild("TradeOverlay"),
 -- and two children with that name would make which one it finds a race.
-local tradeOverlay = Instance.new("Frame"); tradeOverlay.Name = "TradeOverlayLegacy"; tradeOverlay.Size = UDim2.new(1,-24,1,-116); tradeOverlay.Position = UDim2.new(0,12,0,110)
+local tradeOverlay = Instance.new("Frame"); tradeOverlay.Name = "TradeOverlayLegacy"; tradeOverlay.Size = UDim2.new(1,-24,1,-130); tradeOverlay.Position = UDim2.new(0,12,0,110) -- -130: matches the other bands, clear of the corner arc
 tradeOverlay.BackgroundColor3 = Color3.fromRGB(140, 16, 81); tradeOverlay.Visible = false; tradeOverlay.Parent = panel; uicorner(tradeOverlay, 12); uistroke(tradeOverlay, Color3.fromRGB(100, 10, 55), 2)
+tradeOverlay.ClipsDescendants = true -- nothing inside the band may cross its border stroke
 local ovTitle = Instance.new("TextLabel"); ovTitle.Size = UDim2.new(1,-120,0,28); ovTitle.Position = UDim2.new(0,12,0,8); ovTitle.BackgroundTransparency = 1
 ovTitle.Font = Enum.Font.GothamBold; ovTitle.TextSize = 18; ovTitle.TextColor3 = Color3.fromRGB(255,215,0); ovTitle.TextXAlignment = Enum.TextXAlignment.Left; ovTitle.Text = "Trade"; ovTitle.Parent = tradeOverlay
 local ovBack = Instance.new("TextButton"); ovBack.Size = UDim2.new(0,100,0,28); ovBack.Position = UDim2.new(1,-108,0,8); ovBack.BackgroundColor3 = Color3.fromRGB(120,120,120)
@@ -891,6 +1092,8 @@ _G.PetHub.showPage = function(id)
 		return
 	end
 	questsOverlay.Visible = (id == "quests")
+	-- rebuild ON OPEN, so the list is right the moment it appears rather than one poll tick later
+	if id == "quests" then pcall(rebuildQuests) end
 	-- NEVER shown any more: PetTradeClient intercepts "trade" before this line can run with that id, and
 	-- pinning it false covers the boot window before its wrap installs -- a click in that window would
 	-- otherwise show the retired UI once, talking to remotes with the same names as the real one.
@@ -973,11 +1176,7 @@ if not PetInventoryEvent then
 			PopcornSheep = { petId="PopcornSheep", displayName="Popcorn Sheep",  level=22, xp=40,  xpNeed=400, maxLevel=25, count=2, milestone="Lv 25 -> MAX" },
 			["ButterDuck#R"] = { petId="ButterDuck", displayName="Butter Duck", rareName="Cosmic Duck", rare=true, level=25, xp=0, xpNeed=0, maxLevel=25, milestone="Maxed Mythical" },
 		},
-		quests = {
-			b = { islandName="Broccoli Bluff",  status="done",       desc="Find 3 hidden broccoli pieces, then hatch the egg." },
-			c = { islandName="Coconut Cove",    status="inprogress", found=4, total=7, unit="coconuts", desc="Crack 7 coconuts to earn the Cave Key, open the chest." },
-			p = { islandName="Popcorn Pinnacle",status="available",  desc="Find 6 film reels, load the projector, watch the show." },
-		},
+		-- no demo quests: the QUESTS tab builds itself from IslandConfig and ignores this field
 	})
 	print("[PetHub] no server remotes found -> showing DEMO inventory. Open via the More+ menu's Pets card.")
 end

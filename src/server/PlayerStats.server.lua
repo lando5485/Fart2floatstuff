@@ -22,6 +22,11 @@ local SkipIslandEvent   = getOrCreate(RS, "RemoteEvent", "SkipIslandEvent")
 local UnlockIslandEvent = getOrCreate(RS, "RemoteEvent", "IslandUnlockEvent")
 local AnnouncementEvent = getOrCreate(RS, "RemoteEvent", "AnnouncementEvent")
 local ServerEventNotify = getOrCreate(RS, "RemoteEvent", "ServerEventNotify")
+-- s->c: (dispName, seconds) -- "a rough event is coming, here is how long you have".
+-- A SEPARATE remote from ServerEventNotify on purpose: everything listening on that one
+-- (EventClient, EventChip, LateJoinEventSync, the campfire) treats a broadcast as "the event
+-- is happening NOW", and a warning is the opposite of that. A new remote cannot be misread.
+local EventWarnEvent    = getOrCreate(RS, "RemoteEvent", "EventWarnEvent")
 local StomachFullEvent  = getOrCreate(RS, "RemoteEvent", "StomachFullEvent")
 local BuyStomachEvent   = getOrCreate(RS, "RemoteEvent", "BuyStomachEvent")
 local StomachUpdateEvent= getOrCreate(RS, "RemoteEvent", "StomachUpdateEvent")
@@ -65,22 +70,33 @@ local ISLAND_DISPLAY_NAMES = {
 	"Burrito Barrens","Pizza Palms"
 }
 
--- price = round(power * (0.8 + (island - 1) / 13 * 2.2))  -- cheap early islands, expensive late
+-- FOOD -- prices and powers copied from the F2F UNIVERSAL PROGRESSION GUIDE (the Dinosaur Realm's
+-- shipped menu), one food per island. Foods come in identical PAIRS; Pizza extends the top pair
+-- because our tower has 14 islands to the guide's 13.
+--
+-- THE CRITICAL RULE: power/price is monotonically NON-DECREASING up the tower (0.0250 -> 0.0422,
+-- a 1.69x spread), and power is non-decreasing too. Later food is never worse value, so buying
+-- "ahead" is never a trap and buying "behind" is never optimal. A retune that breaks either
+-- ordering re-creates the old "Popcorn costs 600 and Pizza 518" problem.
+--
+-- Every meal past the tutorial is <= 18% of what its own crossing pays out, and the player can
+-- afford the intended food on FLIGHT 1 of every crossing -- the check whose absence sank a build.
+-- IDENTICAL table in CoreClient.client.lua -- if you change one, change both.
 local foods = {
-	{name="Beans",    price=5,    power=8,   island=1},
-	{name="Broccoli", price=24,   power=25,  island=2},
-	{name="Cabbage",  price=85,   power=45,  island=3},
-	{name="Turnips",  price=94,   power=70,  island=4},
-	{name="Coconuts", price=142,  power=100, island=5},
-	{name="Bread",    price=138,  power=140, island=6},
-	{name="Pasta",    price=202,  power=185, island=7},
-	{name="Popcorn",  price=600,  power=240, island=8},
-	{name="Milk",     price=500,  power=300, island=9},
-	{name="Butter",   price=400,  power=370, island=10},
-	{name="IceCream", price=560,  power=450, island=11},
-	{name="Burger",   price=405,  power=540, island=12},
-	{name="Burrito",  price=700,  power=640, island=13},
-	{name="Pizza",    price=518,  power=750, island=14},
+	{name="Beans",    price=1280, power=32,  island=1},
+	{name="Broccoli", price=1480, power=40,  island=2},
+	{name="Cabbage",  price=1480, power=40,  island=3},
+	{name="Turnips",  price=1520, power=45,  island=4},
+	{name="Coconuts", price=1520, power=45,  island=5},
+	{name="Bread",    price=1720, power=55,  island=6},
+	{name="Pasta",    price=1720, power=55,  island=7},
+	{name="Popcorn",  price=1840, power=65,  island=8},
+	{name="Milk",     price=1840, power=65,  island=9},
+	{name="Butter",   price=2200, power=85,  island=10},
+	{name="IceCream", price=2200, power=85,  island=11},
+	{name="Burger",   price=3080, power=130, island=12},
+	{name="Burrito",  price=3080, power=130, island=13},
+	{name="Pizza",    price=3080, power=130, island=14},
 }
 
 -- FOOD STANDS ARE ALL UNLOCKED. Every stand sells all 14 foods to everybody, from the first join.
@@ -104,36 +120,36 @@ local function foodStandUnlocked()
 	return true
 end
 
--- getMaxHeight(maxPower) = 50 + maxPower*14. Iron is the top of the free path and
--- reaches island 14; Infinite is a Robux-only premium gut that flies the whole map.
--- `island` = the island you must have REACHED (landed on) before this gut can be bought.
+-- GUTS -- tanks, costs and unlock islands copied from the F2F UNIVERSAL PROGRESSION GUIDE.
+-- maxPower MUST equal FlightTuning.BASE_TIERS row for row: the tank size IS the climb lookup.
 --
--- The rule: a gut unlocks on the island where the PREVIOUS gut runs out -- the island you are
--- standing on when you cannot climb any further, which is the moment the next gut is the thing
--- you actually want. Derived from the numbers rather than picked: a gut's ceiling is
--- 50 + maxPower*14, and the highest island under that ceiling is where its owner gets stuck.
+-- Every gut covers exactly TWO crossings: a WALL (the gap is 2% past the previous gut's full-tank
+-- reach, so you get 97%+ of the way and still cannot land) and a STRETCH (97% of the new tank).
+-- That is why `island` steps by 2: a gut unlocks on the island where the previous gut runs out.
+--   Tiny   120 -> climb  853.5  covers c1            (tutorial, 1.355x headroom)
+--   Small  270 -> climb 1279.5  covers c2 + c3       unlocks at island 2
+--   Medium 470 -> climb 1848.0  covers c4 + c5       unlocks at island 4
+--   Large  620 -> climb 2559.0  covers c6 + c7       unlocks at island 6
+--   XL    1080 -> climb 3555.0  covers c8 + c9       unlocks at island 8
+--   XXL   1710 -> climb 4977.0  covers c10 + c11     unlocks at island 10
+--   Iron  2600 -> climb 7110.0  covers c12 + c13     unlocks at island 12
 --
---   Tiny   ceiling  1,450 -> tops out on island 2  -> Small  unlocks at 2
---   Small  ceiling  2,598 -> tops out on island 4  -> Medium unlocks at 4
---   Medium ceiling  7,330 -> tops out on island 7  -> Large  unlocks at 7
---   Large  ceiling 15,100 -> tops out on island 11 -> XL     unlocks at 11
---   XL     ceiling 30,094 -> clears island 14      -> Iron   unlocks at 14
---
--- NOTE Iron lands on 14 because XL's ceiling already clears the whole stack; there is nothing
--- above 14 to need it for. Move it down if Iron should have a job before the top.
+-- Each gut costs LESS than the crossing before its wall pays out, so saving for it is short. Costs
+-- are strictly increasing. A purchased gut arrives EMPTY (see BuyStomachEvent).
 --
 -- Infinite Gut is deliberately island = 1: it is the Robux tier, and refusing a real-money
 -- purchase to a new player is worse than letting them skip ahead.
 --
--- The COST still gates as it always did; this is a second, separate lock, so banked coins alone
--- can no longer buy a gut for a stretch of the game the player has not seen.
+-- The COST still gates as it always did; `island` is a second, separate lock, so banked coins
+-- alone cannot buy a gut for a stretch of the game the player has not seen.
 local stomachTiers = {
-	{name="Tiny Gut",     maxPower=100,  cost=0,      robux=false, island=1},
-	{name="Small Gut",    maxPower=182,  cost=1600,   robux=false, island=2},
-	{name="Medium Gut",   maxPower=520,  cost=3000,   robux=false, island=4},
-	{name="Large Gut",    maxPower=1075, cost=5200,   robux=false, island=7},
-	{name="XL Gut",       maxPower=2146, cost=8000,   robux=false, island=11},
-	{name="Iron Gut",     maxPower=3218, cost=11000,  robux=false, island=14},
+	{name="Tiny Gut",     maxPower=120,  cost=0,      robux=false, island=1},
+	{name="Small Gut",    maxPower=270,  cost=1000,   robux=false, island=2},
+	{name="Medium Gut",   maxPower=470,  cost=2000,   robux=false, island=4},
+	{name="Large Gut",    maxPower=620,  cost=4000,   robux=false, island=6},
+	{name="XL Gut",       maxPower=1080, cost=5000,   robux=false, island=8},
+	{name="XXL Gut",      maxPower=1710, cost=6000,   robux=false, island=10},
+	{name="Iron Gut",     maxPower=2600, cost=11500,  robux=false, island=12},
 	{name="Infinite Gut", maxPower=9999, cost=499,    robux=true,  island=1},
 }
 
@@ -145,13 +161,11 @@ local ISLAND_NAMES = {
 	"Island_13_BurritoBarrens","Island_14_PizzaPalms"
 }
 
-local ISLAND_POSITIONS = {
-	{x=0,    y=150,   z=0},   {x=120,  y=790,   z=60},   {x=-160, y=1680,  z=100},
-	{x=180,  y=2480,  z=-120}, {x=-200, y=3580,  z=160},  {x=220,  y=4820,  z=-180},
-	{x=-240, y=6460,  z=200},  {x=260,  y=8202,  z=-220}, {x=-280, y=9732,  z=240},
-	{x=300,  y=11978, z=-260}, {x=-320, y=14194, z=280},  {x=340,  y=17138, z=-300},
-	{x=-360, y=20206, z=320},  {x=380,  y=24017, z=-340},
-}
+-- Island positions live in ONE place: ReplicatedStorage.Shared.IslandOrder (the client reads the
+-- same table for gaps and coin payouts). Same {x,y,z} shape every use below always had.
+local IslandOrder = require(RS:WaitForChild("Shared"):WaitForChild("IslandOrder"))
+local FlightTuning = require(RS:WaitForChild("Shared"):WaitForChild("FlightTuning"))
+local ISLAND_POSITIONS = IslandOrder.SLOT_POS
 
 -- PURE VISUAL Y-axis rotation per island (degrees), applied about the island's CENTER
 -- AFTER it's positioned -- so the WHOLE model (stand, shop, paths, props, decorations,
@@ -297,10 +311,15 @@ local playerCoinAccum = {}
 -- because the flat allowance exists to cover ring bonuses and cutting it will silently rob players.
 local coinWindow       = {}
 local COIN_WINDOW      = 5      -- seconds per budget window
-local COIN_MAX_CALLS   = 60     -- calls per window. Legit is ~10-15 (2/s flight + ring bursts).
-local COIN_MAX_SINGLE  = 3000   -- no single grant may exceed this. Worst legit ring bonus is ~1,650.
-local COIN_FLAT_BUDGET = 5000   -- coins per window allowed at ANY altitude (this is the ring allowance)
-local COIN_PER_HEIGHT  = 0.12   -- plus this per stud of current altitude, per window
+local COIN_MAX_CALLS   = 60     -- calls per window. Legit is ~4.3/s (COIN_TICK 0.23) + ring bursts.
+local COIN_MAX_SINGLE  = 8000   -- no single grant may exceed this. Worst legit tick: an Iron Gut falling
+                                -- at terminal speed pays ~5.4k per 0.23s tick during COIN_RUSH. Rings ~1,650.
+local COIN_FLAT_BUDGET = 5000   -- coins per window allowed for ANY gut (this is the ring allowance)
+-- Plus, per window, the MOST one whole flight on this player's gut can legitimately pay: a failed
+-- flight is climb * COIN_PER_STUD * (1 + DESCENT_PAY_MULT), doubled for COIN_RUSH. A flight is never
+-- shorter than a window, so no honest window can exceed one flight's total. Computed from the
+-- server's own StomachMax in the handler -- the client cannot inflate it.
+local COIN_EVENT_PEAK  = 2
 local GamepassEvent = nil
 task.spawn(function() GamepassEvent = RS:WaitForChild("GamepassEvent", 10) end)
 local BirdNukeEvent = nil
@@ -410,9 +429,13 @@ _G.playerPlaytimeSec = _G.playerPlaytimeSec or {}
 --   playerEquippedSkins[player] = { Pet = {skin=,trait=} }  -- which skin each pet is wearing
 -- Declared here as well as in SkinCrateService because server script load ORDER is not guaranteed: if this join
 -- handler ran before that service had created the tables, indexing them would error out the whole load path.
+--   playerOwnedTraits[player]   = { King = true, ... }      -- traits owned OUTRIGHT: bought at the Pet Hut's
+--       Customize counter for Crate Tickets, or stocked automatically by a crate pull. Separate from petSkins
+--       on purpose -- a skin entry is one pet's one look, a wardrobe trait goes on ANY pet you own.
 _G.playerCrateTokens   = _G.playerCrateTokens   or {}
 _G.playerPetSkins      = _G.playerPetSkins      or {}
 _G.playerEquippedSkins = _G.playerEquippedSkins or {}
+_G.playerOwnedTraits   = _G.playerOwnedTraits   or {}
 --   playerCollection[player]    = { completedPets, titles, auras, activeTitle, activeAura, full }
 --       Collection Book progress + the badge/title/aura rewards it pays out. Derived from petSkins, but stored
 --       rather than recomputed so a reward already announced is never announced twice, and so a title the player
@@ -428,7 +451,7 @@ _G.playerEverCompletedQuests = _G.playerEverCompletedQuests or {}
 -- ran before PetSystem had created these tables, indexing them would error out the whole load path.
 _G.playerPetMilestones = _G.playerPetMilestones or {}  -- [player] = { ["3"]=true, ... } (string keys: JSON-safe)
 _G.playerTitle = _G.playerTitle or {}                  -- [player] = "Beastmaster" (mirrored to the "Title" attribute)
-local DEFAULT_COINS, DEFAULT_STOMACH, DEFAULT_ISLAND = 25, 100, 1 -- new player: 25 coins, Tiny gut (100, base StomachMax), island 1
+local DEFAULT_COINS, DEFAULT_STOMACH, DEFAULT_ISLAND = 2000, 120, 1 -- new player: 2,000 coins (a 3-rung tutorial ladder off the bank against a 1,280 first meal), Tiny Gut (120), island 1
 print("[RESET] new-player defaults: coins=25, stomach=base, gamepasses=owned-only, islands=locked-to-1, test grants removed.")
 -- SAVE RECORD VERSION. ONE-TIME WIPE: bumped to 4. On load, any record whose saveVersion ~= SAVE_VERSION
 -- (old records have no saveVersion field at all -> nil; version-2 AND version-3 records from the prior
@@ -455,6 +478,11 @@ local dataLoaded = {}             -- [player] = true once load succeeded & appli
 -- SET THIS TO false BEFORE PUBLISHING. It is one word, and it is the difference between a game that keeps
 -- progress and a game that does not.
 local DISABLE_SAVE_FOR_TESTING = true
+-- PUBLISHED SO OTHER SERVER SCRIPTS CAN SEE IT. Anything that keeps its own DataStore -- the Gnome Home
+-- key in SecretTreeDoor is the one that bit us -- has to honour this flag too, or a "brand-new" test
+-- player is silently handed something they earned three sessions ago and the gate it guards reads as
+-- broken. Set at the top of this file, before any PlayerAdded can fire.
+_G.FRESH_PLAYER_TESTING = DISABLE_SAVE_FOR_TESTING
 if DISABLE_SAVE_FOR_TESTING then
 	warn("==================================================================")
 	warn("[NOSAVE] SAVING IS DISABLED FOR EVERY PLAYER -- progress is thrown")
@@ -471,6 +499,7 @@ local TEST_FULL_DATA = false
 local TEST_FULL_DATA_COINS = 9999999
 -- [BALANCE LOGGING] per-session attempt tracking (logging only, no gameplay effect).
 local sessionFlights = {}         -- [player] = total flights this session (one per landing)
+local strandGrantFlight = {}      -- [player] = sessionFlights value at the last anti-strand top-up (one per landing)
 local flightsSinceNewIsland = {}  -- [player] = flights since the last NEW island was reached
 local attemptsPerIsland = {}      -- [player] = { [islandNum] = attempts it took to reach that island }
 -- [BALANCE LOGGING] additional per-session tracking (logging only, no gameplay effect).
@@ -599,6 +628,7 @@ local function savePlayerData(player, trigger)
 		crateTokens      = math.floor(tonumber(_G.playerCrateTokens[player]) or 0), -- COSMETIC currency (skin crates only; never buys food)
 		petSkins         = _G.playerPetSkins[player] or {},                       -- pet skin inventory: ["Pet|Skin|Trait"] = duplicate count
 		equippedSkins    = _G.playerEquippedSkins[player] or {},                  -- which skin+trait each pet is wearing
+		ownedTraits      = _G.playerOwnedTraits[player] or {},                    -- trait wardrobe: bought or pulled, wearable on any pet
 		collection       = _G.playerCollection[player] or {},                     -- collection-book completion + earned titles/auras
 		playtimeSeconds  = _G.playerPlaytimeSec[player] or 0,                     -- total cumulative playtime (drives skin unlocks)
 		islandTimeSec    = _G.playerIslandTimeSec[player] or 0,                   -- playtime(s) at which they reached their highest island (FASTEST CLIMB board)
@@ -822,12 +852,146 @@ local function findIslandModel(islandNum)
 	return nil
 end
 
+-- ===================== WHERE AN ISLAND ACTUALLY LANDED =====================
+-- NO island has a PrimaryPart, so every one of them is placed by MoveTo below, and MoveTo puts the
+-- model's BOUNDING BOX CENTRE on SLOT_POS. That is fine right up until ONE part inside the model sits
+-- a long way from the island -- a block dragged in from a neighbour, something left far overhead --
+-- because the bounding box stretches to swallow it and its centre is then nowhere near the landmass.
+-- MoveTo faithfully puts that centre on SLOT_POS and the ground you can stand on ends up somewhere
+-- else entirely, while the log still cheerfully prints "Positioned ... at Y=<the right number>".
+--
+-- Cabbage Cliffs hit exactly this: "Positioned Island_3_CabbageCliffs at Y=1848" with its stand at
+-- Y=243 and its AFK farm reporting ground 1/5 rays -- the island had dropped ~1605 studs onto Bean
+-- Farm while every other island stayed put to the decimal.
+--
+-- coreCentre() measures the island IGNORING those strays: take the MEDIAN part position (a median
+-- shrugs off a handful of outliers; a mean or a bounding box does not), keep the parts within
+-- OUTLIER_RADIUS of it, and return the centre of THAT box plus the names of what it threw out.
+-- A healthy island excludes nothing, so this is the very centre MoveTo already used and the caller
+-- moves it by zero. Nothing about the other thirteen changes.
+local OUTLIER_RADIUS = 1200 -- studs from the median part. The widest island is ~500 across, ~340 tall.
+local CORRECT_ABOVE  = 25   -- studs of error worth correcting; below this it is float noise.
+
+-- World-axis-aligned half-extents of a part, rotation included -- the same box MoveTo measures.
+local function partHalf(cf: CFrame, sz: Vector3): Vector3
+	local _, _, _, r00, r01, r02, r10, r11, r12, r20, r21, r22 = cf:GetComponents()
+	return Vector3.new(
+		(math.abs(r00) * sz.X + math.abs(r01) * sz.Y + math.abs(r02) * sz.Z) * 0.5,
+		(math.abs(r10) * sz.X + math.abs(r11) * sz.Y + math.abs(r12) * sz.Z) * 0.5,
+		(math.abs(r20) * sz.X + math.abs(r21) * sz.Y + math.abs(r22) * sz.Z) * 0.5
+	)
+end
+
+local function median(t)
+	table.sort(t)
+	local n = #t
+	if n == 0 then return 0 end
+	return t[(n // 2) + 1]
+end
+
+-- Returns centre (Vector3 or nil if the model has no parts), and a list of stray part descriptions.
+local function coreCentre(model)
+	local parts = {}
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") then parts[#parts + 1] = d end
+	end
+	if #parts == 0 then return nil, {} end
+
+	local xs, ys, zs = {}, {}, {}
+	for _, d in ipairs(parts) do
+		local pp = d.Position
+		xs[#xs + 1] = pp.X; ys[#ys + 1] = pp.Y; zs[#zs + 1] = pp.Z
+	end
+	local med = Vector3.new(median(xs), median(ys), median(zs))
+
+	local lo, hi, strays = nil, nil, {}
+	for _, d in ipairs(parts) do
+		if (d.Position - med).Magnitude > OUTLIER_RADIUS then
+			if #strays < 8 then -- a handful is enough to go and find them; do not spam the log
+				strays[#strays + 1] = ("%s at %d, %d, %d (%d studs out)")
+					:format(d:GetFullName(), d.Position.X, d.Position.Y, d.Position.Z, (d.Position - med).Magnitude)
+			end
+		else
+			local h = partHalf(d.CFrame, d.Size)
+			local a, b = d.Position - h, d.Position + h
+			lo = lo and Vector3.new(math.min(lo.X, a.X), math.min(lo.Y, a.Y), math.min(lo.Z, a.Z)) or a
+			hi = hi and Vector3.new(math.max(hi.X, b.X), math.max(hi.Y, b.Y), math.max(hi.Z, b.Z)) or b
+		end
+	end
+	if not lo then return nil, strays end
+	return (lo + hi) * 0.5, strays
+end
+
+-- ANCHOR THE ISLAND BEFORE MOVING IT. An island with UNANCHORED parts obeys physics the moment MoveTo
+-- releases it: the log prints "Positioned ... at Y=1848" and the island then simply FALLS -- 366 studs
+-- gone three seconds later, 2457 by six, resting on Bean Farm one run and below the world the next,
+-- depending on how it tumbles. That is precisely what happened to Cabbage Cliffs on 2026-08-30 (its
+-- parts came unanchored in a Studio edit), and it is why the stray-part correction below kept refusing
+-- to act: the WHOLE island moves together, so nothing ever looks like a stray. Islands are static
+-- scenery -- every part of one should be anchored, and PetSystem already does the same for its quest
+-- markers ("anchored N unanchored quest marker part(s) before the island move"). Anchoring is a plain
+-- property write, so it persists even if the stale duplicate PlayerStats repositions the island after us.
+local function anchorIsland(i, model)
+	local n = 0
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") and not d.Anchored then
+			d.Anchored = true
+			n = n + 1
+		end
+	end
+	if n > 0 then
+		warn(("ISLAND %d (%s): ANCHORED %d unanchored part(s) so the island cannot fall after placement. "
+			.. "Someone unanchored them in Studio -- re-anchor them there (select the model, Anchor) to fix it for good.")
+			:format(i, model.Name, n))
+	end
+	return n
+end
+
+-- Measure island i and, if stray parts have dragged it off SLOT_POS, shift it back on. Returns true if
+-- it moved anything. Safe to call repeatedly: a correctly-placed island measures an offset of ~0 and is
+-- left alone, so every call after the first is a no-op unless something ELSE has moved the island again.
+local function correctIslandPlacement(i, model, why)
+	if not (model and model:IsA("Model") and model.Parent) then return false end
+	local pos = ISLAND_POSITIONS[i]
+	local centre, strays = coreCentre(model)
+	if not centre then return false end
+	local off = Vector3.new(pos.x, pos.y, pos.z) - centre
+	if off.Magnitude <= CORRECT_ABOVE then return false end
+	if #strays == 0 then
+		-- No stray to blame. Offsets up to a few hundred studs here are usually NOISE: runtime builders
+		-- (garden, AFK farms, campfires, leaderboard) parent new parts INTO the island models after
+		-- placement, which legitimately shifts the measured box without the island being wrong -- so only
+		-- say anything for a drift too big for props to explain. Either way, never move the island on a
+		-- no-stray measurement: if it really is drifting whole (unanchored parts falling), anchorIsland
+		-- is the cure, and shoving it around mid-fall just relocates the crash site.
+		if off.Magnitude > 500 then
+			warn(("ISLAND %d: measured %d studs off SLOT_POS with no stray part to blame -- the island itself "
+				.. "has MOVED since placement (falling unanchored parts?). Re-anchoring; if this repeats, check "
+				.. "it in Studio with tools/IslandAudit.studio.luau. [%s]"):format(i, off.Magnitude, why))
+			pcall(function() anchorIsland(i, model) end)
+			-- Now that nothing can fall, put it back where it belongs.
+			pcall(function() model:PivotTo(model:GetPivot() + off) end)
+			warn(("ISLAND %d: moved back onto SLOT_POS (by %d, %d, %d) now that it is anchored. [%s]")
+				:format(i, off.X, off.Y, off.Z, why))
+			return true
+		end
+		return false
+	end
+	pcall(function() model:PivotTo(model:GetPivot() + off) end)
+	warn(("ISLAND %d (%s): was %d studs off SLOT_POS (bounding box stretched by stray part(s)). "
+		.. "CORRECTED by %d, %d, %d [%s]. Fix it properly in Studio -- delete/move these out of the model:")
+		:format(i, model.Name, off.Magnitude, off.X, off.Y, off.Z, why))
+	for _, sname in ipairs(strays) do warn("      STRAY: " .. sname) end
+	return true
+end
+
 task.spawn(function()
 	task.wait(2)
 	for i, iname in ipairs(ISLAND_NAMES) do
 		local model = findIslandModel(i)
 		local pos = ISLAND_POSITIONS[i]
 		if model then
+			pcall(function() anchorIsland(i, model) end) -- MUST run before MoveTo or the island falls (see anchorIsland)
 			pcall(function()
 				if model:IsA("Model") then
 					if model.PrimaryPart then
@@ -851,6 +1015,12 @@ task.spawn(function()
 					print("ROTATED island "..i.." ("..iname..") by "..rotDeg.." deg about Y (visual only)")
 				end)
 			end
+
+			-- MoveTo aimed the BOUNDING BOX centre at SLOT_POS. If stray parts dragged that box off the
+			-- island then the landmass is NOT at the Y the "Positioned" line above just printed -- measure
+			-- the island itself and shift it the rest of the way (after the rotation, so a spin about the
+			-- same bad centre gets straightened too). See correctIslandPlacement for the rules.
+			correctIslandPlacement(i, model, "initial placement")
 			for _, obj in ipairs(model:GetDescendants()) do
 				if obj:IsA("ProximityPrompt") and not isTutorialNpc(obj, model) and (obj.ObjectText == "Stand" or obj.ObjectText == "Buy Food" or obj.ObjectText == "") then
 					obj:SetAttribute("IslandNumber", i)
@@ -861,6 +1031,22 @@ task.spawn(function()
 			end
 		else
 			print("WARNING: "..iname.." not found in workspace")
+		end
+	end
+
+	-- RE-ASSERT. BootCheck reports "PlayerStats 2 copies": a STALE copy of this script is baked into the
+	-- place and runs this same positioning loop WITHOUT correctIslandPlacement, on its own task.wait(2).
+	-- If it fires after the loop above, its MoveTo re-breaks any island with stray parts (Cabbage Cliffs
+	-- fell 1605 studs this way even after the correction shipped). Until that duplicate is deleted in
+	-- Studio, sweep again a few times so the corrected placement always has the last word. Each sweep is
+	-- a no-op on healthy islands, so this costs nothing once the duplicate is gone.
+	for _, delay in ipairs({ 3, 6, 12, 25 }) do
+		task.wait(delay)
+		for i = 1, #ISLAND_NAMES do
+			local model = findIslandModel(i)
+			if model then
+				correctIslandPlacement(i, model, "re-assert +" .. delay .. "s -- something re-broke it (stale duplicate PlayerStats?)")
+			end
 		end
 	end
 end)
@@ -1002,6 +1188,7 @@ task.spawn(function()
 		print("STAND DATA ISLAND", k, v.x, v.y, v.z)
 	end
 	print("STANDS SETUP COMPLETE:", count, "/ 14")
+	_G.islandStandData = standData -- read-only for other servers scripts (Campfire picks the story fire nearest stand 1)
 
 	-- Publish island-1's REAL detected stand + a readiness flag so the tutorial-NPC spawner can place
 	-- the Farmer at the actual stand AFTER detection is done. The Farmer lives in ServerStorage (never
@@ -1069,7 +1256,7 @@ Players.PlayerAdded:Connect(function(player)
 
 	local ls = Instance.new("Folder"); ls.Name = "leaderstats"; ls.Parent = player
 	local coins  = Instance.new("IntValue"); coins.Name  = "Coins";          coins.Value  = saved.coins or DEFAULT_COINS;        coins.Parent  = ls
-	if DISABLE_SAVE_FOR_TESTING then coins.Value = DEFAULT_COINS end -- [NOSAVE TEST] \xE2\x9A\xA0 force a fresh 25-coin start, IGNORING any saved coin value. REMOVE BEFORE LAUNCH.
+	if DISABLE_SAVE_FOR_TESTING then coins.Value = DEFAULT_COINS end -- [NOSAVE TEST] \xE2\x9A\xA0 force a fresh 2,000-coin start, IGNORING any saved coin value. REMOVE BEFORE LAUNCH.
 	if TEST_FULL_DATA then coins.Value = TEST_FULL_DATA_COINS end -- [TEST] unlimited coins to sample every tier's reach without grinding
 	local island = Instance.new("IntValue"); island.Name = "Island";         island.Value = math.max(saved.island or DEFAULT_ISLAND, saved.highestIsland or DEFAULT_ISLAND); island.Parent = ls
 	local tfp    = Instance.new("IntValue"); tfp.Name    = "TotalFartPower"; tfp.Value    = saved.totalFartPower or 0;           tfp.Parent    = ls
@@ -1148,6 +1335,11 @@ Players.PlayerAdded:Connect(function(player)
 	_G.playerCrateTokens[player]   = math.floor(tonumber(saved.crateTokens) or 0)
 	_G.playerPetSkins[player]      = saved.petSkins or {}
 	_G.playerEquippedSkins[player] = saved.equippedSkins or {}
+	-- The trait wardrobe. A save written before the Pet Hut's Customize counter existed loads as an empty set;
+	-- SkinCrateService BACK-FILLS it from the skin inventory on join (skinCrateApplyOnJoin), so a trait this
+	-- player already pulled is wearable straight away. Without that back-fill their old King would be stuck on
+	-- the one pet it landed on while every new pull went to the wardrobe -- the same trait behaving two ways.
+	_G.playerOwnedTraits[player]   = saved.ownedTraits or {}
 	-- A save written before the collection existed loads as an empty table; SkinCrateService's collection()
 	-- back-fills the missing fields, then its first pushState re-derives completion from the inventory -- so an
 	-- existing player who already owns a full set is credited on their next join rather than having to re-earn it.
@@ -1384,27 +1576,45 @@ BuyFoodEvent.OnServerEvent:Connect(function(player, foodName)
 		pcall(function() StomachFullEvent:FireClient(player, "food_locked", food.name, foodIsland) end)
 		return
 	end
-	-- FAILURE CHECK 0b (NO SHOPPING BELOW YOUR FEET): you cannot buy food from an island BELOW the one
-	-- you are standing on. The ceiling above is "have you earned this rung"; this is the floor.
+	-- ===== THERE IS NO FLOOR ANY MORE: COINS ARE THE LIMIT =====
+	-- There used to be a FAILURE CHECK 0b here refusing any food from an island BELOW the one you were
+	-- standing on ("food_below_island"). It was there to stop island 13 being played by buying beans, but it
+	-- broke the thing the shop is FOR: on island 1 your coins turn straight into food, and on every island
+	-- above it they stop doing that. Stood on island 4 with 150 coins, Turnips (94) are the only legal
+	-- purchase -- one of them, and the other 56 coins buy nothing at all, on an island whose gut you cannot
+	-- fill with whole turnips anyway. Island 1 spends every coin; island 4 stranded them.
 	--
-	-- WHY: the early foods are the best coins-per-power in the game, so the optimal play on island 13 was
-	-- to keep buying BEANS rather than the food actually sold there -- the whole price ladder was
-	-- decorative, and every island's own food was a trap. A floor at your current island makes the local
-	-- food the cheapest thing you can actually buy, which is what the ladder was designed around.
+	-- So the only gate left is the CEILING above (have you reached this food's island) and the price. What
+	-- you can buy is what you have unlocked, and how much of it is what your coins allow -- the same rule on
+	-- island 14 as on island 1.
 	--
-	-- The floor is WHERE YOU ARE STANDING, not the highest island you have reached: on island 1 nothing is
-	-- blocked (you may still buy island 13's food if you have unlocked it), and the restriction tightens
-	-- only as you climb. Physical position, so it is the same authority the landing detection uses.
-	--
-	-- Unknown position (mid-air, character still loading) does NOT block: islandUnderCharacter returns nil
-	-- there, and refusing a purchase because a raycast missed would be a random unexplained failure. You
-	-- cannot reach a stand mid-flight anyway, so there is nothing to exploit in letting nil through.
-	local charNow    = player.Character
-	local standingOn = charNow and islandUnderCharacter and islandUnderCharacter(charNow) or nil
-	if standingOn and foodIsland < standingOn then
-		print("FOOD TOO LOW:", player.Name, food.name, "is island", foodIsland, "but standing on", standingOn)
-		pcall(function() StomachFullEvent:FireClient(player, "food_below_island", food.name, standingOn) end)
-		return
+	-- KNOWN TRADE-OFF, deliberately accepted: the early foods are still the best power-per-coin in the game
+	-- (Beans 1.60, Popcorn 0.40), so buying beans stays mathematically optimal at altitude. That is a PRICE
+	-- TABLE problem -- see the "food prices are not monotonic" note in CLAUDE.md -- and the fix belongs in
+	-- the prices, not in a rule that stops players spending their money.
+	-- ===== ANTI-STRAND: a dry landing is never a dead end =====
+	-- If the player lands DRY and cannot afford any meal they have unlocked, grant exactly enough for ONE
+	-- serving of the food on the island they are standing on. Once per landing (keyed on sessionFlights) so
+	-- it cannot be farmed by hopping. The free meal must never hand over a crossing: one serving is at most
+	-- 36% of a crossing (the tutorial, c1) and under 20% everywhere else. An earlier design priced the top-up
+	-- against FlightTuning.powerShortfall() and that handed over a WHOLE crossing on the first dry landing.
+	if coins.Value < food.price and currentPower and currentPower.Value <= 0 then
+		local cheapest = math.huge
+		for _, f in ipairs(foods) do
+			if (tonumber(f.island) or 1) <= reachedIsland and f.price < cheapest then cheapest = f.price end
+		end
+		local flightNow = sessionFlights[player] or 0
+		if coins.Value < cheapest and strandGrantFlight[player] ~= flightNow then
+			local hereIsland = math.clamp((lsIslandStat and lsIslandStat.Value) or 1, 1, #foods)
+			local localFood = foods[hereIsland]
+			for _, f in ipairs(foods) do if f.island == hereIsland then localFood = f; break end end
+			local grant = localFood.price - coins.Value
+			if grant > 0 then
+				strandGrantFlight[player] = flightNow
+				coins.Value = coins.Value + grant
+				print(("[ANTI-STRAND] %s landed dry with %d coins -> +%d for one %s"):format(player.Name, coins.Value - grant, grant, localFood.name))
+			end
+		end
 	end
 	-- FAILURE CHECK 1 (COINS FIRST — the common blocker): not enough coins -> "not_enough_coins".
 	if coins.Value < food.price then
@@ -1466,21 +1676,20 @@ CoinEvent.OnServerEvent:Connect(function(player, amount)
 	--
 	-- ===== WHY THIS IS A BUDGET AND NOT AN EXACT RECOMPUTE =====
 	-- The honest fix is for the server to work out flight coins itself and stop trusting the client for the
-	-- figure at all. That is a real refactor: the formula, the per-flight cap, the peak-height ceiling and
-	-- the 0.70 payout scalar all live in CoreClient and are tuned there, so moving them is an economy change
-	-- as much as a security one. This bounds the hole hard without touching balance -- see the note at the
-	-- bottom of this handler for what is still open.
+	-- figure at all. That is a real refactor: the per-stud payout, the descent prepay and the apex settle
+	-- all live in CoreClient's flight loop. This bounds the hole hard without touching balance.
 	--
 	-- ===== THE NUMBERS ARE SIZED OFF REAL WORST CASES, NOT GUESSED =====
 	-- Two very different legitimate sources arrive on this same remote:
-	--   * FLIGHT TICKS, twice a second: height * 0.0044 * serverEventCoinMult * 0.70. serverEventCoinMult
-	--     peaks at 2 (COIN_RUSH), so at Pizza Palms altitude (~24,000) that is ~148 per call.
-	--   * RING BONUSES, bursty: floor(15 * (1 + ringStreak * 0.2) * serverEventRingMult). ringStreak resets
-	--     on landing, but serverEventRingMult reaches 10 during a ring event -- so a long streak in that
-	--     event legitimately pays ~1,650 in ONE call, at ANY altitude.
-	-- That second case is why this cannot be a purely height-derived cap: a ring bonus down at the farm
-	-- would be rejected and the player would silently lose coins they earned. The flat allowance exists
-	-- specifically to cover it.
+	--   * FLIGHT TICKS, every COIN_TICK (0.23s): studs travelled * COIN_PER_STUD (3.52) -- x3 on a failed
+	--     flight (the 2x descent bonus) -- * serverEventCoinMult (peaks at 2, COIN_RUSH). The biggest
+	--     honest tick is an Iron Gut falling at terminal speed during COIN_RUSH: ~5.4k.
+	--   * PICKUP BONUSES, bursty: a set amount priced off the player's island (15% of their current meal
+	--     for a coin bubble, half that for a gas one, so 190..460 and 100..230), * serverEventRingMult,
+	--     which reaches 10 during a ring event -- so one bubble at the summit legitimately pays ~4,600 in
+	--     ONE call, at ANY altitude. That is under COIN_MAX_SINGLE (8,000) with room to spare.
+	-- That second case is why the window has a flat allowance on top of the per-gut flight budget: a ring
+	-- bonus down at the farm must never be rejected and silently rob the player.
 	if amt ~= amt or amt == math.huge or amt == -math.huge then return end -- NaN / inf
 	if amt <= 0 then return end
 	if amt > COIN_MAX_SINGLE then
@@ -1506,14 +1715,16 @@ CoinEvent.OnServerEvent:Connect(function(player, amount)
 			end
 			return
 		end
-		-- BUDGET. Altitude is the one input the server can verify for itself, so the ceiling grows with it:
-		-- a player genuinely up at Pizza Palms is allowed to earn far more per second than one on the farm.
-		local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-		local height = math.max(0, hrp and hrp.Position.Y or 0)
-		local budget = COIN_FLAT_BUDGET + height * COIN_PER_HEIGHT
+		-- BUDGET. The gut is the one input the server owns outright, so the ceiling is "one full flight on
+		-- this gut, failed, during COIN_RUSH" -- the most any honest window can carry.
+		local sm = ls:FindFirstChild("StomachMax")
+		local gutMax = (sm and sm.Value) or 120
+		local oneFlight = FlightTuning.fullTankClimb(gutMax) * FlightTuning.COIN_PER_STUD
+			* (1 + FlightTuning.DESCENT_PAY_MULT) * COIN_EVENT_PEAK
+		local budget = COIN_FLAT_BUDGET + oneFlight
 		if (w.spent + amt) > budget then
-			warn(("[SECURITY] %s exceeded the coin budget (%.0f + %.0f > %.0f at height %.0f) -- rejected")
-				:format(player.Name, w.spent, amt, budget, height))
+			warn(("[SECURITY] %s exceeded the coin budget (%.0f + %.0f > %.0f on a %d gut) -- rejected")
+				:format(player.Name, w.spent, amt, budget, gutMax))
 			return
 		end
 		w.spent = w.spent + amt
@@ -1522,6 +1733,11 @@ CoinEvent.OnServerEvent:Connect(function(player, amount)
 	-- RewardsService (friend-in-server +25%, MLR group +10%, stackable). Flat rewards (codes) are granted directly, unaffected.
 	amt = amt * ((_G.coinBonusMult and _G.coinBonusMult[player]) or 1)
 	amt = amt * ((_G.rebirthMult and _G.rebirthMult[player]) or 1) -- REBIRTH coin boost (stacks on top of the friend/group boost)
+	-- PET: PIZZA DRAGON'S "DRAGON'S HOARD" (+8%..+40% at level 25). Applied HERE, inside the same chain as the
+	-- friend/group and rebirth boosts and AFTER the budget check above -- so the bonus scales what the player
+	-- legitimately earned and can never be used to buy headroom past the anti-cheat ceiling. Server-resolved
+	-- from the equipped pet by PetAbilityService; the client is never asked and never trusted for it.
+	if _G.petAbility then amt = amt * _G.petAbility(player, "coinAll") end
 	-- SHADY SAL'S 2x COINS: bought for coins at the secret cave trader. The attribute is an EXPIRY set with
 	-- the server clock by SecretTrader.server.lua, and it is checked HERE, server-side, at the moment coins
 	-- are banked -- so a client can neither fake a boost nor stretch one past its five minutes.
@@ -1894,6 +2110,7 @@ Players.PlayerRemoving:Connect(function(player)
 	hasChosenIsland[player] = nil
 	spawnIsland[player] = nil
 	sessionFlights[player] = nil
+	strandGrantFlight[player] = nil
 	flightsSinceNewIsland[player] = nil
 	attemptsPerIsland[player] = nil
 	-- [BALANCE LOGGING] clean up the added tracking tables.
@@ -2120,7 +2337,16 @@ local function triggerBirdNuke(buyer)
 	-- Fire to all clients NOW: boom sound + swarm + nuke visual play immediately; each VICTIM's client
 	-- kills its own character on this same event (the buyer is spared client-side).
 	if BirdNukeEvent then
-		pcall(function() BirdNukeEvent:FireAllClients(buyer.Name) end)
+		-- HOW MANY PEOPLE THIS ACTUALLY HIT, sent with the event. The buyer's client slams it on screen
+		-- ("9 PLAYERS SENT HOME!") -- without it the one person who paid for this has no idea whether it
+		-- landed on nine players or on nobody. Counted here because the server is the only place that
+		-- knows, and sent to everyone because it costs nothing and only the buyer's branch reads it.
+		local victims = 0
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr ~= buyer then victims = victims + 1 end
+		end
+		pcall(function() BirdNukeEvent:FireAllClients(buyer.Name, victims) end)
+		print(("[BirdNuke] %s nuked %d player(s)"):format(buyer.Name, victims))
 	end
 	-- Purchase banner ("[name] bought Bird Nuke!") — same as before.
 	fireProductAnnouncement(buyer, PRODUCT_IDS.BirdNuke)
@@ -2356,15 +2582,52 @@ local eventPool = {
 	-- stays "LOW_GRAVITY" so the client handler (EventClient ~938) and all mechanics
 	-- (speed/gas-drain multipliers, weight, 10s duration) are completely unchanged.
 	{name="LOW_GRAVITY",  dispName="\xF0\x9F\x8C\x99 HIGH GRAVITY",  weight=15, dur=10, msg="\xF0\x9F\x8C\x99 HIGH GRAVITY! Float like a cloud for 10 seconds!",        r=150,g=100,b=255},
-	{name="POWER_SURGE",  dispName="\xE2\x9A\xA1 POWER SURGE",      weight=15, dur=20, msg="\xE2\x9A\xA1 POWER SURGE! Fly higher than ever for 20 seconds!",          r=255,g=255,b=0},
+	{name="POWER_SURGE",  dispName="\xE2\x9A\xA1 POWER SURGE",      weight=15, dur=8,  msg="\xE2\x9A\xA1 POWER SURGE! Fly higher than ever for 8 seconds!",          r=255,g=255,b=0},
 	{name="RING_FEVER",   dispName="\xF0\x9F\x8E\xAF RING FEVER",   weight=15, dur=30, msg="\xF0\x9F\x8E\xAF RING FEVER! Massive ring bonuses for 30 seconds!",       r=255,g=100,b=200},
 	-- 60s (was 25). This is the ONE authority for the length: the server broadcasts `dur` alongside the event
 	-- name and EventClient's startThunderstorm(dur) uses whatever arrives -- its own `or 25` is only a
 	-- fallback for a broadcast that somehow carries no duration, so it does NOT need changing to match.
 	-- Campfires stay doused for the whole storm plus their 10s dry-out, so they are now out for ~70s.
-	{name="THUNDERSTORM", dispName="\xe2\x9b\x88 THUNDERSTORM",     weight=15, dur=60, msg="\xe2\x9b\x88\xef\xb8\x8f THUNDERSTORM! Hard to see!",                    r=50, g=50, b=80},
+	{name="THUNDERSTORM", dispName="\xe2\x9b\x88 THUNDERSTORM",     weight=15, dur=40, msg="\xe2\x9b\x88\xef\xb8\x8f THUNDERSTORM! Hard to see!",                    r=50, g=50, b=80},
 	{name="WINDSTORM",    dispName="\xF0\x9F\x92\xA8 WIND STORM",   weight=10, dur=20, msg="\xF0\x9F\x92\xA8 WIND STORM! Fighting the wind!",                        r=100,g=150,b=200},
 }
+
+-- ===== THE 20-SECOND HEADS-UP =====
+-- Only for events that WORK AGAINST the player. A buff arriving unannounced is a pleasant
+-- surprise; a hazard arriving unannounced mid-flight is a crossing lost to something the
+-- player could not see coming, which is the one thing the tower's spacing cannot absorb.
+--
+-- THE THREE THAT QUALIFY, and why each one is a hazard and not a buff:
+--   THUNDERSTORM -- fog to 60 studs while flying (you cannot see the island you are aiming at)
+--                   plus a 90-force wind that buffets you off line. Also douses every campfire.
+--   WINDSTORM    -- a shifting wind you have to fly against for its whole duration.
+--   LOW_GRAVITY  -- shown as "HIGH GRAVITY": serverEventSpeedMult = 0.5, i.e. HALF SPEED. The
+--                   gas-drain cut (0.1) softens it but the climb still crawls.
+-- NOT warned, because they only ever help: FART_STORM, COIN_RUSH, POWER_SURGE, RING_FEVER.
+--
+-- Warn, wait, THEN fire -- so the event still runs exactly as before, just 20s later. Landing
+-- before it starts is the whole point: 20s is one full flight on a Tiny Gut with room to spare.
+local EVENT_WARN_SECONDS = 20
+local EVENT_WARNED = { THUNDERSTORM = true, WINDSTORM = true, LOW_GRAVITY = true }
+
+-- Just the broadcast, no wait. Split out from warnBeforeEvent so the /warning test command can put
+-- the banner + alarm on screen WITHOUT an event behind it -- that is the only way to check the
+-- warning itself (its wording, its lane, its six beats) without sitting through a 40s storm after it.
+local function sendEventWarning(ev, secs)
+	secs = secs or EVENT_WARN_SECONDS
+	pcall(function()
+		EventWarnEvent:FireAllClients(ev.dispName or ev.name, secs, Color3.fromRGB(ev.r, ev.g, ev.b))
+	end)
+end
+
+-- Fires the heads-up and waits it out. Returns immediately for an event nobody needs warning about,
+-- so callers can put it in front of every broadcast without special-casing the friendly ones.
+local function warnBeforeEvent(ev)
+	if not (ev and EVENT_WARNED[ev.name]) then return end
+	print("[EventWarn] " .. tostring(ev.name) .. " in " .. EVENT_WARN_SECONDS .. "s -- warning players")
+	sendEventWarning(ev)
+	task.wait(EVENT_WARN_SECONDS)
+end
 
 local function pickRandomEvent()
 	return eventPool[math.random(1, #eventPool)]
@@ -2380,15 +2643,23 @@ task.spawn(function()
 		eventsFiredCount = eventsFiredCount + 1
 		eventsFiredTally[ev.name] = (eventsFiredTally[ev.name] or 0) + 1
 		print("NEXT EVENT:", ev.name, "(server events fired so far:", eventsFiredCount..")")
+		warnBeforeEvent(ev)   -- hazards only; returns instantly for a buff
 		pcall(function()
 			ServerEventNotify:FireAllClients(ev.name, ev.dispName, ev.dur, ev.msg, Color3.fromRGB(ev.r, ev.g, ev.b))
 		end)
 		workspace:SetAttribute("ActiveServerEvent", ev.name) -- server-readable flag (e.g. the campfire douses in THUNDERSTORM)
+		-- TWO MORE ATTRIBUTES, for anything that wants to SHOW the event rather than react to it (the blimp's
+		-- WHAT'S ON page). ActiveServerEvent is the internal key (THUNDERSTORM); this is the name a player
+		-- should read, plus when it ends so a countdown can be drawn without guessing the duration.
+		workspace:SetAttribute("ActiveServerEventName", ev.dispName or ev.name)
+		workspace:SetAttribute("ActiveServerEventEndsAt", os.time() + ev.dur)
 		task.wait(ev.dur + 2)
 		pcall(function()
 			ServerEventNotify:FireAllClients("END", "", 0, "", Color3.new(1,1,1))
 		end)
 		workspace:SetAttribute("ActiveServerEvent", "")
+		workspace:SetAttribute("ActiveServerEventName", "")
+		workspace:SetAttribute("ActiveServerEventEndsAt", 0)
 		task.wait(240)
 	end
 end)
@@ -2402,17 +2673,24 @@ end)
 -- \xE2\x9A\xA0 TEST COMMANDS allowed for: lando5485, Broskie310111. REMOVE BEFORE LAUNCH.
 -- (The shared ALLOWED_TEST_USERS list + isAllowedTestUser() are defined near the top of this file so the
 -- island-select all-unlock and these chat commands can both use them. /thunderstorm checks it below.)
-local function fireThunderstormNow()
+-- skipWarning=true (the /skipthunderstorm test command) drops straight into the storm with no 20s
+-- heads-up -- for testing the storm itself, when you have already watched the countdown enough times.
+local function fireThunderstormNow(skipWarning)
 	local ev
 	for _, e in ipairs(eventPool) do if e.name == "THUNDERSTORM" then ev = e break end end
 	if not ev then return end
+	if not skipWarning then warnBeforeEvent(ev) end   -- /thunderstorm runs the REAL path, warning included
 	pcall(function()
 		ServerEventNotify:FireAllClients(ev.name, ev.dispName, ev.dur, ev.msg, Color3.fromRGB(ev.r, ev.g, ev.b))
 	end)
 	workspace:SetAttribute("ActiveServerEvent", ev.name)
+	workspace:SetAttribute("ActiveServerEventName", ev.dispName or ev.name)   -- same pair the random loop sets
+	workspace:SetAttribute("ActiveServerEventEndsAt", os.time() + ev.dur)
 	task.delay(ev.dur + 2, function() -- end it after its duration, exactly like the random loop does
 		pcall(function() ServerEventNotify:FireAllClients("END", "", 0, "", Color3.new(1,1,1)) end)
 		workspace:SetAttribute("ActiveServerEvent", "")
+		workspace:SetAttribute("ActiveServerEventName", "")
+		workspace:SetAttribute("ActiveServerEventEndsAt", 0)
 	end)
 end
 -- \xE2\x9A\xA0 TEST: quick "get<tier>gut" chat commands to grab any gut tier instantly (for belly/flight testing).
@@ -2455,7 +2733,38 @@ local function handleTestChat(player, msg)
 		elseif cmd == "/thunderstorm" then
 			if not isAllowedTestUser(player) then return end -- shared test-user allow-list (lando5485 + the two test accounts)
 			print("[TEST] /thunderstorm command used by " .. player.Name .. " - firing thunderstorm event. REMOVE BEFORE LAUNCH.")
-			fireThunderstormNow()
+			-- SPAWNED: fireThunderstormNow now yields for the 20s hazard warning, and this is a chat
+			-- callback -- yielding in here would hold up the command handler for the whole countdown.
+			task.spawn(fireThunderstormNow)
+		elseif cmd == "/skipthunderstorm" then
+			if not isAllowedTestUser(player) then return end
+			print("[TEST] /skipthunderstorm used by " .. player.Name .. " - storm NOW, no 20s warning. REMOVE BEFORE LAUNCH.")
+			task.spawn(fireThunderstormNow, true)
+		elseif cmd:match("^/warning") then
+			-- â  TEST COMMAND /warning <event> -- shows the 20s hazard heads-up ON ITS OWN, with no
+			-- event behind it. REMOVE BEFORE LAUNCH. `/warning` alone means thunderstorm.
+			--
+			-- Deliberately NOT restricted to the three events that normally warn: forcing the banner for a
+			-- buff is how you check the wording and the lane without waiting for a storm to come round.
+			-- The print says whether the event you named is one that warns for real, so a test cannot be
+			-- mistaken for evidence that COIN_RUSH warns players.
+			if not isAllowedTestUser(player) then return end
+			local want = cmd:match("^/warning%s+(.+)$")
+			want = (want or "thunderstorm"):gsub("[%s_]", ""):upper()
+			local ev
+			for _, e in ipairs(eventPool) do
+				if e.name:gsub("_", "") == want then ev = e break end
+			end
+			if not ev then
+				local names = {}
+				for _, e in ipairs(eventPool) do names[#names + 1] = e.name:lower() end
+				warn("[TEST] /warning: no event called '" .. want .. "'. Try one of: " .. table.concat(names, ", "))
+			else
+				print(("[TEST] /warning %s used by %s -- banner + alarm only, NO event will fire. "
+					.. "(this event %s in normal play). REMOVE BEFORE LAUNCH.")
+					:format(ev.name, player.Name, EVENT_WARNED[ev.name] and "DOES warn" or "does NOT warn"))
+				sendEventWarning(ev)
+			end
 		elseif cmd == "/allpets" then -- \xE2\x9A\xA0 TEST COMMAND /allpets - grants all pets to test accounts. REMOVE BEFORE LAUNCH.
 			if not isAllowedTestUser(player) then return end -- same allow-list as the other test commands (non-test players: ignored)
 			-- Report what actually happened: the old form pcall'd the grant then printed success
@@ -2552,8 +2861,12 @@ do
 		reg("TestGutCommand2",       "/getmediumgut", "/getlargegut")
 		reg("TestGutCommand3",       "/getxlgut",     "/getirongut")
 		reg("TestGutCommand4",       "/getinfinitegut")
+		-- Takes an argument ("/warning windstorm"). A TextChatCommand matches on the FIRST word and
+		-- hands the whole line to Triggered, so the event name survives -- handleTestChat parses it.
+		reg("TestWarningCommand",    "/warning")
+		reg("TestSkipStormCommand",  "/skipthunderstorm")
 	end)
-	if ok then print("[TEST] chat commands registered with TextChatService (/allpets /rarepets /10pets /thunderstorm /offline /goisland /get*gut)")
+	if ok then print("[TEST] chat commands registered with TextChatService (/allpets /rarepets /10pets /thunderstorm /skipthunderstorm /warning /offline /goisland /get*gut)")
 	else warn("[TEST] TextChatService command registration failed: " .. tostring(err)) end
 end
 
@@ -2599,30 +2912,10 @@ LandingEvent.OnServerEvent:Connect(function(player, remainingPower, birdHit, rea
 	local newVal = math.clamp(reported, 0, cp.Value)
 	if newVal ~= cp.Value then
 		cp.Value = newVal
-		pcall(function() RegenEvent:FireClient(player, 0, newVal, sm and sm.Value or 100) end)
+		pcall(function() RegenEvent:FireClient(player, 0, newVal, sm and sm.Value or 120) end)
 	end
 	lastMeter[player] = cp.Value -- snapshot the last-known live meter for SAVE (so a later respawn-zero can't persist a stale 0)
 end)
-
--- On a stomach purchase, FILL the fart meter to just reach the NEXT island — the one in front of the player
--- (highestIslandReached + 1, e.g. 6 -> 7) — plus a small grace so they clear it, but NOT enough to reach the
--- island after that. Reach model matches getMaxHeight (CoreClient): height = 50 + power*14, so the power to
--- reach island Y is (Y - 50)/14. The fill is capped at the new tank's max. RegenEvent replicates it to the
--- client's gas meter. (10% grace stays safely below the after-next island for every island pair.)
-local NEXT_ISLAND_GRACE = 0.10 -- +10% over the exact power = "a bit more than exactly to the island"
-local function fillMeterForNextIsland(player, ls, newMaxN)
-	local cp = ls:FindFirstChild("CurrentPower"); if not cp then return end
-	local curIsland  = highestIslandReached[player] or 1
-	local nextIsland = math.min(curIsland + 1, #ISLAND_POSITIONS)
-	local yNext = (ISLAND_POSITIONS[nextIsland] and ISLAND_POSITIONS[nextIsland].y) or 0
-	local powerForNext = math.max(0, (yNext - 50) / 14)                 -- exact power to reach that island
-	local target = powerForNext * (1 + NEXT_ISLAND_GRACE)              -- + grace so they clear it
-	local fill = math.clamp(math.floor(target + 0.5), 0, newMaxN)      -- never exceed the tank's max
-	cp.Value = fill
-	pcall(function() RegenEvent:FireClient(player, 0, fill, newMaxN) end)
-	print(string.format("[STOMACH FILL] %s bought gut (max=%d) -> meter filled to %d for island %d (need %d + %d%% grace, Y=%d)",
-		player.Name, newMaxN, fill, nextIsland, math.floor(powerForNext), math.floor(NEXT_ISLAND_GRACE * 100), yNext))
-end
 
 BuyStomachEvent.OnServerEvent:Connect(function(player, newMax, cost)
 	local ls = player:FindFirstChild("leaderstats"); if not ls then return end
@@ -2684,10 +2977,19 @@ BuyStomachEvent.OnServerEvent:Connect(function(player, newMax, cost)
 	coins.Value = coins.Value - costN
 	coinsSpentOnGuts[player] = (coinsSpentOnGuts[player] or 0) + costN -- [BALANCE LOGGING] track gut spend
 	stomachMaxStat.Value = newMaxN
-	-- FILL the fart meter to JUST reach the NEXT island (the one in front of the player) + a little grace,
-	-- capped at the new tank's max — so buying a stomach directly enables reaching that island, and only that
-	-- one (not the island after it). Replaces the old carry-over behavior.
-	fillMeterForNextIsland(player, ls, newMaxN)
+	-- ===== A GUT ARRIVES EMPTY (FlightTuning.COURTESY_FRACTION = 0) =====
+	-- It used to come FULL. That handed out a free crossing with every purchase: the wall crossing the gut
+	-- was bought for was always cleared on the very next launch, and the most meaningful decision in the
+	-- game turned into a cutscene. Now you buy the gut, then go and earn a meal for it -- the purchase is a
+	-- step, not a teleport. Whatever was already in the tank is KEPT (fuel is never wiped), just re-sent so
+	-- the client's meter re-scales against the bigger max.
+	do
+		local cp = ls:FindFirstChild("CurrentPower")
+		if cp then
+			cp.Value = math.clamp(cp.Value, 0, newMaxN)
+			pcall(function() RegenEvent:FireClient(player, 0, cp.Value, newMaxN) end)
+		end
+	end
 	local tierNameStr = "Gut"
 	for _, t in ipairs(stomachTiers) do
 		if t.maxPower == newMaxN then tierNameStr = t.name; break end

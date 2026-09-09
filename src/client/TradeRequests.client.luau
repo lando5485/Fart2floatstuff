@@ -797,13 +797,18 @@ end
 -- SERVER MESSAGES
 --======================================================================
 ReqInbox.OnClientEvent:Connect(function(l)
+-- Someone wants to trade. Light: this arrives unprompted and may arrive repeatedly.
+if _G.hapticPulse then pcall(_G.hapticPulse, "tock") end
 	if type(l) ~= "table" then return end
 	inbox = l
 	table.sort(inbox, function(a, b) return (tonumber(a.at) or 0) > (tonumber(b.at) or 0) end)
 	if #inbox > 0 then
 		local who = (#inbox == 1) and (inbox[1].fromName or "A player") or (#inbox .. " players")
-		toast("\xF0\x9F\x94\x81 " .. who .. " want" .. ((#inbox == 1) and "s" or "") ..
-			" to trade! Check PETS \xE2\x86\x92 Trade \xE2\x86\x92 Friends.", GOLD)
+		-- FOUR WORDS. This used to append "Check PETS -> Trade -> Friends", which put the line at 66 characters
+		-- -- NotifyCenter warns about anything over 42, and this tripped it on every request that arrived. The
+		-- route is already on screen: the trade overlay's FRIENDS tab wears a badge with the count on it, and
+		-- that is what a player follows. The banner's job is only to say that something is waiting.
+		toast("ð " .. who .. " want" .. ((#inbox == 1) and "s" or "") .. " to trade!", GOLD)
 	end
 	refreshTab()
 	if open then rebuild() end

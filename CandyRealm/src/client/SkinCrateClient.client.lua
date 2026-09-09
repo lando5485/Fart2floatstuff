@@ -1779,7 +1779,7 @@ local function buildCell(parent, x, item)
 		do local g = Instance.new("UIGradient"); g.Rotation = 90; g.Parent = disc
 			g.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), PetTraits.color(item.trait) or tierCol) end
 		mkLabel(disc, {
-			Text = "â¨", Font = Enum.Font.FredokaOne, TextSize = 56, TextScaled = true,
+			Text = "\xE2\x9C\xA8", Font = Enum.Font.FredokaOne, TextSize = 56, TextScaled = true,
 			TextColor3 = Color3.fromRGB(66, 18, 42), Size = UDim2.new(1, -22, 1, -22),
 			Position = UDim2.new(0, 11, 0, 11),
 		})
@@ -2241,7 +2241,7 @@ local function openReveal(crate, result)
 		resultTrait.Text = "Rarity is permanent \xE2\x80\x94 it grows from Baby as you play"
 		resultTrait.TextColor3 = Color3.fromRGB(150, 255, 170)
 	elseif result.kind == "trait" then
-		resultTrait.Text = "A permanent effect â stacks with other traits"
+		resultTrait.Text = "A permanent effect \xE2\x80\x94 stacks with other traits"
 		resultTrait.TextColor3 = PetTraits.color(result.trait) or Color3.fromRGB(150, 255, 170)
 	elseif PetTraits.isNone(result.trait) then
 		resultTrait.Text = "Trait: None"
@@ -2263,7 +2263,7 @@ local function openReveal(crate, result)
 			or "Added to your pets"
 		resultNote.TextColor3 = Color3.fromRGB(150, 255, 170)
 	elseif result.kind == "trait" then
-		resultNote.Text = "In your Trait Collection â open INVENTORY to pick its pet"
+		resultNote.Text = "In your Trait Collection \xE2\x80\x94 open INVENTORY to pick its pet"
 		resultNote.TextColor3 = Color3.fromRGB(150, 255, 170)
 	elseif result.locked then
 		-- prettyPet, not the raw id: "Unlock Burrito Armadillo", never "Unlock BurritoArmadillo".

@@ -42,7 +42,9 @@ local PANELS = {
 	-- PetInventoryUI is NOT here: Pets opens from the rail now, and rail menus (Shop,
 	-- Stomach) have no BACK -- there is nothing to go back TO.
 	-- SkinCrateGui is NOT here either: crates are a page of the pet hub, opened from its
-	-- tab bar, and the crate panel's own BACK button already returns to the hub.
+	-- tab bar -- and that same tab bar is drawn on the crate panel, so its PETS tab is the
+	-- way back. (It used to have a BACK button of its own; that was removed as a second
+	-- door to the place the tab already goes. Do not inject one here to replace it.)
 }
 
 local BACK_W, BACK_H = 92, 36
@@ -265,13 +267,16 @@ local function inject(gui, target)
 		corner(b, radius)                    -- no stroke: the seasonal one has none either
 	else
 		-- No close button found -- fall back to the old left-hand placement, title shove and all.
-		b.Size = UDim2.new(0, BACK_W, 0, BACK_H)
+		-- Square and glyph-only, exactly like the path above. This read "\xE2\x9D\xAE  BACK" in a 92px slab:
+		-- a different shape AND a different glyph from the back button every other panel shows, so the
+		-- one place this fallback fires was the one place Back did not look like Back.
+		b.Size = UDim2.new(0, BACK_H, 0, BACK_H)
 		b.AnchorPoint = Vector2.new(0, 0.5)
 		b.Position = header
 			and UDim2.new(0, 14, 0, math.floor(header.Size.Y.Offset / 2))
 			or  UDim2.new(0, 14, 0, 22)
-		b.Text = "\xE2\x9D\xAE  BACK"        -- ❮ BACK
-		b.TextSize = 15
+		b.Text = "\xE2\x97\x80"   -- the same left arrow the primary path uses
+		b.TextSize = 20
 		b.Parent = host
 		corner(b, 10); stroke(b, Color3.fromRGB(255, 255, 255), 1.5)
 		clearRoom(host, b)

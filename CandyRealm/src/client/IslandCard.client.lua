@@ -117,7 +117,25 @@ local function islandUnder(pos)
 				if b then
 					local dx = math.max(0, math.abs(pos.X - b.c.X) - b.h.X)
 					local dz = math.max(0, math.abs(pos.Z - b.c.Z) - b.h.Z)
-					local score = math.sqrt(dx * dx + dz * dz) * 1000 + (b.h.X + b.h.Z)
+
+					-- ⚠ VERTICAL DISTANCE COUNTS, AND IT DOMINATES. This test was horizontal-only,
+					-- which is the wrong question on a TOWER: the islands sit above one another and
+					-- overlap in X/Z by design (the zig-zag is only +/-360 studs wide), so standing on
+					-- island15 at Y29,674 scored a horizontal ZERO for island19 too -- and the
+					-- tie-break, which prefers the SMALLER box, handed the banner to whichever island
+					-- happened to measure smallest. That is the "arrived on island 19 -- Sugarbeet
+					-- Farm" line printed in the log while stood on the Bakery, and it is why the
+					-- island announced the wrong quest.
+					--
+					-- NpcGuideArrow hit this exact bug and already carries this exact fix (see its
+					-- islandUnder) -- IslandCard simply never got it. Two islands are never within a
+					-- few hundred studs vertically here, so height alone identifies the one you are on.
+					--
+					-- The 25-stud grace matters here in a way it does not there: this function has a
+					-- "genuinely over it" threshold below, and a flat island whose box top IS its deck
+					-- would score your standing height as a vertical miss and announce nothing at all.
+					local dy = math.max(0, math.abs(pos.Y - b.c.Y) - b.h.Y - 25)
+					local score = dy * 1e6 + math.sqrt(dx * dx + dz * dz) * 1000 + (b.h.X + b.h.Z)
 					if not bestScore or score < bestScore then
 						best, bestScore, bestN = m, score, tonumber(n)
 					end

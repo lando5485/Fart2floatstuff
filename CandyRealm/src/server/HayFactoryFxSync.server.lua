@@ -30,7 +30,10 @@ if not ev then
 	ev.Parent = ReplicatedStorage
 end
 
-local KINDS = { bale = true }
+-- "tip" joined "bale": a trailer of straw being handed to the intake is the other visible thing
+-- that happens at this building, and without it a delivery is a bale appearing from nowhere a
+-- few seconds later. Same worst case as ever: some chaff puffs on somebody's screen.
+local KINDS = { bale = true, tip = true }
 
 -- a press cycle is over a second long, so this is several times faster than anyone can bale
 local MAX_PER_SEC = 4

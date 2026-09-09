@@ -40,15 +40,22 @@ local GREEN  = Color3.fromRGB(126, 224, 110)
 local BLUE   = Color3.fromRGB(120, 186, 255)
 local PURPLE = Color3.fromRGB(196, 150, 240)
 
+-- ===== THE COINS-EARNED MILESTONES ARE GONE =====
+-- There were four: 1,000 / 10,000 / 100,000 / A MILLION COINS EARNED. They went because coins are the one
+-- number in this game that is ALWAYS going up -- every stud of every flight pays -- so a coin milestone does
+-- not mark an achievement, it marks the clock. Worse, they are exclusive TUTORIAL-rank banners: each one took
+-- the top-centre slot to itself and made every other banner wait, to tell the player something the coin
+-- counter had already told them, in the same second, a few inches to the left.
+--
+-- ISLANDS ARE WHAT IS LEFT, and they are the right unit: an island is a thing you had to buy a gut and clear
+-- a wall to reach, it happens fourteen times ever, and the player remembers each one.
+-- (The coins machinery below is untouched -- readValue still answers for kind = "coins" -- so putting a coin
+-- milestone back is one row in this table.)
 local MILESTONES = {
-	{ kind = "coins",  at = 1000,     text = "\xF0\x9F\xAA\x99  1,000 COINS EARNED",      colour = GREEN  },
-	{ kind = "coins",  at = 10000,    text = "\xF0\x9F\xAA\x99  10,000 COINS EARNED",     colour = GREEN  },
-	{ kind = "coins",  at = 100000,   text = "\xF0\x9F\xAA\x99  100,000 COINS EARNED",    colour = BLUE   },
-	{ kind = "coins",  at = 1000000,  text = "\xF0\x9F\x92\x8E  A MILLION COINS EARNED",  colour = PURPLE },
 	{ kind = "island", at = 3,        text = "\xF0\x9F\x8F\x9D  THREE ISLANDS CLIMBED",   colour = GREEN  },
 	{ kind = "island", at = 7,        text = "\xE2\x9B\xB0  HALFWAY UP \xE2\x80\x94 PASTA PEAK", colour = BLUE   },
 	{ kind = "island", at = 11,       text = "\xF0\x9F\x8D\xA8  ICE CREAM ISLE REACHED",  colour = PURPLE },
-	{ kind = "island", at = 14,       text = "\xF0\x9F\x8D\x95  ALL 14 ISLANDS \xE2\x80\x94 TOP OF THE WORLD", colour = GOLD },
+	{ kind = "island", at = 14,       text = "ALL 14 ISLANDS CLIMBED!",   colour = GOLD  },
 }
 
 local function toast(m)
@@ -115,4 +122,23 @@ task.spawn(function()
 
 	total:GetPropertyChangedSignal("Value"):Connect(function() check("coins") end)
 	player:GetAttributeChangedSignal("HighestIsland"):Connect(function() check("island") end)
+end)
+
+--======================================================================
+-- BADGES -- the server awards them, this turns them into a banner
+--======================================================================
+-- BadgeAwards.server used to push this banner itself by reading _G.NotifyCenter, which only exists on the
+-- CLIENT -- so the branch never ran and every badge was silent in-game, Master Collector included. It fires
+-- BadgeEarnedEvent now and the banner is built here, in the file that already owns milestone toasts, at the
+-- same exclusive TUTORIAL tier so a badge can never overlap an achievement or an island landing.
+task.spawn(function()
+	local ev = game:GetService("ReplicatedStorage"):WaitForChild("BadgeEarnedEvent", 30)
+	if not ev then
+		warn("[Achievements] BadgeEarnedEvent never arrived -- badges will not banner")
+		return
+	end
+	ev.OnClientEvent:Connect(function(label)
+		if type(label) ~= "string" or label == "" then return end
+		toast({ text = "ð  BADGE EARNED  â  " .. label, colour = GOLD })
+	end)
 end)

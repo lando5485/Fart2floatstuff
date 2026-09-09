@@ -89,6 +89,25 @@ local FOOT_DARK   = 0.65  -- how far the print is lerped toward black from the f
 local MAX_PRINTS  = 40    -- hard cap. Without it, a long walk quietly spawns hundreds of parts and the frame
                           -- rate dies somewhere on island 9 for reasons nobody can find.
 
+-- ===== MUDDY TRACKS =====
+-- CommunityGarden turns the garden soil beds to mud while it is raining and for 20s
+-- after. Walk through it and you carry mud out on your boots: the next MUD_STEPS prints are wet brown
+-- instead of pressed earth, and they outlast a dry print. That is what makes them TRACKS -- a trail
+-- leading away from the puddle that thins out as the mud wears off, rather than a colour change that
+-- only happens while you are standing in it.
+--
+-- DETECTED BY DISTANCE, not by the footprint raycast: the mud parts are built CanQuery = false (so
+-- they can never block the watering prompt or a landing check), which means the ray passes straight
+-- through them and reports the ground underneath. Their position is the only thing to test against.
+local MUD_PART    = "RainPuddles"   -- the Model CommunityGarden builds over the soil beds
+local MUD_STEPS   = 12    -- prints carried out of the mud -- ~31 studs of trail at STEP_DIST
+local MUD_MARGIN  = 1.5   -- studs of slack around a wet part, so the very edge still dirties a boot
+local MUD_COLOR   = Color3.fromRGB(58, 42, 28)
+local MUD_ALPHA   = 0.12  -- wetter and heavier than FOOT_ALPHA: mud sits ON the floor, it is not pressed into it
+local MUD_FADE    = 6.0   -- wet mud dries slower than a dry print settles (FOOT_FADE is 2.6)
+local mudLeft     = 0     -- prints still to be stamped muddy
+local mudPart     = nil   -- cached; re-found if the garden rebuilds or it has not replicated yet
+
 local prints = {}         -- oldest-first; the cap is enforced by destroying prints[1]
 
 local function stampFoot(char, hrp, sign)
@@ -108,6 +127,31 @@ local function stampFoot(char, hrp, sign)
 
 	local pos = hit.Position + up * 0.03 + right * (FOOT_SPREAD * sign) -- 0.03 above, or it z-fights the floor
 
+	-- PICK UP MUD. Re-looked-up whenever the cached part has gone (a garden rebuild, or it simply had
+	-- not replicated yet on the first steps of a session). Transparency is the "is it raining" test --
+	-- the patch is always present and fades between 1 (dry) and 0.05 (wet), so a visible patch means
+	-- wet ground without the client needing to know anything about the storm.
+	if not (mudPart and mudPart.Parent) then mudPart = Workspace:FindFirstChild(MUD_PART, true) end
+	if mudPart then
+		-- TESTED AGAINST EVERY WET PART, not one centre and one radius. The mud is now a shell over each
+		-- soil bed plus pools scattered on them, so the wet ground is several shapes in several places --
+		-- a single circle would either miss the far bed or dirty boots standing on clean stone between
+		-- them. Each part is checked against its own footprint instead. There are only a handful.
+		for _, w in ipairs(mudPart:GetChildren()) do
+			-- Transparency is the "is it raining" test: these parts always exist and fade between 1 (dry)
+			-- and their wet value, so a visible one means wet ground with no storm state to sync.
+			if w:IsA("BasePart") and w.Transparency < 0.9 then
+				local d = w.Position - pos
+				-- Horizontal only: the print is on the surface, so a height difference is noise. The
+				-- radius is that part's own half-footprint, so a big bed reaches further than a pool.
+				local reach = math.max(w.Size.X, w.Size.Z) * 0.5 + MUD_MARGIN
+				if (d.X * d.X + d.Z * d.Z) <= reach * reach then mudLeft = MUD_STEPS; break end
+			end
+		end
+	end
+	local muddy = mudLeft > 0
+	if muddy then mudLeft -= 1 end
+
 	local p = Instance.new("Part")
 	p.Name         = "Footprint"
 	p.Size         = Vector3.new(FOOT_WIDTH, 0.05, FOOT_LEN)
@@ -117,8 +161,24 @@ local function stampFoot(char, hrp, sign)
 	p.CanQuery     = false  -- so the NEXT footprint's raycast does not land on THIS one and stack prints
 	p.CanTouch     = false  -- upward forever
 	p.Material     = Enum.Material.SmoothPlastic
-	p.Color        = hit.Instance.Color:Lerp(Color3.new(0, 0, 0), FOOT_DARK) -- pressed earth: the floor, darker
-	p.Transparency = FOOT_ALPHA
+	-- MESSED UP, NOT STAMPED. A dry print is a clean oval because pressing a boot into earth IS clean.
+	-- Mud is not: it slides, it drags, and no two prints are the same shape. So a muddy print is
+	-- smeared along the direction of travel, jittered in width, and skewed a few degrees off the walk
+	-- line -- the difference between a trail somebody tracked across paving and a row of stickers.
+	if muddy then
+		local smear = 1.30 + math.random() * 0.55   -- 1.30-1.85x longer, in the direction of travel
+		local widen = 0.85 + math.random() * 0.45   -- narrower or wider, never the same twice
+		p.Size = Vector3.new(FOOT_WIDTH * widen, 0.05, FOOT_LEN * smear)
+		-- Skew about the surface normal, not the world Y: on the garden steps a world-Y twist would
+		-- lift one end of the print off the slope.
+		p.CFrame = p.CFrame * CFrame.fromAxisAngle(Vector3.yAxis, math.rad(math.random(-14, 14)))
+	end
+
+	-- A dry print is the floor's OWN colour darkened, so it reads as pressure. A muddy one ignores the
+	-- floor entirely and is mud -- carried from somewhere else, which is the whole point of a track.
+	p.Color        = muddy and MUD_COLOR or hit.Instance.Color:Lerp(Color3.new(0, 0, 0), FOOT_DARK)
+	p.Transparency = muddy and MUD_ALPHA or FOOT_ALPHA
+	if muddy then p.Reflectance = 0.08 end   -- a little wet sheen; dry prints get none
 	p.Parent       = Workspace
 
 	local c = Instance.new("SpecialMesh") -- a squashed sphere reads as a soft oval sole; a bare block reads
@@ -132,8 +192,9 @@ local function stampFoot(char, hrp, sign)
 		if oldest then oldest:Destroy() end
 	end
 
-	TweenService:Create(p, TweenInfo.new(FOOT_FADE, Enum.EasingStyle.Linear), { Transparency = 1 }):Play()
-	Debris:AddItem(p, FOOT_FADE + 0.2)
+	local fade = muddy and MUD_FADE or FOOT_FADE
+	TweenService:Create(p, TweenInfo.new(fade, Enum.EasingStyle.Linear), { Transparency = 1 }):Play()
+	Debris:AddItem(p, fade + 0.2)
 end
 
 -- ===== THE DUST =====
@@ -292,6 +353,9 @@ local function watch(char)
 				puff(feet, floorColor(char, hrp), t)
 				thud(hrp, t)
 				shake(t)
+				-- FELT, not just seen. t is already 'how hard was that' (0..1 over 95..260 studs/s), so the same
+				-- number that sizes the dust picks the haptic: a step off a kerb is a bump, a screamer is a quake.
+				if _G.hapticPulse then pcall(_G.hapticPulse, (t >= 0.55) and "quake" or "bump") end
 				-- and stamp BOTH feet where you actually came down -- you landed on two feet, not one, and
 				-- the prints you leave at the point of impact are the ones worth seeing
 				stampFoot(char, hrp, 1)
@@ -309,5 +373,5 @@ end
 if player.Character then task.spawn(watch, player.Character) end
 player.CharacterAdded:Connect(function(c) task.spawn(watch, c) end)
 
-print(("[LandingImpact] ready -- dust + thud + shake scaled by fall speed (%d..%d studs/s), footprints every %.1f studs (fade %.1fs, max %d)")
-	:format(MIN_SPEED, MAX_SPEED, STEP_DIST, FOOT_FADE, MAX_PRINTS))
+print(("[LandingImpact] ready -- dust + thud + shake scaled by fall speed (%d..%d studs/s), footprints every %.1f studs (fade %.1fs, max %d); muddy tracks for %d prints after the rain puddle (fade %.1fs)")
+	:format(MIN_SPEED, MAX_SPEED, STEP_DIST, FOOT_FADE, MAX_PRINTS, MUD_STEPS, MUD_FADE))

@@ -57,7 +57,7 @@ local IGNORED_ROOTS = {
 }
 
 -- ============================ GENERATED MANIFEST ============================
--- 137 script instances, from FartToFloat/default.project.json + src/ on disk.
+-- 138 script instances, from FartToFloat/default.project.json + src/ on disk.
 local MANIFEST = {
 	["ReplicatedFirst.LoadingScreen"] = true,
 	["ReplicatedStorage.PhoneHUD"] = true,
@@ -154,6 +154,7 @@ local MANIFEST = {
 	["StarterPlayer.StarterPlayerScripts.GardenerChat"] = true,
 	["StarterPlayer.StarterPlayerScripts.GardenerLife"] = true,
 	["StarterPlayer.StarterPlayerScripts.GutSkinClient"] = true,
+	["StarterPlayer.StarterPlayerScripts.GutGrowCinematic"] = true,
 	["StarterPlayer.StarterPlayerScripts.HeldItemSync"] = true,
 	["StarterPlayer.StarterPlayerScripts.LandingImpact"] = true,
 	["StarterPlayer.StarterPlayerScripts.MenuBackButton"] = true,

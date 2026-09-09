@@ -3,25 +3,24 @@
 --======================================================================
 -- ISLAND-5 QUEST: "THE TAFFY STORM"
 --
--- A sugar storm sits over island5, and THREE ANCHORS are holding it there -- one on each of
--- the little islands. Cap all three and the storm comes down; then grab a basket and catch the
--- last of it before it splats.
+-- A taffy storm is rolling in over island5. You cannot catch it bare-handed -- so you gather
+-- sugar reed off all three islets, weave your own basket, and then catch the storm with it.
 --
--- Island 5 is three small islands and the first place you can properly fly, so the quest is
--- built across all three: a taffy vent to cap, a kite to reel in, and a lightning rod that only
--- wakes once the other two are down. Three DIFFERENT jobs, because three of the same thing in
--- three places is one job you do three times.
+-- Island 5 is three small islands and the first place you can properly fly, so the reed is
+-- scattered across all three: flying between them IS the middle of the quest.
 --
 -- WHAT THE WORLD PROVIDES:
 --   * a "Candy Npc" on island5 -- she starts it (nearest to island5)
---   * (optional) THREE parts named  anchor1 / anchor2 / anchor3  -- one per little island.
---     Name them and the anchors sit exactly where you put them; leave them out and they are
---     placed on a triangle around the island instead, which works but ignores your layout.
+--   * (optional) parts named  reed / cane / sugarcane / anchor1..n  -- each becomes a reed.
+--     Name them and the reeds stand exactly where you put them; leave them out and they are
+--     scattered on a ring around the island instead, which plays but ignores your layout.
 --   * (optional) a part named  stormspot  -- centres the falling candy somewhere specific
 --
 -- HOW IT PLAYS:
---   Talk to her -> you're handed a Catching Basket (a real Tool, held in hand)
---   -> the sky darkens, candy rains down over the island
+--   Talk to her -> she tells you to make a basket
+--   -> find 6 sugar reeds across the three islands (they glow gold and are labelled)
+--   -> hold E at the weaving stand by her to weave YOUR basket
+--   -> the storm breaks; candy rains down over the island
 --   -> stand under a falling piece to catch it; miss it and it splats
 --   -> catch the target across 3 waves -> storm clears -> quest complete
 --
@@ -116,13 +115,61 @@ end
 -- STATE
 -- ============================================================================
 local npcHead, islandPos, stormCentre
-local anchorsDone = 0        -- declared up here because the banner reads it and the banner is
-                             -- built long before the anchors are
+local islandModel   -- the island5 Model itself: the reed ring tests candidate ground against it
+-- the island's vertical EXTENT, not just its centre -- groundAt() needs somewhere above the
+-- island to start a downward cast from, and islandPos is nowhere near the top of it.
+local islandTopY, islandBotY
 local accepted, storming, done = false, false, false
+local STORM_RANGE = 900   -- how far from the storm's centre still counts as "under it"
+
+-- ARE YOU UNDER THE STORM? The three islets are one weather system, so this is a single radius
+-- around the storm centre rather than a per-islet test.
+--
+-- WHY IT EXISTS. runStorm's tail loop is deliberately unbounded -- "it rains until you have them",
+-- so the quest cannot be failed -- but nothing checked that you were still there to catch any. Fly
+-- off island5 mid-storm and candy kept falling on an empty island for the rest of the session, and
+-- worse, the storm SKY stayed on: setStormSky writes global Lighting, so every island in the realm
+-- sat under island5's weather until you came back and caught ten pieces. Pausing is the fix, not
+-- stopping: the storm is still yours when you return, at the count you left it on.
+local function underStorm()
+	local ref = stormCentre or islandPos
+	if not ref then return true end
+	local hrp = hrpOf()
+	if not hrp then return true end        -- mid-respawn: hold, do not judge
+	return (hrp.Position - ref).Magnitude <= STORM_RANGE
+end
 local caught, missed = 0, 0
 local waveNum = 0
 local hasBasket = false
 _G.stormQuestComplete = false
+
+-- ⚠ DECLARED HERE, WITH THE REST OF THE STATE, AND NOT BESIDE THE CODE THAT BUILDS REEDS.
+-- bannerText() below reads reedsHeld and REED_COUNT, and it sits ~340 lines ABOVE where these
+-- used to live -- so the names in the banner resolved to GLOBALS instead, both nil, and every
+-- refresh threw "attempt to compare nil < nil". A Lua local is invisible above its own
+-- declaration; anything the banner touches has to be declared before the banner.
+-- ⚠ CUT FROM 6 REEDS ON A 165-STUD SPREAD. Cutting a reed is an INSTANT E-tap (HoldDuration 0,
+-- no minigame, no variation) -- so six of them on a 91-181 stud scatter across three islets was
+-- ~90% travel time bracketed by a zero-duration interaction, and reed 6 played exactly like
+-- reed 1. The storm-catching finale is the good half of this quest and it was gated behind the
+-- dull half. Three reeds on a tighter spread keeps "you gathered the basket from all three
+-- islands" while cutting the walking roughly in half.
+local REED_COUNT   = 3           -- how many reeds the basket takes
+local REED_SPREAD  = 120         -- how far from the island centre they scatter
+-- names you can give parts in Studio to place reeds by hand. Anything matching becomes a reed
+-- spot; leftover spots are auto-placed on a ring so the quest never depends on you naming them.
+-- ⚠ THE OLD ANCHOR NAMES ARE IN HERE ON PURPOSE. island5 was built for the three-anchor version
+-- of this quest, so the parts already standing on it are called guyser / kite / rod / anchor1..3.
+-- Dropping those names would have silently ignored every marker on the island and auto-placed
+-- all six reeds on a ring -- which is exactly what the boot log showed ("0 on your parts").
+-- Anything matching becomes a reed spot; the ring only fills what your parts do not.
+local REED_HINTS   = { "reed", "cane", "sugarcane", "sugarreed", "anchor",
+	"guyser", "geyser", "vent", "kite", "updraft", "rod", "lightningrod", "beacon" }
+
+local reeds = {}                 -- { model =, pos =, taken = }
+local reedsHeld = 0
+local weaveStand                 -- the weaving spot at the NPC, built once she gives the job
+local stormCollapse              -- forward: weaving the basket brings the storm down
 
 -- ============================================================================
 -- BANNER
@@ -147,16 +194,21 @@ end
 
 local function bannerText()
 	if done then return "\xF0\x9F\x8D\xAC You weathered the Taffy Storm!" end
-	if not accepted then return "\xF0\x9F\x8C\xA7 A taffy storm is coming -- talk to the Candy Npc!" end
-	if anchorsDone < 3 then
-		return ("\xE2\x9A\x93 Cut the storm loose:  %d/3 anchors  (one on each island)")
-			:format(anchorsDone)
+	if not accepted then
+		return "\xF0\x9F\x8C\xA7 A taffy storm is coming! Talk to the Candy NPC -- follow the green arrows."
+	end
+	if not hasBasket then
+		if reedsHeld < REED_COUNT then
+			return ("\xF0\x9F\x8C\xBE Press Cut on the tall pink Sugar Reed:  %d/%d  (it grows on all 3 islands)")
+				:format(reedsHeld, REED_COUNT)
+		end
+		return "\xF0\x9F\xA7\xBA Take the reed back to the Candy NPC and hold Weave on the loom!"
 	end
 	if storming then
-		return ("\xF0\x9F\x8D\xAC Catch the falling taffy!  %d/%d   (wave %d/%d)")
+		return ("\xF0\x9F\x8D\xAC Stand in a shadow on the ground to catch the taffy!  %d/%d   (wave %d/%d)")
 			:format(caught, TARGET, waveNum, #WAVES)
 	end
-	return ("\xF0\x9F\x8C\xA7 Storm incoming...  %d/%d caught"):format(caught, TARGET)
+	return ("\xF0\x9F\x8C\xA7 Storm incoming -- get ready to catch!  %d/%d caught"):format(caught, TARGET)
 end
 local function refreshBanner() label.Text = bannerText() end
 
@@ -220,7 +272,8 @@ end
 
 player.CharacterAdded:Connect(function()
 	task.wait(0.6)
-	if accepted and not done then hasBasket = false; giveBasket() end
+	-- only re-issue a basket you EARNED: before weaving there is nothing to give back
+	if accepted and not done and hasBasket then hasBasket = false; giveBasket() end
 end)
 
 -- ============================================================================
@@ -228,6 +281,11 @@ end)
 -- ============================================================================
 local skySaved = nil
 local function setStormSky(on)
+	-- Tell SkyByAltitude to stand down while the storm is up: it rewrites Brightness and OutdoorAmbient
+	-- every frame otherwise, and this dim is the storm's whole look. Released the moment it clears, and
+	-- also whenever you leave the island (waitUntilBack calls setStormSky(false)).
+	local claims = _G.questSkyClaims; if not claims then claims = {}; _G.questSkyClaims = claims end
+	claims.storm = on or nil
 	if on then
 		if not skySaved then
 			skySaved = { bright = Lighting.Brightness, amb = Lighting.OutdoorAmbient, fogEnd = Lighting.FogEnd }
@@ -376,6 +434,8 @@ local function winStorm()
 	done = true
 	storming = false
 	_G.stormQuestComplete = true
+	-- PAYOFF SHOT, the same one every other island now gets. TARGETS[5] resolves the subject.
+	task.delay(1.0, function() if _G.revealIsland then pcall(_G.revealIsland, 5) end end)
 	setStormSky(false)
 	refreshBanner()
 
@@ -423,13 +483,28 @@ local function runStorm()
 	setStormSky(true)
 	playSound(SOUND_STORM, 0.5)
 
+	-- Holds here for as long as you are away, putting the sky back while you are gone and pulling it
+	-- over again when you return. Returns false only if the quest ended while you were off the island,
+	-- which lets every loop below break cleanly instead of raining into an empty sky.
+	local function waitUntilBack()
+		if done then return false end
+		if underStorm() then return true end
+		setStormSky(false)
+		repeat task.wait(0.5) until done or underStorm()
+		if done then return false end
+		setStormSky(true)
+		return true
+	end
+
 	for w, wave in ipairs(WAVES) do
 		if done or caught >= TARGET then break end
+		if not waitUntilBack() then break end
 		waveNum = w
 		flash(("\xF0\x9F\x8C\xA7 Wave %d/%d -- %s!"):format(w, #WAVES, wave.name), 2.2)
 		task.wait(1.6)
 		for _ = 1, wave.drops do
 			if done or caught >= TARGET then break end
+			if not waitUntilBack() then break end
 			dropOne(wave.fall)
 			task.wait(wave.gap)
 		end
@@ -443,6 +518,7 @@ local function runStorm()
 	-- last wave simply keeps going -- you cannot fail it, only take longer over it.
 	local last = WAVES[#WAVES]
 	while not done and caught < TARGET do
+		if not waitUntilBack() then break end
 		waveNum = #WAVES
 		dropOne(last.fall)
 		task.wait(last.gap)
@@ -460,490 +536,337 @@ local function runStorm()
 	end
 end
 
--- ============================================================================
--- THE THREE ANCHORS
--- ============================================================================
--- Island 5 is three small islands, and the old quest was one circle of falling candy around one
--- point -- so the layout did nothing and half the candy fell in the sea. This is the storm with
--- three things HOLDING it up, one per islet, and it does not stop until all three are down.
+-- things a ground cast must not mistake for ground: reeds already planted, the loom. Appended
+-- as they are built, so reed 4 can never come to rest on top of reed 3.
+local groundIgnore = {}
+
+-- WHERE THE GROUND IS UNDER A POINT.
 --
--- Each islet is a DIFFERENT job on purpose. Three of the same thing in three places is one job
--- you do three times; three different ones is a reason to go to each island.
+-- ⚠ THIS USED TO START THE CAST 60 STUDS ABOVE `pos`, AND `pos` COMES FROM islandPos, WHICH IS
+-- THE BOUNDING-BOX **CENTRE** OF THE ISLAND MODEL -- not its surface. On a model whose box is
+-- stretched upward by anything tall (a tree, a spire, the storm rig), the walkable top sits far
+-- more than 60 studs above that centre, so the cast began UNDERGROUND, travelled down, and hit
+-- nothing. The old fallback then returned `pos.Y` -- the centre again -- and the reed was built
+-- at the island's mid-height: inside the rock, which is exactly the "not on the surface" you saw.
 --
---   VENT     a taffy geyser. Cap it in the gap between eruptions -- a timing game.
---   UPDRAFT  a kite dragging in the wind. Reel it in -- hold, but let go on the gusts.
---   ROD      only once the other two are down. Crank it up and the storm discharges into it.
+-- So: start above the island's actual TOP, and stop below its BOTTOM.
 --
--- Island 5 is also the first place you can properly FLY, so making the quest span three islets
--- turns flight into the way you play it rather than a way to skip the walk.
--- WHERE EACH ONE GOES. Name a part after the thing you want there and it is built on that
--- part -- 'guyser' is spelt the way you spelt it in Studio, and 'geyser' works too, because a
--- quest that silently ignores your marker over one letter is a quest you cannot place.
--- Numbered variants match as well, so guyser1 / rod2 are fine.
-local ANCHOR_KINDS = {
-	vent = { "guyser", "geyser", "vent" },
-	kite = { "kite", "updraft" },
-	rod  = { "rod", "lightningrod", "beacon" },
-}
-local ANCHOR_NAME = "anchor"     -- the fallback: anchor1 / anchor2 / anchor3
-local ANCHOR_SPREAD = 150        -- fallback triangle radius when you have not placed any
-
-local anchors = {}               -- { pos =, kind =, done =, model =, prompt = }
-local rodReady = false
-
--- ---- the shared mini-game HUD ----------------------------------------------
--- One widget, three modes. A track with a needle, a band to hit, and a fill for progress
--- covers timing, tug-of-war and cranking between them; three separate HUDs would have been
--- three sets of tuning to keep in step for no gain the player can see.
-local MG = {}
-local mgBusy = false
-do
-	local g = Instance.new("ScreenGui")
-	g.Name = "StormMini"; g.ResetOnSpawn = false; g.DisplayOrder = 9
-	g.IgnoreGuiInset = true; g.Enabled = false; g.Parent = PlayerGui
-	MG.gui = g
-
-	local catch = Instance.new("TextButton")
-	catch.Size = UDim2.fromScale(1, 1); catch.BackgroundTransparency = 1
-	catch.Text = ""; catch.AutoButtonColor = false; catch.ZIndex = 1; catch.Parent = g
-	MG.catch = catch
-
-	-- HOME is the shell's centre, not a hand-placed corner. _G.housePanel below centres this panel
-	-- inside the house card, so every slide-in/slide-out tween has to be an offset off that centre
-	-- -- the old (0.5,-280),(0.72,0) would fling it out of the card the first time it re-homed.
-	MG.home = UDim2.fromScale(0.5, 0.5)
-	local panel = Instance.new("Frame")
-	panel.AnchorPoint = Vector2.new(0.5, 0.5)
-	panel.Size = UDim2.new(0, 560, 0, 158); panel.Position = MG.home
-	panel.BackgroundColor3 = FILL; panel.BackgroundTransparency = 0.04
-	panel.BorderSizePixel = 0; panel.ZIndex = 2; panel.Parent = g
-	-- HOUSE PANEL: the Pet Hub's 700x520 card in the Pet Hub's spot, and the bottom buttons hide
-	-- while it is up. The strip keeps its own 560x158 coordinates -- see HousePanel.client.luau.
-	pcall(_G.housePanel, panel)   -- island5 taffy catch
-	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 16)
-	MG.panel = panel
-	local st = Instance.new("UIStroke"); st.Color = STROKE; st.Thickness = 3; st.Parent = panel
-	MG.stroke = st
-
-	local title = Instance.new("TextLabel")
-	title.Size = UDim2.new(1, -180, 0, 32); title.Position = UDim2.new(0, 16, 0, 12)
-	title.BackgroundTransparency = 1; title.Font = Enum.Font.FredokaOne
-	title.TextSize = 24; title.TextColor3 = TEXTC
-	title.TextXAlignment = Enum.TextXAlignment.Left; title.ZIndex = 3
-	title.Text = ""; title.Parent = panel
-	MG.title = title
-
-	local count = Instance.new("TextLabel")
-	count.Size = UDim2.new(0, 150, 0, 32); count.Position = UDim2.new(1, -166, 0, 12)
-	count.BackgroundTransparency = 1; count.Font = Enum.Font.FredokaOne
-	count.TextSize = 24; count.TextColor3 = STROKE
-	count.TextXAlignment = Enum.TextXAlignment.Right; count.ZIndex = 3
-	count.Text = ""; count.Parent = panel
-	MG.count = count
-
-	local track = Instance.new("Frame")
-	track.Size = UDim2.new(1, -32, 0, 46); track.Position = UDim2.new(0, 16, 0, 54)
-	track.BackgroundColor3 = Color3.fromRGB(238, 226, 236); track.BorderSizePixel = 0
-	track.ClipsDescendants = true; track.ZIndex = 3; track.Parent = panel
-	Instance.new("UICorner", track).CornerRadius = UDim.new(0, 10)
-
-	local zone = Instance.new("Frame")
-	zone.Size = UDim2.new(0.22, 0, 1, 0); zone.Position = UDim2.new(0.39, 0, 0, 0)
-	zone.BackgroundColor3 = Color3.fromRGB(120, 214, 130); zone.BorderSizePixel = 0
-	zone.ZIndex = 4; zone.Parent = track
-	Instance.new("UICorner", zone).CornerRadius = UDim.new(0, 8)
-	MG.zone = zone
-
-	local fill = Instance.new("Frame")
-	fill.Size = UDim2.new(0, 0, 0, 6); fill.Position = UDim2.new(0, 0, 1, -6)
-	fill.BackgroundColor3 = STROKE; fill.BorderSizePixel = 0
-	fill.ZIndex = 6; fill.Parent = track
-	MG.fill = fill
-
-	local needle = Instance.new("Frame")
-	needle.Size = UDim2.new(0, 6, 1, 0); needle.BackgroundColor3 = TEXTC
-	needle.BorderSizePixel = 0; needle.ZIndex = 7; needle.Parent = track
-	MG.needle = needle
-
-	local hint = Instance.new("TextLabel")
-	hint.Size = UDim2.new(1, -32, 0, 26); hint.Position = UDim2.new(0, 16, 0, 110)
-	hint.BackgroundTransparency = 1; hint.Font = Enum.Font.GothamMedium
-	hint.TextSize = 16; hint.TextColor3 = HINTC
-	hint.TextXAlignment = Enum.TextXAlignment.Left; hint.ZIndex = 3
-	hint.Text = ""; hint.Parent = panel
-	MG.hint = hint
-end
-
-local function mgOpen(title, hint, showZone)
-	MG.title.Text = title; MG.hint.Text = hint; MG.count.Text = ""
-	MG.zone.Visible = showZone
-	MG.fill.Size = UDim2.new(0, 0, 0, 6)
-	MG.gui.Enabled = true
-	MG.panel.Position = MG.home + UDim2.new(0, 0, 0.08, 0)
-	TweenService:Create(MG.panel, TweenInfo.new(0.22, Enum.EasingStyle.Back),
-		{ Position = MG.home }):Play()
-end
-
-local function mgClose()
-	TweenService:Create(MG.panel, TweenInfo.new(0.18),
-		{ Position = MG.home + UDim2.new(0, 0, 0.1, 0) }):Play()
-	task.delay(0.2, function() MG.gui.Enabled = false end)
-end
-
-local function mgFlash(good)
-	MG.stroke.Color = good and Color3.fromRGB(96, 200, 110) or Color3.fromRGB(226, 76, 70)
-	task.delay(0.18, function() MG.stroke.Color = STROKE end)
-end
-
--- ---- ISLET A: THE VENT -- cap it in the gap between eruptions ---------------
--- The needle runs the track and the safe band is the lull. Hit it three times and the cap is
--- seated; hit an eruption and it blows straight back off, so you lose a seat rather than time.
-local function playVent(onSeat)
-	if mgBusy then return false end
-	mgBusy = true
-	mgOpen("CAP THE VENT", "Tap in the green -- outside it the geyser blows the cap off", true)
-
-	local seated, pos, dir, speed = 0, 0, 1, 0.85
-	local zc, zw = 0.5, 0.22
-	local tapped = false
-	local conn = MG.catch.MouseButton1Down:Connect(function() tapped = true end)
-	local function drawZone()
-		MG.zone.Position = UDim2.new(zc - zw * 0.5, 0, 0, 0)
-		MG.zone.Size = UDim2.new(zw, 0, 1, 0)
+-- ⚠ AND SKIP NON-COLLIDABLE HITS. The first thing under a high start point is often a cloud, a
+-- canopy or a glow part. Taking the first hit blindly plants reeds in the air on top of scenery;
+-- stepping under each non-collidable hit and carrying on down finds the surface you stand on.
+-- The honest half of groundAt: (Y, instance) for a REAL CanCollide hit, or nil for open air.
+-- The reed ring needs the distinction -- "the island top is a safe guess" is fine for a marker
+-- somebody placed, and exactly wrong for deciding whether a ring spot has ground at all.
+local function solidGroundAt(pos)
+	local ignore = {}
+	if player.Character then ignore[#ignore + 1] = player.Character end
+	for _, m in ipairs(groundIgnore) do
+		if m and m.Parent then ignore[#ignore + 1] = m end
 	end
-	drawZone()
-
-	while seated < 3 do
-		local dt = math.min(task.wait(), 0.05)
-		pos += dir * speed * dt
-		if pos >= 1 then pos, dir = 1, -1 elseif pos <= 0 then pos, dir = 0, 1 end
-		MG.needle.Position = UDim2.new(pos, -3, 0, 0)
-		MG.count.Text = ("%d / 3"):format(seated)
-		if tapped then
-			tapped = false
-			if math.abs(pos - zc) <= zw * 0.5 then
-				seated += 1
-				speed = math.min(1.9, speed + 0.22)
-				zw = math.max(0.12, zw - 0.035)
-				zc = 0.16 + math.random() * 0.68
-				mgFlash(true)
-				if onSeat then onSeat(seated) end
-			else
-				seated = math.max(0, seated - 1)      -- it blows the cap back off
-				mgFlash(false)
-				if onSeat then onSeat(seated, true) end
-			end
-			drawZone()
-			TweenService:Create(MG.fill, TweenInfo.new(0.15),
-				{ Size = UDim2.new(seated / 3, 0, 0, 6) }):Play()
-		end
-	end
-
-	MG.count.Text = "3 / 3"
-	conn:Disconnect()
-	task.wait(0.25); mgClose()
-	mgBusy = false
-	return true
-end
-
--- ---- ISLET B: THE UPDRAFT -- reel the kite in, but ride the gusts -----------
--- Hold to reel. Every few seconds a gust comes: the band turns red and holding through it tears
--- line off you. So it is hold, watch, release, hold again -- the opposite instinct to the vent.
-local function playKite(onPull)
-	if mgBusy then return false end
-	mgBusy = true
-	mgOpen("REEL THE KITE IN", "Hold to reel -- LET GO when the bar turns red", false)
-
-	local down, line, gust, nextGust = false, 0, 0, 1.6
-	local c1 = MG.catch.MouseButton1Down:Connect(function() down = true end)
-	local c2 = MG.catch.MouseButton1Up:Connect(function() down = false end)
-	local c3 = MG.catch.MouseLeave:Connect(function() down = false end)
-	local t0 = os.clock()
-
-	while line < 1 do
-		local dt = math.min(task.wait(), 0.05)
-		local now = os.clock() - t0
-		if gust > 0 then
-			gust -= dt
-			if gust <= 0 then nextGust = now + 1.4 + math.random() * 1.6 end
-		elseif now >= nextGust then
-			gust = 0.9 + math.random() * 0.5
-		end
-
-		if gust > 0 then
-			MG.needle.BackgroundColor3 = Color3.fromRGB(226, 76, 70)
-			MG.fill.BackgroundColor3 = Color3.fromRGB(226, 76, 70)
-			MG.title.Text = "GUST -- LET GO!"
-			if down then line = math.max(0, line - dt * 0.55) end   -- it tears line back off
-		else
-			MG.needle.BackgroundColor3 = TEXTC
-			MG.fill.BackgroundColor3 = STROKE
-			MG.title.Text = "REEL THE KITE IN"
-			if down then line = math.min(1, line + dt * 0.32) end
-		end
-
-		MG.fill.Size = UDim2.new(line, 0, 0, 6)
-		MG.needle.Position = UDim2.new(line, -3, 0, 0)
-		MG.count.Text = ("%d%%"):format(math.floor(line * 100))
-		if onPull then onPull(line) end
-	end
-
-	mgFlash(true)
-	c1:Disconnect(); c2:Disconnect(); c3:Disconnect()
-	MG.needle.BackgroundColor3 = TEXTC; MG.fill.BackgroundColor3 = STROKE
-	task.wait(0.2); mgClose()
-	mgBusy = false
-	return true
-end
-
--- ---- ISLET C: THE ROD -- crank it up ---------------------------------------
--- Alternate taps: the needle sweeps and you tap at each END of the track, like working a
--- two-handed crank. Tapping in the middle does nothing, so it has a rhythm to it.
-local function playRod(onTurn)
-	if mgBusy then return false end
-	mgBusy = true
-	mgOpen("RAISE THE ROD", "Tap at each END of the bar -- left, right, left...", true)
-	MG.zone.Size = UDim2.new(0.18, 0, 1, 0)
-
-	local turns, pos, dir, want = 0, 0, 1, 1
-	local tapped = false
-	local conn = MG.catch.MouseButton1Down:Connect(function() tapped = true end)
-
-	while turns < 8 do
-		local dt = math.min(task.wait(), 0.05)
-		pos = math.clamp(pos + dir * 0.95 * dt, 0, 1)
-		if pos >= 1 then dir = -1 elseif pos <= 0 then dir = 1 end
-		MG.needle.Position = UDim2.new(pos, -3, 0, 0)
-		MG.zone.Position = (want == 1) and UDim2.new(0.82, 0, 0, 0) or UDim2.new(0, 0, 0, 0)
-		MG.count.Text = ("%d / 8"):format(turns)
-		if tapped then
-			tapped = false
-			local atEnd = (want == 1 and pos > 0.82) or (want == -1 and pos < 0.18)
-			if atEnd then
-				turns += 1
-				want = -want
-				mgFlash(true)
-				if onTurn then onTurn(turns) end
-				TweenService:Create(MG.fill, TweenInfo.new(0.15),
-					{ Size = UDim2.new(turns / 8, 0, 0, 6) }):Play()
-			else
-				mgFlash(false)
-			end
-		end
-	end
-
-	MG.count.Text = "8 / 8"
-	conn:Disconnect()
-	task.wait(0.25); mgClose()
-	mgBusy = false
-	return true
-end
-
--- ---- what the anchors LOOK like -------------------------------------------
--- All three are built from flat blocks on a few stepped tones, like the rest of the realm.
--- Each one changes visibly as you work it, because the mini-game is on screen and the thing
--- you are fixing is in the world -- if the world does not move with the bar, the bar is a
--- puzzle you happen to be playing near a prop.
-local function groundAt(pos)
 	local rp = RaycastParams.new()
 	rp.FilterType = Enum.RaycastFilterType.Exclude
-	rp.FilterDescendantsInstances = { player.Character }
-	local hit = Workspace:Raycast(pos + Vector3.new(0, 60, 0), Vector3.new(0, -400, 0), rp)
-	return hit and hit.Position.Y or pos.Y
+	rp.FilterDescendantsInstances = ignore
+	rp.IgnoreWater = true
+
+	local botY = (islandBotY or (pos.Y - 300)) - 40
+	local from = Vector3.new(pos.X, (islandTopY or pos.Y) + 120, pos.Z)
+	for _ = 1, 8 do
+		if from.Y <= botY then break end
+		local hit = Workspace:Raycast(from, Vector3.new(0, botY - from.Y, 0), rp)
+		if not hit then break end
+		if hit.Instance.CanCollide then return hit.Position.Y, hit.Instance end
+		from = Vector3.new(pos.X, hit.Position.Y - 0.25, pos.Z)
+	end
+	return nil
 end
 
-local function buildVent(a)
-	local m = Instance.new("Model"); m.Name = "TaffyVent"; m.Parent = Workspace
-	local at = CFrame.new(a.pos)
-	local function bit(props, cf) props.Parent = m; local p = mk(props); p.CFrame = cf; return p end
+local function groundAt(pos)
+	local y = solidGroundAt(pos)
+	if y then return y end
+	-- nothing solid under this point at all. The island TOP is the safe guess -- a reed stood a
+	-- little high is findable; the old fallback buried it.
+	return islandTopY or pos.Y
+end
 
-	for i = 1, 8 do                                    -- a ring of rock around the throat
-		local ang = (i / 8) * math.pi * 2
-		bit({ Color = Color3.fromRGB(122, 112, 104), Size = Vector3.new(2.2, 1.4 + (i % 3) * 0.5, 1.8) },
-			at * CFrame.new(math.cos(ang) * 3.4, 0.6, math.sin(ang) * 3.4) * CFrame.Angles(0, -ang, 0))
+-- ============================================================================
+-- THE BASKET IS SOMETHING YOU MAKE
+-- ============================================================================
+-- ⚠ WHAT THIS REPLACED, AND WHY. Island 5 used to be three "storm anchors", one per islet,
+-- each a different bar-and-needle mini-game: tap-in-the-green on a sweeping needle, hold-and-
+-- release a reeling bar through random gusts, and alternate-tap the two ends of a crank. Three
+-- HUD puzzles wearing island hats. None of them was about the storm, none was about island 5,
+-- and the gusts and green-zone positions were randomised, so the honest way to play was to
+-- guess and eat the failures.
+--
+-- What was GOOD about the island was the catching -- standing under falling candy with a basket
+-- -- and the fact that it is the first place you can properly fly. So the middle is now the
+-- thing that earns the catching: the basket is not handed to you, you BUILD it. Sugar reeds are
+-- scattered across all three islets, you fly around gathering them, and then you weave them at
+-- the NPC. Same three-island layout, same reason to fly, no bars and no guessing -- and the
+-- basket you catch with is one you made.
+
+-- ---- finding your markers -------------------------------------------------
+-- HIDING A MARKER TAKES MORE THAN TRANSPARENCY. A Decal or Texture on it keeps drawing at
+-- full opacity, and a SurfaceAppearance overrides transparency outright -- so a part that looks
+-- "hidden" in code is still sat there in game. Blank the lot.
+local function hideMarker(inst)
+	local function one(b)
+		b.Transparency = 1
+		b.CanCollide = false
+		b.CanQuery = false
+		b.CanTouch = false
+		b.CastShadow = false
 	end
-	bit({ Shape = Enum.PartType.Cylinder, Color = Color3.fromRGB(86, 78, 72),
-		Size = Vector3.new(2.6, 3.6, 3.6) }, at * CFrame.new(0, 1.3, 0) * CFrame.Angles(0, 0, math.rad(90)))
-	local throat = bit({ Shape = Enum.PartType.Cylinder, Color = Color3.fromRGB(255, 150, 190),
-		Material = Enum.Material.Neon, Size = Vector3.new(0.4, 2.6, 2.6) },
-		at * CFrame.new(0, 2.5, 0) * CFrame.Angles(0, 0, math.rad(90)))
+	if inst:IsA("BasePart") then one(inst) end
+	for _, d in ipairs(inst:GetDescendants()) do
+		if d:IsA("BasePart") then one(d)
+		elseif d:IsA("Decal") or d:IsA("Texture") then d.Transparency = 1
+		elseif d:IsA("SurfaceAppearance") then d:Destroy() end
+	end
+end
 
-	-- the cap, waiting beside it -- it drops on as you seat it
-	local cap = bit({ Shape = Enum.PartType.Cylinder, Color = Color3.fromRGB(198, 132, 66),
-		Size = Vector3.new(0.7, 3.2, 3.2) },
-		at * CFrame.new(4.6, 0.6, 0) * CFrame.Angles(0, 0, math.rad(90)))
+-- name matches the marker exactly, or the marker with a number after it (rod, rod1, rod02)
+local function markerIs(part, hints)
+	local n = norm(part.Name)
+	for _, h in ipairs(hints) do
+		if n == h or n:match("^" .. h .. "%d+$") then return true end
+	end
+	return false
+end
 
-	local host = bit({ Transparency = 1, Size = Vector3.new(1, 1, 1) }, at * CFrame.new(0, 2.8, 0))
-	local em = Instance.new("ParticleEmitter")
-	em.Texture = "rbxasset://textures/particles/smoke_main.dds"
-	em.Color = ColorSequence.new(Color3.fromRGB(255, 170, 205), Color3.fromRGB(255, 226, 240))
-	em.Lifetime = NumberRange.new(1.2, 2.2); em.Rate = 18
-	em.Speed = NumberRange.new(22, 40); em.SpreadAngle = Vector2.new(10, 10)
-	em.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 2), NumberSequenceKeypoint.new(1, 9) })
-	em.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(1, 1) })
-	em.Acceleration = Vector3.new(0, -12, 0); em.EmissionDirection = Enum.NormalId.Top
-	em.Parent = host
-
-	-- it erupts on a beat, so the lull you are timing is a thing you can SEE, not just a bar
-	task.spawn(function()
-		while m.Parent and not a.done do
-			em:Emit(40); throat.Transparency = 0
-			task.wait(0.55)
-			throat.Transparency = 0.5
-			task.wait(2.0)
+-- A MARKER MAY BE A MODEL. Half the markers in this place are empty Models -- garden1,
+-- ancienttree, Candy Npc are all Models, not parts -- so a search that only accepted BaseParts
+-- would walk straight past a Model you named 'guyser' and quietly auto-place instead.
+-- Returns the TOP of whatever it is, which is where a thing standing on it belongs.
+local function markerSpot(d)
+	if d:IsA("BasePart") then
+		return d.Position + Vector3.new(0, d.Size.Y * 0.5, 0)
+	end
+	local ok, cf, size = pcall(function() return d:GetBoundingBox() end)
+	if ok and cf then
+		if size and size.Y > 0.05 then
+			return cf.Position + Vector3.new(0, size.Y * 0.5, 0)
 		end
-	end)
-
-	a.model, a.cap, a.capHome, a.throat, a.em = m, cap, cap.CFrame, throat, em
-	a.seatCF = at * CFrame.new(0, 2.9, 0) * CFrame.Angles(0, 0, math.rad(90))
-	return m
+		return cf.Position                      -- an EMPTY model: the pivot is all there is
+	end
+	return nil
 end
 
-local function buildKite(a)
-	local m = Instance.new("Model"); m.Name = "StormKite"; m.Parent = Workspace
-	local at = CFrame.new(a.pos)
+-- ⚠ THE THREE HELPERS ABOVE ARE HOISTED ON PURPOSE. scatterReeds() calls markerSpot,
+-- markerIs and hideMarker; they used to be defined ~150 lines BELOW it (they had sat under the
+-- old anchor-placing code, which ran late). Being locals, they were simply nil where the reeds
+-- needed them -- "attempt to call a nil value" on the first sweep, so no reed was ever built
+-- and the quest never reached its ready flag. Helpers before callers.
+
+-- A SUGAR REED: a tall striped cane with a tuft, standing on the ground. Deliberately tall and
+-- brightly banded -- these are scattered over three islets and half the job is SPOTTING one
+-- from the air, so a small tasteful prop would be a worse prop.
+local function buildReed(pos, index)
+	local m = Instance.new("Model"); m.Name = "SugarReed" .. index; m.Parent = Workspace
+	local at = CFrame.new(pos)
 	local function bit(props, cf) props.Parent = m; local p = mk(props); p.CFrame = cf; return p end
 
-	bit({ Color = Color3.fromRGB(122, 112, 104), Size = Vector3.new(5, 1, 5) }, at * CFrame.new(0, 0.4, 0))
-	bit({ Color = Color3.fromRGB(150, 104, 58), Size = Vector3.new(0.9, 5.5, 0.9) }, at * CFrame.new(0, 3, 0))
-	bit({ Shape = Enum.PartType.Cylinder, Color = Color3.fromRGB(104, 70, 38),
-		Size = Vector3.new(1.2, 2.4, 2.4) }, at * CFrame.new(0, 4.6, 0) * CFrame.Angles(0, math.rad(90), 0))
-
-	-- the kite itself, high up and yanking about
-	local kite = Instance.new("Model"); kite.Name = "Kite"; kite.Parent = m
-	local kroot
-	for i, q in ipairs({
-		{ Color3.fromRGB(255, 120, 150), Vector3.new(4.4, 0.3, 4.4), CFrame.Angles(0, 0, math.rad(45)) },
-		{ Color3.fromRGB(255, 226, 240), Vector3.new(4.6, 0.34, 0.7), CFrame.Angles(0, 0, math.rad(45)) },
-		{ Color3.fromRGB(255, 226, 240), Vector3.new(0.7, 0.34, 4.6), CFrame.Angles(0, 0, math.rad(45)) },
-	}) do
-		local p = mk({ Color = q[1], Size = q[2], Parent = kite })
-		p.CFrame = at * CFrame.new(0, 46, 0) * q[3]
-		if i == 1 then kroot = p end
+	-- the cane: stacked segments, alternating pink and cream, leaning slightly
+	local lean = CFrame.Angles(math.rad((index % 3) * 4 - 4), 0, math.rad((index % 5) * 3 - 6))
+	local root
+	for i = 1, 7 do
+		local p = bit({ Shape = Enum.PartType.Cylinder,
+			Color = (i % 2 == 0) and Color3.fromRGB(255, 138, 186) or Color3.fromRGB(255, 240, 232),
+			Size = Vector3.new(1.35, 0.62, 0.62) },
+			at * lean * CFrame.new(0, 0.9 + (i - 1) * 1.3, 0) * CFrame.Angles(0, 0, math.rad(90)))
+		root = root or p
 	end
-	for i = 1, 3 do                                   -- a tail, so the yanking reads
-		local t = mk({ Color = Color3.fromRGB(255, 180, 110), Size = Vector3.new(0.9, 0.3, 0.9), Parent = kite })
-		t.CFrame = at * CFrame.new(0, 46 - i * 1.6, i * 0.5)
+	-- the tuft on top, so it reads from a distance and from above
+	for i = 1, 5 do
+		local a = (i / 5) * math.pi * 2
+		bit({ Color = Color3.fromRGB(180, 232, 150), Size = Vector3.new(0.22, 1.9, 0.5) },
+			at * lean * CFrame.new(math.cos(a) * 0.45, 9.9, math.sin(a) * 0.45)
+				* CFrame.Angles(math.rad(26), -a, 0))
 	end
-	kite.PrimaryPart = kroot
+	m.PrimaryPart = root
 
-	local line = bit({ Color = Color3.fromRGB(240, 235, 230), Size = Vector3.new(0.12, 40, 0.12) },
-		at * CFrame.new(0, 25, 0))
+	-- FINISHED THE WAY THE TRACTOR ISLAND FINISHES ITS PICKUPS.
+	--
+	-- ⚠ OUTLINE ONLY, NEVER A FILL. A Highlight with any FillTransparency below 1 washes the
+	-- whole model in gold, which reads as a part fading OUT rather than one you can take. The
+	-- outline alone says "pick this up", and because it is AlwaysOnTop it draws through terrain
+	-- -- which is exactly what makes six reeds findable across three islets from the air.
+	--
+	-- ⚠ AND NO FLOATING NAME LABEL, for the reason the tractor file argues at length: names
+	-- over pickups stack into an unreadable pile wherever two are close and stay legible from
+	-- the next island up. The E prompt names it the moment you are near enough to cut it, which
+	-- is where the name is worth anything.
+	local hl = Instance.new("Highlight")
+	hl.FillColor = GOLD; hl.FillTransparency = 1
+	hl.OutlineColor = Color3.fromRGB(255, 236, 170); hl.OutlineTransparency = 0.05
+	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop; hl.Adornee = m; hl.Parent = m
+	return m, root
+end
 
-	a.model, a.kite, a.line, a.base = m, kite, line, at
-	a.kiteHigh = 46
-	task.spawn(function()                              -- it never sits still until it is down
-		local t = 0
-		while m.Parent and not a.done do
-			t += 0.06
-			local h = a.kiteHigh
-			kite:PivotTo(at * CFrame.new(math.sin(t * 1.7) * 4, h, math.cos(t * 1.3) * 4)
-				* CFrame.Angles(math.sin(t * 2) * 0.3, t * 0.4, math.cos(t * 1.6) * 0.3))
-			line.Size = Vector3.new(0.12, h - 5, 0.12)
-			line.CFrame = at * CFrame.new(0, 5 + (h - 5) * 0.5, 0)
-			task.wait(0.06)
+-- forward: weaving needs the basket, and giveBasket is defined far above
+local function reedTaken(rec)
+	if rec.taken or not accepted then return end
+	rec.taken = true
+	reedsHeld += 1
+	playSound(SOUND_CATCH, 0.5)
+	catchBurst(rec.pos + Vector3.new(0, 5, 0), GOLD)
+	if rec.model.Parent then rec.model:Destroy() end
+	refreshBanner()
+	if reedsHeld >= REED_COUNT then
+		flash("\xF0\x9F\xA7\xBA That is enough reed -- go and hold Weave on the Reed Loom!", 3.4)
+		-- the stand only lights up once you can actually use it, so a player who wanders past
+		-- it early is never told to press something that would refuse them
+		if weaveStand and weaveStand.prompt then weaveStand.prompt.Enabled = true end
+		if _G.guideTrailTo and weaveStand then
+			pcall(function() _G.guideTrailTo(weaveStand.pos) end)
 		end
-	end)
-	return m
-end
-
-local function buildRod(a)
-	local m = Instance.new("Model"); m.Name = "LightningRod"; m.Parent = Workspace
-	local at = CFrame.new(a.pos)
-	local function bit(props, cf) props.Parent = m; local p = mk(props); p.CFrame = cf; return p end
-
-	bit({ Color = Color3.fromRGB(96, 100, 108), Size = Vector3.new(6, 1.2, 6) }, at * CFrame.new(0, 0.5, 0))
-	for _, s in ipairs({ -1, 1 }) do
-		bit({ Color = Color3.fromRGB(122, 112, 104), Size = Vector3.new(1.2, 2.6, 1.2) },
-			at * CFrame.new(s * 2.2, 1.6, 0))
+	else
+		flash(("\xF0\x9F\x8C\xBE Reed %d/%d"):format(reedsHeld, REED_COUNT), 1.6)
 	end
-	bit({ Shape = Enum.PartType.Cylinder, Color = Color3.fromRGB(150, 156, 166),
-		Size = Vector3.new(1.4, 2.2, 2.2) }, at * CFrame.new(0, 2.4, 0) * CFrame.Angles(0, math.rad(90), 0))
-
-	-- the mast, which grows out of the housing one turn at a time
-	local mast = bit({ Color = Color3.fromRGB(180, 186, 196), Size = Vector3.new(0.7, 3, 0.7) },
-		at * CFrame.new(0, 3.2, 0))
-	local tip = bit({ Color = Color3.fromRGB(255, 240, 170), Material = Enum.Material.Neon,
-		Size = Vector3.new(1.1, 1.1, 1.1) }, at * CFrame.new(0, 4.7, 0))
-	tip.Transparency = 0.4
-
-	a.model, a.mast, a.tip, a.base = m, mast, tip, at
-	return m
 end
 
--- ---- capping one --------------------------------------------------------------
--- Forward-declared: wireAnchor calls the collapse, and the collapse is written below it
--- because it reads better after the thing that triggers it.
-local stormCollapse
-
-local function wireAnchor(a)
-	local hit = mk({ Transparency = 1, CanQuery = true, Size = Vector3.new(12, 12, 12) })
-	hit.CFrame = CFrame.new(a.pos + Vector3.new(0, 4, 0))
-	hit.Parent = a.model
+local function wireReed(rec, root)
 	local pr = Instance.new("ProximityPrompt")
-	pr.Name = "AnchorPrompt"
-	pr.ActionText = (a.kind == "vent" and "Cap it") or (a.kind == "kite" and "Reel it in") or "Raise it"
-	pr.ObjectText = (a.kind == "vent" and "Taffy Vent") or (a.kind == "kite" and "Storm Kite") or "Lightning Rod"
-	pr.HoldDuration = 0.25; pr.MaxActivationDistance = 14
-	pr.RequiresLineOfSight = false
-	-- visible from the start, but not workable until she has told you what they are
-	pr.Enabled = accepted and (a.kind ~= "rod")
+	pr.ActionText = "Cut"; pr.ObjectText = "Sugar Reed"
+	pr.HoldDuration = 0; pr.MaxActivationDistance = 14
+	pr.RequiresLineOfSight = false; pr.Parent = root
+	root.CanQuery = true
+	pr.Triggered:Connect(function(plr) if plr == player then reedTaken(rec) end end)
+	rec.prompt = pr
+end
+
+-- WHERE THE REEDS GO. Parts you named win; the rest ring the island so the quest still plays
+-- on a world where nobody has placed anything. Spread wide on purpose -- the point is that they
+-- are on all three islets and you fly between them.
+local function scatterReeds()
+	local marks = {}
+	for _, d in ipairs(Workspace:GetDescendants()) do
+		if (d:IsA("BasePart") or d:IsA("Model")) and not d:IsA("Tool") and #marks < REED_COUNT then
+			local spot = markerSpot(d)
+			if spot and (spot - islandPos).Magnitude <= 900 and markerIs(d, REED_HINTS) then
+				marks[#marks + 1] = { part = d, pos = spot }
+			end
+		end
+	end
+	table.sort(marks, function(x, y) return x.part.Name < y.part.Name end)
+
+	local named = 0
+	for i = 1, REED_COUNT do
+		local pos
+		if marks[i] then
+			named += 1
+			-- HIDE FIRST, THEN CAST: hideMarker() clears CanCollide, so after it has run the marker
+			-- can no longer be mistaken for the ground beneath itself. Your part decides WHERE the
+			-- reed goes in X/Z; the surface under it decides how high, so a marker you left floating
+			-- (or buried) still yields a reed stood properly on the island.
+			hideMarker(marks[i].part)
+			local mp = marks[i].pos
+			pos = Vector3.new(mp.X, groundAt(mp), mp.Z)
+		else
+			-- ===== THE RING IS A CANDIDATE, NOT AN ANSWER =====
+			-- island5 is three islets with open air between them, and the old ring dropped each
+			-- reed wherever its circle happened to say -- over a gap, past a rim -- and groundAt
+			-- then seated it on whatever lay far below, or floated it at the island-top guess
+			-- (the boot log showed reeds 200+ studs under the top). A spot only counts now if a
+			-- ray HITS something solid that belongs to island5's own model, within a sane band
+			-- of its top: inside the island's bounds AND touching a real object, which is the
+			-- whole ask. The search keeps the golden-angle spread but spirals inward until it
+			-- finds such ground; the island's own centre qualifies, so it cannot come up empty.
+			pos = nil
+			for try = 0, 11 do
+				local ang = (i + try * REED_COUNT) * 2.39996
+				local rad = REED_SPREAD * (0.55 + ((i * 0.37) % 1) * 0.55) * (1 - try * 0.085)
+				local p = islandPos + Vector3.new(math.cos(ang) * rad, 0, math.sin(ang) * rad)
+				local gy, inst = solidGroundAt(p)
+				if gy and inst
+					and (islandModel == nil or inst:IsDescendantOf(islandModel))
+					and (not islandTopY or math.abs(gy - islandTopY) <= 90) then
+					pos = Vector3.new(p.X, gy, p.Z)
+					break
+				end
+			end
+			if not pos then   -- every candidate refused: stand it at the centre, on real ground
+				pos = Vector3.new(islandPos.X, groundAt(islandPos), islandPos.Z)
+			end
+		end
+		local rec = { pos = pos, taken = false }
+		local m, root = buildReed(pos, i)
+		groundIgnore[#groundIgnore + 1] = m     -- so the next reed does not land on this one
+		rec.model = m
+		reeds[i] = rec
+		wireReed(rec, root)
+	end
+	if named == 0 then
+		warn(("[Storm] none of your parts matched a reed name -- all %d reed(s) were auto-placed "
+			.. "on a ring. Name parts any of: %s (numbered variants like reed2 count too).")
+			:format(REED_COUNT, table.concat(REED_HINTS, ", ")))
+	else
+		print(("[Storm] %d sugar reed(s) -- %d on your parts, %d auto-placed on the ring "
+			.. "(island top Y %.1f, reed Y %s)"):format(REED_COUNT, named, REED_COUNT - named,
+			islandTopY or -1, table.concat((function()
+				local t = {} for _, r in ipairs(reeds) do t[#t + 1] = ("%.1f"):format(r.pos.Y) end
+				return t
+			end)(), ", ")))
+	end
+end
+
+-- THE WEAVING STAND, built beside the NPC. Weaving is a HOLD, not a tap: three seconds of
+-- holding E reads as making something, and it is the one moment in the quest where you are
+-- standing still, which makes the storm arriving on top of it land properly.
+local function buildWeaveStand(nearPos)
+	local p = nearPos + Vector3.new(6, 0, 6)
+	local pos = Vector3.new(p.X, groundAt(p), p.Z)
+	-- ⚠ NOT NAMED "...Stand", AND TAGGED QuestProp. Shop_AllInOne sweeps Workspace for anything
+	-- whose name CONTAINS "stand" or "shop" and bolts a buy-food prompt onto it -- so the first
+	-- build of this called "WeavingStand" was adopted as a food stand on island5 (the boot log
+	-- literally read: prompt added on 'WeavingStand' -> island 5). Two independent guards: a name
+	-- with no "stand" in it, and the QuestProp attribute that sweep already honours.
+	local m = Instance.new("Model"); m.Name = "ReedLoom"; m.Parent = Workspace
+	m:SetAttribute("QuestProp", true)
+	local at = CFrame.new(pos)
+	local function bit(props, cf) props.Parent = m; local p2 = mk(props); p2.CFrame = cf; return p2 end
+
+	local top = bit({ Color = Color3.fromRGB(186, 138, 84), Material = Enum.Material.WoodPlanks,
+		Size = Vector3.new(5.0, 0.45, 3.6), CanCollide = true }, at * CFrame.new(0, 3.0, 0))
+	for _, sx in ipairs({ -1, 1 }) do
+		for _, sz in ipairs({ -1, 1 }) do
+			bit({ Color = Color3.fromRGB(146, 102, 60), Material = Enum.Material.Wood,
+				Size = Vector3.new(0.42, 3.0, 0.42), CanCollide = true },
+				at * CFrame.new(sx * 2.1, 1.5, sz * 1.4))
+		end
+	end
+	-- a half-woven basket sitting on it, so the stand says what it is without a sign
+	for i = 1, 5 do
+		local a = (i / 5) * math.pi * 2
+		bit({ Color = Color3.fromRGB(206, 158, 100), Material = Enum.Material.Wood,
+			Size = Vector3.new(0.28, 1.2, 0.28) },
+			at * CFrame.new(math.cos(a) * 1.0, 3.85, math.sin(a) * 1.0) * CFrame.Angles(math.rad(9), -a, 0))
+	end
+	bit({ Shape = Enum.PartType.Cylinder, Color = Color3.fromRGB(166, 118, 68),
+		Material = Enum.Material.Wood, Size = Vector3.new(0.24, 2.3, 2.3) },
+		at * CFrame.new(0, 3.3, 0) * CFrame.Angles(0, 0, math.rad(90)))
+
+	local hit = mk({ Transparency = 1, CanQuery = true, Size = Vector3.new(9, 9, 9), Parent = m })
+	hit.CFrame = at * CFrame.new(0, 3, 0)
+	local pr = Instance.new("ProximityPrompt")
+	pr.ActionText = "Weave"; pr.ObjectText = "Reed Loom"
+	pr.HoldDuration = 3          -- a hold, not a tap: you are MAKING something
+	pr.MaxActivationDistance = 14; pr.RequiresLineOfSight = false
+	pr.Enabled = false           -- lit only once you have every reed
 	pr.Parent = hit
-	a.prompt = pr
+
+	weaveStand = { model = m, pos = pos, prompt = pr }
 
 	pr.Triggered:Connect(function(plr)
-		if plr ~= player or a.done or mgBusy or not accepted then return end
-		if a.kind == "rod" and not rodReady then return end
+		if plr ~= player or hasBasket or reedsHeld < REED_COUNT then return end
 		pr.Enabled = false
-
-		local ok
-		if a.kind == "vent" then
-			ok = playVent(function(n, blown)
-				-- the cap creeps onto the throat as it seats, and jumps back off if it blows
-				local t = n / 3
-				a.cap.CFrame = a.capHome:Lerp(a.seatCF, t)
-				if blown then
-					a.em:Emit(60)
-					a.throat.Transparency = 0
-				end
-			end)
-			if ok then
-				a.cap.CFrame = a.seatCF
-				a.em.Rate = 0
-				a.throat.Transparency = 1
-			end
-		elseif a.kind == "kite" then
-			ok = playKite(function(v) a.kiteHigh = 46 - v * 38 end)
-			if ok then a.kiteHigh = 8 end
-		else
-			ok = playRod(function(n)
-				local h = 3 + n * 2.6
-				a.mast.Size = Vector3.new(0.7, h, 0.7)
-				a.mast.CFrame = a.base * CFrame.new(0, 1.7 + h * 0.5, 0)
-				a.tip.CFrame = a.base * CFrame.new(0, 1.7 + h + 0.6, 0)
-				a.tip.Transparency = math.max(0, 0.4 - n * 0.05)
-			end)
-		end
-
-		if not ok then pr.Enabled = true; return end
-
-		a.done = true
-		anchorsDone += 1
-		playSound(SOUND_CATCH, 0.6)
-		flash(("\xE2\x9A\x93 %s down!  %d/3 anchors"):format(pr.ObjectText, anchorsDone), 2.4)
+		catchBurst(pos + Vector3.new(0, 4, 0), GOLD)
+		giveBasket()
+		flash("\xF0\x9F\xA7\xBA You wove your own catching basket!", 3)
 		refreshBanner()
-		print(("[Storm] anchor '%s' capped (%d/3)"):format(a.kind, anchorsDone))
-
-		if anchorsDone == 2 then
-			rodReady = true
-			for _, o in ipairs(anchors) do
-				if o.kind == "rod" and o.prompt then o.prompt.Enabled = true end
-			end
-			flash("\xE2\x9A\xA1 The rod on the third island just woke up!", 3)
-		elseif anchorsDone >= 3 then
-			task.delay(0.8, stormCollapse)
-		end
+		task.delay(1.2, stormCollapse)
 	end)
+	return weaveStand
 end
 
 -- ---- the storm comes down -------------------------------------------------
@@ -997,127 +920,12 @@ stormCollapse = function()
 		end
 	end)
 
-	-- the anchors give up: the kite drops, the rod discharges, the vent goes cold
-	for _, a in ipairs(anchors) do
-		if a.kind == "rod" and a.tip then
-			task.spawn(function()
-				for _ = 1, 6 do
-					a.tip.Transparency = 0
-					task.wait(0.08)
-					a.tip.Transparency = 0.6
-					task.wait(0.12)
-				end
-				a.tip.Transparency = 0
-			end)
-		end
-	end
-
 	task.delay(3.0, function()
 		flash("\xF0\x9F\x8D\xAC Last of it is falling -- CATCH IT!", 2.6)
 		task.delay(1.4, runStorm)
 	end)
 end
 
--- ---- finding them ---------------------------------------------------------
--- Parts you named win. Failing that, a triangle around the island -- the quest still plays,
--- it just will not sit on your three islets, and the log says so rather than leaving you to
--- wonder why the anchors are in the sea.
--- HIDING A MARKER TAKES MORE THAN TRANSPARENCY. A Decal or Texture on it keeps drawing at
--- full opacity, and a SurfaceAppearance overrides transparency outright -- so a part that looks
--- "hidden" in code is still sat there in game. Blank the lot.
-local function hideMarker(inst)
-	local function one(b)
-		b.Transparency = 1
-		b.CanCollide = false
-		b.CanQuery = false
-		b.CanTouch = false
-		b.CastShadow = false
-	end
-	if inst:IsA("BasePart") then one(inst) end
-	for _, d in ipairs(inst:GetDescendants()) do
-		if d:IsA("BasePart") then one(d)
-		elseif d:IsA("Decal") or d:IsA("Texture") then d.Transparency = 1
-		elseif d:IsA("SurfaceAppearance") then d:Destroy() end
-	end
-end
-
--- name matches the marker exactly, or the marker with a number after it (rod, rod1, rod02)
-local function markerIs(part, hints)
-	local n = norm(part.Name)
-	for _, h in ipairs(hints) do
-		if n == h or n:match("^" .. h .. "%d+$") then return true end
-	end
-	return false
-end
-
--- A MARKER MAY BE A MODEL. Half the markers in this place are empty Models -- garden1,
--- ancienttree, Candy Npc are all Models, not parts -- so a search that only accepted BaseParts
--- would walk straight past a Model you named 'guyser' and quietly auto-place instead.
--- Returns the TOP of whatever it is, which is where a thing standing on it belongs.
-local function markerSpot(d)
-	if d:IsA("BasePart") then
-		return d.Position + Vector3.new(0, d.Size.Y * 0.5, 0)
-	end
-	local ok, cf, size = pcall(function() return d:GetBoundingBox() end)
-	if ok and cf then
-		if size and size.Y > 0.05 then
-			return cf.Position + Vector3.new(0, size.Y * 0.5, 0)
-		end
-		return cf.Position                      -- an EMPTY model: the pivot is all there is
-	end
-	return nil
-end
-
-local function placeAnchors()
-	-- 1. things named after the anchor itself, 2. generic anchor markers, 3. a triangle
-	local byKind, spare = {}, {}
-	for _, d in ipairs(Workspace:GetDescendants()) do
-		if (d:IsA("BasePart") or d:IsA("Model")) and not d:IsA("Tool") then
-			local spot = markerSpot(d)
-			if spot and (spot - islandPos).Magnitude <= 900 then
-				local claimed = false
-				for kind, hints in pairs(ANCHOR_KINDS) do
-					if not byKind[kind] and markerIs(d, hints) then
-						byKind[kind] = d; claimed = true; break
-					end
-				end
-				if not claimed and string.find(norm(d.Name), ANCHOR_NAME, 1, true) then
-					spare[#spare + 1] = d
-				end
-			end
-		end
-	end
-	table.sort(spare, function(x, y) return x.Name < y.Name end)
-
-	local KINDS = { "vent", "kite", "rod" }
-	local named, si = 0, 0
-	for i = 1, 3 do
-		local kind = KINDS[i]
-		local mark = byKind[kind]
-		if not mark then si += 1; mark = spare[si] end
-		local pos
-		if mark then
-			named += 1
-			-- ON TOP of the marker, never through the middle of it
-			pos = markerSpot(mark) or mark:GetPivot().Position
-			hideMarker(mark)
-			print(("[Storm] %s -> your '%s' (%s) at (%.0f, %.0f, %.0f)")
-				:format(kind, mark.Name, mark.ClassName, pos.X, pos.Y, pos.Z))
-		else
-			local ang = (i / 3) * math.pi * 2
-			local p = islandPos + Vector3.new(math.cos(ang) * ANCHOR_SPREAD, 0,
-			                                  math.sin(ang) * ANCHOR_SPREAD)
-			pos = Vector3.new(p.X, groundAt(p), p.Z)
-		end
-		local a = { pos = pos, kind = kind, done = false }
-		anchors[i] = a
-		if a.kind == "vent" then buildVent(a)
-		elseif a.kind == "kite" then buildKite(a)
-		else buildRod(a) end
-		wireAnchor(a)
-	end
-	print(("[Storm] 3 anchors placed -- %d on your parts, %d auto-placed"):format(named, 3 - named))
-end
 
 -- ============================================================================
 -- NPC
@@ -1156,19 +964,29 @@ local function questPages()
 		return { "You caught the lot! \xF0\x9F\x8D\xAC", "That storm's been ruining my harvest for years." }
 	end
 	if storming then
-		return { ("Don't talk to me -- CATCH! %d of %d!"):format(caught, TARGET) }
+		return { ("No talking. CATCH! %d of %d!"):format(caught, TARGET),
+			"Stand in the shadows. That's where they land!" }
+	end
+	if accepted and not hasBasket then
+		if reedsHeld >= REED_COUNT then
+			return { "That's the lot! Hold Weave on my loom." }
+		end
+		return {
+			("%d of %d reed. Try all 3 islands."):format(reedsHeld, REED_COUNT),
+			"Find tall pink-and-white canes, then press Cut.",
+		}
 	end
 	if accepted then
 		return {
-			("Ready for another go? You've caught %d of %d."):format(caught, TARGET),
-			"Stand under the shadows -- that's where it'll land.",
+			("Another go? You've caught %d of %d."):format(caught, TARGET),
+			"Shadows show where pieces fall. Stand in them!",
 		}
 	end
 	return {
-		"See those clouds? That's a TAFFY STORM rolling in.",
-		"Three waves of it, and every piece that hits the ground is wasted.",
-		("Take this basket and catch me %d of them."):format(TARGET),
-		"Watch the shadows on the ground -- stand in one and it drops right to you.",
+		"A TAFFY STORM! You need a basket.",
+		("1) Press Cut on %d pink SUGAR REED."):format(REED_COUNT),
+		"2) Hold Weave on my reed loom.",
+		("3) Catch %d pieces in the shadows!"):format(TARGET),
 	}
 end
 
@@ -1193,26 +1011,26 @@ local function wireNPC(head)
 	end
 
 	prompt.Triggered:Connect(function()
-		if index == 0 then pages = questPages() end
+		if index == 0 then pages = (_G.capBubble and _G.capBubble(questPages())) or questPages() end
 		index += 1
 		if not pages or index > #pages then
 			closeDialogue()
-			-- closing the intro (or a retry) kicks the storm off
-			if accepted and not storming and not done then task.spawn(runStorm) end
+			-- ⚠ WEAVING starts the storm now, not closing the dialogue. A retry (you have the
+			-- basket, the storm is over, you did not hit the target) still restarts it here.
+			if accepted and hasBasket and not storming and not done then task.spawn(runStorm) end
 			return
 		end
 		if index == 2 and not accepted then
 			accepted = true
-			giveBasket()
-			-- the anchors are already standing; taking the job is what makes them workable
-			for _, a in ipairs(anchors) do
-				if a.prompt and not a.done and a.kind ~= "rod" then a.prompt.Enabled = true end
-			end
+			-- ⚠ NO BASKET HERE ANY MORE. It used to be handed over on this line; the whole
+			-- middle of the quest is now earning it, so taking the job only unlocks the reeds.
 			refreshBanner()
 		end
 		local last = index >= #pages
-		showBubble(head, pages[index], true, last and "[E] go cut it loose" or ("[E] more  (%d/%d)"):format(index, #pages))
-		prompt.ActionText = last and "START" or "Continue"
+		showBubble(head, pages[index], true,
+			last and (hasBasket and "[E] bring on the storm" or "[E] go find the reed")
+			or ("[E] more  (%d/%d)"):format(index, #pages))
+		prompt.ActionText = last and (hasBasket and "START" or "GO") or "Continue"
 		startWatcher()
 	end)
 	prompt.PromptHidden:Connect(function() if index ~= 0 then closeDialogue() end end)
@@ -1251,8 +1069,15 @@ task.spawn(function()
 	end, 45)
 
 	if isle then
-		local ok, cf = pcall(function() return (select(1, isle:GetBoundingBox())) end)
-		islandPos = (ok and cf) and cf.Position or nil
+		islandModel = isle
+		local ok, cf, size = pcall(function() return isle:GetBoundingBox() end)
+		if ok and cf then
+			islandPos = cf.Position
+			if size then
+				islandTopY = cf.Position.Y + size.Y * 0.5
+				islandBotY = cf.Position.Y - size.Y * 0.5
+			end
+		end
 	end
 	if not islandPos then
 		warn("[Storm] island5 not found -- quest inactive")
@@ -1286,7 +1111,8 @@ task.spawn(function()
 		warn("[Storm] no 'Candy Npc' near island5 -- nobody to start the storm")
 	end
 
-	placeAnchors()
+	scatterReeds()
+	if npcHead then buildWeaveStand(npcHead.Position) end
 	refreshBanner()
 	print(("[Storm] ready -- centre %.0f,%.0f,%.0f, target %d, %d wave(s)"):format(
 		stormCentre.X, stormCentre.Y, stormCentre.Z, TARGET, #WAVES))
@@ -1298,20 +1124,22 @@ task.spawn(function()
 end)
 
 -- ============================================================================
--- /storm -- what the anchors are and where they went
+-- /storm -- where the reeds are and how far in you are
 -- ============================================================================
 local function stormDiag(msg)
 	if tostring(msg or ""):lower():sub(1, 6) ~= "/storm" then return end
-	print("[Storm] ---- anchors ----")
-	if #anchors == 0 then
+	print("[Storm] ---- sugar reeds ----")
+	if #reeds == 0 then
 		print("  none built yet -- island5 may not have streamed in")
 	end
-	for i, a in ipairs(anchors) do
-		print(("  %d  %-5s  at (%.0f, %.0f, %.0f)  done=%s  prompt=%s")
-			:format(i, a.kind, a.pos.X, a.pos.Y, a.pos.Z, tostring(a.done),
-				a.prompt and tostring(a.prompt.Enabled) or "none"))
+	for i, r in ipairs(reeds) do
+		print(("  %d  at (%.0f, %.0f, %.0f)  taken=%s"):format(i, r.pos.X, r.pos.Y, r.pos.Z, tostring(r.taken)))
 	end
-	print(("  accepted=%s  rodReady=%s  %d/3 down"):format(tostring(accepted), tostring(rodReady), anchorsDone))
+	print(("  weave stand=%s (prompt %s)"):format(
+		weaveStand and "built" or "none",
+		weaveStand and weaveStand.prompt and tostring(weaveStand.prompt.Enabled) or "n/a"))
+	print(("  accepted=%s  basket=%s  reed %d/%d"):format(tostring(accepted), tostring(hasBasket),
+		reedsHeld, REED_COUNT))
 end
 pcall(function()
 	TextChatService.MessageReceived:Connect(function(m)
@@ -1324,13 +1152,22 @@ pcall(function() player.Chatted:Connect(stormDiag) end)
 -- /complete
 -- ============================================================================
 local function onCommand(msg)
+	-- DEV ONLY. QuestDevGate publishes this; read at command time so load order cannot matter,
+	-- and nil (gate not up yet) refuses. Without it any player could type their way to the whole realm.
+	if not _G.questDevOK then return end
 	if tostring(msg or ""):lower():sub(1, 9) ~= "/complete" then return end
 	local h = hrpOf()
 	if not (islandPos and h) then return end
 	if (h.Position - islandPos).Magnitude > 420 then return end
 	accepted = true; caught = TARGET
-	anchorsDone = 3
-	for _, a in ipairs(anchors) do a.done = true; if a.prompt then a.prompt.Enabled = false end end
+	reedsHeld = REED_COUNT
+	if not hasBasket then giveBasket() end
+	-- clear the field so the cheat does not leave six glowing reeds standing on a finished quest
+	for _, r in ipairs(reeds) do
+		r.taken = true
+		if r.model and r.model.Parent then r.model:Destroy() end
+	end
+	if weaveStand and weaveStand.prompt then weaveStand.prompt.Enabled = false end
 	winStorm()
 	print("[Storm][TEST] /complete -- storm weathered")
 end

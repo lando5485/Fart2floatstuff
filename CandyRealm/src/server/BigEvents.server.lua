@@ -62,7 +62,11 @@ end
 local MeteorSync      = remote("MeteorSync")
 local RocketEventSync = remote("RocketEventSync")
 local RainbowBeamSync = remote("RainbowBeamSync")
-local BlizzardSync    = remote("BlizzardSync")
+local SinkholeSync    = remote("SinkholeSync")
+-- RocketUI waits on THIS TOO, and bails without it -- its "Go to Island 1" button would have
+-- nowhere to send you. Creating RocketEventSync alone got the UI past its first bounded wait and
+-- into its second; the event needs both remotes to exist or the whole set piece is a banner.
+local GoToIsland1Event = remote("GoToIsland1Event")
 local ServerEventNotify = remote("ServerEventNotify")   -- ServerEvents makes this too; whoever is first wins
 
 -- Coins are written straight to leaderstats. NOT through CoinEvent: that is the client->server path the
@@ -74,6 +78,22 @@ local function award(plr, amount)
 	local coins = stats and stats:FindFirstChild("Coins")
 	if coins then coins.Value = coins.Value + amount end
 end
+
+-- THE ROCKET'S TELEPORT BUTTON. The client asks; the SERVER moves you -- a client that could
+-- reposition its own character on request is a free teleport exploit wearing an event costume.
+--
+-- Only honoured while a rocket launch is actually running (BigEvents sets ActiveServerEvent), and
+-- only to island1's own position -- so the worst a spammed request can do is put you where the
+-- event was already inviting you to stand.
+GoToIsland1Event.OnServerEvent:Connect(function(plr)
+	if Workspace:GetAttribute("ActiveServerEvent") ~= "ROCKET LAUNCH" then return end
+	local char = plr.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	local isle = Workspace:FindFirstChild("island1")
+	local at = isle and isle:GetPivot().Position or Vector3.new(0, 150, 0)
+	hrp.CFrame = CFrame.new(at + Vector3.new(0, 90, 0))   -- above the deck; they drop onto it
+end)
 
 --=============================================================================================================
 -- THE SET PIECES
@@ -184,58 +204,76 @@ local function runRainbowBeam()
 	ServerEventNotify:FireAllClients("END", "", 0, "", Color3.new(1, 1, 1))
 end
 
--- ===== POWDERED SUGAR BLIZZARD =====
--- The only set piece with a MECHANIC rather than just a spectacle: while it blows, being outside
--- costs you speed, and getting under a roof gives it back. Everything you see is Blizzard.client;
--- the server owns the one thing a client must not, which is deciding who is under cover.
+-- ===== SINKHOLE =====
+-- A random island's floor "opens" and whoever jumps in gets a private 30-second treasure grab in a
+-- cave far below the map. Everything visible is Sinkhole.client -- the hole, the drop, the cave,
+-- the candies, the payout (through CoinEvent, so the normal server caps apply). The server owns
+-- the two things a client must not: WHICH island, and WHERE on its floor -- one broadcast position
+-- means every player sees the same hole in the same spot, rather than each client rolling its own.
 --
--- THE SHELTER TEST IS SourRain'S, NOT A NEW ONE. One ray straight up, 30 studs, ignoring every
--- character. That distance is load-bearing and the reasoning is written out in SourRain.server:
--- longer and the island above reads as a roof, so the top of the tower is permanently "indoors"
--- and the event does nothing to anybody. Two different answers to "are you sheltered" is how you
--- get a player slowed under a roof because the client disagreed with the server.
-local SHELTER_UP = 30
-local blizzardRay = RaycastParams.new()
-blizzardRay.FilterType = Enum.RaycastFilterType.Exclude
-
-local function isSheltered(char)
-	local hrp = char and char:FindFirstChild("HumanoidRootPart")
-	if not hrp then return true end                  -- no body to slow down
-	local hit = Workspace:Raycast(hrp.Position + Vector3.new(0, 2, 0),
-		Vector3.new(0, SHELTER_UP, 0), blizzardRay)
-	return hit ~= nil
-end
-
-local function runBlizzard()
-	local DUR = 75
-	ServerEventNotify:FireAllClients("BLIZZARD", "\u{2744} SUGAR BLIZZARD", DUR,
-		"\u{2744} A powdered sugar blizzard is rolling in -- find cover!", Color3.fromRGB(210, 226, 250))
-	BlizzardSync:FireAllClients("start")
-
-	local told = {}          -- [player] = the last state we sent them
-	local endAt = os.clock() + DUR
-	while os.clock() < endAt do
-		-- rebuilt every pass: characters respawn mid-storm, and a stale filter means a player's own
-		-- torso starts counting as the roof over their head
-		local ex = {}
-		for _, p in ipairs(Players:GetPlayers()) do
-			if p.Character then ex[#ex + 1] = p.Character end
+-- THE ISLAND IS ELECTED, NOT ROLLED. Every player votes for the island model nearest their feet
+-- and the winner hosts the hole. A pure random pick lands the event on an empty island most of the
+-- time -- eleven islands, a handful of players -- and an event nobody can see still burns its slot
+-- in the rotation.
+local function sinkholeSpot()
+	local models = {}
+	for _, m in ipairs(Workspace:GetChildren()) do
+		if m:IsA("Model") and string.match(string.lower(m.Name), "^island%d+$") then
+			models[#models + 1] = m
 		end
-		blizzardRay.FilterDescendantsInstances = ex
+	end
+	if #models == 0 then return nil end
 
-		for _, plr in ipairs(Players:GetPlayers()) do
-			local safe = isSheltered(plr.Character)
-			-- sent only when it CHANGES: this loop runs four times a second and the client only
-			-- needs to know the moment you step under something
-			if told[plr] ~= safe then
-				told[plr] = safe
-				BlizzardSync:FireClient(plr, "shelter", safe)
+	local votes, best, bestN = {}, nil, 0
+	for _, plr in ipairs(Players:GetPlayers()) do
+		local hrp = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			local near, nd
+			for _, m in ipairs(models) do
+				local d = (m:GetPivot().Position - hrp.Position).Magnitude
+				if not nd or d < nd then near, nd = m, d end
+			end
+			if near then
+				votes[near] = (votes[near] or 0) + 1
+				if votes[near] > bestN then best, bestN = near, votes[near] end
 			end
 		end
-		task.wait(0.25)
 	end
+	best = best or models[math.random(1, #models)]
 
-	BlizzardSync:FireAllClients("stop")
+	-- a real spot ON the floor: ray down through the island's own parts only, from a point pulled
+	-- toward the middle so the hole cannot open hanging off a cliff edge
+	local cf, size = best:GetBoundingBox()
+	local rp = RaycastParams.new()
+	rp.FilterType = Enum.RaycastFilterType.Include
+	rp.FilterDescendantsInstances = { best }
+	local from = cf.Position + Vector3.new(
+		(math.random() - 0.5) * size.X * 0.35, size.Y, (math.random() - 0.5) * size.Z * 0.35)
+	local hit = Workspace:Raycast(from, Vector3.new(0, -size.Y * 2, 0), rp)
+	return best.Name, hit and hit.Position or cf.Position
+end
+
+local function runSinkhole()
+	local islandName, pos = sinkholeSpot()
+	if not pos then return end
+	local DUR = 60
+
+	-- the pretty name, if the ladder knows it; the model name is the honest fallback
+	local disp = islandName
+	pcall(function()
+		local IslandOrder = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("IslandOrder"))
+		local n = tonumber(string.match(islandName, "%d+"))
+		if n and IslandOrder.NAME_BY_ISLAND and IslandOrder.NAME_BY_ISLAND[n] then
+			disp = IslandOrder.NAME_BY_ISLAND[n]
+		end
+	end)
+
+	ServerEventNotify:FireAllClients("SINKHOLE", "\u{1F573} SINKHOLE", DUR,
+		("\u{1F573} A sinkhole has opened on %s -- jump in for buried candy!"):format(disp),
+		Color3.fromRGB(140, 96, 56))
+	SinkholeSync:FireAllClients("start", { pos = pos, duration = DUR })
+	task.wait(DUR)
+	SinkholeSync:FireAllClients("stop")
 	ServerEventNotify:FireAllClients("END", "", 0, "", Color3.new(1, 1, 1))
 end
 
@@ -264,7 +302,7 @@ local POOL = {
 	{ w = 30, name = "SOUR STORM",     run = function() runWeather("THUNDERSTORM") end },
 	{ w = 25, name = "SUGAR GALE",     run = function() runWeather("WINDSTORM") end },
 	{ w = 20, name = "METEOR SHOWER",  run = runMeteorShower },
-	{ w = 20, name = "SUGAR BLIZZARD", run = runBlizzard },
+	{ w = 15, name = "SINKHOLE",       run = runSinkhole },
 	{ w = 15, name = "RAINBOW BEAM",   run = runRainbowBeam },
 	{ w = 10, name = "ROCKET LAUNCH",  run = runRocketLaunch },
 }
@@ -306,7 +344,7 @@ task.spawn(function()
 	end
 end)
 
-print(("[BigEvents] ready -- %d set piece(s): sour storm, sugar gale, sugar blizzard, meteor shower, "
-	.. "rainbow beam, rocket launch. First in %ds, then every %ds. MeteorSync / RocketEventSync / "
-	.. "RainbowBeamSync / BlizzardSync created here, which is what finally builds those UIs.")
+print(("[BigEvents] ready -- %d set piece(s): sour storm, sugar gale, meteor shower, sinkhole, rainbow "
+	.. "beam, rocket launch. First in %ds, then every %ds. MeteorSync / RocketEventSync / GoToIsland1Event "
+	.. "/ RainbowBeamSync / SinkholeSync created here, which is what builds those UIs.")
 	:format(#POOL, FIRST_WAIT, BETWEEN))

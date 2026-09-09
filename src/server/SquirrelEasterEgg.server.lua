@@ -39,13 +39,36 @@ local CAMP_LIMIT  = 6                  -- hard cap (sec) on standing in the same
 local CAMP_RADIUS = 4                  -- counts as "moved" once it's this many studs from the remembered spot
 -- Obstacle avoidance (so the pig never walks its body into garden props/fences/walls -- it steers/turns away).
 local AVOID_LOOKAHEAD = 5              -- studs of clear space it keeps ahead; something nearer -> stop + turn away
-local AVOID_HALFWIDTH = 2              -- side-ray offset (~half the pig's body width) so its shoulders clear too
-local AVOID_RAYHEIGHT = 0.9           -- cast at body height (sees fences/walls/props; the flat floor isn't hit)
+-- (The old AVOID_HALFWIDTH / AVOID_RAYHEIGHT rays are gone: the path is now swept with the pig's whole body
+-- silhouette -- see bodySweepHit below -- so width and height come from the model, not from two numbers.)
 local AVOID_TRIES     = 18            -- random directions tested for a fully-clear path before it gives up + waits
 local NOSE_BUFFER     = 3             -- require the path clear this far PAST the target too, so the snout never pokes into an object
 local FALL_BELOW   = 25                -- studs below the floor -> treat as "fell", respawn
 local TALK_MIN, TALK_MAX = 12, 18      -- random line every 12-18s
-local TALK_RANGE   = 20                -- only speak when a player is within 20 studs (same gate as the bubble MaxDistance)
+local TALK_RANGE   = 20                -- only speak the AMBIENT one-liners when a player is within 20 studs
+                                       -- (the bubble itself is readable from 100 -- see the note by the bubble)
+-- ===== THE OINK =====
+-- The pig had NO sound at all -- only text bubbles -- so it has been a silent animal since it was
+-- written. This mirrors the cow exactly: same Sound placement (on the body, 3D/positional), same
+-- rolloff, same "every N seconds plus on demand" cadence, so the two farm animals behave alike.
+-- â  PUT A REAL rbxassetid HERE. Empty means the pig hops but makes no noise.
+local OINK_SOUND_ID = "rbxassetid://855134280"
+local OINK_MIN, OINK_MAX = 15, 40      -- same cadence as the cow's moo (mooMin/mooMax in EasterEggManager)
+-- ONE-SHOT LOAD CHECK, at file scope rather than per rig (the pig respawns, and a repeated check would
+-- just spam the log). Several ids in this place fail with "Asset type does not match requested type" or
+-- "not approved for the requester", and that failure is SILENT at the point of use -- without this line
+-- a bad id looks exactly like the oink system being broken.
+task.spawn(function()
+	if OINK_SOUND_ID == "" then return end
+	local probe = Instance.new("Sound"); probe.SoundId = OINK_SOUND_ID; probe.Parent = workspace
+	local ok, err = pcall(function() game:GetService("ContentProvider"):PreloadAsync({probe}) end)
+	if ok and probe.IsLoaded then
+		print(("[PIG] oink %s loaded OK (length %.2fs) -- the id is good"):format(OINK_SOUND_ID, probe.TimeLength))
+	else
+		warn("[PIG] oink "..OINK_SOUND_ID.." did NOT load -- the pig will be silent. "..tostring(err))
+	end
+	probe:Destroy()
+end)
 
 -- short cosmetic one-liners cycled in the pig's overhead bubble (easy to edit; keep them brief)
 local PIG_LINES = {
@@ -302,7 +325,18 @@ local function buildPig(rootCF)
 	end
 	print("[COLLISION] pig body parts set solid=" .. pigSolid .. " (CanCollide=true; anchored + CFrame-driven, movement unaffected)")
 
-	return { model = model, hrp = hrp, head = head, hum = hum, legs = legs }
+	-- OINK SOUND on the body, not the HumanoidRootPart: the HRP is invisible and sits at the pig's
+	-- centre, but the body union is what a player is standing next to. Cow-exact rolloff so the two
+	-- animals carry the same distance across the garden.
+	local oink = Instance.new("Sound"); oink.Name = "OinkSound"; oink.SoundId = OINK_SOUND_ID
+	oink.Volume = 0.6; oink.RollOffMinDistance = 12; oink.RollOffMaxDistance = 130
+	oink.Parent = head or hrp
+	if OINK_SOUND_ID == "" then
+		warn("[PIG] OINK_SOUND_ID is empty -- the pig hops but is SILENT. Set it at the top of "
+			.. "SquirrelEasterEgg.server.lua to a real rbxassetid.")
+	end
+
+	return { model = model, hrp = hrp, head = head, hum = hum, legs = legs, oink = oink }
 end
 
 --======================================================================
@@ -319,7 +353,10 @@ local function attachTalkBubble(rig)
 	bb.SizeOffset = Vector2.new(0, 0)
 	bb.StudsOffset = Vector3.new(0, 2.2, 0)    -- above the head
 	bb.LightInfluence = 0
-	bb.AlwaysOnTop = true; bb.MaxDistance = 20; bb.Enabled = false; bb.Parent = host
+	-- 100, not 20: MaxDistance is the range the bubble can be SEEN from. See the matching note on the cow's
+	-- bubble in EasterEggManager -- at 20 the fireside stories were unreadable from anywhere but on top of
+	-- the animals, which defeats walking over to watch them.
+	bb.AlwaysOnTop = true; bb.MaxDistance = 100; bb.Enabled = false; bb.Parent = host
 	local frame = Instance.new("Frame")
 	frame.Size = UDim2.fromOffset(230, 64); frame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 	frame.BackgroundTransparency = 0.05; frame.BorderSizePixel = 0; frame.Parent = bb
@@ -368,12 +405,41 @@ local function runTalk(rig, stop)
 	if not bubble then return end
 	-- register for the GardenFeeding mini-feature (find the pig's body + make it speak, reusing THIS bubble)
 	_G.gardenAnimals = _G.gardenAnimals or {}
-	_G.gardenAnimals.pig = { body = bubble.gui.Adornee, say = function(m) bubbleSay(bubble, m, 7) end }
+	-- `hold` is optional and defaults to the 7s an ambient one-liner wants. The fireside stories pass a
+	-- shorter one: they land a line every LINE_SECONDS and the bubble must clear before this animal speaks
+	-- again, or the hide fires over the next line and blanks it mid-sentence.
+	_G.gardenAnimals.pig = { body = bubble.gui.Adornee, say = function(m, hold) bubbleSay(bubble, m, hold or 7) end }
+
+	-- ===== OINK: on a timer AND on demand =====
+	-- Rewound before every play, same as the warning alarm and the cow's moo: a Sound told to play while
+	-- already playing resumes instead of restarting, which turns two oinks into one smeared one.
+	local function oinkNow()
+		if not rig.model.Parent then return false end
+		local s = rig.oink
+		if s then pcall(function() s.TimePosition = 0; s:Play() end) end
+		print("[PIG] oink")
+		return true
+	end
+	-- The ambient cadence. A SEPARATE loop from the talk loop above on purpose: the bubble lines are
+	-- proximity-gated (they are text nobody can read from across the garden), but a sound carries, so
+	-- gating the oink on proximity too would leave the farm silent exactly when you are walking toward it.
+	task.spawn(function()
+		while rig.model.Parent and not stop() do
+			interruptibleWait(math.random(OINK_MIN, OINK_MAX), function() return stop() or not rig.model.Parent end)
+			if stop() or not rig.model.Parent then break end
+			oinkNow()
+		end
+	end)
 	local i = 1 -- CYCLE the short lines in order (loop), starting on line 1
 	while rig.model.Parent and not stop() do
 		interruptibleWait(math.random(TALK_MIN, TALK_MAX), function() return stop() or not rig.model.Parent end)
 		if stop() or not rig.model.Parent then break end
-		if isPlayerNear(rig, TALK_RANGE) then
+		-- SILENT AT NIGHT. The idle one-liners share the ONE speech bubble the fireside stories are told
+		-- through, so an ambient "Got any snacks?" landing mid-story overwrites a line and the exchange stops making
+		-- sense. Campfire.server owns BeanFarmNight; the chatter comes back on its own at sunrise.
+		if Workspace:GetAttribute("BeanFarmNight") == true then
+			print("[PIG] quiet -- night, the fireside story owns the bubble")
+		elseif isPlayerNear(rig, TALK_RANGE) then
 			local line = PIG_LINES[i]
 			i = (i % #PIG_LINES) + 1
 			bubbleSay(bubble, line, 7) -- readable pace
@@ -416,44 +482,69 @@ local function avoidParams(rig)
 	return params
 end
 
--- true if a body-width path from `fromPos` to `toPos` is clear (3 parallel rays: centre + both shoulders).
-local function pathClear(fromPos, toPos, params)
+-- ===== BODY SWEEP, NOT HAIRLINE RAYS =====
+-- Three rays at one fixed height were the previous test, and one fixed height is why the animals still
+-- walked through things: the cow's ray sat 3.2 studs up -- above the 2.4-stud food box, above the fence
+-- rails, above every planter -- so none of those ever registered, and the pig's missed anything under
+-- 1.4 studs or over its shoulder line. This sweeps a slab the size of the animal's own silhouette (its
+-- bounding box, minus ankle height so grass tufts are stepped over rather than steered around) along
+-- the intended path. Anything the body would pass through, at any height from shin to back, is a hit.
+-- Invisible non-collidable bricks (hidden markers) are skipped, so a helper part never becomes an
+-- invisible wall. `params` supplies the exclusion list (the animal itself, players).
+local function bodySweepHit(model, fromPos, dir, dist, params)
+	local flat = Vector3.new(dir.X, 0, dir.Z)
+	if flat.Magnitude < 0.05 or dist <= 0 then return nil end
+	flat = flat.Unit
+	local ok, cf, size = pcall(function() return model:GetBoundingBox() end)
+	if not ok or not size then return nil end
+	local LIFT = 0.5 -- shin height: things this low are walked over, not around
+	local slab = Vector3.new(math.max(1, size.X), math.max(0.5, size.Y - LIFT), 0.5)
+	local centre = Vector3.new(fromPos.X, cf.Position.Y + LIFT * 0.5, fromPos.Z)
+	local start = CFrame.lookAt(centre, centre + flat)
+	local ghosts = {}
+	for _ = 1, 6 do
+		local p = RaycastParams.new()
+		p.FilterType = Enum.RaycastFilterType.Exclude
+		p.IgnoreWater = true
+		local list = table.clone(params.FilterDescendantsInstances)
+		for _, g in ipairs(ghosts) do list[#list + 1] = g end
+		p.FilterDescendantsInstances = list
+		local hit = workspace:Blockcast(start, slab, flat * dist, p)
+		if not hit then return nil end
+		local inst = hit.Instance
+		if inst and inst:IsA("BasePart") and inst.Transparency >= 0.95 and not inst.CanCollide then
+			ghosts[#ghosts + 1] = inst -- a hidden marker: look past it
+		else
+			return hit
+		end
+	end
+	return nil
+end
+
+-- true if the pig's whole body can travel from `fromPos` to `toPos` without passing through anything.
+local function pathClear(rig, fromPos, toPos, params)
 	local dir = Vector3.new(toPos.X - fromPos.X, 0, toPos.Z - fromPos.Z)
 	if dir.Magnitude < 0.05 then return true end
-	local origin = Vector3.new(fromPos.X, fromPos.Y + AVOID_RAYHEIGHT, fromPos.Z)
-	local right = Vector3.new(-dir.Unit.Z, 0, dir.Unit.X)
-	for _, off in ipairs({ -AVOID_HALFWIDTH, 0, AVOID_HALFWIDTH }) do
-		if workspace:Raycast(origin + right * off, dir, params) then return false end
-	end
-	return true
+	return bodySweepHit(rig.model, fromPos, dir, dir.Magnitude, params) == nil
 end
 
 -- true if something solid is within AVOID_LOOKAHEAD studs straight ahead (pig front = HRP LookVector).
 local function forwardBlocked(rig, params)
-	local hrp = rig.hrp
-	local fwd = hrp.CFrame.LookVector
-	fwd = Vector3.new(fwd.X, 0, fwd.Z)
-	if fwd.Magnitude < 0.05 then return false end
-	fwd = fwd.Unit
-	local origin = hrp.Position + Vector3.new(0, AVOID_RAYHEIGHT, 0)
-	local right = Vector3.new(-fwd.Z, 0, fwd.X)
-	for _, off in ipairs({ -AVOID_HALFWIDTH, 0, AVOID_HALFWIDTH }) do
-		if workspace:Raycast(origin + right * off, fwd * AVOID_LOOKAHEAD, params) then return true end
-	end
-	return false
+	local fwd = rig.hrp.CFrame.LookVector
+	return bodySweepHit(rig.model, rig.hrp.Position, fwd, AVOID_LOOKAHEAD, params) ~= nil
 end
 
 -- pick a target whose ENTIRE straight path is clear of obstacles (plus a nose buffer past the endpoint so the snout
 -- never ends up inside something). Two passes: normal legs first, then short steps -> it can still slip down a gap when
 -- mostly boxed in. nil only when no clear direction exists at all (caller just waits + retries -- it never clips through).
-local function pickClearTarget(field, fromPos, params)
+local function pickClearTarget(rig, field, fromPos, params)
 	for _, span in ipairs({ { NEAR_MIN, NEAR_MAX }, { 3, 9 } }) do
 		for _ = 1, AVOID_TRIES do
 			local cand = nearbyPoint(field, fromPos, span[1], span[2])
 			local dir = Vector3.new(cand.X - fromPos.X, 0, cand.Z - fromPos.Z)
 			-- check the whole way to the target AND NOSE_BUFFER studs beyond it -> the pig stops short, body fully clear
 			local checkTo = (dir.Magnitude > 0.05) and (cand + dir.Unit * NOSE_BUFFER) or cand
-			if pathClear(fromPos, checkTo, params) then return cand end
+			if pathClear(rig, fromPos, checkTo, params) then return cand end
 		end
 	end
 	return nil
@@ -465,18 +556,68 @@ end
 -- never fight a walker, so the pig is both bump-solid AND can never wedge/stop.
 local STEP = 1 / 30
 -- glide the rig's root from its current CFrame to toCF over `duration` secs (ease-in/out, same curve the cow uses).
-local function driveTo(rig, toCF, duration, stop)
+-- The params argument is optional. When given, the drive CHECKS AHEAD EVERY STEP and stops early if
+-- something has moved into the way -- see the note below on why picking a clear path once is not enough.
+local function driveTo(rig, toCF, duration, stop, params)
 	local hrp = rig.hrp
 	local fromCF = hrp.CFrame
 	local t = 0
+	local look = 0
 	while t < duration do
 		if stop() or not rig.model.Parent then return end
+		-- ===== CHECK AHEAD WHILE WALKING, NOT ONLY WHEN CHOOSING =====
+		-- pickClearTarget tests the path at the MOMENT the leg starts and never again, so anything that
+		-- appears after that gets walked straight through: the food box (placed a moment after the pig
+		-- spawns), a player-dropped prop, the cow, a garden rebuild. forwardBlocked existed for exactly
+		-- this and was never called. Four times a second is plenty for an animal at 4 studs/sec and it
+		-- costs three short rays.
+		look = look + STEP
+		if params and look >= 0.25 then
+			look = 0
+			if forwardBlocked(rig, params) then return end   -- stop here; wander() picks a fresh heading
+		end
 		t = math.min(duration, t + STEP)
 		local a = t / duration
 		hrp.CFrame = fromCF:Lerp(toCF, (math.sin((a - 0.5) * math.pi) + 1) / 2) -- eased -> smooth accel + settle
 		task.wait(STEP)
 	end
 	if rig.model.Parent and not stop() then hrp.CFrame = toCF end
+end
+
+-- ===== NIGHT: GO TO THE FIRE =====
+-- Campfire.server publishes BeanFarmNight and StoryFirePos (the fire nearest the island-1 food stand). While it
+-- is night the pig stops wandering and walks to the point INSIDE its field nearest that fire, then stands facing
+-- the flames -- that is where the stories are told (Campfire drives the bubbles; this only gets him there). The
+-- field fence is never crossed: the story fire sits right at the field's corner, so "the nearest point inside"
+-- is within a few studs of it.
+local GATHER_BACK = 8 -- studs back from the flame centre, clear of the ring of stools around it
+
+local function nightGatherPoint(field, firePos)
+	local cx, cz = (field.minX + field.maxX) * 0.5, (field.minZ + field.maxZ) * 0.5
+	local dir = Vector3.new(cx - firePos.X, 0, cz - firePos.Z)
+	if dir.Magnitude < 0.05 then dir = Vector3.new(1, 0, 0) end
+	local p = firePos + dir.Unit * GATHER_BACK
+	return Vector3.new(
+		math.clamp(p.X, field.minX + EDGE_MARGIN, field.maxX - EDGE_MARGIN), field.groundY,
+		math.clamp(p.Z, field.minZ + EDGE_MARGIN, field.maxZ - EDGE_MARGIN))
+end
+
+-- One clear leg toward `goal` (flat vector from the pig): straight at it if the body sweep says the way is
+-- clear, else the nearest clear heading either side. nil = every direction blocked this instant.
+local function legToward(rig, field, flat, params)
+	local here = rig.hrp.Position
+	local len = math.clamp(flat.Magnitude, 3, NEAR_MAX)
+	for _, deg in ipairs({ 0, 35, -35, 70, -70, 105, -105 }) do
+		local dir = (CFrame.Angles(0, math.rad(deg), 0) * flat.Unit)
+		local cand = Vector3.new(
+			math.clamp(here.X + dir.X * len, field.minX + EDGE_MARGIN, field.maxX - EDGE_MARGIN), field.groundY,
+			math.clamp(here.Z + dir.Z * len, field.minZ + EDGE_MARGIN, field.maxZ - EDGE_MARGIN))
+		local d = Vector3.new(cand.X - here.X, 0, cand.Z - here.Z)
+		if d.Magnitude > 1 and pathClear(rig, here, cand + d.Unit * math.min(NOSE_BUFFER, 1.5), params) then
+			return cand
+		end
+	end
+	return nil
 end
 
 -- WANDER: pick a clear nearby point, FACE it (front = -Z), glide there, brief pause, then immediately pick a NEW
@@ -486,8 +627,41 @@ local function wander(rig, field, stop)
 	local baseY = rig.hrp.Position.Y -- the (constant) root-centre height; targets stay on this plane so feet stay grounded
 	while rig.model.Parent and not stop() do
 		local params = avoidParams(rig) -- ignores the pig + players; refreshed per leg
+		local stopFn = function() return stop() or not rig.model.Parent end
+
+		-- NIGHT: head for the fire and stay there (see nightGatherPoint above).
+		local firePos = Workspace:GetAttribute("StoryFirePos")
+		if Workspace:GetAttribute("BeanFarmNight") == true and typeof(firePos) == "Vector3" then
+			local goal = nightGatherPoint(field, firePos)
+			local here = rig.hrp.Position
+			local flat = Vector3.new(goal.X - here.X, 0, goal.Z - here.Z)
+			local blockedTwice = (rig.nightBlocked or 0) >= 2 and flat.Magnitude <= 8
+			if flat.Magnitude <= 2.5 or blockedTwice then
+				-- settled: face the flames and listen. A stool in the way of the exact spot is close enough.
+				local face = Vector3.new(firePos.X - here.X, 0, firePos.Z - here.Z)
+				if face.Magnitude > 0.1 then
+					local at = Vector3.new(here.X, baseY, here.Z)
+					local want = CFrame.lookAt(at, at + face)
+					if (rig.hrp.CFrame.LookVector - want.LookVector).Magnitude > 0.2 then driveTo(rig, want, 0.8, stop) end
+				end
+				interruptibleWait(1, stopFn)
+			else
+				local leg = legToward(rig, field, flat, params)
+				if leg then
+					rig.nightBlocked = 0
+					local toPos = Vector3.new(leg.X, baseY, leg.Z)
+					local dir = toPos - Vector3.new(here.X, baseY, here.Z)
+					driveTo(rig, CFrame.lookAt(toPos, toPos + dir), math.clamp(dir.Magnitude / WALK_SPEED, 0.8, 6), stop, params)
+				else
+					rig.nightBlocked = (rig.nightBlocked or 0) + 1
+					interruptibleWait(0.6, stopFn)
+				end
+			end
+			continue
+		end
+		rig.nightBlocked = 0
 		-- ONLY ever head to a point whose whole path is clear -> the pig gets close to props but never walks inside one.
-		local target = pickClearTarget(field, rig.hrp.Position, params)
+		local target = pickClearTarget(rig, field, rig.hrp.Position, params)
 		if not target then
 			-- fully boxed in this instant: don't clip through anything -- wait a beat and re-scan for a clear opening
 			interruptibleWait(0.4 + math.random() * 0.4, function() return stop() or not rig.model.Parent end)
@@ -497,7 +671,8 @@ local function wander(rig, field, stop)
 			local dir = toPos - Vector3.new(fromPos.X, baseY, fromPos.Z)
 			if dir.Magnitude > 0.1 then
 				local toCF = CFrame.lookAt(toPos, toPos + dir) -- front (-Z) faces the travel direction, like the cow
-				driveTo(rig, toCF, math.clamp(dir.Magnitude / WALK_SPEED, 0.8, 5), stop) -- leg time tied to distance, capped
+				-- params passed so the leg aborts if something moves into the path mid-walk
+				driveTo(rig, toCF, math.clamp(dir.Magnitude / WALK_SPEED, 0.8, 5), stop, params) -- leg time tied to distance, capped
 			end
 			interruptibleWait(0.3 + math.random() * 0.6, function() return stop() or not rig.model.Parent end) -- brief settle, then a new heading
 		end

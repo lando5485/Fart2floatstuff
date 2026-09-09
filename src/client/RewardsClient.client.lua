@@ -20,6 +20,7 @@ local playerGui        = player:WaitForChild("PlayerGui")
 local RedeemCode      = RS:WaitForChild("RedeemCode", 30)
 local CoinBoostState  = RS:WaitForChild("CoinBoostState", 30)
 local GroupInfo       = RS:WaitForChild("GroupInfo", 30)
+local CheckGroupNow   = RS:WaitForChild("CheckGroupNow", 30) -- ask the server to RE-READ group membership (no rejoin)
 local GetOwnedPets    = (function() local r = RS:WaitForChild("CrateRemotes", 30); return r and r:WaitForChild("GetOwnedPets", 30) end)() -- to tell if a new player still has no pets
 
 -- group info is filled in by the GroupInfo event; sensible fallback so the buttons work even if it's late
@@ -141,13 +142,88 @@ local function setGroupOpen(open)
 	-- MEMBERS never see this window (or its dim scrim) at all -- the perk is already applied for them.
 	if open and groupState.isMember then groupGui.Enabled = false; groupPanel.Visible = false; groupCatch.Visible = false; return end
 	refreshGroupPanel()
+	if open and not groupState.isMember then joinBtn.Text = "JOIN GROUP" end -- fresh open = fresh prompt
 	groupGui.Enabled = open                          -- whole ScreenGui off when closed -> no scrim renders
 	groupPanel.Visible = open; groupCatch.Visible = open
 end
 groupCatch.MouseButton1Click:Connect(function() setGroupOpen(false) end)
 groupX.MouseButton1Click:Connect(function() setGroupOpen(false) end)
+-- ===== JOIN GROUP, WITHOUT LEAVING THE GAME =====
+-- Roblox has NO API that can join a group for a player -- no experience can do it, and this button never
+-- could. What it can do is open the group page in the IN-EXPERIENCE browser overlay (so the player never
+-- alt-tabs or closes the game), and then notice on its own that they joined.
+--
+-- Noticing is the part that used to be broken. The server checked membership once, on join, through
+-- Player:IsInGroup(), which caches for the whole session -- so someone who joined the group thirty seconds
+-- ago still read as a non-member and the panel told them to REJOIN THE GAME. The server now re-reads it
+-- live (RewardsService.CheckGroupNow -> Shared.GroupMembership, which uses GroupService:GetGroupsAsync and
+-- is not cached), so all this has to do is ask a few times while the panel is open.
+--
+-- The poll is bounded and slow on purpose: every ask is a web request on the server. POLL_EVERY is above the
+-- module's own 4s rate limit, and the whole thing stops on success, when the panel closes, or after
+-- POLL_FOR seconds -- after which the button is still there to press manually.
+local POLL_EVERY, POLL_FOR = 5, 120
+local pollToken = 0 -- bumped to cancel the previous poll; a stale loop sees the change and exits
+
+local function askServerAmIIn()
+	local res
+	local ok = pcall(function() res = CheckGroupNow:InvokeServer() end)
+	return ok and type(res) == "table" and res.isMember == true
+end
+
+-- Confirmed: flip the panel over to the member state and say so, once.
+local function onConfirmedMember()
+	groupState.isMember = true
+	joinBtn.Text = "JOIN GROUP"
+	refreshGroupPanel()
+	if _G.NotifyCenter and _G.NotifyCenter.push then
+		pcall(function()
+			_G.NotifyCenter.push({
+				top = "GROUP JOINED", text = "+10% COINS FOR JOINING!",
+				color = Color3.fromRGB(90, 200, 110), priority = _G.NotifyCenter.PRIORITY.REWARD, duration = 4,
+			})
+		end)
+	end
+end
+
+local function startPolling()
+	pollToken = pollToken + 1
+	local mine = pollToken
+    task.spawn(function()
+		local waited = 0
+		while waited < POLL_FOR do
+			task.wait(POLL_EVERY)
+			waited = waited + POLL_EVERY
+			if pollToken ~= mine then return end            -- superseded by a newer press
+			if groupState.isMember then return end          -- the server told us via GroupInfo already
+			if not groupPanel.Visible then return end       -- panel closed: stop spending web calls
+			if askServerAmIIn() then
+				if pollToken == mine then onConfirmedMember() end
+				return
+			end
+		end
+		-- Window lapsed without a yes. Leave the button in its "check" state so a slow joiner can still
+		-- confirm by hand -- never claim they failed, they may simply have taken their time.
+		if pollToken == mine and not groupState.isMember and groupPanel.Visible then
+			joinBtn.Text = "I JOINED â CHECK AGAIN"
+		end
+	end)
+end
+
 joinBtn.MouseButton1Click:Connect(function()
-	pcall(function() GuiService:OpenBrowserWindow(groupState.url) end) -- opens the group page in a browser (desktop)
+	-- Second and later presses are a manual "check me now" -- the page is already open behind the panel.
+	if joinBtn.Text ~= "JOIN GROUP" then
+		joinBtn.Text = "CHECKINGâ¦"
+		task.spawn(function()
+			local yes = askServerAmIIn()
+			if yes then onConfirmedMember()
+			else joinBtn.Text = "I JOINED â CHECK AGAIN" end
+		end)
+		return
+	end
+	pcall(function() GuiService:OpenBrowserWindow(groupState.url) end) -- in-experience overlay, not a real browser tab
+	joinBtn.Text = "CHECKINGâ¦"
+	startPolling()
 end)
 copyBtn.MouseButton1Click:Connect(function()
 	-- Roblox has no player-clipboard API, so best-effort: try an exploit-free clipboard if present, then
@@ -165,7 +241,19 @@ _G.openGroupGui = function() setGroupOpen(true) end
 -- lowest-priority reminder banners below. (If you want a passive "perk active" indicator, add a small icon to
 -- the STATS/PERKS panel — never a banner pinned to the top.) CoinBoostState is left wired for that future use.
 
-GroupInfo.OnClientEvent:Connect(function(info)
+-- GroupInfo comes from a WaitForChild WITH A TIMEOUT, so it is nil-able by design and every use of it has to
+-- say so. It WAS nil in practice: RewardsService (its only creator) yielded forever on Shared.GroupMembership,
+-- which was missing from the Rojo project, so the remote was never created and this line took the whole script
+-- down with "attempt to index nil with 'OnClientEvent'" -- killing every reward banner below it, not just the
+-- group one.
+--
+-- That mapping is fixed, so it should arrive now. The guard stays regardless: a client that loses a race
+-- against a slow server should quietly do without the group perk, never lose the rest of its rewards UI.
+if not GroupInfo then
+	warn("[Rewards] GroupInfo remote never arrived -- group perks are off this session. RewardsService creates "
+		.. "it; if that script is stuck, check ReplicatedStorage.Shared.GroupMembership exists.")
+end
+if GroupInfo then GroupInfo.OnClientEvent:Connect(function(info)
 	if type(info) ~= "table" then return end
 	groupState.isMember = info.isMember == true
 	if info.url then groupState.url = info.url end
@@ -175,7 +263,7 @@ GroupInfo.OnClientEvent:Connect(function(info)
 	elseif groupPanel.Visible then
 		refreshGroupPanel()
 	end
-end)
+end) end
 
 -- ============== 2)+3) SHARED BANNER SCHEDULER (no overlap, event-gated) ======
 -- One banner frame, one queue. The three recurring reminders (friend / daily / group) and /friends all
@@ -266,7 +354,7 @@ local function displayBanner(spec, onDone)
 		text     = spec.text,
 		color    = Color3.fromRGB(40, 120, 70),
 		priority = NC.PRIORITY.REWARD,
-		duration = 4.5,
+		duration = spec.duration or 4.5, -- per-banner: a one-line tip reads in 4.5s, a "where to find it" tip does not
 		onClick  = spec.onClick, -- tappable banners (e.g. group) open something
 		onDone   = onDone,
 	})
@@ -279,9 +367,9 @@ pumpBanners = function()
 	bannerShowing = true
 	displayBanner(spec, function() bannerShowing = false; task.defer(pumpBanners) end)
 end
-local function enqueueBanner(text, key, onClick)
+local function enqueueBanner(text, key, onClick, duration)
 	for _, s in ipairs(bannerQueue) do if s.key == key then return end end -- never stack duplicates of the same reminder
-	bannerQueue[#bannerQueue + 1] = { text = text, key = key, onClick = onClick }
+	bannerQueue[#bannerQueue + 1] = { text = text, key = key, onClick = onClick, duration = duration }
 	pumpBanners()
 end
 -- exposed so other systems (e.g. GutSkinClient skin-unlock banners) share this one no-overlap, event-gated queue
@@ -339,6 +427,47 @@ task.spawn(function()
 	end
 end)
 
+-- ---- WORMHOLE: the one reminder that never retires ----
+-- Every OTHER prompt here has an off switch -- the group one stops when they join, the daily one stopped
+-- because it was nagging about a button that already has a ready-dot. This one runs for the whole session
+-- on purpose: the wormhole is a menu entry with no world presence at all, it moved out of the button rail
+-- into MORE+, and a player who never opens MORE+ will finish the game without ever learning it exists.
+--
+-- FAST AT FIRST, THEN BACKS OFF. Every 3 minutes for the first half hour, every 10 after that. The early
+-- pace is aimed at the exact window where knowing about fast-travel changes how the game feels -- the
+-- stretch where you are re-climbing islands you already own -- and the late pace is a footnote for anyone
+-- still playing two hours in. It never stops entirely because there is nothing to detect: no flag says
+-- "this player understands the wormhole", so backing off is the honest version of giving up on them.
+--
+-- It shares the same queue and screen-clear gate as everything else here, so a faster cadence only ever
+-- means it waits its turn behind a real unlock, an event, or an open menu.
+local WORMHOLE_TEXT       = "\xF0\x9F\x8C\x80 WORMHOLE is in the MORE+ menu -- warp straight to any island you've unlocked!"
+local WORMHOLE_EARLY_GAP  = 180  -- 3 minutes...
+local WORMHOLE_LATE_GAP   = 600  -- ...then 10
+local WORMHOLE_EARLY_FOR  = 1800 -- for the first 30 minutes of the session
+
+-- Tapping it opens the wormhole menu, so the reminder is also the shortcut -- being told where a thing is
+-- and being taken there are very different amounts of work for the player.
+local function showWormholeBanner()
+	-- 8 SECONDS, not the usual 4.5. This banner is doing more work than the others: it names a thing, says
+	-- where the thing lives, and says what it does. Read that at a glance while flying and 4.5s is a blur --
+	-- and it is the one banner you can act on, so it has to still be there when you reach for it.
+	enqueueBanner(WORMHOLE_TEXT, "wormhole", function()
+		if _G.toggleWormhole then _G.toggleWormhole() end
+	end, 8)
+end
+
+task.spawn(function()
+	local elapsed = 90
+	task.wait(elapsed) -- let them land and fly once before the first tip
+	while true do
+		showWormholeBanner()
+		local gap = (elapsed < WORMHOLE_EARLY_FOR) and WORMHOLE_EARLY_GAP or WORMHOLE_LATE_GAP
+		task.wait(gap)
+		elapsed += gap
+	end
+end)
+
 -- chat commands to show a reminder on demand: /friends (friend tip) and /group (group banner, for testing).
 -- Both still route through the gate/queue. The /group banner is tappable -> opens the join window.
 local function handleFriendsCmd() enqueueBanner(FRIEND_TEXT, "friend") end
@@ -360,4 +489,4 @@ pcall(function()
 	end)
 end)
 
-print("[RewardsClient] ready (codes, group banner, shared banner scheduler, /friends, /group)")
+print("[RewardsClient] ready (codes, group banner, wormhole reminder 3min-then-10min, shared banner scheduler, /friends, /group)")

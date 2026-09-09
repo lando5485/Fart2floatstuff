@@ -24,6 +24,11 @@ local PlayerGui = player:WaitForChild("PlayerGui")
 
 -- WARP CINEMATIC + SOUND -- the shared module (the new file). play(onPeak) does the ~1.9s tunnel; playSound() whooshes.
 local WarpEffect = require(script.Parent:WaitForChild("WarpEffect"))
+-- THE REALM CROSSING is a different shot, on purpose. WarpEffect's 1.9s tunnel is the right length for
+-- hopping between two islands you can see from each other; leaving the realm entirely is the Food
+-- realm's 4.2s portal cinematic, ported whole into RealmOutro.luau. Same shot the player already knows
+-- from walking into a portal on Bean Island, so arriving and leaving bookend each other.
+local RealmOutro = require(script.Parent:WaitForChild("RealmOutro"))
 
 -- ===== destinations (this realm's 13 candy islands) =====
 -- names come from the shared tower module (ReplicatedStorage.Shared.IslandOrder),
@@ -45,6 +50,12 @@ local IslandOrder = require(game:GetService("ReplicatedStorage"):WaitForChild("S
 -- ⚠ SET THIS BACK TO false BEFORE PUBLISHING. It does not grant progression, break saves or
 -- unlock anything you can buy -- it is travel only -- but it hands a new player the entire
 -- tower, names and all, in their first minute, which is most of the game's pacing gone.
+-- ⚠ ON, AND ON DELIBERATELY -- the name is legacy, this is not a leftover debug switch.
+-- Fast travel is open: every island row is warpable from the start, whatever the quest ledger
+-- says. The progression lock lives on the FOOD STANDS instead (Shop_AllInOne's STAND_GATE), so
+-- warping to an island you have not earned gets you there and shows you the place -- it just
+-- will not sell you anything until you finish that island's quest. Set false to make the warp
+-- menu obey the ladder as well.
 local UNLOCK_ALL_FOR_TESTING = true
 
 local LADDER = IslandOrder.NAMES -- SLOT-indexed (1 = bottom of the climb): the tower, in climb order
@@ -59,22 +70,87 @@ local LADDER = IslandOrder.NAMES -- SLOT-indexed (1 = bottom of the climb): the 
 -- They are listed after the tower and are NEVER LOCKED. The lock on a tower row means "you have
 -- not climbed this far yet", and that sentence has no meaning for an island the climb does not
 -- pass through -- there is no height to reach, so there is nothing to gate on. Their parts do
--- replicate at any distance (IslandStreaming's EXTRA_PERSIST already lists exactly these three
--- for the same reason their quests needed it), so arrivalPoint can always find a spawn brick.
-local OFF_LADDER = {
-	{ model = 16, name = "Candy Mine",     color = Color3.fromRGB(235, 120, 200) },
-	{ model = 18, name = "Pancake Arena",  color = Color3.fromRGB(235, 185, 110) },
-	{ model = 19, name = "Sugarbeet Farm", color = Color3.fromRGB(120, 195, 105) },
+-- replicate at any distance (IslandStreaming's EXTRA_PERSIST lists exactly the same models for
+-- the same reason their quests needed it), so arrivalPoint can always find a spawn brick.
+--
+-- ⚠ WHICH ISLANDS THOSE ARE HAS CHANGED. The space-economy port needed twelve rungs, each
+-- hosting a quest that funds the next gut, and it took two of them from this list: island16
+-- (Candy Mine) is now slot 8, island18 (Pancake Arena) is now slot 7. Both appear in LADDER
+-- above like any other rung, and listing them here as well would put them in the menu twice --
+-- once lockable, once not.
+--
+-- ⚠ THERE ARE NO OFF-LADDER ISLANDS ANY MORE. The space-economy port needed thirteen rungs,
+-- each hosting a quest that funds the next gut, and the realm has exactly thirteen
+-- quest-bearing islands -- so island16, island18 and island19 were all promoted onto the tower
+-- (slots 8, 7 and 12). They appear in LADDER above like any other rung now, and listing them
+-- here as well would put them in the menu twice, once lockable and once not.
+--
+-- island2 ("Chocolate Chasm") is not listed either. It was slot 7 until the Jelly Tower was
+-- removed, but the deeper reason is that NO MODEL NAMED island2 WAS EVER BUILT -- see the
+-- islandExists() refusal further down, which exists precisely because this row used to offer
+-- the place, play the whole warp cinematic and then fail silently in arriveLocally. A menu row
+-- that can only ever say "not built" is worse than no row.
+--
+-- Kept as an empty table rather than deleted: a future island that sits off the tower is one
+-- line away, and the rendering below already handles the list being empty.
+local OFF_LADDER = {}
+
+-- ===== THE REALMS THAT CAME BEFORE THIS ONE =====
+-- Food -> Space -> Dino -> Candy is the order a player actually arrives in, and until now the trip
+-- was one-way: this realm has a Dino PORTAL on island 1 and nothing at all back to Food or Space,
+-- so a player who climbed three realms to get here could not go and look at any of them again
+-- without leaving the experience and rejoining from the game page.
+--
+-- They are rows in this menu because this menu is already "the place that moves you", and a realm
+-- is just a further destination than an island. They are NEVER LOCKED: you cannot be standing in
+-- the Candy realm without having come through the ones before it.
+--
+-- ⚠ THE CLIENT NEVER NAMES A PLACE ID. Each row sends a KEY to RealmTravelEvent and the server
+-- looks it up (RealmTravel.server.lua). A client that can name its own destination is a client that
+-- can teleport itself into any experience on the platform.
+local REALM_ROWS = {
+	{ realm = "food",  name = "Food Realm",      color = Color3.fromRGB(120, 200, 120) },
+	{ realm = "space", name = "Space Realm",     color = Color3.fromRGB(130, 150, 250) },
+	{ realm = "dino",  name = "Dinosaur Realm",  color = Color3.fromRGB(215, 150, 90)  },
 }
 
 -- one flat row list, so the loop below does not have to know which kind it is building.
--- `slot` is nil for the off-ladder three, and every gate in this file reads it that way.
+-- `slot` is nil for the off-ladder three and for the realms; `realm` is set only on the last three,
+-- and every gate in this file reads both that way.
 local ROWS = {}
 for slot, nm in ipairs(LADDER) do
 	ROWS[#ROWS + 1] = { name = nm, model = IslandOrder.SLOT_TO_ISLAND[slot] or slot, slot = slot }
 end
 for _, e in ipairs(OFF_LADDER) do
 	ROWS[#ROWS + 1] = { name = e.name, model = e.model, slot = nil, color = e.color }
+end
+for _, e in ipairs(REALM_ROWS) do
+	ROWS[#ROWS + 1] = { name = e.name, realm = e.realm, slot = nil, color = e.color }
+end
+
+-- ===== SECTION HEADINGS =====
+-- Tagged onto the FIRST row of each group rather than inserted as their own entries, so ROWS stays a
+-- list of destinations and nothing that iterates it has to skip over dividers.
+--
+-- The three realms needed this. Warping to an island and leaving the realm entirely are not the same
+-- kind of act -- one moves you a few thousand studs inside a place you are already in, the other ends
+-- the session here and loads another game -- and as one unbroken list of seventeen identical rows the
+-- only thing saying so was the wording of the status text on the right. A player scrolling past
+-- "Sugarbeet Farm" straight into "Food Realm" has no reason to expect the next tap to do something
+-- categorically bigger.
+ROWS[1].section      = "\u{1F36D}  CANDY ISLANDS"
+ROWS[1].sectionNote  = "warp around this realm"
+ROWS[1].sectionColor = ACCENT                              -- the menu's own pink: chrome, not a place
+
+do
+	local firstRealm = ROWS[#LADDER + #OFF_LADDER + 1]
+	firstRealm.section      = "\u{1FA90}  OTHER REALMS"
+	firstRealm.sectionNote  = "leave the Candy realm entirely"
+	-- A DIFFERENT COLOUR ON PURPOSE, and NOT the first realm's green. Taking `col` from the row below
+	-- would have made this heading mean "Food Realm" rather than "everything under here is a realm" --
+	-- and it would silently change the day the row order changes. Cold violet reads as ELSEWHERE
+	-- against a menu that is otherwise entirely pink, which is the whole job of the break.
+	firstRealm.sectionColor = Color3.fromRGB(158, 176, 255)
 end
 -- a colour per island (row icon disc + stroke), candy-bright up the tower
 local ISLAND_COLORS = {
@@ -109,7 +185,14 @@ local function highestIsland() return math.max(1, math.floor(tonumber(player:Get
 -- HighestIsland MODEL number -- which is what this file shipped doing -- unlocks and locks the wrong
 -- rows: reaching Gumdrop Grove (island9) read as "you may warp to rows 1..9". FlightEconomy publishes
 -- HighestSlot for exactly this; the fallback converts the model attribute for a save from before it.
+-- ⚠ THE LOCK IS THE QUEST LEDGER, NOT WHERE YOU HAVE BEEN.
+-- UnlockedSlot (GutProgression) is the contiguous run of finished quests + 1, and it is what
+-- BuyFood and FlightEconomy enforce -- so the menu has to draw its padlocks from the SAME number
+-- or the rows lie. HighestSlot is kept only as the fallback for a save from before UnlockedSlot
+-- existed, and the HighestIsland conversion below it for one older still.
 local function highestSlot()
+	local q = math.floor(tonumber(player:GetAttribute("UnlockedSlot")) or 0)
+	if q >= 1 then return q end
 	local s = math.floor(tonumber(player:GetAttribute("HighestSlot")) or 0)
 	if s >= 1 then return s end
 	local isl = math.floor(tonumber(player:GetAttribute("HighestIsland")) or 1)
@@ -175,6 +258,18 @@ local function currentIsland()
 	end
 	return (bestD < 200) and best or nil
 end
+-- The realm remote, resolved in the BACKGROUND for the same reason WormholeWarp is below: this
+-- script has to be ready the moment MORE+ can be opened, so nothing at file scope may block. A nil
+-- here simply means the realm rows say so instead of pretending to travel.
+local RealmTravel
+task.spawn(function()
+	RealmTravel = ReplicatedStorage:WaitForChild("RealmTravelEvent", 30)
+	if not RealmTravel then
+		warn("[Wormhole] RealmTravelEvent never arrived -- is RealmTravel.server.lua running? "
+			.. "The three realm rows will refuse rather than teleport.")
+	end
+end)
+
 local function isGrounded()
 	if _G.isFlying then return false end
 	local char = player.Character
@@ -250,7 +345,10 @@ end)
 
 local subtitle = Instance.new("TextLabel")
 subtitle.BackgroundTransparency = 1; subtitle.AnchorPoint = Vector2.new(0.5, 0); subtitle.Position = UDim2.new(0.5, 0, 0, 62); subtitle.Size = UDim2.new(1, -32, 0, 22)
-subtitle.Font = Enum.Font.GothamMedium; subtitle.Text = "Warp to an island you've already reached"; subtitle.TextColor3 = MUTED; subtitle.TextScaled = true
+subtitle.Font = Enum.Font.GothamMedium; subtitle.TextColor3 = MUTED; subtitle.TextScaled = true
+-- names BOTH halves: the list is no longer only islands, and a subtitle that says it is would be the
+-- one line a player reads before deciding the realms at the bottom are not what they are looking for
+subtitle.Text = "Warp to an island you've reached \u{2022} or travel back to another realm"
 subtitle.Parent = panel
 do local cns = Instance.new("UITextSizeConstraint"); cns.MaxTextSize = 16; cns.Parent = subtitle end
 
@@ -261,8 +359,71 @@ scroll.CanvasSize = UDim2.new(0, 0, 0, 0); scroll.AutomaticCanvasSize = Enum.Aut
 do local l = Instance.new("UIListLayout"); l.Padding = UDim.new(0, 8); l.SortOrder = Enum.SortOrder.LayoutOrder; l.Parent = scroll end
 
 local warping = false
-local closeMenu -- fwd
-local warpTo    -- fwd
+local closeMenu      -- fwd
+local warpTo         -- fwd
+local travelToRealm  -- fwd: the three realm rows (needs the remote + the toast, both below)
+local showNotBuilt   -- fwd: the toast for an island that has no model in this place
+
+-- IS THERE ACTUALLY AN ISLAND OF THIS NUMBER? Cheap enough to call on every refresh (one
+-- FindFirstChild), and it has to be re-asked rather than cached: IslandLayout moves and renames
+-- nothing at runtime, but a model can arrive late, and a row that locked itself out at boot for an
+-- island that showed up a second later would stay wrong for the whole session.
+local function islandExists(n)
+	if not n then return false end
+	if workspace:FindFirstChild("island" .. n) then return true end
+	for _, d in ipairs(workspace:GetChildren()) do
+		if d:IsA("Model") then
+			local num = string.lower(d.Name):match("^island[ _]?(%d+)$")
+			if num and tonumber(num) == n then return true end
+		end
+	end
+	return false
+end
+
+-- ===== ONE SECTION HEADING =====
+-- A label over a rule that fades out to the right, in the section's own colour. Deliberately NOT a
+-- row: no background, no stroke, no button -- the whole job is to look like something you cannot tap,
+-- so it never reads as a destination that has stopped working.
+--
+-- `gap` is what actually does the separating. The first heading sits tight under the subtitle; every
+-- later one carries 18px of dead space above it, which is more than twice the 8px the list layout puts
+-- between rows -- enough that the break is obvious while scrolling past at speed.
+local function sectionHeader(text, note, order, colour, gap)
+	local h = Instance.new("Frame")
+	h.Name = "Section"; h.LayoutOrder = order
+	h.Size = UDim2.new(1, -6, 0, gap and 52 or 34)
+	h.BackgroundTransparency = 1; h.Parent = scroll
+
+	local lbl = Instance.new("TextLabel")
+	lbl.BackgroundTransparency = 1; lbl.AnchorPoint = Vector2.new(0, 1)
+	lbl.Position = UDim2.new(0, 4, 1, note and -20 or -9)
+	lbl.Size = UDim2.new(1, -8, 0, 18)
+	lbl.Font = Enum.Font.FredokaOne; lbl.Text = text; lbl.TextColor3 = colour
+	lbl.TextScaled = true; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = h
+	do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 16; c.Parent = lbl end
+
+	if note then
+		local n = Instance.new("TextLabel")
+		n.BackgroundTransparency = 1; n.AnchorPoint = Vector2.new(0, 1)
+		n.Position = UDim2.new(0, 4, 1, -8); n.Size = UDim2.new(1, -8, 0, 13)
+		n.Font = Enum.Font.GothamMedium; n.Text = note; n.TextColor3 = MUTED
+		n.TextScaled = true; n.TextXAlignment = Enum.TextXAlignment.Left; n.Parent = h
+		do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 12; c.Parent = n end
+	end
+
+	local rule = Instance.new("Frame")
+	rule.AnchorPoint = Vector2.new(0, 1); rule.Position = UDim2.new(0, 4, 1, -2)
+	rule.Size = UDim2.new(1, -8, 0, 2); rule.BackgroundColor3 = colour
+	rule.BackgroundTransparency = 0.35; rule.BorderSizePixel = 0; rule.Parent = h
+	do
+		local g = Instance.new("UIGradient")
+		g.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+		g.Parent = rule
+	end
+end
 
 -- Build one row per island; returns a refresher.
 local rowRefreshers = {}
@@ -275,9 +436,16 @@ for i, entry in ipairs(ROWS) do
 	local name     = entry.name
 	local slot     = entry.slot
 	local modelNum = entry.model
+	local realmKey = entry.realm
 	local col      = entry.color or ISLAND_COLORS[i] or ACCENT
+	-- x10 so a heading can sit at (order - 5) between two rows. UIListLayout only compares these, so
+	-- the gaps cost nothing and leave room to slot anything else in later without renumbering.
+	if entry.section then
+		sectionHeader(entry.section, entry.sectionNote, i * 10 - 5, entry.sectionColor or col, i > 1)
+	end
+
 	local row = Instance.new("TextButton")
-	row.Name = "Island" .. i; row.LayoutOrder = i; row.Size = UDim2.new(1, -6, 0, 50); row.AutoButtonColor = true; row.Text = ""
+	row.Name = "Island" .. i; row.LayoutOrder = i * 10; row.Size = UDim2.new(1, -6, 0, 50); row.AutoButtonColor = true; row.Text = ""
 	row.BackgroundColor3 = PANEL_DEEP; row.Parent = scroll
 	do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 12); c.Parent = row end
 	local rowStroke = Instance.new("UIStroke"); rowStroke.Color = ACCENT; rowStroke.Thickness = 1.5; rowStroke.Transparency = 0.4; rowStroke.Parent = row
@@ -308,15 +476,43 @@ for i, entry in ipairs(ROWS) do
 
 	row.Activated:Connect(function()
 		if warping then return end
+		if realmKey then
+			if travelToRealm then travelToRealm(realmKey, name) end
+			return
+		end
 		-- no slot means off the ladder, which means nothing to reach and nothing to gate
 		if slot and slot > highestSlot() and not UNLOCK_ALL_FOR_TESTING then return end
+		-- AN ISLAND THAT IS NOT IN THE WORKSPACE CANNOT BE TRAVELLED TO, whatever the gate says.
+		-- island2 is exactly this today: IslandOrder has it at slot 7 but no model of that name was
+		-- ever built, so the row offered "Chocolate Chasm", played the whole warp cinematic and then
+		-- failed silently in arriveLocally. Refusing up front, with the reason on the row, is the
+		-- honest version -- and the row lights up on its own the moment the model appears.
+		if not islandExists(modelNum) then showNotBuilt(); return end
 		if currentIsland() == modelNum then return end  -- model vs model
 		if warpTo then warpTo(modelNum, name) end       -- the warp wants the workspace model
 	end)
 
 	rowRefreshers[i] = function()
+		-- ---- a realm row: never locked, never "here", and it says where it goes ----
+		if realmKey then
+			row.BackgroundColor3 = PANEL_DEEP; rowStroke.Color = col; rowStroke.Transparency = 0.25
+			lockOverlay.Visible = false; nameLbl.TextColor3 = WHITE; nameLbl.Text = name
+			disc.Text = "\u{1FA90}"      -- a ringed planet, so the three realms read apart from the islands
+			statusLbl.Text = "Travel \u{27A4}"; statusLbl.TextColor3 = col
+			row.Active = true; row.AutoButtonColor = true
+			return
+		end
 		local reached = UNLOCK_ALL_FOR_TESTING or (slot == nil) or slot <= highestSlot()
 		local here = currentIsland() == modelNum
+		-- ---- reached, but the model is not in this place ----
+		if reached and not islandExists(modelNum) then
+			row.BackgroundColor3 = LOCK_GREY; rowStroke.Color = Color3.fromRGB(70, 74, 92)
+			rowStroke.Transparency = 0.5; lockOverlay.Visible = true; nameLbl.TextColor3 = MUTED
+			nameLbl.Text = name
+			statusLbl.Text = "Not built yet"; statusLbl.TextColor3 = MUTED
+			row.Active = false; row.AutoButtonColor = false
+			return
+		end
 		if reached then
 			row.BackgroundColor3 = PANEL_DEEP; rowStroke.Color = col; rowStroke.Transparency = 0.25; lockOverlay.Visible = false; nameLbl.TextColor3 = WHITE
 			nameLbl.Text = name
@@ -366,7 +562,16 @@ do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 12); c.Paren
 	local s = Instance.new("UIStroke"); s.Color = ACCENT; s.Thickness = 2; s.Parent = landToast
 	local cns = Instance.new("UITextSizeConstraint"); cns.MaxTextSize = 22; cns.Parent = landToast end
 local landTok = 0
-local function showLandFirst() landTok += 1; local mine = landTok; landToastGui.Enabled = true; task.delay(2.6, function() if landTok == mine then landToastGui.Enabled = false end end) end
+-- One label, one token, three messages. A second ScreenGui for a second two-second toast would be a
+-- second thing to keep on top of the closed menu and a second thing to hide on respawn.
+local function toast(text, secs)
+	landTok += 1; local mine = landTok
+	landToast.Text = text
+	landToastGui.Enabled = true
+	task.delay(secs or 2.6, function() if landTok == mine then landToastGui.Enabled = false end end)
+end
+local function showLandFirst() toast("\u{1FA90}  Land on an island to use the wormhole!") end
+showNotBuilt = function() toast("\u{1F6A7}  That island isn't built yet -- nothing to warp to!", 3) end
 
 -- ===== ARRIVAL POINT =====================================================
 -- Every island's waypoint is its SPAWN BRICK: a SpawnLocation, or any part with
@@ -395,16 +600,37 @@ local function topOf(inst)
 	return base + Vector3.new(0, 5, 0)
 end
 
+-- WHERE THE SOLVED TOWER SAYS THIS ISLAND IS. IslandOrder.SLOT_POS is what IslandLayout positions
+-- the islands FROM, so it is right by construction and needs no parts to be loaded -- which is the
+-- whole point of having it here. The off-ladder three (16/18/19) have no slot and so no entry; they
+-- are in IslandStreaming's EXTRA_PERSIST, so their parts are always replicated and the model route
+-- below always works for them.
+local function ladderPos(n)
+	local slot = IslandOrder.ISLAND_TO_SLOT[n]
+	local p = slot and IslandOrder.SLOT_POS[slot]
+	if not p then return nil end
+	return (typeof(p) == "Vector3") and p or Vector3.new(p[1], p[2], p[3])
+end
+
 local function arrivalPoint(n)
 	local isle = findIslandModel(n)
-	if not isle then return nil end
-	-- the spawn brick is the waypoint
-	for _, d in ipairs(isle:GetDescendants()) do
-		if d:IsA("BasePart") and (d:IsA("SpawnLocation") or string.lower(d.Name):find("spawn", 1, true)) then
-			return topOf(d)
+	if isle then
+		-- the spawn brick is the waypoint
+		for _, d in ipairs(isle:GetDescendants()) do
+			if d:IsA("BasePart") and (d:IsA("SpawnLocation") or string.lower(d.Name):find("spawn", 1, true)) then
+				return topOf(d)
+			end
 		end
+		-- A MODEL WITH NO PARTS IS NOT A POSITION. With StreamingEnabled a distant island replicates as
+		-- an EMPTY Model: it exists, GetBoundingBox() reports a zero box at the ORIGIN, and topOf would
+		-- cheerfully hand back a point near (0,0,0) -- which is under island 1, thousands of studs from
+		-- where you asked to go. So the model is only trusted once it has real geometry.
+		if isle:FindFirstChildWhichIsA("BasePart", true) then return topOf(isle) end
 	end
-	return topOf(isle)
+	-- ...otherwise fall back to the solved ladder height, lifted clear of the island's own deck.
+	local p = ladderPos(n)
+	if p then return p + Vector3.new(0, 12, 0) end
+	return nil
 end
 
 -- Place the player ourselves. CandyRealm has no WormholeService (it lives in the other
@@ -414,14 +640,103 @@ end
 local function arriveLocally(islandNum)
 	local char = player.Character
 	if not char then return false end
+
+	-- ===== STREAM THE DESTINATION IN FIRST =====
+	-- This is what made the far half of the tower unreliable. Warping is the one moment a player
+	-- crosses tens of thousands of studs instantly, so the island they are landing on is by
+	-- definition the one furthest from anything the engine has bothered to replicate -- and the old
+	-- code read the model, found it empty, and gave up. RequestStreamAroundAsync is the one
+	-- client-side call that says "pull this region in NOW"; it is the same fix QuestRetainer uses on
+	-- the quests, for the identical reason. Asked for at the solved ladder position, so it works
+	-- even when the model is the empty shell we are trying to fill.
+	local want = ladderPos(islandNum)
+	if want then pcall(function() player:RequestStreamAroundAsync(want, 6) end) end
+
 	local pos = arrivalPoint(islandNum)
 	if not pos then
-		warn(("[Wormhole] island%d has no spawn brick and no parts loaded -- can't place you"):format(islandNum))
+		-- one more look, a beat later: the request above may have landed just after we read.
+		task.wait(0.6)
+		pos = arrivalPoint(islandNum)
+	end
+	if not pos then
+		warn(("[Wormhole] island%d could not be located -- no model in Workspace and no ladder "
+			.. "position (it is off the ladder AND not built). Nothing to place you on.")
+			:format(islandNum))
 		return false
 	end
 	char:PivotTo(CFrame.new(pos))
 	return true
 end
+
+-- ===== TRAVEL TO ANOTHER REALM =====
+-- The island rows move you inside this place; these three move you out of it. Same cinematic, so a
+-- realm reads as one more destination rather than a mode switch -- but the trip itself belongs to
+-- the server (RealmTravel.server.lua), which owns the place ids and re-checks everything.
+--
+-- IT DOES NOT UNSET `warping`. Every other path through this file clears the flag when the warp is
+-- done; here "done" means the player has left the experience, and clearing it would re-arm the menu
+-- during the second or two the teleport takes to land -- which is exactly long enough to tap a
+-- second realm and queue a second teleport. It clears itself if the trip fails (see the handler).
+travelToRealm = function(realmKey, realmName)
+	if warping then return end
+	if not RealmTravel then
+		toast("\u{1F6A7}  Realm travel isn't available on this server.", 3)
+		return
+	end
+	if not isGrounded() then closeMenu(); showLandFirst(); return end
+	warping = true
+	closeMenu()
+
+	-- NO TOAST HERE ANY MORE. The cinematic hides every ScreenGui in PlayerGui for its whole run and
+	-- lands on a card that already says "entering the Food Realm" in that realm's own colours -- a
+	-- banner underneath it would be the same sentence twice, and it would be hidden anyway.
+	RealmOutro.playSound()
+	RealmOutro.play(realmKey)
+
+	-- THE TELEPORT FIRES UNDER THE CARD, not at the peak of the tunnel. The shot holds on the title
+	-- card and never tears itself down on the success path -- the place swap is the cut -- so the
+	-- request goes at the moment the card has landed and the screen is already full. Half a beat
+	-- early, so a fast server does not swap the place while the card is still fading up.
+	task.delay(math.max(0.2, RealmOutro.SECONDS - 0.4), function()
+		pcall(function() RealmTravel:FireServer(realmKey) end)
+	end)
+
+	-- STILL HERE? THEN IT DIDN'T HAPPEN. `warping` is deliberately never cleared on the success path
+	-- (see above), and the server answers "error" on every failure it KNOWS about -- but it also
+	-- silently drops a request that arrives inside its 6s per-player cooldown, which is exactly what a
+	-- double-tapped row produces. Without this that request gets no reply, nothing clears the flag, and
+	-- the wormhole is dead for the rest of the session. If this fires we are provably still in the
+	-- Candy realm, so the crossing did not happen and the menu has to work again.
+	task.delay(RealmOutro.SECONDS + 3, function()
+		if warping then
+			RealmOutro.abort()
+			warping = false
+			warn("[Wormhole] realm travel to '" .. tostring(realmKey) .. "' never landed -- menu re-armed")
+		end
+	end)
+end
+
+-- The server answers "traveling" / "locked" / "error". Only the failures need saying: a successful
+-- trip ends with the player in another place, where nothing here is running to say anything.
+task.spawn(function()
+	local ev = ReplicatedStorage:WaitForChild("RealmTravelEvent", 30)
+	if not ev then return end
+	ev.OnClientEvent:Connect(function(state, key)
+		-- ABORT THE SHOT FIRST, THEN SPEAK. The cinematic has every other ScreenGui switched off while
+		-- it runs, so a toast raised before the teardown would be raised into a hidden GUI and the
+		-- player would sit on a title card for a realm they are not going to.
+		if state == "locked" then
+			RealmOutro.abort()
+			warping = false
+			toast("\u{1F6A7}  That realm isn't open yet -- coming soon!", 3)
+		elseif state == "error" then
+			RealmOutro.abort()
+			warping = false
+			toast("\u{26A0}\u{FE0F}  Couldn't travel right now -- try again in a moment.", 3)
+			warn("[Wormhole] realm travel failed for '" .. tostring(key) .. "'")
+		end
+	end)
+end)
 
 warpTo = function(islandNum, islandName)
 	if warping then return end
@@ -452,7 +767,11 @@ warpTo = function(islandNum, islandName)
 end
 
 closeBtn.Activated:Connect(closeMenu)
-backdrop.MouseButton1Click:Connect(closeMenu)
+-- BACKDROP TAPS CLOSE NOTHING. This is the realm's one banned menu behaviour: a panel must only
+-- ever be shut by its X. The button stays (it swallows the click so it cannot reach the world or
+-- the buttons behind the panel) -- it just does not act on it. Losing a full-screen menu to a
+-- mis-aimed tap, mid-scroll or mid-read, is indistinguishable from the menu crashing.
+backdrop.MouseButton1Click:Connect(function() end)
 -- OpenWormhole BindableEvent (fired by the WORMHOLE side button in CoreClient)
 do
 	local sig = ReplicatedStorage:FindFirstChild("OpenWormhole")
@@ -462,8 +781,12 @@ end
 player:GetAttributeChangedSignal("HighestIsland"):Connect(function() if isOpen then refreshMenu() end end)
 player:GetAttributeChangedSignal("HighestSlot"):Connect(function() if isOpen then refreshMenu() end end) -- the gate the rows actually read
 
-print(("[Wormhole][client] online at boot -- %d rows (%d tower + %d off-ladder quest islands: "
-	.. "16 Candy Mine, 18 Pancake Arena, 19 Sugarbeet Farm), opens from MORE+ > Fast Travel")
+-- (the old text still named 16/18/19 as off-ladder islands: all three were promoted onto the
+-- tower by the space-economy port, and island16 is the SUMMIT now -- the row counts always told
+-- the truth, the prose did not)
+print(("[Wormhole][client] online at boot -- %d rows (%d tower islands, Candy Cane Court up to "
+	.. "the Pop Rock Quarry summit, + %d off-ladder + 3 realms: Food, Space, Dinosaur), "
+	.. "opens from MORE+ > Fast Travel")
 	:format(#ROWS, #LADDER, #OFF_LADDER))
 if UNLOCK_ALL_FOR_TESTING then
 	warn("[Wormhole] ⚠ UNLOCK_ALL_FOR_TESTING is ON -- every island is named and warpable "

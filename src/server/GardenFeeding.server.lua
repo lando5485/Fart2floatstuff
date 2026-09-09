@@ -20,6 +20,21 @@ local REWARD_COINS  = 1    -- coins per feed (exactly 1)
 local BOX_COOLDOWN  = 4    -- seconds between grabs from a food box
 local FEED_COOLDOWN = 45   -- seconds between feeds, PER PLAYER PER ANIMAL (anti-farm)
 local PROMPT_DIST   = 9    -- ProximityPrompt activation distance (studs)
+
+-- ===== THE ANIMALS ARE BUSY AFTER DARK =====
+-- Campfire.server publishes BeanFarmNight, and at night both animals walk to the story fire and stay there
+-- telling each other stories. Feeding has to be OFF for that whole stretch, for two reasons that are really
+-- one: a fed animal plays its thank-you line through the SAME speech bubble the story is using, so a feed
+-- mid-story overwrites a line and the exchange stops making sense; and a "Feed" prompt floating over an
+-- animal that is mid-anecdote invites the player to interrupt it.
+--
+-- BOTH PROMPTS GO, not just the Feed one -- grabbing food you cannot use is a dead end, and the box prompt
+-- is what tells a player feeding is a thing to do right now. They come back at sunrise on their own; the
+-- refresh loop at the bottom of this file flips them every half second, so nothing has to be rebuilt.
+local function feedingClosed()
+	return Workspace:GetAttribute("BeanFarmNight") == true
+end
+local livePrompts = {}   -- every prompt this file owns, so the loop can toggle them all
 local BOX_OFFSET    = 7    -- how far from the animal's spawn to drop its food box (studs)
 local DAILY_FOOD_LIMIT = 1 -- max FOOD PICKUPS per player PER ANIMAL PER DAY. 1 = feed each animal once a day
                           -- once, so this caps feeding at 4/day. After 4 grabs the bins give no more food until the
@@ -194,6 +209,7 @@ local function buildBox(animal, body)
 	prompt.ActionText = cfg.grabText; prompt.ObjectText = cfg.foodName
 	prompt.KeyboardKeyCode = Enum.KeyCode.E; prompt.MaxActivationDistance = PROMPT_DIST
 	prompt.RequiresLineOfSight = false; prompt.Parent = box
+	livePrompts[#livePrompts + 1] = prompt
 
 	-- flash a short message above the bin (e.g. when they're out of food for the day); debounced
 	local msgUntil = 0
@@ -210,6 +226,7 @@ local function buildBox(animal, body)
 
 	local boxCooldownUntil = 0
 	prompt.Triggered:Connect(function(player)
+		if feedingClosed() then return end   -- night: re-checked here, not just on the disabled prompt
 		-- THIS animal's daily allowance only. Locking the cow's bin must not lock the pig's.
 		if atFoodLimit(player, animal) then flashMsg(LIMIT_MESSAGE); return end
 		local now = os.clock()
@@ -234,8 +251,10 @@ local function buildFeedPrompt(animal, body)
 	prompt.ActionText = cfg.feedText; prompt.ObjectText = ""
 	prompt.KeyboardKeyCode = Enum.KeyCode.E; prompt.MaxActivationDistance = PROMPT_DIST
 	prompt.RequiresLineOfSight = false; prompt.Parent = body
+	livePrompts[#livePrompts + 1] = prompt
 
 	prompt.Triggered:Connect(function(player)
+		if feedingClosed() then return end   -- night: the bubble belongs to the story, not to a thank-you
 		local entry = _G.gardenAnimals and _G.gardenAnimals[animal]
 		if not entry then return end
 		-- VALIDATE (server): the player must be holding THIS animal's food
@@ -299,8 +318,15 @@ task.spawn(function()
 				end
 			end
 		end
+		-- Open by day, shut all night. Done here rather than on a signal so a prompt built mid-night
+		-- (the cow respawns after an abduction) is corrected within half a second of existing.
+		local shut = feedingClosed()
+		for i = #livePrompts, 1, -1 do
+			local pr = livePrompts[i]
+			if not pr.Parent then table.remove(livePrompts, i) else pr.Enabled = not shut end
+		end
 		task.wait(0.5)
 	end
 end)
 
-print("[Feeding] garden feeding ready (cow + pig: grab food box -> feed -> +1 coin)")
+print("[Feeding] garden feeding ready (cow + pig: grab food box -> feed -> +1 coin). Both prompts are DISABLED while BeanFarmNight is on -- the animals are at the story fire and their speech bubble is busy.")

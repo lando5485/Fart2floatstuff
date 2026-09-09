@@ -365,6 +365,9 @@ playBtn.Visible = false            -- revealed at TRUE 100% (see revealPlay)
 playBtn.Active = false             -- not clickable until ready
 playBtn.BackgroundTransparency = 1 -- BULLETPROOF HIDE: fully transparent too, so it can render NOTHING before reveal even if Visible leaked (e.g. via the parent CanvasGroup)
 playBtn.ZIndex = 8
+-- No tick on this one. UiHaptics adopts every GuiButton under PlayerGui, so PLAY! buzzed the phone
+-- the instant the game was pressed into life -- a stray jolt on a screen that is meant to feel calm.
+playBtn:SetAttribute("NoHaptic", true)
 local playCorner = Instance.new("UICorner"); playCorner.CornerRadius = UDim.new(1, 0); playCorner.Parent = playBtn -- fully rounded
 local playAspect = Instance.new("UIAspectRatioConstraint") -- keep the pill shape (width:height) on any aspect ratio
 playAspect.AspectRatio = 3.4; playAspect.DominantAxis = Enum.DominantAxis.Width; playAspect.Parent = playBtn

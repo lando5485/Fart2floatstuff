@@ -16,6 +16,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local SoundService      = game:GetService("SoundService")
 local Workspace         = game:GetService("Workspace")
+local player            = game:GetService("Players").LocalPlayer   -- needed by the launch distance check
 
 -- Settings mirrored from the old server versions in RocketEffects.lua (audio already preloaded).
 local LAUNCH_SOUND_ID        = "rbxassetid://135490777114772"
@@ -36,6 +37,9 @@ if not sync then return end
 --------------------------------------------------------------------
 local constructionAnchor = nil
 local constructionSound = nil
+-- Where the rocket is, remembered from "constructionStart". The launch sound needs it -- see playLaunch.
+local rocketSite = nil
+local LAUNCH_HEAR_MAX = 700   -- studs: past this the launch is somebody else's event (island 2 is 630 up)
 
 local function stopConstruction()
 	if constructionSound then pcall(function() constructionSound:Stop() end); constructionSound = nil end
@@ -45,6 +49,7 @@ end
 local function startConstruction(site)
 	stopConstruction()  -- guard against a stale loop
 	if typeof(site) ~= "Vector3" then return end
+	rocketSite = site
 	local anchor = Instance.new("Part")
 	anchor.Name = "RocketConstructionSoundAnchorLocal"
 	anchor.Size = Vector3.new(1, 1, 1)
@@ -71,9 +76,17 @@ local function startConstruction(site)
 end
 
 --------------------------------------------------------------------
--- LAUNCH (server-wide, one-shot): each client plays its OWN 2D Sound from SoundService on "launch".
+-- LAUNCH (one-shot, 2D, but ONLY for players who are actually there).
+-- It is a 2D SoundService sound on purpose -- a launch you are standing next to should be loud and in your
+-- head, not rolled off. But 2D also meant every client in the server heard it, including someone twenty
+-- thousand studs up mid-flight who cannot see the rocket and has no part in it. So the DISTANCE CHECK is
+-- done here, once, instead: near the site you get the full 2D blast, past LAUNCH_HEAR_MAX you get nothing.
+-- Same rule the countdown now follows (RocketEffects.startCountdownSound) -- rocket noise is island 1's.
 --------------------------------------------------------------------
 local function playLaunch()
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if rocketSite and hrp and (hrp.Position - rocketSite).Magnitude > LAUNCH_HEAR_MAX then return end
 	local snd = Instance.new("Sound")
 	snd.Name = "RocketLaunchLocal"
 	snd.SoundId = LAUNCH_SOUND_ID

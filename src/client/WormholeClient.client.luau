@@ -279,7 +279,7 @@ _G.toggleWormhole = function() if isOpen then closeMenu() else openMenu() end en
 --
 -- The old gui is swept below, because deleting the code that BUILDS it does not delete the one a stale
 -- duplicate already built.
-local LAND_MSG = "\u{1FA90}  Land on an island to use the wormhole!"
+local LAND_MSG = "LAND FIRST TO WARP"
 
 local function showLandFirst()
 	local NC = _G.NotifyCenter
@@ -300,6 +300,44 @@ local function showLandFirst()
 	-- a plain banner, and rebuilding the stuck toast is what we are here to remove.
 	warn("[Wormhole][client] " .. LAND_MSG .. "  (NotifyCenter unavailable -- message not shown on screen)")
 end
+
+-- ===== SWEEP THE STALE DUPLICATE MENU =====
+-- The panel above is 700x520 -- the house size, byte-for-byte the Pet Hub's. But a STALE baked-in copy of
+-- this script builds its OWN ScreenGui, also called "WormholeMenu", at its own older, smaller size, and
+-- Rojo only ADDS so both exist. Whichever one the WORMHOLE button happened to bind to is the one you saw,
+-- which is why the wormhole menu looked like a different size from every other panel in the game.
+--
+-- Measured in a boot log: two WormholeMenu guis, one 420x312 (= our 700x520 under the 0.6 HUD UIScale, i.e.
+-- correct) and one 276x282 (a completely different authored size -- the stale one). BootCheck reports the
+-- pair as "WormholeClient 2 copies" and MenuBackdropGuard lists WormholeMenu among its duplicate ScreenGuis.
+--
+-- So: destroy any WormholeMenu that is not ours, and retire the duplicate LocalScript so it stops rebuilding
+-- one. Runs repeatedly for a few seconds because the stale copy may not have built its gui yet when we boot.
+-- This is the same treatment Campfire, RealmPortals, NotifyCenter and DailyTasks already give their twins.
+task.spawn(function()
+	local killedGui, killedScript = 0, 0
+	for _ = 1, 6 do
+		for _, g in ipairs(PlayerGui:GetChildren()) do
+			if g ~= gui and g:IsA("ScreenGui") and g.Name == "WormholeMenu" then
+				g:Destroy(); killedGui += 1
+			end
+		end
+		local container = script.Parent
+		if container then
+			for _, d in ipairs(container:GetChildren()) do
+				if d ~= script and d:IsA("LocalScript") and d.Name == script.Name then
+					d.Disabled = true; d:Destroy(); killedScript += 1
+				end
+			end
+		end
+		task.wait(1)
+	end
+	if killedGui > 0 or killedScript > 0 then
+		print(("[Wormhole][client] retired %d STALE duplicate menu gui(s) and %d duplicate script(s) -- the "
+			.. "wormhole panel is the house 700x520 now. Delete them in Studio for good.")
+			:format(killedGui, killedScript))
+	end
+end)
 
 -- SWEEP THE OLD TOAST. ResetOnSpawn = false meant one built by a previous session -- or, far more likely,
 -- by a stale copy of this script baked into the place -- hangs around with nothing left to hide it. This is
@@ -323,6 +361,8 @@ warpTo = function(islandNum, islandName)
 	warping = true
 	closeMenu()
 	WarpEffect.playSound() -- warp whoosh (the new file's sound), fired as the warp begins
+	-- Matches the whoosh: pulled down to nothing, then a snap out the other side.
+	if _G.hapticPulse then pcall(_G.hapticPulse, "warp") end
 	WarpEffect.play(function()
 		pcall(function() WormholeWarp:InvokeServer(islandNum) end) -- server re-validates reached-island + grounded, then places you
 	end)

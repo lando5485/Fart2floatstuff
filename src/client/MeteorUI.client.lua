@@ -39,6 +39,30 @@ local player = Players.LocalPlayer
 local sync = ReplicatedStorage:WaitForChild("MeteorSync")
 
 --======================================================================
+-- THE INTRO ALARM
+--======================================================================
+-- ONE cycle of the meteor klaxon, played the instant the "start" phase arrives -- before the banner is
+-- filled in, before the sky starts tinting, before anything else in this file runs.
+--
+-- IT USED TO LIVE ON THE SERVER, which is why it was late. MeteorManager built a Folder + Sound in
+-- Workspace at event start so it would play 2D for everybody; that works, but those instances have to
+-- REPLICATE to every client before a single note comes out, while the "start" RemoteEvent lands
+-- immediately. So the red sky and the banner arrived first and the alarm turned up afterwards -- backwards,
+-- because the alarm is the thing whose whole job is to make you look up before you see anything.
+--
+-- Built at join and left parked in SoundService, so at event time the only work is :Play(). Still
+-- server-wide in effect: every client gets the same message on the same frame. EventSoundPreload already
+-- warms this exact id, so it is decoded and ready long before the first storm.
+local INTRO_SOUND_ID = "rbxassetid://109362273688140" -- also listed in EventSoundPreload.client.lua
+local INTRO_VOLUME   = 1
+local introAlarm = Instance.new("Sound")
+introAlarm.Name = "MeteorIntroAlarm"
+introAlarm.SoundId = INTRO_SOUND_ID
+introAlarm.Volume = INTRO_VOLUME
+introAlarm.Looped = false -- ONE cycle. It announces the storm; it does not nag through it.
+introAlarm.Parent = game:GetService("SoundService")
+
+--======================================================================
 -- ScreenGui: banner (top) + small reward popup (bottom).
 --======================================================================
 local gui = Instance.new("ScreenGui")
@@ -293,6 +317,9 @@ end
 -- distance from the impact so far-away players aren't rattled hard.
 --======================================================================
 local function cameraShake(impactPos, intensity, seconds)
+-- Felt as well as seen, and only for a real impact-scale shake -- the small ones stay visual so the
+-- big ones keep meaning something.
+if intensity and intensity >= 0.5 and _G.hapticPulse then pcall(_G.hapticPulse, "quake") end
 	local cam = workspace.CurrentCamera
 	if not cam then return end
 	local scale = 1
@@ -364,8 +391,15 @@ rewardPopup.Visible = false
 --======================================================================
 -- Listen to the server-driven sync events.
 --======================================================================
-sync.OnClientEvent:Connect(function(phase, payload)
+-- `catchUp` is true only when LateJoinEventSync is replaying a storm that was ALREADY running when this
+-- player joined. Everything visual should still be re-applied (that is the whole point of the replay), but
+-- the opening alarm should not: it is an announcement of something starting, and for this player it
+-- started before they got here.
+sync.OnClientEvent:Connect(function(phase, payload, catchUp)
 	if phase == "start" then
+		-- FIRST LINE OF THE FIRST PHASE. Nothing above it can yield, so the alarm and the message that
+		-- triggered it are the same frame.
+		if not catchUp then pcall(function() introAlarm.TimePosition = 0; introAlarm:Play() end) end
 		startSky()
 		showBanner(payload or "\u{2604} METEOR SHOWER INCOMING!", 5, Color3.fromRGB(60, 15, 15))
 
@@ -408,7 +442,9 @@ sync.OnClientEvent:Connect(function(phase, payload)
 		showBanner(payload or "\u{2604} Meteor Shower Ending\u{2026}", 4, Color3.fromRGB(40, 20, 20))
 
 	elseif phase == "reset" then
-		-- Full restore of the sky/Lighting + cleanup of client cosmetics.
+		-- Full restore of the sky/Lighting + cleanup of client cosmetics. The alarm is one short cycle and
+		-- is long finished by now -- this only matters if a storm is cut short in its first few seconds.
+		pcall(function() if introAlarm.IsPlaying then introAlarm:Stop() end end)
 		hideBanner()
 		rewardPopup.Visible = false  -- force-hide the transient reward popup so it can't linger past the event
 		restoreSky()

@@ -33,6 +33,11 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 -- ---------------------------------------------------------------------
+-- THE HAMMER CLANG. Left "" on purpose: an empty SoundId is silent and harmless, where a guessed id is a
+-- broken-asset warning on every strike. Put a metal-impact asset id here and every hammer blow rings across
+-- the pad -- the sound is what makes the build site audible from the far side of island 1.
+local HAMMER_CLANG_SOUND_ID = ""
+
 -- DEFAULT R15 ANIMATION ASSET IDS
 -- These are the well-known Roblox default R15 "Animate" loop ids. If a swap is
 -- ever needed it is a one-line change here. (Walk + Idle are all we need for an
@@ -488,6 +493,7 @@ local function makeWorker(index, spawnPos)
 	-- 3f) THE TOOL IN THE RIGHT HAND -- hammer for most, a welding torch for the welder.
 	-- Either way it is welded into the RIGHT HAND so it follows the arm when the RightShoulder Motor6D moves.
 	local torchTip = nil   -- welder only: the part the sparks and the arc light hang off
+	local hammerTip = nil  -- hammerer only: the part the strike sparks + the clang fire from
 	if look.role == "welder" then
 		-- VISOR. A flip-down welding mask, welded to the HEAD so it turns with the neck gesture like the hat
 		-- does. Sat DOWN over the face rather than flipped up, because the down position is the one that
@@ -585,6 +591,58 @@ local function makeWorker(index, spawnPos)
 		weldDetail(model, rightHand, "HammerHead",
 			Vector3.new(0.5, 0.5, 1.05), Color3.fromRGB(70, 72, 80), Enum.Material.Metal,
 			CFrame.new(0, -1.35, -0.2), { reflectance = 0.08 })
+
+		-- ===== THE STRIKE POINT =====
+		-- The swing was already there and it still read as a man standing still, because from anywhere a
+		-- player actually stands -- across island 1, or in the air -- one arm rotating a few degrees is
+		-- below the threshold of "that thing is moving". The welder was the only worker who looked busy,
+		-- and the ONLY reason is that he throws sparks: light is what carries at distance, not geometry.
+		--
+		-- So the hammer gets the same treatment. An invisible marker welded at the hammer's face carries a
+		-- burst emitter and the clang, so both fire from wherever the head actually is mid-swing -- no
+		-- per-frame repositioning, and it survives any later change to the swing arc.
+		hammerTip = weldDetail(model, rightHand, "HammerTip",
+			Vector3.new(0.1, 0.1, 0.1), Color3.fromRGB(255, 220, 150), Enum.Material.Neon,
+			CFrame.new(0, -1.72, -0.2), { transparency = 1 })
+		if hammerTip then
+			-- BURST ONLY. Rate stays 0 and build() calls :Emit() on the frame the hammer lands -- a
+			-- continuous stream would read as a sparkler, and the whole point is the IMPACT.
+			local sp = Instance.new("ParticleEmitter")
+			sp.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+			sp.Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 248, 214)),
+				ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 190, 70)),
+				ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 110, 30)) })
+			sp.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.05), NumberSequenceKeypoint.new(1, 1) })
+			sp.Size = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.30), NumberSequenceKeypoint.new(1, 0.02) })
+			sp.Lifetime = NumberRange.new(0.25, 0.55)
+			sp.Speed = NumberRange.new(7, 16)
+			sp.SpreadAngle = Vector2.new(60, 60)
+			sp.Acceleration = Vector3.new(0, -38, 0) -- they arc and fall, like real hot chips
+			sp.Rate = 0
+			sp.Enabled = true
+			sp.Parent = hammerTip
+			-- A flash of light on the same beat. Two frames of it is enough -- it is what makes the strike
+			-- visible from across the island at dusk, when the sparks alone are small.
+			local fl = Instance.new("PointLight")
+			fl.Color = Color3.fromRGB(255, 200, 120); fl.Range = 14; fl.Brightness = 0
+			fl.Parent = hammerTip
+			-- The clang. HAMMER_CLANG_SOUND_ID is "" by default -- silent, and NOT an error: an empty
+			-- SoundId simply never plays, the same safe placeholder the toaster used before it had a real
+			-- id. Drop a metal-impact asset id in at the top of this file and the site starts ringing.
+			if HAMMER_CLANG_SOUND_ID ~= "" then
+				local cl = Instance.new("Sound")
+				cl.Name = "HammerClang"
+				cl.SoundId = HAMMER_CLANG_SOUND_ID
+				cl.Volume = 0.55
+				cl.RollOffMode = Enum.RollOffMode.InverseTapered
+				cl.RollOffMinDistance = 20
+				cl.RollOffMaxDistance = 320
+				cl.Parent = hammerTip
+			end
+		end
 	end
 
 	-- 4) Cache the two Motor6Ds we hand-animate, plus their REST C0s so the
@@ -621,6 +679,7 @@ local function makeWorker(index, spawnPos)
 		-- second lookup back into WORKER_LOOKS.
 		role = look.role,
 		torchTip = torchTip,
+		hammerTip = hammerTip,
 		shoulderMotor = shoulderMotor,
 		shoulderRestC0 = shoulderRestC0,
 		neckMotor = neckMotor,
@@ -669,6 +728,9 @@ local function plantWorker(worker)
 			end
 		end
 		worker.root.Anchored = true
+		-- The pose the swing leans out of and returns to. Captured AFTER the look-at, so the lean runs
+		-- along the worker's own forward axis (at the rocket) rather than along the world's.
+		worker.plantCF = worker.root.CFrame
 	end
 	-- SOLID once planted. The worker is now ANCHORED and CFrame-driven, so collision cannot shove it, push it
 	-- off its mark or hand it to the physics solver -- exactly the arrangement the garden's cow and pig use
@@ -1005,8 +1067,12 @@ function RocketNPCs.build()
 			-- Pure rotations applied ON TOP of the rest C0 (which already places
 			-- the shoulder joint). Negative X pitches back/up, positive X swings
 			-- forward/down toward the rocket.
-			local raisedAngle = math.rad(-70) -- back/up (ready)
-			local strikeAngle = math.rad(25)  -- forward/down (the hit)
+			-- A BIGGER, FASTER SWING. It was -70..25 degrees at 6 rad/s -- a tap. A sledgehammer comes from
+			-- up behind the shoulder and goes through the work, and often enough that you catch it in
+			-- passing instead of having to stand and wait for one.
+			local raisedAngle = math.rad(-104) -- back/up, well past vertical (ready)
+			local strikeAngle = math.rad(42)   -- forward/down, through the work (the hit)
+			local SWING_HZ    = 7.4            -- was 6
 
 			-- ===== THE WELDER MOVES COMPLETELY DIFFERENTLY =====
 			-- A hammer is a big two-position swing. A weld is the opposite: the arm barely moves at all, and
@@ -1038,6 +1104,12 @@ function RocketNPCs.build()
 			local torchTip  = worker.torchTip
 			local sparks    = torchTip and torchTip:FindFirstChildOfClass("ParticleEmitter") or nil
 			local arcLight  = torchTip and torchTip:FindFirstChildOfClass("PointLight") or nil
+			-- The hammerer's impact kit, looked up ONCE here rather than every frame inside the loop.
+			local hammerTip   = worker.hammerTip
+			local sparkBurst  = hammerTip and hammerTip:FindFirstChildOfClass("ParticleEmitter") or nil
+			local strikeLight = hammerTip and hammerTip:FindFirstChildOfClass("PointLight") or nil
+			local clangSound  = hammerTip and hammerTip:FindFirstChildOfClass("Sound") or nil
+			local struck      = false -- latch: one impact per swing, re-armed on the way back up
 			-- Each welder gets its own flicker clock so an arc never pulses in time with anything else.
 			local flickerPhase = math.random() * math.pi * 2
 			local conn
@@ -1054,6 +1126,12 @@ function RocketNPCs.build()
 					-- its owner is wiping his forehead is the detail that breaks the whole illusion.
 					if sparks then sparks.Rate = 0 end
 					if arcLight then arcLight.Brightness = 0 end
+					-- ...and STAND BACK UP. The hammerer leans his whole body into the swing, so a pause
+					-- that returns here mid-blow would freeze him bent forward over the work until the
+					-- gesture finished. Returning to the planted pose makes the pause read as a break.
+					if worker.plantCF and worker.root and worker.root.Parent and not worker.fallen then
+						worker.root.CFrame = worker.plantCF
+					end
 					return
 				end
 
@@ -1103,13 +1181,52 @@ function RocketNPCs.build()
 
 				else
 					-- 0..1 sine drives the blend between raised and strike each cycle.
-					local s = (math.sin(os.clock() * 6 + phase) + 1) * 0.5
+					local s = (math.sin(os.clock() * SWING_HZ + phase) + 1) * 0.5
 					-- EASE the blend so the swing accelerates into the strike and eases
 					-- out of the raise (smootherstep) instead of a linear/robotic lerp.
 					local e = s * s * s * (s * (s * 6 - 15) + 10)
 					local pitch = raisedAngle + (strikeAngle - raisedAngle) * e
 					-- Apply ONLY to this joint's C0 — rotate about local X (pitch).
 					motor.C0 = restC0 * CFrame.Angles(pitch, 0, 0)
+
+					-- ===== THE REST OF HIM SWINGS TOO =====
+					-- An arm rotating on a body that is otherwise a statue is what "standing there doing nothing"
+					-- actually looks like -- nobody swings a sledgehammer with their shoulder alone. The root is
+					-- anchored and CFrame-driven (see plantWorker), so leaning it is free and it moves the whole
+					-- silhouette: he dips and pitches forward into the blow and rises back out of it, on the same
+					-- eased curve as the arm.
+					--
+					-- Small numbers on purpose. This is a lean, not a bow -- past about 12 degrees the planted feet
+					-- stop selling it and he reads as falling over.
+					if worker.plantCF and worker.root then
+						worker.root.CFrame = worker.plantCF
+							* CFrame.new(0, -0.16 * e, -0.10 * e)
+							* CFrame.Angles(math.rad(11) * e, 0, 0)
+					end
+
+					-- ===== THE BLOW LANDS =====
+					-- Everything above is motion; this is the part that reads as WORK from a distance. On the frame
+					-- the swing reaches the bottom, throw a burst of hot chips off the hammer face, flash the light
+					-- for a beat and ring the clang. `struck` latches so one swing fires exactly one impact however
+					-- many frames it spends near the bottom, and re-arms on the way back up.
+					if e > 0.94 then
+						if not struck then
+							struck = true
+							if sparkBurst then sparkBurst:Emit(16) end
+							if strikeLight then
+								strikeLight.Brightness = 4.5
+								task.delay(0.09, function()
+									if strikeLight and strikeLight.Parent then strikeLight.Brightness = 0 end
+								end)
+							end
+							if clangSound then
+								clangSound.PlaybackSpeed = 0.92 + math.random() * 0.16 -- never twice the same
+								clangSound:Play()
+							end
+						end
+					elseif e < 0.55 then
+						struck = false
+					end
 				end
 			end)
 			table.insert(actionLoops, conn)

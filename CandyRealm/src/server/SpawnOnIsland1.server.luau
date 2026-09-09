@@ -231,14 +231,67 @@ local function targetTop()
 	return landmarkTop(findIsland1Spawn())
 end
 
+-- WHICH WAY YOU ARE FACING WHEN YOU ARRIVE.
+--
+-- place() used to position with CFrame.new(top), which carries IDENTITY rotation -- so every
+-- player spawned facing +Z no matter what was actually in front of them, and on island1 that is
+-- the wrong way round: you land looking away from the island you are meant to walk into.
+--
+-- 180 is the flip that fixes it. It is a named constant rather than an inline CFrame.Angles
+-- because "which way does the spawn face" is a thing you re-tune by eye after moving the pad, and
+-- it should be one number to change, in one place, with its own name.
+local SPAWN_YAW = 180
+
+-- ===== RESPAWNS GO TO YOUR HIGHEST ISLAND, NOT THE BOTTOM OF THE TOWER =====
+-- The FIRST placement of a session is island1 as always (the tutorial and the intro live
+-- there). Every death after that puts you back on the highest island you have reached --
+-- HighestSlot is the server's own attribute (FlightEconomy / GutProgression write it), so a
+-- client cannot spoof its way up. Slot 1, a missing island model, or any resolve failure all
+-- fall back to the island1 pad, so nobody can respawn into nothing.
+local IslandOrder = require(game:GetService("ReplicatedStorage")
+	:WaitForChild("Shared"):WaitForChild("IslandOrder"))
+local placedOnce = {}   -- [player] = true after their first placement this session
+Players.PlayerRemoving:Connect(function(plr) placedOnce[plr] = nil end)
+
+local function highestTop(plr)
+	local slot = math.floor(tonumber(plr:GetAttribute("HighestSlot")) or 1)
+	if slot <= 1 then return nil end
+	local n = IslandOrder.SLOT_TO_ISLAND[slot]
+	local m = n and Workspace:FindFirstChild("island" .. n)
+	if not (m and m:IsA("Model")) then return nil end
+	local ok, cf, size = pcall(function()
+		local c, s = m:GetBoundingBox()
+		return c, s
+	end)
+	if not (ok and cf and size) then return nil end
+	-- stand on whatever the island's own centre column actually holds: a ray through the model
+	-- finds the deck (or a roof, which is also fine to stand on); the bounding-box top is the
+	-- last resort
+	local topY = cf.Position.Y + size.Y * 0.5
+	local rp = RaycastParams.new()
+	rp.FilterType = Enum.RaycastFilterType.Include
+	rp.FilterDescendantsInstances = { m }
+	local hit = Workspace:Raycast(Vector3.new(cf.Position.X, topY + 40, cf.Position.Z),
+		Vector3.new(0, -(size.Y + 80), 0), rp)
+	local at = hit and hit.Position or Vector3.new(cf.Position.X, topY, cf.Position.Z)
+	return at + Vector3.new(0, 4, 0)
+end
+
 local function place(char)
 	local hrp = char:WaitForChild("HumanoidRootPart", 10)
 	if not hrp then return end
 	task.wait(0.1) -- let the default spawn settle a frame, then move
+	local plr = Players:GetPlayerFromCharacter(char)
 	local top
-	for _ = 1, 20 do top = targetTop(); if top then break end; task.wait(0.25) end
+	if plr and placedOnce[plr] then top = highestTop(plr) end   -- respawn: highest island reached
+	if not top then
+		for _ = 1, 20 do top = targetTop(); if top then break end; task.wait(0.25) end
+	end
 	if top then
-		char:PivotTo(CFrame.new(top))
+		-- position AND facing. PivotTo takes the whole CFrame, so the yaw rides along with it -- and
+		-- the intro records this same CFrame as its "home", so the facing survives the cinematic
+		-- putting the player back down at the end.
+		char:PivotTo(CFrame.new(top) * CFrame.Angles(0, math.rad(SPAWN_YAW), 0))
 		-- PUBLISH IT, as a replicated ATTRIBUTE (not _G -- this is a server script and the reader is a
 		-- LocalScript, and _G does not cross that boundary).
 		--
@@ -247,8 +300,11 @@ local function place(char)
 		-- (the loop above waits up to 5s for the island to stream in, and the intro fires at ~1s). Without
 		-- this the cinematic would faithfully restore the player to wherever the DEFAULT spawn dropped
 		-- them, quietly undoing the placement above. Intro.client prefers this over its own snapshot.
-		local plr = Players:GetPlayerFromCharacter(char)
-		if plr then plr:SetAttribute("CandySpawnTop", top) end
+		-- (plr resolved at the top of place() now, for the respawn routing)
+		if plr then
+			plr:SetAttribute("CandySpawnTop", top)
+			placedOnce[plr] = true   -- from here on, deaths respawn at the highest island reached
+		end
 	end
 end
 
@@ -259,4 +315,5 @@ end
 Players.PlayerAdded:Connect(onPlayer)
 for _, p in ipairs(Players:GetPlayers()) do onPlayer(p) end -- Studio Play Solo / live reload
 
-print("[SpawnIsland1] active -- spawning players on: " .. SPAWN_TARGET)
+print("[SpawnIsland1] active -- first spawn on: " .. SPAWN_TARGET
+	.. "; respawns land on the player's highest island reached (HighestSlot)")

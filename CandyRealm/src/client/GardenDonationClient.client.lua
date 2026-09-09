@@ -157,7 +157,11 @@ function buildHUD()
 
 	-- dim click-catcher backdrop (click outside closes)
 	local backdrop = mkButton(gui, { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.45, Text = "", AutoButtonColor = false, Active = true })
-	backdrop.MouseButton1Click:Connect(closePanel)
+	-- BACKDROP TAPS CLOSE NOTHING. This is the realm's one banned menu behaviour: a panel must only
+	-- ever be shut by its X. The button stays (it swallows the click so it cannot reach the world or
+	-- the buttons behind the panel) -- it just does not act on it. Losing a full-screen menu to a
+	-- mis-aimed tap, mid-scroll or mid-read, is indistinguishable from the menu crashing.
+	backdrop.MouseButton1Click:Connect(function() end)
 
 	-- PANEL (blue modal -- same style as the Garden Reward / shop panels)
 	panel = mkFrame(gui, { Size = UDim2.new(0.6, 0, 0.62, 0), Position = UDim2.new(0.5, 0, 0.5, 0), AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = BLUE_PANEL, ClipsDescendants = true, Active = true })

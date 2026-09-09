@@ -39,32 +39,33 @@ local CoinEvent         = ev("CoinEvent")          -- c->s: (amount) -- coins ea
 -- DATA (VERBATIM from PlayerStats.server.lua) -- the client mirrors this exactly.
 -- ============================================================================
 local foods = {
-	{name="Beans",    price=5,    power=8,   island=1},
-	{name="Broccoli", price=24,   power=25,  island=2},
-	{name="Cabbage",  price=85,   power=45,  island=3},
-	{name="Turnips",  price=94,   power=70,  island=4},
-	{name="Coconuts", price=142,  power=100, island=5},
-	{name="Bread",    price=138,  power=140, island=6},
-	{name="Pasta",    price=202,  power=185, island=7},
-	{name="Popcorn",  price=600,  power=240, island=8},
-	{name="Milk",     price=500,  power=300, island=9},
-	{name="Butter",   price=400,  power=370, island=10},
-	{name="IceCream", price=560,  power=450, island=11},
-	{name="Burger",   price=405,  power=540, island=12},
-	{name="Burrito",  price=700,  power=640, island=13},
-	{name="Pizza",    price=518,  power=750, island=14},
+	{name="Beans",    price=1280, power=32,  island=1},
+	{name="Broccoli", price=1480, power=40,  island=2},
+	{name="Cabbage",  price=1480, power=40,  island=3},
+	{name="Turnips",  price=1520, power=45,  island=4},
+	{name="Coconuts", price=1520, power=45,  island=5},
+	{name="Bread",    price=1720, power=55,  island=6},
+	{name="Pasta",    price=1720, power=55,  island=7},
+	{name="Popcorn",  price=1840, power=65,  island=8},
+	{name="Milk",     price=1840, power=65,  island=9},
+	{name="Butter",   price=2200, power=85,  island=10},
+	{name="IceCream", price=2200, power=85,  island=11},
+	{name="Burger",   price=3080, power=130, island=12},
+	{name="Burrito",  price=3080, power=130, island=13},
+	{name="Pizza",    price=3080, power=130, island=14},
 }
 -- getMaxHeight(maxPower) = 50 + maxPower*14. Iron is the top of the free path; Infinite is a Robux-only premium gut.
 -- `island` = the island that must have been REACHED before this gut can be bought. Keep these in
 -- step with the same table in PlayerStats.server.lua, which is the live one -- a gut unlocks on the
 -- island where the previous gut runs out. Infinite Gut stays at 1: it is the Robux tier.
 local stomachTiers = {
-	{name="Tiny Gut",     maxPower=100,  cost=0,      robux=false, island=1},
-	{name="Small Gut",    maxPower=182,  cost=1600,   robux=false, island=2},
-	{name="Medium Gut",   maxPower=520,  cost=3000,   robux=false, island=4},
-	{name="Large Gut",    maxPower=1075, cost=5200,   robux=false, island=7},
-	{name="XL Gut",       maxPower=2146, cost=8000,   robux=false, island=11},
-	{name="Iron Gut",     maxPower=3218, cost=11000,  robux=false, island=14},
+	{name="Tiny Gut",     maxPower=120,  cost=0,      robux=false, island=1},
+	{name="Small Gut",    maxPower=270,  cost=1000,   robux=false, island=2},
+	{name="Medium Gut",   maxPower=470,  cost=2000,   robux=false, island=4},
+	{name="Large Gut",    maxPower=620,  cost=4000,   robux=false, island=6},
+	{name="XL Gut",       maxPower=1080, cost=5000,   robux=false, island=8},
+	{name="XXL Gut",      maxPower=1710, cost=6000,   robux=false, island=10},
+	{name="Iron Gut",     maxPower=2600, cost=11500,  robux=false, island=12},
 	{name="Infinite Gut", maxPower=9999, cost=499,    robux=true,  island=1},
 }
 -- expose for the client (the real game sets these in CoreClient; harmless if already set)

@@ -3,8 +3,8 @@
 --======================================================================
 -- THE PET HUT. A small builder's hut on Bean Farm with a row of little beds outside its door. Walk up,
 -- open the panel, pick one of your pets and drop it off. It curls up on a bed and goes to sleep. While it
--- naps it trickles a few coins -- exactly the shape of the campfire: a cozy nice-to-have, never a reason to
--- stop playing (the campfire's ceiling is 36 coins/min, this tops out at 30, active flight beats both ~50x).
+-- naps it trickles TICKETS (the crate currency) -- a cozy nice-to-have, never a reason to stop playing: it
+-- tops out at 24 tickets/hour against the AFK farm's 40, and the farm at least asks you to stand in it.
 --
 -- ===== WHY THE PETS ARE VISIBLE TO EVERYONE =====
 -- The obvious version of this feature is "pets sleep after their owner leaves", and it is worthless: nobody
@@ -13,7 +13,7 @@
 -- client renders every sleeping pet -- yours and everyone else's.
 --
 -- ===== WHAT THIS SCRIPT OWNS =====
--- OWNS:      the BUILDING (wall/roof/beds), who is napping, which bed they hold, the coin trickle.
+-- OWNS:      the BUILDING (wall/roof/beds), who is napping, which bed they hold, the ticket trickle.
 -- DOES NOT:  equip state. Dropping a pet off has to UNEQUIP it (or it would both follow you and sleep), and
 --            equipping is PetSystem's business -- its sendState() is what makes PetFollow spawn/despawn the
 --            follower, and that function is local to it. So the CLIENT fires PetEquipEvent (PetSystem's own
@@ -24,7 +24,7 @@
 --            scenery nobody inspects that closely.
 --
 -- ===== NO OFFLINE FARMING =====
--- The trickle only pays while the OWNER IS IN THE SERVER. Leaving does not bank coins. What leaving does do
+-- The trickle only pays while the OWNER IS IN THE SERVER. Leaving does not bank tickets. What leaving does do
 -- is leave your pet asleep outside the hut for AWAY_KEEP minutes, greyed out and tagged "away" -- so the hut
 -- still looks lived-in, and if you rejoin in that window your pet is still there waiting for you.
 --
@@ -46,7 +46,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 -- DUPLICATE GUARD ---------------------------------------------------------------------------------------
 -- Same treatment Campfire and RealmPortals use, for the same reason: Rojo ADDS, it never overwrites, so a
 -- stale copy baked into the place file runs alongside this one. Two copies here means two houses built on
--- the same spot, z-fighting through each other, and two coin trickles paying for one sleeping pet.
+-- the same spot, z-fighting through each other, and two ticket trickles paying for one sleeping pet.
 if _G.__PetBarnServer then
 	warn("[PetBarn] a SECOND copy of PetBarn.server is running -- this one is bailing out. " ..
 		"Delete the stale Script in Studio (Explorer > search 'PetBarn') and re-sync Rojo.")
@@ -61,12 +61,17 @@ local HOUSE_PART_NAME = "pethouse" -- matched case-insensitively; the Part alrea
 local DROP_RADIUS     = 70         -- studs: how close you must be to drop off / take back. Server-checked.
 local AWAY_KEEP       = 15 * 60    -- seconds a pet stays in the beds after its owner leaves, then it's evicted
 
-local TICK            = 10         -- seconds between coin payouts
--- Coins per tick, by the pet's AGE (level). Level 1 -> 1 coin/10s (6/min); level 25 -> 5 coins/10s (30/min).
--- Deliberately under the campfire's 36/min ceiling, and it scales with age so there's a reason to nap your
--- best pet rather than your throwaway one.
-local function coinsForLevel(level)
-	return math.clamp(1 + math.floor((tonumber(level) or 1) / 6), 1, 5)
+local TICK            = 10         -- seconds between payouts
+-- ===== IT PAYS TICKETS, NOT COINS =====
+-- Coins are what flying earns, constantly, in the thousands -- a few of them for a sleeping pet was noise you
+-- would never notice. Tickets are the crate currency: scarce, wanted, and something you can only otherwise get
+-- from crates, the daily streak and the AFK farm. A slow ticket trickle is worth walking your pet over for.
+--
+-- RATE IS PER HOUR, and set BELOW the AFK farm's 40/hour on purpose. The farm asks you to stand plugged into
+-- it; the barn asks nothing at all once the pet is dropped off, so it must pay less or nobody would ever use
+-- the farm. It still scales with the pet's AGE, so there is a reason to nap your best pet and not a throwaway.
+local function ticketsPerHour(level)
+	return math.clamp(8 + math.floor((tonumber(level) or 1) / 2), 8, 24)   -- lvl 1 -> 8/hr, lvl 25+ -> 24/hr (AFK farm is 40)
 end
 
 -- ===== HUT DIMENSIONS (studs) =====
@@ -288,15 +293,37 @@ local function buildHouse(markerCF, markerSize)
 		p.Shape = Enum.PartType.Cylinder
 		return p
 	end
-	-- A low-poly paw print: one pad and four toes, laid in the CFrame's X/Z plane and thin along its Y.
-	-- Used twice (mat and sign) from one definition, so the two always match.
+	-- A low-poly paw print: a pad and four splayed toes, laid in the CFrame's X/Z plane and thin along its Y.
+	-- Used three times (mat, wall, sign) from one definition, so they always match.
+	--
+	-- ===== WHY THESE ARE CYLINDERS AND NOT BALLS =====
+	-- They were Ball parts sized (0.95, 0.16, 0.8) -- an ellipsoid, if Roblox had one. It does not. A Ball
+	-- part ALWAYS renders a true sphere and takes the SMALLEST axis as its diameter, so every piece of this
+	-- collapsed to a 0.16-stud bead: the pad became a dot, the four toes became four smaller dots, and the
+	-- paw print became five brown dots in a rough cross. That is exactly what it looked like in game.
+	--
+	-- A Cylinder is the shape Roblox will actually squash. Rolled 90 degrees about Z its length runs along
+	-- the print's local Y (so Size.X is the THICKNESS off the surface) and its cross-section is a real
+	-- ELLIPSE in the local X/Z plane -- so the pad can be wider than it is deep and the toes can be longer
+	-- than they are wide, which is the whole difference between "a paw" and "a dot".
+	local function pawDisc(parent, name, cf, thick, w, d, color)
+		local p = deco(part(parent, name, Vector3.new(thick, w, d),
+			cf * CFrame.Angles(0, 0, math.rad(90)), color, Enum.Material.SmoothPlastic))
+		p.Shape = Enum.PartType.Cylinder; p.CastShadow = false
+		return p
+	end
 	local function pawPrint(parent, name, cf, s, color)
-		local pad = deco(part(parent, name, Vector3.new(0.95 * s, 0.16 * s, 0.8 * s), cf * CFrame.new(0, 0, 0.18 * s), color, Enum.Material.SmoothPlastic))
-		pad.Shape = Enum.PartType.Ball; pad.CastShadow = false
-		for i = -1.5, 1.5, 1 do
-			local t = deco(part(parent, name .. "Toe", Vector3.new(0.34 * s, 0.15 * s, 0.34 * s),
-				cf * CFrame.new(i * 0.34 * s, 0, -(0.42 - math.abs(i) * 0.07) * s), color, Enum.Material.SmoothPlastic))
-			t.Shape = Enum.PartType.Ball; t.CastShadow = false
+		-- THE PAD: set back, and wider than it is deep. A circle here reads as a button; the squash is what
+		-- makes it a heel.
+		pawDisc(parent, name, cf * CFrame.new(0, 0, 0.22 * s), 0.16 * s, 1.04 * s, 0.78 * s, color)
+		-- FOUR TOES on an arc in front of it. Three things make them read as toes rather than as beads:
+		-- they are longer than they are wide (0.34 x 0.46), the middle pair sits further FORWARD than the
+		-- outer pair, and each one is splayed outward a little so they fan the way real toes do.
+		for _, i in ipairs({ -1.5, -0.5, 0.5, 1.5 }) do
+			local lead = (1.5 - math.abs(i)) * 0.10 -- middle toes lead
+			pawDisc(parent, name .. "Toe",
+				cf * CFrame.new(i * 0.32 * s, 0, -(0.40 + lead) * s) * CFrame.Angles(0, math.rad(-i * 14), 0),
+				0.15 * s, 0.34 * s, 0.46 * s, color)
 		end
 	end
 
@@ -879,16 +906,20 @@ local function broadcast(reason)
 end
 
 --======================================================================
--- COINS
+-- TICKETS
 --======================================================================
 -- Credited HERE, on the server, from server-owned state. The client is never asked how long its pet slept and
 -- never sends an amount. Same rule the campfire follows.
-local function creditCoins(player, amount)
-	local ls = player:FindFirstChild("leaderstats"); if not ls then return end
-	local coins = ls:FindFirstChild("Coins")
-	local tce   = ls:FindFirstChild("TotalCoinsEarned")
-	if coins then coins.Value = coins.Value + amount end
-	if tce   then tce.Value   = tce.Value   + amount end
+--
+-- THROUGH _G.addSkinTokens, NEVER by touching a balance directly -- that is the one entry point that logs,
+-- saves and replicates, and it is the same call the AFK farm, the daily streak and the buried gnome all use.
+local function creditTickets(player, amount)
+	if amount <= 0 then return end
+	if type(_G.addSkinTokens) ~= "function" then
+		warn("[PetBarn] _G.addSkinTokens missing -- SkinCrateService did not start. Nap tickets NOT paid.")
+		return
+	end
+	pcall(_G.addSkinTokens, player, amount, "pet nap")
 end
 
 --======================================================================
@@ -956,7 +987,7 @@ local function takeBack(player)
 	end
 	slotTaken[e.slot] = nil
 	napping[player.UserId] = nil
-	print(string.format("[PetBarn] %s collected %s after %ds asleep (+%d coins)",
+	print(string.format("[PetBarn] %s collected %s after %ds asleep (+%d tickets)",
 		player.Name, e.skey, os.time() - e.since, math.floor(e.earned)))
 	-- Re-equipping is the client's PetEquipEvent call, same as the drop. We only free the bed.
 	broadcast("take")
@@ -973,7 +1004,7 @@ end)
 --======================================================================
 -- LEAVING AND COMING BACK
 --======================================================================
--- Leaving does NOT bank coins and does NOT collect your pet. The pet stays asleep in its bed, marked away
+-- Leaving does NOT bank tickets and does NOT collect your pet. The pet stays asleep in its bed, marked away
 -- (the client greys its name tag), so the beds keeps looking lived-in and your pet is still there if you come
 -- back soon. After AWAY_KEEP it is evicted so the beds cannot fill with ghosts.
 Players.PlayerRemoving:Connect(function(player)
@@ -1088,9 +1119,17 @@ task.spawn(function()
 			else
 				local owner = Players:GetPlayerByUserId(userId)
 				if owner then
-					local coins = coinsForLevel(e.level)
-					creditCoins(owner, coins)
-					e.earned = e.earned + coins
+					-- ACCRUE FRACTIONALLY, PAY WHOLE. At 8-24 tickets an HOUR a ten-second tick is worth a
+					-- fraction of one, so the tick banks the fraction and only calls addSkinTokens when a
+					-- whole ticket has built up. Rounding per tick would either pay nothing forever
+					-- (floor) or pay a ticket every ten seconds (ceil) -- both wrong by a mile.
+					e.acc = (e.acc or 0) + ticketsPerHour(e.level) * TICK / 3600
+					local whole = math.floor(e.acc)
+					if whole >= 1 then
+						e.acc = e.acc - whole
+						creditTickets(owner, whole)
+						e.earned = e.earned + whole
+					end
 				end
 			end
 		end

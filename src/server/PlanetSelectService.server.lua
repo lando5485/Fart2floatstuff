@@ -24,6 +24,45 @@ local TeleportService   = game:GetService("TeleportService")
 -- Space Realm place inside this SAME experience (matches BlackHoleTeleport.server.lua's id).
 local SPACE_REALM_PLACE_ID = 125063266868039
 
+-- ===== ONE DEFINITION OF WHAT CROSSES A PLACE BOUNDARY =====
+-- This door used to hand-roll its own payload (ownedPets + equippedPet, 2 of the 11 fields the shared
+-- module packs), which meant the planet picker and the portal room sent DIFFERENT amounts of the same
+-- player to the same place. RealmTransfer is the single definition -- of what travels, and of what must
+-- not (coins, island, stomach and the fart meter are absolutes this place's DataStore owns).
+-- Fallback kept so a broken require costs cosmetics, never the teleport itself.
+local RealmTransfer
+do
+	local ok, mod = pcall(function()
+		local shared = ReplicatedStorage:WaitForChild("Shared", 20)
+		return shared and require(shared:WaitForChild("RealmTransfer", 20))
+	end)
+	if ok then RealmTransfer = mod
+	else warn("[PlanetSelect] RealmTransfer unavailable (" .. tostring(mod) .. ") -- falling back to a pets-only payload") end
+end
+
+local function buildTransferPayload(player, extra)
+	if RealmTransfer then
+		local ok, payload = pcall(function() return RealmTransfer.build(player, "space", extra) end)
+		if ok and type(payload) == "table" then return payload end
+		warn("[PlanetSelect] RealmTransfer.build failed (" .. tostring(payload) .. ") -- falling back to a pets-only payload")
+	end
+	local fallback = {
+		fromFartToFloat = true,
+		payloadVersion  = 1,
+		fromPlaceId     = game.PlaceId,
+		homePlaceId     = game.PlaceId,
+		realm           = "space",
+		toRealm         = "space",
+		userId          = player.UserId,
+		ownedPets   = (_G.playerOwnedPets   and _G.playerOwnedPets[player])   or {},
+		equippedPet = (_G.playerEquippedPet and _G.playerEquippedPet[player]) or nil,
+	}
+	if type(extra) == "table" then
+		for k, v in pairs(extra) do fallback[k] = v end
+	end
+	return fallback
+end
+
 -- These strings MUST match Space Realm's Constants (the single source of truth over there).
 local DATASTORE_NAME      = "SpaceRealm_PlayerState_v1" -- Constants.DATASTORE_NAME
 local KEY_PREFIX          = "Player_"                    -- Constants.DATASTORE_KEY_PREFIX
@@ -108,14 +147,12 @@ requestTeleport.OnServerEvent:Connect(function(player, planetName)
 
 	teleporting[player] = true
 	local opts = Instance.new("TeleportOptions")
-	opts:SetTeleportData({
+	-- The picked planet rides along as an EXTRA on the standard payload, so this door now sends exactly
+	-- what the black hole and the portal room send, plus the one field only it knows about.
+	opts:SetTeleportData(buildTransferPayload(player, {
 		[SELECTED_PLANET_KEY] = planetName,
-		fromFartToFloat = true,
-		-- Carry the player's COLLECTED PETS across, the same payload the black-hole teleport sends, so the
-		-- Space Realm side can rebuild them (read via player:GetJoinData().TeleportData over there).
-		ownedPets   = (_G.playerOwnedPets   and _G.playerOwnedPets[player])   or {},
-		equippedPet = (_G.playerEquippedPet and _G.playerEquippedPet[player]) or nil,
-	})
+		realm = "space",
+	}))
 	print(("[PlanetSelect] teleporting %s -> Space Realm on %s (place %d)"):format(player.Name, planetName, SPACE_REALM_PLACE_ID))
 	local ok, err = pcall(function()
 		TeleportService:TeleportAsync(SPACE_REALM_PLACE_ID, { player }, opts)

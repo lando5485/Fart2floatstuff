@@ -20,10 +20,11 @@
 
 local Workspace = game:GetService("Workspace")
 
--- ⚠ PLACEHOLDER SOUNDS -- REPLACE WITH REAL ASSET IDS BEFORE LAUNCH. Left "" (silent, no broken-id spam),
--- same safe approach as the cow easter egg.
-local DING_SOUND_ID  = "" -- ⚠ REPLACE WITH TOASTER DING SOUND
-local LEVER_SOUND_ID = "" -- ⚠ REPLACE WITH LEVER PUSH CLICK SOUND (optional)
+-- SOUNDS. Real ids now -- these were empty-string placeholders, so the toaster was a silent film until
+-- here. Both are parented to the toaster BODY, so they are positional: you hear them from the toaster,
+-- at the toaster, and not at all from the other end of the island.
+local LEVER_SOUND_ID = "rbxassetid://365947908"  -- the lever + toast pushing DOWN (the clunk)
+local DING_SOUND_ID  = "rbxassetid://365950085"  -- ~5s later: the DING as the toast launches back UP
 
 -- tuning
 local STEP           = 0.04   -- seconds per animation frame
@@ -242,10 +243,11 @@ local function buildToaster(rootCF)
 	local leftToast  = buildToast(model, leftLoaded)
 	local rightToast = buildToast(model, rightLoaded)
 
-	-- sounds on the body (placeholders -> see top of file)
-	local ding = Instance.new("Sound"); ding.Name = "DingSound"; ding.SoundId = DING_SOUND_ID -- ⚠ REPLACE WITH TOASTER DING SOUND
+	-- sounds on the body (ids at the top of the file). The DING carries further than the clunk on purpose:
+	-- the push-down is for whoever pulled the lever, the ding is the bit that makes someone else look over.
+	local ding = Instance.new("Sound"); ding.Name = "DingSound"; ding.SoundId = DING_SOUND_ID
 	ding.Volume = 0.7; ding.RollOffMinDistance = 10; ding.RollOffMaxDistance = 120; ding.Parent = body
-	local click = Instance.new("Sound"); click.Name = "LeverClick"; click.SoundId = LEVER_SOUND_ID -- ⚠ REPLACE WITH LEVER PUSH CLICK SOUND
+	local click = Instance.new("Sound"); click.Name = "LeverClick"; click.SoundId = LEVER_SOUND_ID
 	click.Volume = 0.45; click.RollOffMinDistance = 8; click.RollOffMaxDistance = 80; click.Parent = body
 
 	return {

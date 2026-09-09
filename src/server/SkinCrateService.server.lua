@@ -47,16 +47,28 @@ local TradeUp        = getOrCreate(SkinRemotes, "RemoteFunction", "TradeUp")    
 local EquipSkin      = getOrCreate(SkinRemotes, "RemoteEvent",    "EquipSkin")      -- c->s: (petId, skinId, traitId|false)
 local BuyTokens      = getOrCreate(SkinRemotes, "RemoteEvent",    "BuyTokens")      -- c->s: (packId)
 local SetTitle       = getOrCreate(SkinRemotes, "RemoteEvent",    "SetTitle")       -- c->s: (titleId|"")
+-- THE PET HUT'S CUSTOMIZE COUNTER. Buying a trait outright is a PURCHASE, so it is a RemoteFunction: the
+-- client has to know whether it went through (and what the new balance is) before it repaints the button --
+-- the same reason OpenCrate is one. Wearing a trait you already own changes nothing but the look, so it is a
+-- fire-and-forget event like EquipSkin, and the resulting state push is what repaints the pet.
+local BuyTrait       = getOrCreate(SkinRemotes, "RemoteFunction", "BuyTrait")       -- c->s RF: (traitId) -> result
+local SetPetTrait    = getOrCreate(SkinRemotes, "RemoteEvent",    "SetPetTrait")    -- c->s: (petId, traitId|false)
 local AssignPetLevels = getOrCreate(SkinRemotes, "RemoteFunction", "AssignPetLevels") -- c->s RF: (petId) -> pour pending levels into that pet
 local SkinStateEvent = getOrCreate(SkinRemotes, "RemoteEvent",    "SkinStateEvent") -- s->c: (state) push
 local GoldAnnounce   = getOrCreate(SkinRemotes, "RemoteEvent",    "GoldAnnounce")   -- s->ALL: a Gold-tier pull
 local CollectAnnounce = getOrCreate(SkinRemotes, "RemoteEvent",   "CollectAnnounce")-- s->c / s->ALL: a completed collection
+-- s->c: a crate the SERVER opened on the player's behalf (Daily Rewards day 7), pushed so the client can run
+-- its normal reveal. A paid open returns its result through the OpenCrate RemoteFunction, which only works
+-- when the CLIENT started it -- a gift has nobody waiting on a return value, so it needs a channel of its own.
+local FreeCrateReveal = getOrCreate(SkinRemotes, "RemoteEvent",   "FreeCrateReveal")
 print("[SkinCrate] SkinRemotes ready (GetSkinState, OpenCrate, TradeUp, EquipSkin, BuyTokens, SetTitle, "
 	.. "SkinStateEvent, GoldAnnounce, CollectAnnounce)")
 
 local Shared      = ReplicatedStorage:WaitForChild("Shared")
 local PetSkins    = require(Shared:WaitForChild("PetSkins"))
 local PetTraits   = require(Shared:WaitForChild("PetTraits"))
+local PetTier     = require(Shared:WaitForChild("PetTier"))
+local TraitShop   = require(Shared:WaitForChild("TraitShop"))
 local SkinCrates  = require(Shared:WaitForChild("SkinCrates"))
 local CrateTokens = require(Shared:WaitForChild("CrateTokens"))
 local PetCollection = require(Shared:WaitForChild("PetCollection"))
@@ -77,6 +89,11 @@ local pendingLevels = {}   -- [player] = levels waiting to be placed
 _G.playerCrateTokens   = _G.playerCrateTokens   or {} -- [player] = number
 _G.playerPetSkins      = _G.playerPetSkins      or {} -- [player] = { ["PizzaDragon|Galaxy|Crowned"] = 3, ... }
 _G.playerEquippedSkins = _G.playerEquippedSkins or {} -- [player] = { PizzaDragon = { skin="Galaxy", trait="Crowned" } }
+-- THE TRAIT WARDROBE. [player] = { King = true, Wizard = true } -- traits owned OUTRIGHT, wearable on ANY pet,
+-- persisted by PlayerStats as saved.ownedTraits. Filled two ways: bought at the Pet Hut for tickets, and
+-- stocked automatically by every crate pull (see addSkinEntry). Deliberately SEPARATE from the skin inventory:
+-- an inventory entry is one pet's one look, a wardrobe trait is a hat you own and can put on anything.
+_G.playerOwnedTraits   = _G.playerOwnedTraits   or {} -- [player] = { [traitId] = true }
 
 -- Per-session, per-source token totals for the DAILY_CAPS safety net. Not persisted on purpose: these caps exist
 -- to stop a BUG in a caller becoming an infinite faucet, not to limit a legitimate player, so a session-scoped
@@ -245,13 +262,49 @@ local function countOf(player, key)
 	return math.max(0, math.floor(tonumber(inv(player)[key]) or 0))
 end
 
+-- ---- THE TRAIT WARDROBE ------------------------------------------------------------------------------------
+-- Traits owned outright. See the _G.playerOwnedTraits declaration for why this is not part of the skin
+-- inventory. Everything here is a set membership test -- there are no duplicates and no counts, because a
+-- second King is worth nothing when the first one already goes on every pet you own.
+local function wardrobe(player)
+	local t = _G.playerOwnedTraits[player]
+	if not t then t = {}; _G.playerOwnedTraits[player] = t end
+	return t
+end
+
+local function ownsTrait(player, traitId)
+	if type(traitId) ~= "string" or traitId == "" then return false end
+	return wardrobe(player)[traitId] == true
+end
+
+-- Stock the wardrobe. Silent and idempotent: called on every trait-bearing grant in the file, so it has to be
+-- free to call with a trait the player already owns, with "" and with nil. Returns true only the FIRST time a
+-- trait lands, so a caller can celebrate a genuinely new one without tracking it itself.
+local function grantTrait(player, traitId)
+	if not TraitShop.isBuyable(traitId) then return false end -- rejects "", nil, legacy and unknown ids
+	local w = wardrobe(player)
+	if w[traitId] then return false end
+	w[traitId] = true
+	return true
+end
+
 -- Add ONE of a (pet, skin, trait) entry. Duplicates STACK on the same key; a different trait is a different key
 -- and therefore a separate entry with its own count -- exactly the behaviour the spec describes.
+--
+-- IT ALSO STOCKS THE WARDROBE. Every path that grants a trait-bearing entry -- crate open, the Trait Crate's
+-- ride-along, trade-up, dev grants -- funnels through here, so hanging the wardrobe credit off this one point
+-- means a trait you PULLED is a trait you can wear on any pet, and no future grant path can forget to do it.
+-- That is the same reasoning pushState uses for checkCollection. It never charges anything: the shop is the
+-- only place tickets are taken.
 local function addSkinEntry(player, petId, skinId, traitId, howMany)
 	local key = PetSkins.makeKey(petId, skinId, traitId)
 	local n = math.max(1, math.floor(tonumber(howMany) or 1))
 	local t = inv(player)
 	t[key] = countOf(player, key) + n
+	if grantTrait(player, traitId) then
+		print(string.format("[SkinCrate] %s unlocked the '%s' trait for their wardrobe (from a pull)",
+			player.Name, tostring(traitId)))
+	end
 	return key, t[key]
 end
 
@@ -424,6 +477,10 @@ local function buildState(player)
 		skins    = inv(player),
 		equipped = equipped,
 		unlocked = unlockedSet(player),
+		-- The trait wardrobe, for the Pet Hut's Customize counter: which traits are OWNED (bought or pulled) and
+		-- therefore wearable on any unlocked pet. Sent on the same push as the balance so the shop's "BUY" and
+		-- "WEAR" states and the ticket count it checks them against can never be one push out of step.
+		ownedTraits = wardrobe(player),
 		-- what the picker can choose from, and how many levels are waiting to be placed. pendingLevels > 0
 		-- is the client's cue to put the picker back up -- including on a rejoin mid-decision.
 		levelPets     = levelPets,
@@ -469,9 +526,16 @@ local function equipSkin(player, petId, skinId, traitId)
 	local eq = _G.playerEquippedSkins[player]
 	if not eq then eq = {}; _G.playerEquippedSkins[player] = eq end
 
-	-- clear
+	-- clear. Same rule as the carry-over below: taking the SKIN off is not a request to take off a trait the
+	-- player owns outright, so a bought one stays on the pet and only the skin goes. The Pet Hut's Customize
+	-- tab is where a trait is removed, and it has its own button for it.
 	if skinId == false or skinId == nil then
-		eq[petId] = nil
+		local cur = eq[petId]
+		if cur and cur.trait and ownsTrait(player, cur.trait) then
+			eq[petId] = { skin = nil, trait = cur.trait }
+		else
+			eq[petId] = nil
+		end
 		pushState(player)
 		if _G.petRebroadcastEquip then pcall(_G.petRebroadcastEquip, player, "skin-cleared") end
 		return true
@@ -480,14 +544,32 @@ local function equipSkin(player, petId, skinId, traitId)
 	if not PetSkins.exists(skinId) then return false, "bad_skin" end
 	if traitId == false then traitId = nil end
 	if traitId ~= nil and not PetTraits.exists(traitId) then return false, "bad_trait" end
+	-- Normalised so a stale client naming a first-generation id ("Galaxy", "Crowned") lands on the same key
+	-- the join migration rewrote the inventory to.
+	skinId = PetSkins.normalise(skinId)
+	if traitId ~= nil then
+		traitId = PetTraits.normalise(traitId)
+		if traitId == "" then traitId = nil end
+	end
 
 	local key = PetSkins.makeKey(petId, skinId, traitId)
 	if countOf(player, key) <= 0 then return false, "not_owned" end
 	if not ownsPetSpecies(player, petId) then return false, "pet_locked" end
 
-	eq[petId] = { skin = skinId, trait = traitId }
+	-- A BOUGHT TRAIT SURVIVES A SKIN CHANGE. Equipping an entry that carries no trait of its own used to clear
+	-- whatever the pet was wearing, which was right when a trait could only exist inside an entry key -- the
+	-- entry WAS the whole look. Now that traits are owned outright and wearable on any pet, silently binning a
+	-- 7,500-ticket crown because the player changed their pet's shirt is a bug, not a rule. An entry that DOES
+	-- name a trait still wins: the player picked that exact combination out of their inventory.
+	local carried = nil
+	if traitId == nil then
+		local cur = eq[petId]
+		if cur and cur.trait and ownsTrait(player, cur.trait) then carried = cur.trait end
+	end
+
+	eq[petId] = { skin = skinId, trait = traitId or carried }
 	print(string.format("[SkinCrate] %s equipped %s on %s%s", player.Name, skinId, petId,
-		traitId and (" (" .. traitId .. ")") or ""))
+		traitId and (" (" .. traitId .. ")") or (carried and (" (kept " .. carried .. ")") or "")))
 	-- pushState is what makes the pet repaint: the client's applyState calls repaintAll on every push, so the
 	-- follower re-skins the moment this lands. No separate render hook is needed.
 	pushState(player)
@@ -500,6 +582,84 @@ local function equipSkin(player, petId, skinId, traitId)
 	-- only one who cannot tell.
 	if _G.petRebroadcastEquip then pcall(_G.petRebroadcastEquip, player, "skin-equipped") end
 	return true
+end
+
+-- ============================================================================================================
+-- THE PET HUT'S CUSTOMIZE COUNTER: wear a wardrobe trait, and buy one
+-- ============================================================================================================
+-- WEARING one changes ONLY the trait half of the equipped pair. That is the whole difference from equipSkin,
+-- and it is what makes a bought trait wearable at all: equipSkin demands you own the exact pet|skin|trait
+-- inventory entry, and nobody who bought King in the shop owns "ButterDuck|Cosmic|King". So this checks the
+-- WARDROBE instead and leaves whatever skin the pet has on it completely alone.
+--
+-- A pet wearing a trait and NO skin is a legitimate state -- it is what you get the moment you buy your first
+-- trait -- so this does not invent a skin to hang it on. PetSkinLook paints the trait on the pet's default
+-- body in that case.
+local function setPetTrait(player, petId, traitId)
+	if type(petId) ~= "string" or petId == "" then return false, "bad_pet" end
+	if not ownsPetSpecies(player, petId) then return false, "pet_locked" end
+
+	local eq = _G.playerEquippedSkins[player]
+	if not eq then eq = {}; _G.playerEquippedSkins[player] = eq end
+	local cur = eq[petId]
+
+	-- TAKE IT OFF. Clearing is always allowed and always free -- including for a trait that arrived inside an
+	-- inventory entry, because "I can't remove this hat" is not a state any player should be able to reach.
+	if traitId == false or traitId == nil or traitId == "" then
+		if cur then
+			if cur.skin then eq[petId] = { skin = cur.skin, trait = nil } else eq[petId] = nil end
+		end
+		print(string.format("[SkinCrate] %s cleared the trait on %s", player.Name, petId))
+	else
+		if type(traitId) ~= "string" then return false, "bad_trait" end
+		-- NOT normalise(): the shop and the wardrobe deal in current ids only. A legacy id here means a stale
+		-- client, and quietly mapping it would put a trait on the pet that the player never sees named.
+		if not TraitShop.isBuyable(traitId) then return false, "bad_trait" end
+		if not ownsTrait(player, traitId) then return false, "not_owned" end
+		eq[petId] = { skin = cur and cur.skin or nil, trait = traitId }
+		print(string.format("[SkinCrate] %s put the '%s' trait on %s", player.Name, traitId, petId))
+	end
+
+	-- Same two pushes equipSkin ends with, for the same reasons: the owner's own client repaints off the state
+	-- push, and everyone ELSE is still rendering the look from the last broadcast until this rebroadcast lands.
+	pushState(player)
+	if _G.petRebroadcastEquip then pcall(_G.petRebroadcastEquip, player, "trait-changed") end
+	return true
+end
+
+-- BUYING one. Tickets out, wardrobe entry in, in that order and with no yield between them -- the same
+-- anti-dupe ordering openCrate documents. Returns a result table the client repaints its button from.
+local BUY_COOLDOWN = 0.4 -- seconds; a held button must not outrun the state push, or spam the DataStore
+local lastBuyTrait = {}  -- [player] = tick()
+
+local function buyTrait(player, traitId)
+	if not TraitShop.isBuyable(traitId) then return { ok = false, reason = "bad_trait" } end
+
+	local now = tick()
+	if lastBuyTrait[player] and (now - lastBuyTrait[player]) < BUY_COOLDOWN then
+		return { ok = false, reason = "cooldown" }
+	end
+	lastBuyTrait[player] = now
+
+	-- Already owned is a REFUSAL, not a silent re-charge. A trait is a set membership: there is nothing a
+	-- second copy could do, so selling one would be taking tickets for nothing.
+	if ownsTrait(player, traitId) then
+		return { ok = false, reason = "already_owned", tokens = getTokens(player) }
+	end
+
+	local price = TraitShop.priceOf(traitId)
+	if not spendTokens(player, price) then
+		return { ok = false, reason = "not_enough_tokens", tokens = getTokens(player), price = price }
+	end
+	grantTrait(player, traitId)
+
+	print(string.format("[SkinCrate] %s BOUGHT the '%s' trait for %d tickets -> %d left",
+		player.Name, traitId, price, getTokens(player)))
+	pushState(player)
+	if _G.savePlayerData then pcall(function() _G.savePlayerData(player, "trait_bought") end) end
+
+	return { ok = true, trait = traitId, price = price, tokens = getTokens(player),
+		tier = PetTraits.tierOf(traitId) }
 end
 
 -- ============================================================================================================
@@ -521,6 +681,7 @@ local lastPullGold = {}    -- [player] = boolean  [REMOVE BEFORE LAUNCH] only /g
 _G.__skinCrateForget = function(p)
 	lastOpen[p] = nil
 	lastPullGold[p] = nil
+	lastBuyTrait[p] = nil -- declared above with buyTrait, so it always exists by the time this runs
 	if _G.__skinTradeUpForget then _G.__skinTradeUpForget(p) end
 end
 
@@ -685,6 +846,10 @@ local function openCrate(player, crateId, noSave, free)
 	-- X", so it cannot influence its own odds. luckFor() returns exactly 1.0 for a player with no rebirths and
 	-- no pass, and at 1.0 the weights are bit-for-bit what they always were.
 	local luck = Gamepasses.luckFor(player)
+	-- PET: MAPLE FOX'S "LUCKY STREAK" (+4%..+20%). Folded into the SAME luck value the rebirths and the
+	-- Lucky Pass already feed, so it rides the one audited odds path -- there is no second lottery to check,
+	-- and a player with no Maple Fox multiplies by exactly 1.0 and rolls bit-for-bit what they always did.
+	if _G.petAbility then luck = luck * _G.petAbility(player, "crateLuck") end
 	local rarity, entry, reelIndex = SkinCrates.roll(rng, crateId, luck)
 	if not rarity or not entry then return { ok = false, reason = "empty_crate" } end
 	local traitId = PetTraits.roll(rng)
@@ -732,12 +897,24 @@ local function openCrate(player, crateId, noSave, free)
 			warn(string.format("[SkinCrate] %s opened %s but the pet grant FAILED for '%s' -- refunding %d tokens",
 				player.Name, crate.id, tostring(entry.pet), crate.price))
 			addTokens(player, crate.price)
-			return { ok = false, err = "Pet could not be granted -- your tokens were refunded." }
+			return { ok = false, err = "Pet could not be granted -- your tickets were refunded." }
 		end
 
 		local goldPet = (rarity == SkinCrates.GOLD_TIER)
 		print(string.format("[SkinCrate] %s opened %s -> [%s] PET %s (x%d)%s",
 			player.Name, crate.id, rarity, entry.pet, newCount, goldPet and "  *** GOLD ***" or ""))
+		-- RAREST TODAY (the blimp board). Display-only and fully guarded: the board is a nice-to-have and
+		-- must never be able to fail a crate open. It ignores anything below Rare itself.
+		if _G.blimpRecordPull then pcall(_G.blimpRecordPull, player, rarity, tostring(entry.pet)) end
+		-- a GOLD or LEGENDARY pet is server news -- the band the reel landed on is the pet's permanent rarity
+		if goldPet or rarity == "Legendary" then
+			pcall(function()
+				GoldAnnounce:FireAllClients({
+					playerName = player.Name, crateId = crate.id, crateName = crate.displayName,
+					pet = entry.pet, petRarity = rarity, tier = goldPet and "Gold" or "Legendary",
+				})
+			end)
+		end
 		pushState(player)
 		if not noSave and _G.savePlayerData then pcall(function() _G.savePlayerData(player, "crate_open") end) end
 		return {
@@ -745,6 +922,41 @@ local function openCrate(player, crateId, noSave, free)
 			pet = entry.pet, count = newCount,
 			reelIndex = reelIndex, isGold = goldPet,
 			tokens = getTokens(player),
+		}
+	end
+
+	-- TRAIT CRATE: the rolled band IS the trait's rarity; the pet it arrives on is a uniform species pick
+	-- and ALWAYS wears the default Classic skin (SkinCrates.rollRideAlong) -- the trait is the prize, and
+	-- Classic is the one skin no other crate stocks (every pet already ships with it). The grant is still
+	-- a perfectly ordinary inventory entry -- it equips, trades, stacks and saves exactly like a skin-crate
+	-- pull. Never Gold: traits top out at Legendary, the same rule as skins.
+	if SkinCrates.isTraitCrate(crate) then
+		local ridePet, rideSkin = SkinCrates.rollRideAlong(rng)
+		local tKey, tCount = addSkinEntry(player, ridePet, rideSkin, entry.trait, 1)
+		local tLocked = not ownsPetSpecies(player, ridePet)
+		print(string.format("[SkinCrate] %s opened %s -> [%s] TRAIT %s riding %s %s%s (x%d)",
+			player.Name, crate.id, rarity, entry.trait, rideSkin, ridePet,
+			tLocked and " [PET LOCKED]" or "", tCount))
+		if _G.blimpRecordPull then
+			pcall(_G.blimpRecordPull, player, rarity, PetTraits.displayName(entry.trait) .. " Trait")
+		end
+		-- a LEGENDARY trait pull (Celestial / Titan) is server news, same channel as the Gold announcement
+		if rarity == "Legendary" then
+			pcall(function()
+				GoldAnnounce:FireAllClients({
+					playerName = player.Name, crateId = crate.id, crateName = crate.displayName,
+					trait = entry.trait, tier = "Legendary",
+				})
+			end)
+		end
+		pushState(player)
+		if not noSave and _G.savePlayerData then pcall(function() _G.savePlayerData(player, "crate_open") end) end
+		return {
+			ok = true, crateId = crate.id, rarity = rarity, kind = "trait",
+			trait = entry.trait, pet = ridePet, skin = rideSkin,
+			overallTier = (PetTier.overall(rideSkin, entry.trait)),
+			key = tKey, reelIndex = reelIndex, isGold = false,
+			newCount = tCount, tokens = getTokens(player), locked = tLocked,
 		}
 	end
 
@@ -759,15 +971,27 @@ local function openCrate(player, crateId, noSave, free)
 		PetTraits.isNone(traitId) and "" or (" +" .. traitId),
 		locked and " [PET LOCKED]" or "", newCount, isGold and "  *** GOLD ***" or ""))
 
+	-- RAREST TODAY (the blimp board). The prize is named the way a player would say it out loud -- skin
+	-- then pet, "Cosmic Duck" -- because that string is read off a sign from the ground, not parsed.
+	-- Guarded and pcall'd: a display board must never be able to fail a real crate open.
+	if _G.blimpRecordPull then
+		pcall(_G.blimpRecordPull, player, rarity, tostring(entry.skin) .. " " .. tostring(entry.pet))
+	end
+
 	pushState(player)
 
-	-- GOLD is the knife pull: everyone hears about it. Fired to ALL clients so the reveal can be celebrated
-	-- server-wide, the same way a rare pet hatch broadcasts today.
-	if isGold then
+	-- GOLD is the knife pull and LEGENDARY is server news too: a pull carrying a Legendary skin OR a
+	-- Legendary trait broadcasts to everyone on the same channel, with `tier` telling the client which
+	-- fanfare to play. (An Overall-Legendary pet always contains at least one Legendary component, so
+	-- checking the components covers it.)
+	local skinLeg = PetSkins.tierOf(entry.skin) == "Legendary"
+	local traitLeg = PetTraits.tierOf(traitId) == "Legendary"
+	if isGold or skinLeg or traitLeg then
 		pcall(function()
 			GoldAnnounce:FireAllClients({
 				playerName = player.Name, crateId = crate.id, crateName = crate.displayName,
 				pet = entry.pet, skin = entry.skin, trait = traitId,
+				tier = isGold and "Gold" or "Legendary",
 			})
 		end)
 	end
@@ -779,6 +1003,9 @@ local function openCrate(player, crateId, noSave, free)
 	return {
 		ok = true, crateId = crate.id, rarity = rarity,
 		pet = entry.pet, skin = entry.skin, trait = traitId,
+		-- The ONE tier the pet shows overhead, computed from the hidden skin+trait values. Sent so the reveal
+		-- can print it without recomputing -- though the client could: PetTier is shared config on both sides.
+		overallTier = (PetTier.overall(entry.skin, traitId)),
 		key = key, reelIndex = reelIndex, isGold = isGold,
 		newCount = newCount, tokens = getTokens(player), locked = locked,
 	}
@@ -858,11 +1085,13 @@ local function doTradeUp(player, tier, keys)
 
 	pushState(player)
 
-	if isGold then
+	-- a contract landing a Legendary skin or rolling a Legendary trait broadcasts like a crate pull would
+	if isGold or target == "Legendary" or PetTraits.tierOf(traitId) == "Legendary" then
 		pcall(function()
 			GoldAnnounce:FireAllClients({
 				playerName = player.Name, crateId = "TradeUp", crateName = "Trade Up",
 				pet = won.pet, skin = won.skin, trait = traitId,
+				tier = isGold and "Gold" or "Legendary",
 			})
 		end)
 	end
@@ -873,6 +1102,7 @@ local function doTradeUp(player, tier, keys)
 	return {
 		ok = true, from = tier, rarity = target,
 		pet = won.pet, skin = won.skin, trait = traitId,
+		overallTier = (PetTier.overall(won.skin, traitId)),
 		key = newKey, newCount = newCount, isGold = isGold, locked = locked,
 		consumed = need, tokens = getTokens(player),
 	}
@@ -903,6 +1133,19 @@ TradeUp.OnServerInvoke = function(player, tier, keys)
 	end
 	return result
 end
+
+BuyTrait.OnServerInvoke = function(player, traitId)
+	local ok, result = pcall(buyTrait, player, traitId)
+	if not ok then
+		warn("[SkinCrate] buyTrait error: " .. tostring(result))
+		return { ok = false, reason = "error" }
+	end
+	return result
+end
+
+SetPetTrait.OnServerEvent:Connect(function(player, petId, traitId)
+	pcall(setPetTrait, player, petId, traitId)
+end)
 
 EquipSkin.OnServerEvent:Connect(function(player, petId, skinId, traitId)
 	pcall(equipSkin, player, petId, skinId, traitId)
@@ -1016,9 +1259,9 @@ _G.giftSkinTokens = function(fromPlayer, toPlayer, amount)
 	if fromPlayer == toPlayer then return false, "cannot gift yourself" end
 	amount = math.floor(tonumber(amount) or 0)
 	if amount <= 0 then return false, "amount must be positive" end
-	if getTokens(fromPlayer) < amount then return false, "not enough tokens" end
+	if getTokens(fromPlayer) < amount then return false, "not enough tickets" end
 
-	if not spendTokens(fromPlayer, amount) then return false, "not enough tokens" end
+	if not spendTokens(fromPlayer, amount) then return false, "not enough tickets" end
 	addTokens(toPlayer, amount, "gift from " .. fromPlayer.Name)
 	pushState(fromPlayer)
 	pushState(toPlayer)
@@ -1049,8 +1292,8 @@ _G.debitSkinTokensForGift = function(player, amount)
 	if typeof(player) ~= "Instance" or not player:IsA("Player") then return false, "bad sender" end
 	amount = math.floor(tonumber(amount) or 0)
 	if amount <= 0 then return false, "amount must be positive" end
-	if getTokens(player) < amount then return false, "not enough tokens" end
-	if not spendTokens(player, amount) then return false, "not enough tokens" end
+	if getTokens(player) < amount then return false, "not enough tickets" end
+	if not spendTokens(player, amount) then return false, "not enough tickets" end
 	pushState(player)
 	print(string.format("[SkinCrate] DEBIT %d tokens from %s (offline gift)", amount, player.Name))
 	return true
@@ -1064,6 +1307,21 @@ end
 _G.skinCrateFreeOpen = function(player, crateId)
 	if typeof(player) ~= "Instance" or not player:IsA("Player") then return { ok = false, reason = "bad_player" } end
 	return openCrate(player, crateId, false, true)
+end
+
+-- FREE SPIN = free open + show it. skinCrateFreeOpen above rolls the crate and banks the prize, but says
+-- nothing to the client, so a caller using it alone hands out a skin the player never sees arrive. This is the
+-- version anything player-facing should use: it opens, pushes the result down FreeCrateReveal, and the client
+-- plays the SAME reel it plays for a bought crate.
+--
+-- Returns the result table so the caller can tell whether it actually paid out -- Daily Rewards checks that
+-- before consuming the day, so a failed spin does not eat someone's streak.
+_G.skinCrateFreeSpin = function(player, crateId)
+	local result = _G.skinCrateFreeOpen(player, crateId)
+	if type(result) == "table" and result.ok then
+		pcall(function() FreeCrateReveal:FireClient(player, crateId, result) end)
+	end
+	return result
 end
 
 _G.skinGrant = function(player, petId, skinId, traitId, howMany)
@@ -1186,11 +1444,74 @@ end
 -- ============================================================================================================
 -- PlayerStats calls this once the save has loaded (the same handshake _G.petsApplyOnJoin uses), so the first
 -- push carries the real balance and inventory rather than an empty default.
+-- ===== LEGACY MIGRATION =====
+-- The first-generation skin/trait ids (Stone, Galaxy, Crowned, ...) were replaced by the approved lists in
+-- PetSkins/PetTraits. A save written before the change still carries them, so the inventory and the equipped
+-- table are rewritten through normalise() ONCE, at join. Old keys MERGE into their modern identity (counts
+-- add up); a key whose skin maps to nothing is kept verbatim rather than deleted -- nothing is ever wiped.
+-- Idempotent: a second pass over an already-migrated save changes nothing.
+local function migrateLegacy(player)
+	local t = inv(player)
+	local rebuilt, moved = {}, 0
+	for key, count in pairs(t) do
+		local n = math.max(0, math.floor(tonumber(count) or 0))
+		local petId, skinId, traitId = PetSkins.parseKey(key)
+		local newSkin = petId and PetSkins.normalise(skinId) or nil
+		if n > 0 and newSkin then
+			local newTrait = PetTraits.normalise(traitId)
+			local newKey = PetSkins.makeKey(petId, newSkin, newTrait ~= "" and newTrait or nil)
+			rebuilt[newKey] = (rebuilt[newKey] or 0) + n
+			if newKey ~= key then moved = moved + 1 end
+		elseif n > 0 then
+			rebuilt[key] = (rebuilt[key] or 0) + n -- unrecognised: keep as-is, never destroy a player's item
+		end
+	end
+	_G.playerPetSkins[player] = rebuilt
+
+	local eq = _G.playerEquippedSkins[player]
+	if type(eq) == "table" then
+		for petId, e in pairs(eq) do
+			if type(e) == "table" then
+				local newSkin = PetSkins.normalise(e.skin)
+				if newSkin then
+					local newTrait = PetTraits.normalise(e.trait)
+					eq[petId] = { skin = newSkin, trait = newTrait ~= "" and newTrait or nil }
+				else
+					eq[petId] = nil -- an equip pointing at nothing renders as nothing anyway; clear it
+				end
+			end
+		end
+	end
+	if moved > 0 then
+		print(string.format("[SkinCrate] migrated %d legacy skin entr%s for %s onto the current skin/trait ids",
+			moved, moved == 1 and "y" or "ies", player.Name))
+	end
+end
+
 _G.skinCrateApplyOnJoin = function(player)
 	setTokens(player, getTokens(player)) -- mirror the loaded balance onto the leaderstat
+	migrateLegacy(player) -- old skin/trait ids fold into the current lists BEFORE the first state push
+
+	-- BACK-FILL THE TRAIT WARDROBE from the skin inventory. Traits used to exist ONLY inside an entry key, so a
+	-- player who pulled King before the Pet Hut sold traits owns "SomePet|Classic|King" and nothing else. From
+	-- now on every pull stocks the wardrobe (addSkinEntry does it), and without this pass their old King would
+	-- be stuck on the one body it landed on while a new one went everywhere -- the same trait behaving two ways.
+	--
+	-- Runs AFTER migrateLegacy so a first-generation id has already folded into its current one, and it only
+	-- ever ADDS: a trait cannot be lost here, and re-running it is free.
+	local filled = 0
+	for key, count in pairs(inv(player)) do
+		if (tonumber(count) or 0) > 0 then
+			local _, _, traitId = PetSkins.parseKey(key)
+			if grantTrait(player, traitId) then filled = filled + 1 end
+		end
+	end
+
 	pushState(player)
-	print(string.format("[SkinCrate] join state for %s: %d tokens, %d skin entries",
-		player.Name, getTokens(player), (function() local n = 0; for _ in pairs(inv(player)) do n = n + 1 end; return n end)()))
+	print(string.format("[SkinCrate] join state for %s: %d tokens, %d skin entries, %d traits owned (%d back-filled)",
+		player.Name, getTokens(player),
+		(function() local n = 0; for _ in pairs(inv(player)) do n = n + 1 end; return n end)(),
+		(function() local n = 0; for _ in pairs(wardrobe(player)) do n = n + 1 end; return n end)(), filled))
 end
 
 -- A skin for a locked pet must become equippable the moment that pet is unlocked. Rather than patching every
@@ -1278,7 +1599,7 @@ DevUnlockAllSkins.Event:Connect(function(player)
 	pushState(player)
 	if _G.savePlayerData then pcall(function() _G.savePlayerData(player, "dev_unlockall") end) end
 	print(string.format("[SkinCrate][DEV] /unlockall -> %d entries for %s (%d pets x %d skins + %d traits)",
-		granted, player.Name, #pets, #PetSkins.Order, #PetTraits.TRAITS - 1))
+		granted, player.Name, #pets, #PetSkins.Order, #PetTraits.TRAITS))
 end)
 
 local DevOpenCrate = getOrCreate(ServerScriptService, "BindableEvent", "DevOpenCrate")
@@ -1302,4 +1623,4 @@ end)
 
 print("[SkinCrate] service ready -- " .. #SkinCrates.CRATES .. " crates, " ..
 	#PetSkins.Order .. " skins, " .. #PetTraits.TRAITS .. " traits" ..
-	(SkinCrates.TEST_MODE and "  [TEST_MODE: token packs credit without Robux]" or ""))
+	(SkinCrates.TEST_MODE and "  [TEST_MODE: ticket packs credit without Robux]" or ""))

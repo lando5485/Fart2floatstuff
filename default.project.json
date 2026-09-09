@@ -4,6 +4,12 @@
     "$className": "DataModel",
     "ServerScriptService": {
       "$className": "ServerScriptService",
+      "DailyStreak": {
+        "$path": "src/server/DailyStreak.server.lua"
+      },
+      "SessionRewards": {
+        "$path": "src/server/SessionRewards.server.luau"
+      },
       "SecurityWatchdog": {
         "$path": "src/server/SecurityWatchdog.server.luau"
       },
@@ -12,6 +18,9 @@
       },
       "HeldItemSync": {
         "$path": "src/server/HeldItemSync.server.lua"
+      },
+      "PetAbilityService": {
+        "$path": "src/server/PetAbilityService.server.luau"
       },
       "SecretTrader": {
         "$path": "src/server/SecretTrader.server.lua"
@@ -36,6 +45,9 @@
       },
       "PetBarn": {
         "$path": "src/server/PetBarn.server.lua"
+      },
+      "AFKTokenFarm": {
+        "$path": "src/server/AFKTokenFarm.server.lua"
       },
       "IslandNPCs": {
         "$path": "src/server/IslandNPCs.server.lua"
@@ -210,6 +222,21 @@
       "$className": "ReplicatedStorage",
       "Shared": {
         "$className": "Folder",
+        "BubbleWords": {
+          "$path": "src/shared/BubbleWords.luau"
+        },
+        "GuideArrow": {
+          "$path": "src/shared/GuideArrow.luau"
+        },
+        "FlightTuning": {
+          "$path": "src/shared/FlightTuning.luau"
+        },
+        "PetAbilities": {
+          "$path": "src/shared/PetAbilities.luau"
+        },
+        "IslandOrder": {
+          "$path": "src/shared/IslandOrder.luau"
+        },
         "Constants": {
           "$path": "src/shared/Constants.luau"
         },
@@ -231,6 +258,12 @@
         "PetTraits": {
           "$path": "src/shared/PetTraits.luau"
         },
+        "PetTier": {
+          "$path": "src/shared/PetTier.luau"
+        },
+        "TraitShop": {
+          "$path": "src/shared/TraitShop.luau"
+        },
         "PetRarity": {
           "$path": "src/shared/PetRarity.luau"
         },
@@ -251,6 +284,9 @@
         },
         "Gamepasses": {
           "$path": "src/shared/Gamepasses.luau"
+        },
+        "GroupMembership": {
+          "$path": "src/shared/GroupMembership.luau"
         }
       },
       "PhoneHUD": {
@@ -357,6 +393,9 @@
         "BootCheck": {
           "$path": "src/client/BootCheck.client.luau"
         },
+        "HallOfFameScroll": {
+          "$path": "src/client/HallOfFameScroll.client.luau"
+        },
         "ButtonTextStyle": {
           "$path": "src/client/ButtonTextStyle.client.lua"
         },
@@ -387,8 +426,23 @@
         "MenuBackButton": {
           "$path": "src/client/MenuBackButton.client.luau"
         },
+        "MenuSkin": {
+          "$path": "src/client/MenuSkin.client.luau"
+        },
+        "TopScreenAudit": {
+          "$path": "src/client/TopScreenAudit.client.luau"
+        },
+        "DailyStreak": {
+          "$path": "src/client/DailyStreak.client.luau"
+        },
         "TokenHud": {
           "$path": "src/client/TokenHud.client.luau"
+        },
+        "AFKFarmClient": {
+          "$path": "src/client/AFKFarmClient.client.luau"
+        },
+        "AntiIdle": {
+          "$path": "src/client/AntiIdle.client.luau"
         },
         "BlackBarKiller": {
           "$path": "src/client/BlackBarKiller.client.luau"
@@ -513,8 +567,26 @@
         "GardenGuideTrail": {
           "$path": "src/client/GardenGuideTrail.client.luau"
         },
+        "QuestTracker": {
+          "$path": "src/client/QuestTracker.client.luau"
+        },
+        "ClickOutside": {
+          "$path": "src/client/ClickOutside.client.luau"
+        },
+        "EventChip": {
+          "$path": "src/client/EventChip.client.luau"
+        },
         "BellyPuff": {
           "$path": "src/client/BellyPuff.client.lua"
+        },
+        "GutGrowCinematic": {
+          "$path": "src/client/GutGrowCinematic.client.luau"
+        },
+        "GnomeHomeMenu": {
+          "$path": "src/client/GnomeHomeMenu.client.luau"
+        },
+        "PetTricks": {
+          "$path": "src/client/PetTricks.client.luau"
         },
         "RewardsClient": {
           "$path": "src/client/RewardsClient.client.lua"
@@ -591,6 +663,9 @@
         "TradeRequests": {
           "$path": "src/client/TradeRequests.client.luau"
         },
+        "TestPetPreview": {
+          "$path": "src/client/TestPetPreview.client.lua"
+        },
         "SkinCrateClient": {
           "$path": "src/client/SkinCrateClient.client.lua"
         },
@@ -611,6 +686,15 @@
         },
         "CoinMagnet": {
           "$path": "src/client/CoinMagnet.client.luau"
+        },
+        "Haptics": {
+          "$path": "src/client/Haptics.client.luau"
+        },
+        "UiHaptics": {
+          "$path": "src/client/UiHaptics.client.luau"
+        },
+        "ClimbRaceBar": {
+          "$path": "src/client/ClimbRaceBar.client.luau"
         }
       }
     }

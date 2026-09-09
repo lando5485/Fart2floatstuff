@@ -119,10 +119,11 @@ local function ensureReelUI()
 	local dim = Instance.new("Frame"); dim.Size = UDim2.new(1,0,1,0); dim.BackgroundColor3 = Color3.new(0,0,0); dim.BackgroundTransparency = 0.5; dim.Active = true; dim.Parent = g
 	local panel = Instance.new("Frame"); panel.Size = UDim2.new(0,300,0,360); panel.Position = UDim2.new(0.5,0,0.5,0); panel.AnchorPoint = Vector2.new(0.5,0.5)
 	panel.BackgroundColor3 = Color3.fromRGB(25,90,185); panel.Parent = g
-	-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+	-- HOUSE PANEL: the house 700x260 task card, centred in the free band, and the bottom
 	-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
 	-- The panel keeps its own size and every child keeps its own pixel coordinates;
 	-- it is centred in the house shell and scaled to fit, so nothing inside moves.
+	panel:SetAttribute("WantsHousePanel", true)   -- adopted by attribute, so load order cannot lose it
 	pcall(_G.housePanel, panel)   -- fishing panel
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0,16); local ps = Instance.new("UIStroke", panel); ps.Color = Color3.new(1,1,1); ps.Thickness = 3
 	local titl = Instance.new("TextLabel"); titl.Size = UDim2.new(1,-20,0,30); titl.Position = UDim2.new(0,10,0,10); titl.BackgroundTransparency = 1

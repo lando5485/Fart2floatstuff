@@ -1,17 +1,21 @@
 --======================================================================
 -- CampfireFreezeQuest_AllInOne.client.lua  (LocalScript)
 --======================================================================
--- ISLAND-4 QUEST: "BUILD THE CAMPFIRE (before you freeze)"
+-- ISLAND-4 QUEST: "FEED THE FIRE (survive the night)"
 --
--- A Freeze Meter fills the moment the quest starts -- slowly in calm weather, FAST
--- during a blizzard (read from the Summit quest's _G.summitBlizzardPhase). As it
--- climbs, frost creeps in from the screen edges, your view narrows, and you slow
--- down. Race to gather + place the campfire materials before it hits 100%.
+-- The night-survival loop: accepting the quest brings NIGHT down on island4 and lights a
+-- weak EMBER in the fire pit. The ember's ground ring IS the warm zone, honestly drawn --
+-- inside it the Freeze Meter thaws, outside it the meter climbs (fast in a blizzard, read
+-- from the Summit quest's _G.summitBlizzardPhase). The ember BURNS DOWN on its own, so its
+-- circle keeps shrinking until you feed it. Venture out into the dark, grab an ARMFUL of
+-- materials (up to CARRY_MAX at once), and run them back into the light.
 --
---   * 5 Fire Logs, 8 Stones, 3 Kindling -- scattered around island4 (or auto-spawned).
---     Grab one, carry it to the CAMPFIRE spot, and it snaps into place.
---   * Every material placed builds the fire up piece by piece.
---   * Last piece -> the fire IGNITES: warm glow, frost melts, freeze meter gone.
+--   * 3 Fire Logs, 2 Stones, 1 Kindling -- six pieces, placed nearest-first, farthest-last,
+--     so every trip out of the firelight reaches a little deeper into the dark.
+--   * Each delivered piece builds the fire up AND feeds the ember (bigger circle).
+--   * Linger too long in the dark and THE WATCHER creeps in -- glowing eyes that stalk you
+--     and pounce: a cold shock and a shove back toward the fire. Never a kill.
+--   * Last piece -> the fire IGNITES: dawn breaks, frost melts, freeze meter gone.
 --   * Freeze hits 100% -> "YOU DIDN'T SURVIVE THE COLD", fade, reset, try again.
 --
 -- WHAT THE WORLD PROVIDES (name in Studio, on island4):
@@ -43,18 +47,30 @@ local CAMPFIRE_NAMES = { "fire", "campfire" }   -- the part the fire is built on
 local START_NAME    = "queststart"
 local NPC_NAMES     = { "candynpc" }
 
--- how many of each material the fire needs
-local NEED = { firelog = 5, stone = 8, kindling = 3 }
+-- how many of each material the fire needs -- SIX pieces, not sixteen. The old 5/8/3 was
+-- sixteen one-at-a-time round trips of the same walk; the tension lives in the dark now,
+-- not in the item count.
+local NEED = { firelog = 3, stone = 2, kindling = 1 }
 local MAT_ORDER = { "firelog", "stone", "kindling" }
 local MAT_LABEL = { firelog = "Fire Log", stone = "Stone", kindling = "Kindling" }
 local MAT_ICON  = { firelog = "\xF0\x9F\xAA\xB5", stone = "\xF0\x9F\xAA\xA8", kindling = "\xF0\x9F\x8C\xB2" }
+local CARRY_MAX = 3                  -- an armful -- the whole armful drops in the pit at once
 
--- Freeze Meter: seconds to go 0 -> 100% at each weather.  Blizzard is MUCH faster.
-local FREEZE_CALM_TIME     = 190     -- calm: ~3 min to freeze if you do nothing
-local FREEZE_BLIZZARD_TIME = 52      -- blizzard: still much faster, but survivable
-local WARM_RATE            = 0.20    -- how fast it DROPS per second near the lit fire
+-- THE EMBER: the pit starts with a weak flame -- your circle of light and warmth. It burns
+-- down on its own; every delivered piece feeds it back up. The circle never fully dies
+-- (LIGHT_MIN) so there is always somewhere warm to run back to.
+local FIRE_START      = 0.65   -- ember strength 0..1 at quest start
+local FIRE_DECAY_TIME = 75     -- seconds full -> guttering if never fed
+local FIRE_FEED       = 0.30   -- ember strength per delivered piece
+local LIGHT_MIN       = 12     -- warm-circle radius when guttering (studs)
+local LIGHT_MAX       = 38     -- warm-circle radius at full blaze
 
-local BASE_WALKSPEED = 16
+-- Freeze Meter: seconds to go 0 -> 100% OUT IN THE DARK. Shorter than the old numbers on
+-- purpose -- the firelight thaws you now, so the cold can afford real teeth.
+local FREEZE_CALM_TIME     = 80      -- calm night
+local FREEZE_BLIZZARD_TIME = 42      -- blizzard (the warm circle also shrinks, below)
+local WARM_RATE            = 0.22    -- how fast it DROPS per second inside the firelight
+
 local DELIVER_RANGE  = 10
 
 -- audio -- your own ids only; "" stays silent
@@ -112,19 +128,55 @@ local islandPos, campfirePart, startPos, npcHead
 local active   = false        -- is the freeze running?
 local built    = false        -- is the fire lit (quest done)?
 local freeze   = 0            -- 0..1
+local fireLevel = FIRE_START  -- the ember's strength 0..1 -- burns down, feeding builds it up
 local placed   = { firelog = 0, stone = 0, kindling = 0 }
-local carrying = nil          -- material key you're holding, or nil
+local carrying = {}           -- material keys in your arms, oldest first (up to CARRY_MAX)
 local firePieces = {}         -- built-up bits of the campfire, cleared on reset
+local function carriedOf(kind)
+	local n = 0
+	for _, k in ipairs(carrying) do if k == kind then n += 1 end end
+	return n
+end
 _G.campfireQuestComplete = false
 -- Shop_AllInOne calls this when you touch the LOCKED island-4 stand
 _G.campfireQuestNudge = function()
 	if _G.NotifyCenter then
 		pcall(function() _G.NotifyCenter.push({
-			text = "\xF0\x9F\x94\xA5 Build the campfire (beat the cold) to open this stand!", color = FIREC }) end)
+			text = "\xF0\x9F\x94\xA5 Build the campfire first -- then this stand opens!", color = FIREC }) end)
 	end
 end
 
+-- ============================================================================
+-- ARE YOU STILL ON THE ISLAND?
+-- ============================================================================
+-- THE COLD IS ISLAND4'S, NOT THE REALM'S. Without this the freeze tick below ran wherever you
+-- went the moment the quest was accepted: fly off to the bakery and three minutes later (fifty
+-- seconds in a blizzard) you got a full-screen "YOU DIDN'T SURVIVE THE COLD", a fade to black
+-- and a forced PivotTo back to island4 -- from wherever you were, mid-flight, on an island the
+-- quest has nothing to do with. Then it restarted and did it again, forever, until you went
+-- back and built the fire. The walk-speed penalty travelled with you too, so you crossed the
+-- rest of the realm at 45% speed with frost closing over the screen.
+--
+-- So the meter now PAUSES off-island rather than resetting: come back and you resume where you
+-- left off, which keeps the pressure the quest is built on without it following you home. The
+-- ISLAND_RANGE radius is the same one every other lookup in this file already scopes by, and
+-- islandPos is nil until island4 resolves -- treated as "on the island" so the quest cannot be
+-- silently disabled by a slow stream.
+local function onIsland()
+	if not islandPos then return true end
+	local hrp = hrpOf()
+	if not hrp then return true end          -- no character mid-respawn: hold, do not judge
+	return (hrp.Position - islandPos).Magnitude <= ISLAND_RANGE
+end
+
 local function isBlizzard() return _G.summitBlizzardPhase == "blizzard" or _G.summitBlizzardPhase == "warning" end
+-- the warm circle, in studs. Grows with the ember, and a blizzard beats it back -- the one
+-- way the weather still touches this quest now that the walk-speed penalty is gone.
+local function lightRadius()
+	local r = LIGHT_MIN + fireLevel * (LIGHT_MAX - LIGHT_MIN)
+	if isBlizzard() then r = r * 0.72 end
+	return r
+end
 local function totalNeeded() return NEED.firelog + NEED.stone + NEED.kindling end
 local function totalPlaced() return placed.firelog + placed.stone + placed.kindling end
 
@@ -172,6 +224,15 @@ local coldTint = Instance.new("ColorCorrectionEffect")
 coldTint.Name = "FreezeTint"; coldTint.Enabled = false; coldTint.Parent = Lighting
 local coldBlur = Instance.new("BlurEffect")
 coldBlur.Name = "FreezeBlur"; coldBlur.Size = 0; coldBlur.Parent = Lighting
+
+-- NIGHT. Accepting the quest brings this down; the fire igniting lifts it. A dedicated
+-- ColorCorrection (not Lighting.ClockTime etc.) so no sky/altitude system is fought over --
+-- this effect is ours alone to enable and disable, and it stacks under the frost wash.
+local nightTint = Instance.new("ColorCorrectionEffect")
+nightTint.Name = "CampfireNight"; nightTint.Enabled = false
+nightTint.TintColor = Color3.fromRGB(150, 165, 215)
+nightTint.Brightness = -0.18; nightTint.Saturation = -0.2; nightTint.Contrast = 0.03
+nightTint.Parent = Lighting
 
 -- drifting on-screen flakes
 local flakeHolder = Instance.new("Frame")
@@ -266,16 +327,20 @@ local function freezeCard()
 	for _, k in ipairs(MAT_ORDER) do
 		parts[#parts + 1] = ("%s %d/%d"):format(MAT_ICON[k], placed[k], NEED[k])
 	end
-	-- when empty-handed it says go GRAB materials; when carrying, it says take it to the fire pit
+	-- when empty-handed it says go GRAB materials; when carrying, it says take the armful back
 	local body
-	if carrying then
-		body = ("\xF0\x9F\x94\xA5 Take the %s to the fire pit!   "):format(MAT_LABEL[carrying]) .. table.concat(parts, "   ")
+	if #carrying > 0 then
+		body = ("\xF0\x9F\x94\xA5 Drop your armful in the fire pit! (carrying %d/%d)   "):format(#carrying, CARRY_MAX)
+			.. table.concat(parts, "   ")
 	else
-		body = "\xF0\x9F\x94\xA5 Grab logs/stones/kindling from the snow:   " .. table.concat(parts, "   ")
+		-- the counts below already NAME each material with its icon, so the sentence points at the
+		-- place ("in the dark") and the button ("Pick up") instead of listing them a second time
+		body = "\xF0\x9F\x94\xA5 Press Pick up on these out in the dark, then feed the fire pit:   "
+			.. table.concat(parts, "   ")
 	end
 	-- the meter, as text: the bar's own fill colour warmed to cold as it climbed, so the card's
 	-- colour does the same job
-	return ("\xE2\x9D\x84 FREEZING  %d%%"):format(math.floor(freeze * 100)), body,
+	return ("\xE2\x9D\x84 FREEZING %d%% -- warm up in the firelight!"):format(math.floor(freeze * 100)), body,
 		Color3.fromRGB(150, 205, 245):Lerp(Color3.fromRGB(90, 150, 220), freeze)
 end
 
@@ -311,6 +376,70 @@ fadeText.Size = UDim2.new(0.8, 0, 0, 140); fadeText.BackgroundTransparency = 1
 fadeText.Font = Enum.Font.FredokaOne; fadeText.TextColor3 = FROST; fadeText.TextScaled = true
 fadeText.TextTransparency = 1; fadeText.Text = ""; fadeText.Parent = fadeFrame
 do local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 40; sz.Parent = fadeText end
+
+-- ============================================================================
+-- THE WATCHER -- glowing eyes that creep in when you linger in the dark
+-- ============================================================================
+-- Spooky-cute, never lethal: a shadowy blob with two amber eyes that fades up out of the
+-- night once you're properly cold, and stalks toward you while you stay out of the light.
+-- Reach the firelight and it's gone. Let it reach YOU and it pounces -- a cold shock, a
+-- shove back toward the fire, and it vanishes. It can cost you seconds, never the quest.
+local EYES_MIN_FREEZE = 0.18   -- no eyes until the cold has actually started biting
+local EYES_SPEED      = 3.4    -- studs/s creep -- slower than you, faster than dawdling
+local EYES_SPAWN_DIST = 30     -- appears this far out, on your dark side (away from the fire)
+local EYES_LUNGE      = 7      -- this close -> pounce
+
+local watcher
+local function dropWatcher()
+	if watcher then watcher:Destroy(); watcher = nil end
+end
+
+local function buildWatcher(at)
+	local m = Instance.new("Model"); m.Name = "TheWatcher"
+	local body = mk({ Name = "Shade", Shape = Enum.PartType.Ball, Size = Vector3.new(3.4, 3.4, 3.4),
+		Color = Color3.fromRGB(26, 18, 14), Material = Enum.Material.SmoothPlastic, Transparency = 0.35 })
+	body.CFrame = CFrame.new(at)
+	body.Parent = m
+	for _, s in ipairs({ -1, 1 }) do
+		local eye = mk({ Name = "Eye", Shape = Enum.PartType.Ball, Size = Vector3.new(0.55, 0.7, 0.4),
+			Color = Color3.fromRGB(255, 190, 70), Material = Enum.Material.Neon })
+		eye.CFrame = CFrame.new(at + Vector3.new(s * 0.55, 0.5, -1.35))
+		eye.Parent = m
+	end
+	m.PrimaryPart = body
+	m.Parent = Workspace
+	return m
+end
+
+-- called from the freeze tick while you're out in the dark; hrp/pitPos are already vetted
+local function watcherStep(dt, hrp, pitPos)
+	if freeze < EYES_MIN_FREEZE then return end
+	if not watcher then
+		local away = hrp.Position - pitPos
+		away = Vector3.new(away.X, 0, away.Z)
+		local dir = (away.Magnitude > 1) and away.Unit or Vector3.new(0, 0, 1)
+		watcher = buildWatcher(hrp.Position + dir * EYES_SPAWN_DIST + Vector3.new(0, 1.5, 0))
+		return
+	end
+	local wp = watcher:GetPivot().Position
+	local to = hrp.Position - wp
+	local d = to.Magnitude
+	if d > 0.1 then
+		local step = math.min(EYES_SPEED * dt, d)
+		watcher:PivotTo(CFrame.lookAt(wp + to.Unit * step, hrp.Position))
+	end
+	if d <= EYES_LUNGE then
+		-- pounce: a cold shock and a shove back toward the firelight, then it's gone
+		freeze = math.min(1, freeze + 0.08)
+		local push = pitPos - hrp.Position
+		push = Vector3.new(push.X, 0, push.Z)
+		if push.Magnitude > 1 then
+			hrp.AssemblyLinearVelocity = push.Unit * 46 + Vector3.new(0, 24, 0)
+		end
+		flash("\xF0\x9F\x91\x80 Something in the dark! Get back to the firelight!")
+		dropWatcher()
+	end
+end
 
 -- ============================================================================
 -- BUILDING THE CAMPFIRE  (materials snap into place)
@@ -352,6 +481,7 @@ end
 -- teepee of logs/kindling, no flame. It's the "half-built" fire you finish and light.
 local starterBuilt = false
 local campfireSign
+local emberFlame, emberLight, emberRing   -- the weak starter flame + its warm circle
 function buildStarterPile(part)
 	if starterBuilt or not part then return end
 	starterBuilt = true
@@ -383,6 +513,24 @@ function buildStarterPile(part)
 		top = log
 	end
 
+	-- THE EMBER -- a weak flame already going in the pit: your circle of light. Its size
+	-- tracks fireLevel every tick (it shrinks as it burns down, swells when fed), and the
+	-- ring on the ground IS the warm zone, drawn at the real lightRadius() -- never a lie.
+	emberFlame = mk({ Name = "Ember", Material = Enum.Material.Neon, Color = Color3.fromRGB(255, 150, 60),
+		Size = Vector3.new(0.4, 0.4, 0.4) })
+	local emesh = Instance.new("SpecialMesh")
+	emesh.MeshType = Enum.MeshType.FileMesh; emesh.MeshId = "rbxasset://fonts/torch.mesh"
+	emesh.Scale = Vector3.new(1, 1.4, 1); emesh.Parent = emberFlame
+	emberFlame.CFrame = base * CFrame.new(0, 0.9, 0)
+	emberFlame.Parent = part
+	emberLight = Instance.new("PointLight")
+	emberLight.Color = Color3.fromRGB(255, 170, 90); emberLight.Brightness = 2; emberLight.Range = 24
+	emberLight.Shadows = true; emberLight.Parent = emberFlame
+	emberRing = mk({ Name = "WarmRing", Shape = Enum.PartType.Cylinder, Material = Enum.Material.Neon,
+		Color = Color3.fromRGB(255, 170, 90), Transparency = 0.82, Size = Vector3.new(0.12, 48, 48) })
+	emberRing.CFrame = base * CFrame.new(0, 0.08, 0) * CFrame.Angles(0, 0, math.rad(90))
+	emberRing.Parent = part
+
 	-- a little bubble over it: "build me to stay warm"
 	local sign = Instance.new("BillboardGui")
 	sign.Name = "CampfireSign"; sign.Adornee = part; sign.Size = UDim2.new(0, 220, 0, 64)
@@ -394,7 +542,7 @@ function buildStarterPile(part)
 	local sc = Instance.new("UICorner"); sc.CornerRadius = UDim.new(0, 12); sc.Parent = sf
 	local ss = Instance.new("UIStroke"); ss.Color = FIREC; ss.Thickness = 2; ss.Parent = sf
 	local st = Instance.new("TextLabel"); st.BackgroundTransparency = 1; st.Size = UDim2.fromScale(1, 1)
-	st.Font = Enum.Font.FredokaOne; st.Text = "\xF0\x9F\x94\xA5 Build me to stay warm!"
+	st.Font = Enum.Font.FredokaOne; st.Text = "\xF0\x9F\x94\xA5 FIRE PIT -- drop your wood, stones and kindling here!"
 	st.TextColor3 = Color3.fromRGB(120, 60, 20); st.TextScaled = true; st.Parent = sf
 	local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 18; sz.Parent = st
 	campfireSign = sign
@@ -411,7 +559,18 @@ local function igniteFire()
 	built = true
 	active = false
 	_G.campfireQuestComplete = true
+	-- PAYOFF SHOT, the same one every other island now gets. The subject comes from
+	-- RevealCommand's TARGETS[4], so the framing lives in one place.
+	task.delay(1.0, function() if _G.revealIsland then pcall(_G.revealIsland, 4) end end)
 	if campfireSign then campfireSign:Destroy(); campfireSign = nil end  -- no more "build me"
+
+	-- DAWN BREAKS: night lifts, the watcher is gone, and the ember hands over to the real
+	-- fire built below (its ring goes with it -- the whole island is warm now).
+	nightTint.Enabled = false
+	dropWatcher()
+	fireLevel = 1
+	if emberRing  then emberRing:Destroy();  emberRing  = nil end
+	if emberFlame then emberFlame:Destroy(); emberFlame = nil end
 
 	local base = campfirePart and campfirePart.Position or (startPos or Vector3.new())
 
@@ -518,19 +677,22 @@ local function igniteFire()
 	print("[Campfire] complete -- fire lit")
 end
 
--- deliver whatever you're carrying to the campfire
+-- deliver the WHOLE ARMFUL to the campfire at once -- and every piece feeds the ember
 local function tryDeliver()
-	if not carrying or built then return end
+	if #carrying == 0 or built then return end
 	local hrp = hrpOf(); if not hrp then return end
 	local spot = campfirePart and campfirePart.Position or startPos
 	if not spot then return end
 	if (hrp.Position - spot).Magnitude > DELIVER_RANGE then return end
 
-	local k = carrying
-	carrying = nil
-	placed[k] = math.min(NEED[k], placed[k] + 1)
-	addFirePiece(k)
-	setCarryTag(nil)
+	local n = #carrying
+	for _, k in ipairs(carrying) do
+		placed[k] = math.min(NEED[k], placed[k] + 1)
+		addFirePiece(k)
+	end
+	carrying = {}
+	fireLevel = math.min(1, fireLevel + FIRE_FEED * n)
+	refreshCarry()
 	refreshObjective()
 
 	if totalPlaced() >= totalNeeded() then
@@ -542,24 +704,43 @@ end
 -- MATERIALS -- pick up, carry, deliver
 -- ============================================================================
 local carryTag
-local carryModel               -- the item welded into your hand while carrying (removed on drop/deliver)
+local carryModels = {}         -- the welded armful (one model per carried piece)
 local buildHeldMaterial        -- forward decl (assigned below, after the geometry builders)
-function setCarryTag(kind)
+function refreshCarry()
 	if carryTag then carryTag:Destroy(); carryTag = nil end
-	if carryModel then carryModel:Destroy(); carryModel = nil end
-	if not kind then return end
-	-- put the item straight into the player's hand (a welded copy), plus the head label below
-	if buildHeldMaterial then carryModel = buildHeldMaterial(kind) end
+	for _, m in ipairs(carryModels) do pcall(function() m:Destroy() end) end
+	carryModels = {}
+	if #carrying == 0 then return end
+	-- the whole armful, stacked into the player's arms (a welded copy per piece), plus the label
+	if buildHeldMaterial then
+		for i, kind in ipairs(carrying) do
+			local m = buildHeldMaterial(kind, i)
+			if m then carryModels[#carryModels + 1] = m end
+		end
+	end
 	local char = player.Character
 	local head = char and char:FindFirstChild("Head")
 	if not head then return end
+	local bits = {}
+	for _, kind in ipairs(carrying) do bits[#bits + 1] = MAT_ICON[kind] end
 	carryTag = Instance.new("BillboardGui")
-	carryTag.Name = "CarryTag"; carryTag.Adornee = head; carryTag.Size = UDim2.new(0, 150, 0, 40)
+	carryTag.Name = "CarryTag"; carryTag.Adornee = head; carryTag.Size = UDim2.new(0, 170, 0, 40)
 	carryTag.StudsOffset = Vector3.new(0, 3, 0); carryTag.AlwaysOnTop = true; carryTag.Parent = head
 	local l = Instance.new("TextLabel"); l.BackgroundTransparency = 1; l.Size = UDim2.fromScale(1, 1)
-	l.Font = Enum.Font.FredokaOne; l.Text = MAT_ICON[kind] .. " " .. MAT_LABEL[kind]
+	l.Font = Enum.Font.FredokaOne
+	l.Text = table.concat(bits, " ") .. ("  %d/%d"):format(#carrying, CARRY_MAX)
 	l.TextColor3 = Color3.new(1, 1, 1); l.TextStrokeTransparency = 0.3; l.TextScaled = true; l.Parent = carryTag
 end
+
+-- RESPAWN: the welded armful and the head tag died with the old character. The `carrying`
+-- list itself always survived -- delivery still worked -- but the materials LOOKED lost,
+-- which reads as inventory vanishing. Rebuild both so what you hold is never in doubt.
+player.CharacterAdded:Connect(function()
+	carryTag, carryModels = nil, {}
+	task.delay(1.2, function()
+		if #carrying > 0 and not built then refreshCarry() end
+	end)
+end)
 
 local function wirePickup(model, kind)
 	local main = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
@@ -572,9 +753,18 @@ local function wirePickup(model, kind)
 	prompt.Triggered:Connect(function()
 		if built then return end
 		if not active then flash("\xE2\x9D\x84 Talk to the Candy Npc (or /freeze) to start!"); return end
-		if carrying then flash("\xF0\x9F\x94\xA5 Take what you're carrying to the campfire first!"); return end
-		carrying = kind
-		setCarryTag(kind)          -- head label AND a welded copy in the player's hand
+		if #carrying >= CARRY_MAX then
+			flash(("\xF0\x9F\xA7\xBA Arms full (%d/%d)! Drop your armful in the fire pit!"):format(#carrying, CARRY_MAX))
+			return
+		end
+		-- the fire only needs so many of each -- refuse a wasted slot rather than let the 6s
+		-- respawn timer bait an armful of spare logs
+		if placed[kind] + carriedOf(kind) >= NEED[kind] then
+			flash(("\xE2\x9C\x85 That's enough %ss -- the fire needs something else!"):format(string.lower(MAT_LABEL[kind])))
+			return
+		end
+		table.insert(carrying, kind)
+		refreshCarry()             -- head label AND the welded armful in the player's arms
 		refreshObjective()
 		-- the WHOLE ground prop vanishes (every part + its outline, not just the main one) so nothing
 		-- is left lying on the ground; another of its kind respawns after a few seconds so you never
@@ -698,16 +888,18 @@ local function buildMaterialProp(kind, at)
 end
 
 -- the IN-HAND copy: shared geometry welded into the player's hand. Assigned to the forward-declared
--- upvalue so setCarryTag (defined earlier) can build it on pickup. Move the (still-anchored) model
--- into the palm, weld it up, THEN unanchor so it rides the hand cleanly.
-buildHeldMaterial = function(kind)
+-- upvalue so refreshCarry (defined earlier) can build it on pickup. Move the (still-anchored) model
+-- into the palm, weld it up, THEN unanchor so it rides the hand cleanly. `slot` stacks the armful:
+-- piece 1 sits in the hand, 2 and 3 pile on top -- a wobbly armful you can see growing.
+buildHeldMaterial = function(kind, slot)
 	local char = player.Character
 	local hand = char and (char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm"))
 	if not (hand and hand:IsA("BasePart")) then return nil end
 	local m = buildMaterialModel(kind)
 	local prim = m.PrimaryPart
 	if not prim then m:Destroy(); return nil end
-	m:PivotTo(hand.CFrame * CFrame.new(0, -1.3, 0))
+	local lift = ((slot or 1) - 1) * 0.85
+	m:PivotTo(hand.CFrame * CFrame.new(0, -1.3 + lift, 0) * CFrame.Angles(0, math.rad((slot or 1) * 25), 0))
 	for _, p in ipairs(m:GetDescendants()) do
 		if p:IsA("BasePart") and p ~= prim then
 			local w = Instance.new("WeldConstraint"); w.Part0 = prim; w.Part1 = p; w.Parent = p
@@ -751,8 +943,10 @@ local function clearBuild()
 	for _, p in ipairs(firePieces) do pcall(function() p:Destroy() end) end
 	firePieces = {}
 	placed = { firelog = 0, stone = 0, kindling = 0 }
-	carrying = nil
-	setCarryTag(nil)
+	carrying = {}
+	fireLevel = FIRE_START
+	refreshCarry()
+	dropWatcher()
 end
 
 local function stopSounds()
@@ -763,16 +957,23 @@ end
 local function startFreeze()
 	if active or built then return end
 	active = true
+	-- THE SIGN'S JOB ENDS AT ACCEPT. The "🔥 FIRE PIT -- drop your wood..." bubble exists to
+	-- say what the pit is BEFORE you take the quest; from here the objective banner owns the
+	-- directions, and a bobbing billboard over the pit for the whole build was pure noise. It
+	-- does not come back this session -- not on a failed freeze, not on respawn: accepting
+	-- once means you know where the pit is.
+	if campfireSign then campfireSign:Destroy(); campfireSign = nil end
 	freeze = 0
 	clearBuild()
+	nightTint.Enabled = true       -- NIGHT FALLS with the quest; dawn comes with the fire
 	frostGui.Enabled = true
 	refreshObjective()
 	renderFreeze()
 	windLoop = playSound(SOUND_WIND, 0.4, true)
 	if _G.NotifyCenter then
-		pcall(function() _G.NotifyCenter.push({ text = "\xE2\x9D\x84 You're freezing -- build the campfire!", color = ICE }) end)
+		pcall(function() _G.NotifyCenter.push({ text = "\xE2\x9D\x84 Night's falling! Feed the fire and stay in its light!", color = ICE }) end)
 	end
-	print("[Campfire] freeze started")
+	print("[Campfire] freeze started -- night down")
 end
 
 local function failFreeze()
@@ -813,23 +1014,36 @@ local heartOn = false
 task.spawn(function()
 	while true do
 		local dt = task.wait(0.1)
-		if active and not built then
-			local hrp = hrpOf()
-			local warm = false
-			-- near a LIT fire you'd warm up -- but the fire only exists once built, so during
-			-- the quest the only warmth is finishing it. (Kept for symmetry / future braziers.)
-			local rate
-			if isBlizzard() then rate = 1 / FREEZE_BLIZZARD_TIME else rate = 1 / FREEZE_CALM_TIME end
-			freeze = math.clamp(freeze + rate * dt, 0, 1)
+		local here = onIsland()
+		if active and not built and here then
+			-- the ember burns down; its light is the warm zone, and its visuals track it live
+			fireLevel = math.max(0, fireLevel - dt / FIRE_DECAY_TIME)
+			local r = lightRadius()
+			if emberFlame and emberFlame.Parent then
+				local flick = 0.9 + math.abs(math.sin(os.clock() * 5)) * 0.25
+				local s = 0.5 + fireLevel * 1.3
+				local msh = emberFlame:FindFirstChildWhichIsA("SpecialMesh")
+				if msh then msh.Scale = Vector3.new(s, (s + 0.4) * flick, s) end
+				emberLight.Range = r + 8
+				emberLight.Brightness = 1.4 + fireLevel * 2.2
+				emberRing.Size = Vector3.new(0.12, r * 2, r * 2)
+			end
+			if not nightTint.Enabled then nightTint.Enabled = true end
 
-			-- speed penalty by stage
-			local hum = player.Character and player.Character:FindFirstChildWhichIsA("Humanoid")
-			if hum then
-				local slow = 1
-				if     freeze >= 0.75 then slow = 0.45
-				elseif freeze >= 0.50 then slow = 0.62
-				elseif freeze >= 0.25 then slow = 0.82 end
-				hum.WalkSpeed = BASE_WALKSPEED * slow
+			-- IN THE FIRELIGHT you thaw and the watcher melts away; OUT IN THE DARK the cold
+			-- climbs and, once you're properly cold, the eyes come. THAT trade -- how deep do
+			-- I dare go before running home -- is the whole quest now, not a walkspeed tax.
+			local hrp = hrpOf()
+			local pitPos = campfirePart and campfirePart.Position or startPos
+			local inLight = hrp and pitPos and ((hrp.Position - pitPos).Magnitude <= r)
+			if inLight then
+				freeze = math.max(0, freeze - WARM_RATE * dt)
+				dropWatcher()
+			else
+				local rate
+				if isBlizzard() then rate = 1 / FREEZE_BLIZZARD_TIME else rate = 1 / FREEZE_CALM_TIME end
+				freeze = math.clamp(freeze + rate * dt, 0, 1)
+				if hrp and pitPos then watcherStep(dt, hrp, pitPos) end
 			end
 
 			-- the meter lives in the banner now. Repaint only when the WHOLE PERCENT changes:
@@ -844,10 +1058,19 @@ task.spawn(function()
 			if freeze < 0.5 and heartOn then heartOn = false; if heartLoop then heartLoop:Stop(); heartLoop:Destroy(); heartLoop = nil end end
 
 			if freeze >= 1 then failFreeze() end
-		elseif not active then
-			-- restore speed when not freezing
-			local hum = player.Character and player.Character:FindFirstChildWhichIsA("Humanoid")
-			if hum and hum.WalkSpeed < BASE_WALKSPEED then hum.WalkSpeed = BASE_WALKSPEED end
+		elseif not active or not here then
+			-- Not freezing, or freezing but off the island: give the screen (and the sky) back.
+			-- `freeze` itself is left where it is, so walking back onto island4 picks the meter up
+			-- mid-climb instead of handing you a free reset for having stepped away.
+			if active and not here then
+				if heartOn then
+					heartOn = false
+					if heartLoop then heartLoop:Stop(); heartLoop:Destroy(); heartLoop = nil end
+				end
+				if frostGui.Enabled then frostGui.Enabled = false end
+				if nightTint.Enabled then nightTint.Enabled = false end
+				dropWatcher()
+			end
 		end
 	end
 end)
@@ -944,41 +1167,61 @@ task.spawn(function()
 		return (#found > 0) and found or nil
 	end, 90)
 
-	if spots then
-		-- Deal a TYPE to each spot in proportion to what the fire needs (5/8/3), spread out
-		-- evenly rather than clustered -- a weighted round-robin. Over 16 spots that lands
-		-- exactly 5 logs / 8 stones / 3 kindling, interleaved; over more it scales up.
-		local total = #spots
-		local counts = { firelog = 0, stone = 0, kindling = 0 }
-		local totalNeed = NEED.firelog + NEED.stone + NEED.kindling
-		for i, s in ipairs(spots) do
-			-- hide the placement block
-			for _, q in ipairs(s.holder:IsA("Model") and s.holder:GetDescendants() or { s.holder }) do
-				if q:IsA("BasePart") then q.Transparency = 1; q.CanCollide = false; q.CanQuery = false end
-			end
-			-- whichever type is most "owed" so far gets this spot
+	-- ESCALATING VENTURES. Deal the six pieces out first (weighted round-robin over what the
+	-- fire needs, so types stay interleaved), then give each piece one spawn spot stepping
+	-- OUTWARD from the pit -- nearest first, farthest last. Six trips that each reach a
+	-- little deeper into the dark; every spot's marker block is hidden either way, and spots
+	-- beyond the six are simply left empty this night.
+	do
+		local totalNeed = totalNeeded()
+		local deal, counts = {}, { firelog = 0, stone = 0, kindling = 0 }
+		for i = 1, totalNeed do
 			local bestKind, bestOwed
 			for _, kind in ipairs(MAT_ORDER) do
 				local owed = (NEED[kind] / totalNeed) * i - counts[kind]
 				if not bestOwed or owed > bestOwed then bestKind, bestOwed = kind, owed end
 			end
 			counts[bestKind] += 1
-			buildMaterialProp(bestKind, s.pos)
+			deal[i] = bestKind
 		end
-		print(("[Campfire] %d material spot(s) wired -- %d log / %d stone / %d kindling"):format(
-			total, counts.firelog, counts.stone, counts.kindling))
-	elseif anchor then
-		-- no 'material' spots found -> scatter our own around the campfire
-		local i = 0
-		for _, kind in ipairs(MAT_ORDER) do
-			for _ = 1, NEED[kind] + 2 do
-				i += 1
-				local a = (i / 22) * math.pi * 2
-				local r = 24 + (i % 4) * 8
-				buildMaterialProp(kind, anchor + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r))
+
+		local anchorPos = anchor or islandPos or Vector3.new()
+		local chosen = {}
+		if spots then
+			for _, s in ipairs(spots) do
+				for _, q in ipairs(s.holder:IsA("Model") and s.holder:GetDescendants() or { s.holder }) do
+					if q:IsA("BasePart") then q.Transparency = 1; q.CanCollide = false; q.CanQuery = false end
+				end
+			end
+			table.sort(spots, function(a, b)
+				return (a.pos - anchorPos).Magnitude < (b.pos - anchorPos).Magnitude
+			end)
+			if #spots <= totalNeed then
+				chosen = spots
+			else
+				-- an even spread across the near-to-far range, one spot per piece
+				local step = #spots / totalNeed
+				for i = 1, totalNeed do chosen[i] = spots[math.floor((i - 1) * step) + 1] end
 			end
 		end
-		warn("[Campfire] no 'material' spots found -- scattered a fallback supply")
+
+		for i, kind in ipairs(deal) do
+			if chosen[i] then
+				buildMaterialProp(kind, chosen[i].pos)
+			else
+				-- no spot for this piece -> ring it out from the pit, farther each time
+				local a = i * 2.39996
+				local rr = 26 + i * 8
+				buildMaterialProp(kind, anchorPos + Vector3.new(math.cos(a) * rr, 0, math.sin(a) * rr))
+			end
+		end
+
+		if spots then
+			print(("[Campfire] %d spot(s) found -- placed %d pieces near-to-far (%d log / %d stone / %d kindling)"):format(
+				#spots, totalNeed, counts.firelog, counts.stone, counts.kindling))
+		else
+			warn("[Campfire] no 'material' spots found -- ringed a fallback supply out from the pit")
+		end
 	end
 
 	npcHead = pollFor(function() return findNPCNear(anchor or islandPos) end, 20)
@@ -1020,22 +1263,20 @@ local function npcBubble(head, text, persist, footer)
 end
 
 local function questPages()
-	if built then return { "Toasty! You built it just in time. \xF0\x9F\x94\xA5" } end
+	if built then return { "Toasty! You survived the night! \xF0\x9F\x94\xA5" } end
 	if active then
 		return {
-			("Still need %d logs \xF0\x9F\xAA\xB5, %d stones \xF0\x9F\xAA\xA8 and %d kindling \xF0\x9F\x8C\xB2.")
+			("Still need %d logs, %d stones, %d kindling.")
 				:format(NEED.firelog - placed.firelog, NEED.stone - placed.stone, NEED.kindling - placed.kindling),
-			"Find them in the snow, walk up and GRAB each one,",
-			"then carry it back to the fire pit to drop it in! \xF0\x9F\x94\xA5",
+			"They're out there in the dark somewhere.",
+			"Grab an armful, feed the fire. Repeat!",
 		}
 	end
 	return {
-		"Brrr! You're turning blue -- this cold will freeze you solid. \xE2\x9D\x84\xEF\xB8\x8F",
-		"Let's build a campfire! Here's how:",
-		"1) Look around the snow for LOGS \xF0\x9F\xAA\xB5, STONES \xF0\x9F\xAA\xA8 and KINDLING \xF0\x9F\x8C\xB2.",
-		"2) Walk up to each one and GRAB it, then carry it to the fire pit. \xF0\x9F\x94\xA5",
-		"You need 5 logs, 8 stones and 3 kindling. The pit's right over there!",
-		"Hurry -- the Freeze Meter starts the moment we stop talking. GO!",
+		"The sun's gone and this cold BITES!",
+		"My ember won't last. Feed it!",
+		("Need %d logs, %d stones, %d kindling."):format(NEED.firelog, NEED.stone, NEED.kindling),
+		("Press Pick up. Carry %d, drop in pit."):format(CARRY_MAX),
 	}
 end
 
@@ -1063,7 +1304,7 @@ function wireNPC(head)
 	end
 
 	prompt.Triggered:Connect(function()
-		if index == 0 then pages = questPages() end
+		if index == 0 then pages = (_G.capBubble and _G.capBubble(questPages())) or questPages() end
 		index += 1
 		if not pages or index > #pages then closeDialogue(); return end
 		-- reading past page 1 accepts the quest and starts the cold
@@ -1072,8 +1313,10 @@ function wireNPC(head)
 			if campfirePart and _G.guideTrailTo then pcall(function() _G.guideTrailTo(campfirePart.Position) end) end
 		end
 		local last = index >= #pages
-		npcBubble(head, pages[index], true, last and "[E] close" or ("[E] more  (%d/%d)"):format(index, #pages))
-		prompt.ActionText = last and "Close" or "Continue"
+		-- no "[E] ..." badge in the bubble: the ProximityPrompt IS the E prompt, and the page
+		-- count rides its ActionText instead of a second floating HUD over the NPC's head
+		npcBubble(head, pages[index], true, nil)
+		prompt.ActionText = last and "Close" or ("Continue  (%d/%d)"):format(index, #pages)
 		startWatcher()
 	end)
 	prompt.PromptHidden:Connect(function() if index ~= 0 then closeDialogue() end end)
@@ -1085,23 +1328,26 @@ end
 task.spawn(function()
 	while true do
 		task.wait(0.2)
-		if active and carrying and not built then tryDeliver() end
+		if active and #carrying > 0 and not built then tryDeliver() end
 	end
 end)
 
 local function onCommand(msg)
+	-- DEV ONLY. QuestDevGate publishes this; read at command time so load order cannot matter,
+	-- and nil (gate not up yet) refuses. Without it any player could type their way to the whole realm.
+	if not _G.questDevOK then return end
 	local t = tostring(msg or ""):lower()
 	if t:sub(1, 7) == "/freeze" then
 		if built then return end
 		startFreeze()
 		print("[Campfire][TEST] /freeze -- cold started")
 	elseif t:sub(1, 5) == "/warm" then
-		-- convenience: stop the cold
+		-- convenience: stop the cold (and lift the night + call off the watcher)
 		active = false; freeze = 0; renderFreeze()
 		frostGui.Enabled = false; coldTint.Enabled = false; coldBlur.Size = 0
+		nightTint.Enabled = false
+		dropWatcher()
 		stopSounds()
-		local hum = player.Character and player.Character:FindFirstChildWhichIsA("Humanoid")
-		if hum then hum.WalkSpeed = BASE_WALKSPEED end
 		print("[Campfire][TEST] /warm -- cold stopped")
 	end
 end

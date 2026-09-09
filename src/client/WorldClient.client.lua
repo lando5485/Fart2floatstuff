@@ -10,8 +10,20 @@ local IslandUnlockEvent = game:GetService("ReplicatedStorage"):FindFirstChild("I
 local currentKnownIsland = 0
 local playerBillboards = {}
 
-local function makeBillboard(parent, text, textColor, textSize)
-	local bb=Instance.new("BillboardGui"); bb.Size=UDim2.new(0,120,0,30); bb.StudsOffset=Vector3.new(0,3,0); bb.AlwaysOnTop=false; bb.Parent=parent
+-- LABEL RANGE. A BillboardGui with MaxDistance left at its 0 default renders at ANY distance, and the climb
+-- is 24,000 studs of ring and gas-bubble labels stacked up the sky -- every one of them drawing "+BONUS" or
+-- "GAS!" at once. From anywhere on the column that reads as a wall of text with the actual game behind it,
+-- and the label you needed -- the next one, the one you can still steer to -- was lost inside it.
+--
+-- Roblox hides a BillboardGui past MaxDistance for free, so this costs nothing and needs no loop. The numbers
+-- are set from how far ahead you can still ACT on the information: rings are a 40-stud magnet you line up as
+-- you arrive, gas is a 90-stud magnet worth a deliberate sideways move, so gas gets the longer leash. Island
+-- gaps are 600+ studs, so neither can ever show you the next island's worth of labels.
+local LABEL_DIST_RING = 200
+local LABEL_DIST_GAS  = 260
+
+local function makeBillboard(parent, text, textColor, textSize, maxDist)
+	local bb=Instance.new("BillboardGui"); bb.Size=UDim2.new(0,120,0,30); bb.StudsOffset=Vector3.new(0,3,0); bb.AlwaysOnTop=false; bb.MaxDistance=maxDist or LABEL_DIST_RING; bb.Parent=parent
 	local lbl=Instance.new("TextLabel"); lbl.Size=UDim2.new(1,0,1,0); lbl.BackgroundTransparency=1; lbl.Font=Enum.Font.GothamBold; lbl.TextSize=textSize or 13; lbl.TextColor3=textColor or Color3.new(1,1,1); lbl.Text=text; lbl.Parent=bb
 	Instance.new("UIStroke").Parent=lbl
 	return bb, lbl
@@ -139,7 +151,7 @@ end
 local function spawnGasPocket(pos)
 	local p=Instance.new("Part"); p.Shape=Enum.PartType.Ball; p.Size=Vector3.new(20,20,20)
 	p.Material=Enum.Material.Neon; p.Color=Color3.fromRGB(0,255,100); p.Transparency=0.4; p.CanCollide=false; p.Anchored=true; p.CastShadow=false; p.Position=pos; p.Parent=workspace
-	local bb=Instance.new("BillboardGui"); bb.Size=UDim2.new(0,80,0,30); bb.StudsOffset=Vector3.new(0,12,0); bb.AlwaysOnTop=false; bb.Parent=p
+	local bb=Instance.new("BillboardGui"); bb.Size=UDim2.new(0,80,0,30); bb.StudsOffset=Vector3.new(0,12,0); bb.AlwaysOnTop=false; bb.MaxDistance=LABEL_DIST_GAS; bb.Parent=p
 	local bl=Instance.new("TextLabel"); bl.Size=UDim2.new(1,0,1,0); bl.BackgroundTransparency=1; bl.Font=Enum.Font.GothamBold; bl.TextSize=16; bl.TextColor3=Color3.fromRGB(0,255,100); bl.Text="\xF0\x9F\x92\xA8 GAS!"; bl.Parent=bb; Instance.new("UIStroke").Parent=bl
 	table.insert(_G.activeGasPockets,p); startGasPocketPulse(p)
 	startBubbleDrift(p, pos, 180, 280) -- ~4x bigger wander zone (was 45/70); Y clamped to the island gap inside startBubbleDrift
@@ -1051,6 +1063,9 @@ RunService.Heartbeat:Connect(function()
 						for i = 1, islandNum do _G.unlockedIslands[i] = true end
 						if IslandUnlockEvent then
 							print("ISLAND LANDING DETECTED:", islandNum)
+							-- A NEW island is the biggest routine milestone in the game. Ranked above the landing thud that
+							-- fires on the same frame, so this is what the player feels rather than the two smearing together.
+							if _G.hapticPulse then pcall(_G.hapticPulse, "unlock") end
 							IslandUnlockEvent:FireServer(islandNum)
 						end
 					end
@@ -1062,48 +1077,74 @@ RunService.Heartbeat:Connect(function()
 	end)
 end)
 
--- Navigation arrow loop
-task.spawn(function()
-	local Camera=workspace.CurrentCamera
-	while true do
-		task.wait(0.1)
-		pcall(function()
-			local ls=_G.leaderstats; if not ls then navFrame.Visible=false; navName.Visible=false; return end
-			local islVal=ls:FindFirstChild("Island"); if not islVal then navFrame.Visible=false; navName.Visible=false; return end
-			local nextIsland=islVal.Value+1; if nextIsland>14 then navFrame.Visible=false; navName.Visible=false; return end
-			local tp=_G.ISLAND_POS[nextIsland]; local target3D=Vector3.new(tp.x,tp.y,tp.z)
-			local vp=Camera.ViewportSize; local cx,cy=vp.X/2,vp.Y/2
-			local screenPos,onScreen=Camera:WorldToScreenPoint(target3D)
-			local dx,dy=screenPos.X-cx,screenPos.Y-cy
-			local margin=60; local maxX=cx-margin; local maxY=cy-margin
-			local ex,ey
-			if onScreen and screenPos.Z>0 and math.abs(dx)<maxX and math.abs(dy)<maxY then
-				ex=screenPos.X; ey=screenPos.Y
-			else
-				if math.abs(dx)*maxY>=math.abs(dy)*maxX then
-					local sign=dx>=0 and 1 or -1; ex=cx+sign*maxX; ey=cy+dy*(maxX/math.max(math.abs(dx),0.001))
-				else
-					local sign=dy>=0 and 1 or -1; ey=cy+sign*maxY; ex=cx+dx*(maxY/math.max(math.abs(dy),0.001))
-				end
-			end
-			navFrame.Position=UDim2.new(0,ex,0,ey); navName.Position=UDim2.new(0,ex,0,ey+26)
-			navArrow.Rotation=math.deg(math.atan2(dy,dx))+90; navFrame.Visible=true
-			-- ISLAND-NAME REVEAL: only show the real name once THIS player has REACHED the island.
-			-- "HighestIsland" is a per-player, server-authoritative attribute (replicated to the owning
-			-- client and updated the instant the player reaches/skips to a new island). We read it via
-			-- the LocalPlayer, so each player sees names based on THEIR OWN progress only. This loop
-			-- polls every 0.1s, so the label flips on the moment their HighestIsland increases.
-			local highest = player:GetAttribute("HighestIsland") or 0
-			if nextIsland <= highest then
-				-- Visited (island number <= highest reached): show the real island name.
-				navName.Text=_G.ISLAND_DISPLAY_NAMES[nextIsland] or ("Island "..nextIsland)
-				navName.Visible=true
-			else
-				-- Not yet visited: NO "???" -- just the pointer, no mystery label.
-				navName.Visible=false
-			end
-		end)
+-- ===== NEXT-ISLAND POINTER =====
+-- WHAT IT POINTS AT: the LOWEST island whose Y is above the player right now -- their actual next rung,
+-- read from where they ARE, not from how far they have ever got. It used to target the "Island"
+-- leaderstat + 1, which is a PROGRESS number: fall from 14 back down to 1 and the arrow kept aiming at
+-- island 15 (i.e. nothing, so it hid itself) the whole way back up. Position, not progress.
+--
+-- WHY RenderStepped: this is a screen-space marker driven by the CAMERA, so it has to be recomputed in
+-- the same frame the camera moves or it visibly trails behind it. The old loop repositioned on a
+-- task.wait(0.1) poll -- up to 6 frames of lag at 60fps, which is the "laggy" arrow. Picking the target
+-- is a 14-entry scan and the rest is arithmetic, so doing it per-frame is cheaper than the drift.
+local NAV_ABOVE_MARGIN = 100  -- an island counts as "above you" only this far up, so standing ON one never
+                              -- points at itself (islands are ~100 studs tall; the smallest gap is 630, so
+                              -- this margin can never skip past a real target)
+local navCam = workspace.CurrentCamera
+workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	navCam = workspace.CurrentCamera or navCam
+end)
+
+local function hideNav() navFrame.Visible=false; navName.Visible=false end
+
+local function updateNav()
+	local islands = _G.ISLAND_POS
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not islands or not hrp or not navCam then hideNav(); return end
+
+	-- Lowest island strictly above us. At the summit nothing qualifies and the pointer goes away.
+	local myY = hrp.Position.Y
+	local targetIsland, targetY = nil, math.huge
+	for i, p in ipairs(islands) do
+		if p.y > myY + NAV_ABOVE_MARGIN and p.y < targetY then targetIsland, targetY = i, p.y end
 	end
+	if not targetIsland then hideNav(); return end
+
+	local tp = islands[targetIsland]
+	local vp = navCam.ViewportSize; local cx,cy = vp.X/2, vp.Y/2
+	local screenPos = navCam:WorldToScreenPoint(Vector3.new(tp.x, tp.y, tp.z))
+	local behind = screenPos.Z <= 0
+	-- Behind the camera, WorldToScreenPoint mirrors X/Y -- flip them back or the arrow points the wrong way.
+	local dx = (behind and -1 or 1) * (screenPos.X - cx)
+	local dy = (behind and -1 or 1) * (screenPos.Y - cy)
+	local margin = 60; local maxX, maxY = cx-margin, cy-margin
+	local ex, ey
+	if not behind and math.abs(dx) < maxX and math.abs(dy) < maxY then
+		ex, ey = cx+dx, cy+dy                                   -- on screen: sit right on the island
+	elseif math.abs(dx)*maxY >= math.abs(dy)*maxX then          -- off screen: clamp to the screen edge
+		local sign = dx>=0 and 1 or -1; ex = cx+sign*maxX; ey = cy+dy*(maxX/math.max(math.abs(dx),0.001))
+	else
+		local sign = dy>=0 and 1 or -1; ey = cy+sign*maxY; ex = cx+dx*(maxY/math.max(math.abs(dy),0.001))
+	end
+
+	navFrame.Position = UDim2.new(0,ex,0,ey); navName.Position = UDim2.new(0,ex,0,ey+26)
+	navArrow.Rotation = math.deg(math.atan2(dy,dx))+90; navFrame.Visible = true
+	-- ISLAND-NAME REVEAL: only show the real name once THIS player has REACHED the island.
+	-- "HighestIsland" is a per-player, server-authoritative attribute (replicated to the owning client and
+	-- updated the instant the player reaches/skips to a new island), so each player sees names based on
+	-- THEIR OWN progress only. Not yet visited: NO "???" -- just the pointer, no mystery label.
+	if targetIsland <= (player:GetAttribute("HighestIsland") or 0) then
+		local names = _G.ISLAND_DISPLAY_NAMES
+		navName.Text = (names and names[targetIsland]) or ("Island "..targetIsland)
+		navName.Visible = true
+	else
+		navName.Visible = false
+	end
+end
+
+RunService.RenderStepped:Connect(function()
+	if not pcall(updateNav) then hideNav() end
 end)
 
 print("WORLDCLIENT READY")

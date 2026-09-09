@@ -193,12 +193,28 @@ local mineShaft                -- the opened hole + "Enter the Mine" prompt
 local caveModel                -- the private underground cave
 local caveEntryCF, caveExitCF  -- teleport targets (into the cave / back to surface)
 local surfaceReturnCF          -- where you pop out on top when you leave the mine
+local detonate                 -- forward: the light prompt fires it, and it is written below
 local crateSlots = {}          -- world CFrames the placed crates snap to
 local placePrompt              -- the "Plant Dynamite" prompt on the blast zone
 local heldCrate, heldGem       -- welded-to-hand props
 local heldPick                 -- your world "Pickaxe" model, held all mine phase
 local groundCrates = {}        -- the grabbable dynamite crates by the blast zone
 local tntBrick, tntPrompt      -- the world brick named "tnt" you grab charges from (if placed)
+
+-- ===== THE LIGHTER =====================================================
+-- Charges on the wall are not a blast until something LIGHTS them, and the lighter is in four
+-- pieces scattered round island11. You can plant every crate without it -- what you cannot do
+-- is set them off, which is what gates the whole underground half of the quest behind actually
+-- exploring the island rather than walking to one wall.
+local LIGHTER_NAME  = "lighter"     -- name parts this in Studio; four of them
+local LIGHTER_PARTS = 4             -- how many pieces make one lighter
+-- what each piece IS, in pickup order. Naming them turns "4 identical collectibles" into a
+-- thing you are assembling, and the E prompt reads the name out as you take it.
+local LIGHTER_BITS  = { "Flint", "Steel Striker", "Fuel Cell", "Casing" }
+local lighterFound  = 0
+local hasLighter    = false
+local lighterPieces = {}       -- { model =, taken = }
+local lightPrompt              -- the "Light the fuses" prompt, once every charge is planted
 
 -- island-11 "stand" stays LOCKED until this quest is completed (Shop_AllInOne checks the flag +
 -- calls the nudge, exactly like island-1's Candy Stand).
@@ -263,17 +279,27 @@ local function updateObjective()
 
 	local text
 	if phase == "blast" then
-		text = ("💥 Plant Dynamite on the X:   %d / %d crates"):format(placedCrates, CRATES_NEEDED)
+		if placedCrates >= CRATES_NEEDED and not hasLighter then
+			-- the charges are up and the only thing missing is fire: say THAT, not "3/3 crates",
+			-- which would read as a finished step the game is refusing to advance past
+			text = ("\xF0\x9F\x94\xA5 Charges set! Now find the LIGHTER parts around the canyon:   %d / %d")
+				:format(lighterFound, LIGHTER_PARTS)
+		elseif placedCrates >= CRATES_NEEDED then
+			text = "\xF0\x9F\x94\xA5 Go to the big red X and hold Light the fuses!"
+		else
+			text = ("💥 Grab dynamite, then plant it on the big red X:   %d / %d   (lighter %d/%d)")
+				:format(placedCrates, CRATES_NEEDED, lighterFound, LIGHTER_PARTS)
+		end
 	elseif phase == "descend" then
-		text = "🕳️ Enter the mine shaft!"
+		text = "🕳️ The tunnel is open -- hold Enter the Mine at the shaft!"
 	elseif phase == "mine" then
 		if minedNodes < NODES_NEEDED then
-			text = ("⛏️ Mine Diamond Ore:   %d / %d   (carrying %d)"):format(minedNodes, NODES_NEEDED, carriedDiam)
+			text = ("⛏️ Hold Drill on the blue Diamond Ore:   %d / %d   (carrying %d)"):format(minedNodes, NODES_NEEDED, carriedDiam)
 		else
-			text = ("💎 Take the diamonds to the Mine Cart:   %d / %d in cart"):format(cartCount, NODES_NEEDED)
+			text = ("💎 Carry the diamonds to the Mine Cart and hold Deposit Diamonds:   %d / %d in cart"):format(cartCount, NODES_NEEDED)
 		end
 	elseif phase == "return" then
-		text = "🪜 Return to the surface!"
+		text = "🪜 All loaded! Climb the mine shaft back up to the surface."
 	end
 
 	local NC = _G.NotifyCenter
@@ -559,6 +585,23 @@ local function buildBlastZone()
 	placePrompt.HoldDuration = 0.2; placePrompt.MaxActivationDistance = 14
 	placePrompt.RequiresLineOfSight = false; placePrompt.Enabled = false; placePrompt.Parent = zone
 
+	-- THE FLAME. A second prompt on the same zone, live only when every charge is planted AND
+	-- the lighter is assembled. Held, not tapped: lighting three fuses is a deliberate act, and
+	-- the hold is the beat before the bang.
+	lightPrompt = Instance.new("ProximityPrompt")
+	lightPrompt.Name = "LightPrompt"
+	lightPrompt.ActionText = "Light the fuses"; lightPrompt.ObjectText = "Dynamite"
+	lightPrompt.HoldDuration = 1.0; lightPrompt.MaxActivationDistance = 14
+	lightPrompt.RequiresLineOfSight = false; lightPrompt.Enabled = false; lightPrompt.Parent = zone
+	lightPrompt.Triggered:Connect(function(plr)
+		if plr ~= player then return end
+		if not hasLighter or placedCrates < CRATES_NEEDED or busy then return end
+		lightPrompt.Enabled = false
+		placePrompt.Enabled = false
+		notify("\xF0\x9F\x94\xA5 Fuses lit -- STAND BACK!", DYN_RED)
+		task.delay(1.1, detonate)
+	end)
+
 	blastWall = m
 end
 
@@ -588,6 +631,179 @@ local function killFuses()
 end
 
 -- a static crate snapped onto the next free X slot
+-- ---------------------------------------------------------------------------
+-- THE LIGHTER PIECES
+-- ---------------------------------------------------------------------------
+-- Each piece is a small hand-tool-ish prop on a stone so it never sinks into the ground, and it
+-- is finished EXACTLY the way the tractor island finishes its pickups: a gold outline with
+-- FillTransparency = 1 and no floating name label.
+--
+-- ⚠ OUTLINE ONLY, NEVER A FILL. A Highlight with any FillTransparency below 1 washes the whole
+-- model in gold and reads as a part that is fading out rather than one you can take. The
+-- outline says "pick this up" on its own, and it draws through walls (AlwaysOnTop), which is
+-- what makes four small objects findable across a whole island.
+--
+-- ⚠ AND NO BILLBOARD LABEL, for the reason the tractor file spells out at length: names
+-- floating over pickups stack into an unreadable pile wherever two are near each other and are
+-- legible from the next island up. The E prompt names the piece the moment you are close
+-- enough to take it, which is where the name is actually useful.
+local function buildLighterPiece(pos, index)
+	local m = Instance.new("Model"); m.Name = "LighterPiece" .. index; m.Parent = Workspace
+	local at = CFrame.new(pos)
+	local function bit(props, cf) props.Parent = m; local p = mk(props); p.CFrame = cf; return p end
+
+	-- a flat stone under it: these are dropped on rocky ground and a bare prop half-buried in a
+	-- slope is a prop nobody finds
+	bit({ Shape = Enum.PartType.Cylinder, Color = Color3.fromRGB(122, 116, 110),
+		Material = Enum.Material.Slate, Size = Vector3.new(0.4, 3.0, 3.0) },
+		at * CFrame.new(0, 0.2, 0) * CFrame.Angles(0, 0, math.rad(90)))
+
+	local root
+	if index == 1 then          -- FLINT: a dark chipped wedge
+		root = bit({ Color = Color3.fromRGB(64, 66, 74), Material = Enum.Material.Slate,
+			Size = Vector3.new(1.5, 0.9, 1.1) }, at * CFrame.new(0, 0.95, 0) * CFrame.Angles(0, 0.5, 0.2))
+		bit({ Color = Color3.fromRGB(92, 94, 102), Material = Enum.Material.Slate,
+			Size = Vector3.new(0.9, 0.5, 0.8) }, at * CFrame.new(0.3, 1.4, 0.1) * CFrame.Angles(0.3, 0.9, 0))
+	elseif index == 2 then      -- STRIKER: a curved steel bar
+		root = bit({ Color = Color3.fromRGB(176, 178, 186), Material = Enum.Material.Metal,
+			Reflectance = 0.18, Size = Vector3.new(2.1, 0.28, 0.5) }, at * CFrame.new(0, 1.0, 0))
+		for _, sx in ipairs({ -1, 1 }) do
+			bit({ Color = Color3.fromRGB(176, 178, 186), Material = Enum.Material.Metal,
+				Reflectance = 0.18, Size = Vector3.new(0.28, 0.7, 0.5) },
+				at * CFrame.new(sx * 0.95, 1.3, 0) * CFrame.Angles(0, 0, math.rad(sx * -22)))
+		end
+	elseif index == 3 then      -- FUEL: a little brass can with a cap
+		root = bit({ Shape = Enum.PartType.Cylinder, Color = Color3.fromRGB(196, 148, 62),
+			Material = Enum.Material.Metal, Reflectance = 0.12, Size = Vector3.new(1.6, 1.2, 1.2) },
+			at * CFrame.new(0, 1.2, 0))
+		bit({ Shape = Enum.PartType.Cylinder, Color = Color3.fromRGB(150, 108, 44),
+			Material = Enum.Material.Metal, Size = Vector3.new(0.4, 0.6, 0.6) },
+			at * CFrame.new(0.95, 1.2, 0))
+	else                        -- CASING: the body it all goes into
+		root = bit({ Color = Color3.fromRGB(150, 62, 48), Material = Enum.Material.Metal,
+			Reflectance = 0.06, Size = Vector3.new(1.1, 1.7, 0.7) }, at * CFrame.new(0, 1.35, 0))
+		bit({ Color = Color3.fromRGB(196, 148, 62), Material = Enum.Material.Metal,
+			Reflectance = 0.14, Size = Vector3.new(1.15, 0.4, 0.75) }, at * CFrame.new(0, 2.3, 0))
+	end
+	m.PrimaryPart = root
+
+	local hl = Instance.new("Highlight")
+	hl.FillColor = GOLD; hl.FillTransparency = 1      -- outline only -- see the note above
+	hl.OutlineColor = Color3.fromRGB(255, 236, 170); hl.OutlineTransparency = 0.05
+	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop; hl.Adornee = m; hl.Parent = m
+	return m, root
+end
+
+-- the assembled lighter, welded into your hand: proof you did the finding
+local function giveLighterTool()
+	local bp = player:FindFirstChildOfClass("Backpack")
+	if not bp or bp:FindFirstChild("Lighter") then return end
+	local tool = Instance.new("Tool")
+	tool.Name = "Lighter"; tool.ToolTip = "Light the dynamite fuses"
+	tool.RequiresHandle = true; tool.CanBeDropped = false
+	tool.Grip = CFrame.new(0, -0.2, 0)
+
+	local handle = mk({ Name = "Handle", Size = Vector3.new(0.8, 1.5, 0.6),
+		Color = Color3.fromRGB(150, 62, 48), Material = Enum.Material.Metal,
+		Anchored = false, CanCollide = false })
+	handle.Massless = true; handle.Parent = tool
+	local function weld(size, off, col, mat)
+		local p = mk({ Size = size, Color = col, Material = mat or Enum.Material.Metal,
+			Anchored = false, CanCollide = false })
+		p.Massless = true; p.CFrame = handle.CFrame * off; p.Parent = tool
+		local w = Instance.new("WeldConstraint"); w.Part0 = handle; w.Part1 = p; w.Parent = p
+		return p
+	end
+	weld(Vector3.new(0.85, 0.35, 0.65), CFrame.new(0, 0.9, 0), Color3.fromRGB(196, 148, 62))
+	weld(Vector3.new(0.2, 0.5, 0.2), CFrame.new(0.2, 1.2, 0), Color3.fromRGB(176, 178, 186))
+	local flame = weld(Vector3.new(0.25, 0.5, 0.25), CFrame.new(0, 1.45, 0),
+		Color3.fromRGB(255, 176, 60), Enum.Material.Neon)
+	flame.Transparency = 1        -- lit only while the tool is out and doing something
+	tool.Parent = bp
+	local hum = player.Character and player.Character:FindFirstChildWhichIsA("Humanoid")
+	if hum then pcall(function() hum:EquipTool(tool) end) end
+end
+
+local function lighterPieceTaken(rec, index)
+	-- deliberately NOT gated on `started`: the pieces are out from boot, so finding one early is
+	-- allowed and simply means you are ahead of the NPC
+	if rec.taken then return end
+	rec.taken = true
+	lighterFound += 1
+	if rec.model and rec.model.Parent then rec.model:Destroy() end
+	updateObjective()
+	if lighterFound >= LIGHTER_PARTS then
+		hasLighter = true
+		giveLighterTool()
+		notify("\xF0\x9F\x94\xA5 Lighter assembled! Now light the charges.", GOLD)
+		-- if the charges are already on the wall, the light prompt goes live this instant
+		if lightPrompt and placedCrates >= CRATES_NEEDED then lightPrompt.Enabled = true end
+		if blastCF then pointTo(blastCF.Position) end
+	else
+		notify(("\xF0\x9F\x94\xA7 %s  (%d/%d lighter parts)")
+			:format(LIGHTER_BITS[index] or "Part", lighterFound, LIGHTER_PARTS), GOLD)
+		-- point at the next one still standing, so four scattered pieces never become a hunt
+		for _, o in ipairs(lighterPieces) do
+			if not o.taken and o.model and o.model.Parent then
+				pointTo(o.model:GetPivot().Position); break
+			end
+		end
+	end
+end
+
+-- YOUR PARTS WIN. Every part named 'lighter' on island11 becomes a piece, in the order they are
+-- found; if you named fewer than LIGHTER_PARTS the rest are placed around the blast zone so the
+-- quest is always completable, and the log says which happened.
+local function placeLighterPieces()
+	local marks = {}
+	for _, d in ipairs(Workspace:GetDescendants()) do
+		if (d:IsA("BasePart") or d:IsA("Model")) and not d:IsA("Tool")
+			and norm(d.Name):find(LIGHTER_NAME, 1, true) and #marks < LIGHTER_PARTS then
+			local bp = d:IsA("BasePart") and d or firstBasePart(d)
+			if bp then marks[#marks + 1] = { part = d, pos = bp.Position } end
+		end
+	end
+	table.sort(marks, function(x, y) return x.part.Name < y.part.Name end)
+
+	local named = 0
+	for i = 1, LIGHTER_PARTS do
+		local pos
+		if marks[i] then
+			named += 1
+			pos = marks[i].pos
+			-- the marker becomes the piece: hidden, not deleted, so it is still yours in Studio
+			local bp = marks[i].part:IsA("BasePart") and marks[i].part or firstBasePart(marks[i].part)
+			if bp then bp.Transparency = 1; bp.CanCollide = false; bp.CanQuery = false end
+		elseif blastCF then
+			local ang = i * 2.39996
+			local p = blastCF.Position + Vector3.new(math.cos(ang) * 95, 0, math.sin(ang) * 95)
+			pos = p
+		end
+		if pos then
+			local rec = { taken = false }
+			local m, root = buildLighterPiece(pos, i)
+			rec.model = m
+			lighterPieces[i] = rec
+			local pr = Instance.new("ProximityPrompt")
+			pr.ActionText = "Take"; pr.ObjectText = LIGHTER_BITS[i] or "Lighter Part"
+			pr.HoldDuration = 0; pr.MaxActivationDistance = 12
+			pr.RequiresLineOfSight = false; pr.Parent = root
+			root.CanQuery = true
+			pr.Triggered:Connect(function(plr) if plr == player then lighterPieceTaken(rec, i) end end)
+		end
+	end
+	if named == 0 then
+		warn(("[TunnelQuest] no part named '%s' found anywhere in Workspace -- all %d lighter "
+			.. "piece(s) were auto-placed in a ring around the blast zone. The match is a "
+			.. "SUBSTRING of the normalised name, so 'Lighter', 'lighter 2' and 'BigLighter' all "
+			.. "count; check the parts exist and are not inside a Tool.")
+			:format(LIGHTER_NAME, LIGHTER_PARTS))
+	else
+		print(("[TunnelQuest] %d lighter part(s) placed -- %d on your '%s' parts, %d auto-placed")
+			:format(LIGHTER_PARTS, named, LIGHTER_NAME, LIGHTER_PARTS - named))
+	end
+end
+
 local function snapCrateToSlot(fromPos)
 	for _, slot in ipairs(crateSlots) do
 		if not slot.filled then
@@ -928,7 +1144,7 @@ local function islandQuake(at, seconds)
 	end)
 end
 
-local function detonate()
+detonate = function()
 	if busy then return end
 	busy = true
 	if placePrompt then placePrompt.Enabled = false end
@@ -1245,7 +1461,55 @@ local function giveGear()
 			at = CFrame.new(-0.95, -1.45, 0.06) * CFrame.Angles(0, 0, math.rad(90)) },
 		{ props = { Shape = Enum.PartType.Cylinder, Color = ROCK, Size = Vector3.new(0.1, 0.64, 0.64) },
 			at = CFrame.new(0.95, -1.45, 0.06) * CFrame.Angles(0, 0, math.rad(90)) },
+		-- ---- A LAMP HUNG OFF THE FRAME. The headlamp lights where you LOOK; this lights where
+		-- you are, so you cast a pool of your own underground and stop reading as a silhouette
+		-- with a torch. Warm, short-range and shadowless -- it is a hurricane lamp, not a second
+		-- floodlight competing with the one on your hat.
+		{ props = { Color = STEEL_DK, Size = Vector3.new(0.16, 0.3, 0.16) }, at = CFrame.new(-0.98, 0.72, 0.3) },
+		{ props = { Color = STEEL, Size = Vector3.new(0.34, 0.1, 0.34) },    at = CFrame.new(-0.98, 0.56, 0.3) },
+		{ props = { Color = Color3.fromRGB(255, 206, 128), Material = Enum.Material.Neon,
+			Size = Vector3.new(0.3, 0.42, 0.3) },                            at = CFrame.new(-0.98, 0.32, 0.3) },
+		{ props = { Color = STEEL, Size = Vector3.new(0.34, 0.1, 0.34) },    at = CFrame.new(-0.98, 0.08, 0.3) },
+		-- ---- A CANTEEN and a coil of rope: the two things every miner in every picture has, and
+		-- the cheapest way to say "kitted out for a long shift" rather than "wearing a bag"
+		{ props = { Shape = Enum.PartType.Cylinder, Color = STEEL_DK, Size = Vector3.new(0.26, 0.5, 0.5) },
+			at = CFrame.new(0.98, -0.5, 0.3) * CFrame.Angles(0, 0, math.rad(90)) },
+		{ props = { Shape = Enum.PartType.Cylinder, Color = ROCK_LT, Size = Vector3.new(0.24, 0.8, 0.8) },
+			at = CFrame.new(0, 1.28, 0.62) * CFrame.Angles(math.rad(90), 0, 0) },
+		{ props = { Shape = Enum.PartType.Cylinder, Color = ROCK, Size = Vector3.new(0.26, 0.5, 0.5) },
+			at = CFrame.new(0, 1.28, 0.62) * CFrame.Angles(math.rad(90), 0, 0) },
 	})
+
+	-- ⚠ MATERIAL BY ROLE, IN ONE PASS. Every part above is born SmoothPlastic, so a canvas sack,
+	-- a wooden frame, steel buckles and a bedroll were the same shiny plastic in five colours --
+	-- which is why a thirty-part pack still read as one moulded lump. Assigned by the colour the
+	-- builder already chose rather than by editing thirty entries, and Neon is skipped so the
+	-- lamp keeps glowing.
+	for _, d in ipairs(pack:GetDescendants()) do
+		if d:IsA("BasePart") and d.Material ~= Enum.Material.Neon then
+			if d.Color == DIRT then
+				d.Material = Enum.Material.Fabric          -- the canvas sack
+			elseif d.Color == WOOD or d.Color == WOOD_DK then
+				d.Material = Enum.Material.WoodPlanks      -- frame, straps, lash loops
+			elseif d.Color == STEEL or d.Color == STEEL_DK then
+				d.Material = Enum.Material.Metal
+				d.Reflectance = 0.12                       -- buckles catch the headlamp
+			elseif d.Color == ROCK or d.Color == ROCK_LT or d.Color == ROCK_DK then
+				d.Material = Enum.Material.Fabric          -- bedroll and rope
+			end
+		end
+	end
+
+	-- the lamp's actual light, on the glowing part
+	for _, d in ipairs(pack:GetDescendants()) do
+		if d:IsA("BasePart") and d.Material == Enum.Material.Neon then
+			local lt = Instance.new("PointLight")
+			lt.Color = Color3.fromRGB(255, 208, 140)
+			lt.Brightness = 1.5; lt.Range = 15; lt.Shadows = false
+			lt.Parent = d
+			break
+		end
+	end
 
 	print(("[TunnelQuest] miner's gear issued -- hat fitted at %.2f scale, %d hair piece(s) tucked")
 		:format(H, (function() local n = 0; for _ in pairs(hidHair) do n += 1 end; return n end)()))
@@ -1290,13 +1554,17 @@ do
 	-- rock and jerks when it seizes, and both need somewhere to return to.
 	--
 	-- ⚠ IT MUST BE THE SHELL'S CENTRE, NOT A HAND-PLACED SPOT. _G.housePanel below re-parents this
-	-- panel into a 700x520 shell and centres it there. The old home -- (0.5,-300),(0.7,0), measured
+	-- panel into a 700x260 shell and centres it there. The old home -- (0.5,-300),(0.7,0), measured
 	-- against the whole screen -- then meant "300px left of centre, 70% down" INSIDE that shell, so
 	-- the first frame of the minigame threw the card off its own house position and part of it off
 	-- screen. Nothing about the drill looks wrong in the code; the panel just leaves.
 	--
 	-- Every rumble and tween below is an OFFSET off home, so they all keep working unchanged once
 	-- home is the centre. (Same trap TaffyStorm's MG.home fell into -- see HousePanel's header.)
+	-- The house spot, in the shell housePanel parents this panel into. The drill SHAKES around it
+	-- while it bites and settles back, so it opts out of HousePanel's position hold -- see the
+	-- HouseAnimatesPosition note there. Every offset below is DRILL.home +/- a jitter, so the
+	-- panel's resting place is still the same spot as every other task HUD.
 	DRILL.home = UDim2.fromScale(0.5, 0.5)
 
 	local panel = Instance.new("Frame")
@@ -1305,10 +1573,12 @@ do
 	panel.Position = DRILL.home
 	panel.BackgroundColor3 = Color3.fromRGB(14, 18, 24); panel.BackgroundTransparency = 0.06
 	panel.BorderSizePixel = 0; panel.ZIndex = 2; panel.Parent = gui
-	-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+	-- HOUSE PANEL: the house 700x260 task card, centred in the free band, and the bottom
 	-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
 	-- The panel keeps its own size and every child keeps its own pixel coordinates;
 	-- it is centred in the house shell and scaled to fit, so nothing inside moves.
+	panel:SetAttribute("HouseAnimatesPosition", true)   -- the drill shake moves it; it returns to centre
+	panel:SetAttribute("WantsHousePanel", true)   -- adopted by attribute, so load order cannot lose it
 	pcall(_G.housePanel, panel)   -- island11 mine drill
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 16)
 	DRILL.panel = panel
@@ -1916,6 +2186,188 @@ local function buildCave()
 		deco("CeilBeam", Vector3.new(W - 10, 1.5, 1.5), CFrame.new(O + Vector3.new(0, H - 3.5, zc)), WOOD_DK, Enum.Material.Wood)
 	end
 
+	-- ======================================================================
+	-- LICORICE (by request). This island is called the LICORICE TUNNELS and the mine under it
+	-- was rock, wood and crystal -- a cave that could be under any island in the game. The candy
+	-- is what makes it THIS island's underground, in four reads, all deco() (non-colliding, and
+	-- all placed with the same clearAt/entrance rules as everything else here):
+	--   * TWISTED LICORICE COLUMNS holding the roof up between the wooden arches -- stacked
+	--     segments, each turned a little and pushed a little off-axis, which is what makes a
+	--     straight stack read as a twist. Black with a red rope wound through it.
+	--   * RED LACES hanging off the ceiling beams in sagging spans, like cabling strung by
+	--     whoever dug this -- except it is candy.
+	--   * ALLSORTS half-buried in the floor: the striped pink/black/yellow stacks, tipped and
+	--     sunk like boulders that happen to be sweets.
+	--   * GUMDROP BUTTONS dotted low on the walls, faintly lit, so the lamp keeps finding
+	--     little colour in the black stone.
+	-- ======================================================================
+	do
+		local LICO   = Color3.fromRGB(30, 26, 30)      -- licorice black (not pure black: it must
+		local LICO_R = Color3.fromRGB(186, 44, 58)     --  still shade under the headlamp)
+		local SORTS  = { Color3.fromRGB(242, 152, 190), LICO, Color3.fromRGB(245, 208, 96),
+			LICO, Color3.fromRGB(244, 238, 230) }
+
+		-- the columns: between the arch pairs, clear of the entrance line
+		for _, sp in ipairs({ { -HW + 9, -27 }, { -HW + 9, 24 }, { HW - 9, -27 }, { HW - 9, 24 },
+			{ -26, -HL + 10 }, { 26, -HL + 10 } }) do
+			local segs = 8
+			for k = 0, segs - 1 do
+				local twist = k * 0.55
+				local seg = deco("LicoTwist", Vector3.new(2.6, H / segs + 0.6, 2.6),
+					CFrame.new(O + Vector3.new(sp[1] + math.cos(twist) * 0.55, (k + 0.5) * (H / segs),
+						sp[2] + math.sin(twist) * 0.55)) * CFrame.Angles(0, twist, math.rad(4)),
+					LICO, Enum.Material.SmoothPlastic)
+				seg.Reflectance = 0.04
+				if k % 2 == 1 then   -- the red rope wound through: every other segment carries a band
+					deco("LicoBand", Vector3.new(2.9, 0.8, 2.9),
+						seg.CFrame * CFrame.new(0, 0, 0), LICO_R, Enum.Material.SmoothPlastic)
+				end
+			end
+		end
+
+		-- the laces: three sagging spans per ceiling beam line, hung just under the roof
+		for li, zc in ipairs({ -32, -4, 24 }) do
+			for s = -1, 1 do
+				local cx = s * 34 + (li % 2) * 6
+				for k = -2, 2 do
+					deco("Lace", Vector3.new(9.5, 0.7, 0.7),
+						CFrame.new(O + Vector3.new(cx + k * 8.6, H - 5.5 - (2 - math.abs(k)) * 1.5, zc))
+							* CFrame.Angles(0, 0, math.rad(k * 11)),
+						LICO_R, Enum.Material.SmoothPlastic)
+				end
+			end
+		end
+
+		-- the allsorts: striped stacks tipped into the floor like fallen boulders
+		for i = 1, 7 do
+			local a = i * 1.83 + 0.4
+			local r = 22 + (i % 4) * 11
+			local x, z = math.cos(a) * r, math.sin(a) * r
+			if clearAt(x, z, 3) then
+				local w = 4.2 + (i % 3) * 1.1
+				local tip = CFrame.new(O + Vector3.new(x, 0.6, z))
+					* CFrame.Angles(math.rad((i % 3) * 9 - 9), i * 1.3, math.rad((i % 2) * 12 - 6))
+				for L = 1, 3 + (i % 3) do
+					deco("Allsort", Vector3.new(w, 1.15, w),
+						tip * CFrame.new(0, (L - 1) * 1.15, 0), SORTS[((i + L) % #SORTS) + 1],
+						Enum.Material.SmoothPlastic)
+				end
+			end
+		end
+
+		-- the buttons: low on the walls, one faint light in three so the black stone keeps
+		-- giving the lamp something to find (same restraint as the crystal veins above)
+		for i = 1, 12 do
+			local wall = i % 4
+			local along = ((i * 37) % (W - 30)) - (W - 30) / 2
+			local px, pz
+			if wall == 0 then px, pz = along, -HL + 3.2
+			elseif wall == 1 then px, pz = along, HL - 3.2
+			elseif wall == 2 then px, pz = -HW + 3.2, along
+			else px, pz = HW - 3.2, along end
+			if not (math.abs(px) < 11 and math.abs(math.abs(pz) - HL) < 13) then
+				local col = (i % 3 == 0 and LICO_R) or (i % 3 == 1 and Color3.fromRGB(242, 152, 190))
+					or Color3.fromRGB(245, 208, 96)
+				local drop = mk({ Name = "Gumdrop", Shape = Enum.PartType.Ball,
+					Size = Vector3.new(2.2, 1.8, 2.2), Color = col, Material = Enum.Material.Neon,
+					Transparency = 0.25 })
+				drop.CFrame = CFrame.new(O + Vector3.new(px, 2.2 + (i % 3) * 2.4, pz))
+				drop.Parent = m
+				if i % 3 == 0 then
+					local pl = Instance.new("PointLight")
+					pl.Color = col; pl.Brightness = 0.05; pl.Range = 5; pl.Shadows = false; pl.Parent = drop
+				end
+			end
+		end
+	end
+
+	-- ======================================================================
+	-- THE CAVE IS ALIVE -- three slow background behaviours, because a room you only LOOK at is
+	-- a diorama. All of it dies with the model (every loop is gated on m.Parent), none of it can
+	-- touch a player, and none of it is loud -- the rockfall lesson from island8 applies: ambience
+	-- earns its place by being almost missable.
+	-- ======================================================================
+	--   * SYRUP DRIPS: dark red beads fall from the roof at six fixed spots and land as a small
+	--     spreading ring. Licorice country -- it drips candy, not water.
+	--   * DUST MOTES: a thin haze drifting through the room, which is what makes a headlamp beam
+	--     read as a BEAM.
+	--   * SETTLING GROANS: every so often, somewhere in the dark, the mine creaks -- the realm's
+	--     known-good thump pitched right down, quiet, and echoed by the cave reverb. The dark
+	--     doing what dark is for.
+	do
+		for di, dp in ipairs({ { -34, -22 }, { 18, -38 }, { 40, 8 }, { -12, 30 }, { 8, 4 }, { -44, 42 } }) do
+			task.spawn(function()
+				task.wait(di * 1.1)   -- never in unison
+				while m.Parent do
+					task.wait(3 + (di * 1.7) % 4 + math.random() * 3)
+					if not m.Parent then break end
+					local bead = mk({ Name = "Drip", Shape = Enum.PartType.Ball,
+						Size = Vector3.new(0.55, 0.8, 0.55), Color = Color3.fromRGB(150, 34, 44),
+						Material = Enum.Material.SmoothPlastic, Reflectance = 0.1 })
+					bead.CFrame = CFrame.new(O + Vector3.new(dp[1], H - 2.5, dp[2]))
+					bead.Parent = m
+					TweenService:Create(bead, TweenInfo.new(0.62, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+						{ CFrame = CFrame.new(O + Vector3.new(dp[1], 0.4, dp[2])) }):Play()
+					task.delay(0.62, function()
+						if not m.Parent then if bead.Parent then bead:Destroy() end return end
+						bead:Destroy()
+						local ring = mk({ Name = "DripRing", Shape = Enum.PartType.Cylinder,
+							Size = Vector3.new(0.12, 0.7, 0.7), Color = Color3.fromRGB(150, 34, 44),
+							Transparency = 0.25 })
+						ring.CFrame = CFrame.new(O + Vector3.new(dp[1], 0.25, dp[2])) * CFrame.Angles(0, 0, math.rad(90))
+						ring.Parent = m
+						TweenService:Create(ring, TweenInfo.new(0.5),
+							{ Size = Vector3.new(0.12, 2.6, 2.6), Transparency = 1 }):Play()
+						Debris:AddItem(ring, 0.6)
+					end)
+				end
+			end)
+		end
+
+		for _, mp in ipairs({ { -30, -20 }, { 28, 14 }, { 0, -44 } }) do
+			local host = mk({ Name = "MoteHost", Size = Vector3.new(0.2, 0.2, 0.2), Transparency = 1 })
+			host.CFrame = CFrame.new(O + Vector3.new(mp[1], H * 0.55, mp[2]))
+			host.Parent = m
+			local motes = Instance.new("ParticleEmitter")
+			motes.Texture = "rbxasset://textures/particles/smoke_main.dds"
+			motes.Color = ColorSequence.new(Color3.fromRGB(214, 200, 186))
+			motes.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(1, 0.35) })
+			motes.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.3, 0.86),
+				NumberSequenceKeypoint.new(1, 1) })
+			motes.Lifetime = NumberRange.new(6, 10)
+			motes.Rate = 4
+			motes.Speed = NumberRange.new(0.3, 0.8)
+			motes.SpreadAngle = Vector2.new(180, 180)
+			motes.Acceleration = Vector3.new(0.15, -0.05, 0.1)   -- a faint sideways draught
+			motes.LightInfluence = 1                             -- lit by the LAMP, dark in the dark
+			motes.Parent = host
+		end
+
+		task.spawn(function()
+			while m.Parent do
+				task.wait(14 + math.random() * 16)
+				if not m.Parent then break end
+				local hrp = hrpOf()
+				if hrp and (hrp.Position - O).Magnitude < 200 then   -- only while somebody is down here
+					local a = math.random() * math.pi * 2
+					local src = mk({ Name = "Groan", Size = Vector3.new(0.2, 0.2, 0.2), Transparency = 1 })
+					src.CFrame = CFrame.new(O + Vector3.new(math.cos(a) * (HW - 8), 6 + math.random() * 12,
+						math.sin(a) * (HL - 8)))
+					src.Parent = m
+					local s = Instance.new("Sound")
+					s.SoundId = "rbxassetid://4612378364"          -- the realm's known-good thump...
+					s.PlaybackSpeed = 0.2 + math.random() * 0.12   -- ...slowed into a deep creak
+					s.Volume = 0.16
+					s.RollOffMode = Enum.RollOffMode.InverseTapered
+					s.RollOffMinDistance = 15; s.RollOffMaxDistance = 160
+					s.Parent = src; s:Play()
+					Debris:AddItem(src, 8)
+				end
+			end
+		end)
+	end
+
 	-- ---- worn, uneven floor: gravel patches, worn path, shallow pits, loose pebbles (all thin +
 	-- non-colliding, so you still walk on the real flat floor beneath) ----
 	for i = 1, 26 do
@@ -2346,6 +2798,11 @@ end
 -- if you die down there.
 local litSaved
 local function caveDark(on)
+	-- SkyByAltitude re-asserts Brightness and OutdoorAmbient every frame, and those are two of the three
+	-- properties this function exists to zero. Without the claim the "BLACK, not dim" note below was
+	-- aspirational: only Lighting.Ambient and the fog ever survived a frame.
+	local claims = _G.questSkyClaims; if not claims then claims = {}; _G.questSkyClaims = claims end
+	claims.tunnel = on or nil
 	if on then
 		if litSaved then return end
 		litSaved = {
@@ -2355,7 +2812,12 @@ local function caveDark(on)
 			fog  = Lighting.FogEnd,
 			fogs = Lighting.FogStart,
 			fogc = Lighting.FogColor,
+			rev  = SoundService.AmbientReverb,
 		}
+		-- THE CAVE ECHOES. Reverb is the audio half of what the black fog does for the eyes: the
+		-- drill, your own footsteps and the mine's groans all bounce, which says "underground" in
+		-- a way no prop can. Saved and restored with the lighting, so the surface never echoes.
+		SoundService.AmbientReverb = Enum.ReverbType.Cave
 		-- BLACK, not dim. Ambient is what stops a cave being dark, so it goes to nothing; the
 		-- fog closes to 90 studs so anything past your lamp is gone rather than merely faint.
 		Lighting.Ambient        = Color3.fromRGB(0, 0, 0)
@@ -2371,6 +2833,7 @@ local function caveDark(on)
 		Lighting.FogEnd         = litSaved.fog
 		Lighting.FogStart       = litSaved.fogs
 		Lighting.FogColor       = litSaved.fogc
+		SoundService.AmbientReverb = litSaved.rev or Enum.ReverbType.NoReverb
 		litSaved = nil
 	end
 end
@@ -2552,8 +3015,23 @@ local function wirePlacePrompt()
 		placedCrates = placedCrates + 1
 		updateObjective()
 		if placedCrates >= CRATES_NEEDED then
-			notify("💥 All charges set! Stand back...", DYN_RED)
-			task.delay(0.9, detonate)
+			-- ⚠ CHARGES ON THE WALL ARE NOT A BLAST. Planting used to detonate on a 0.9s timer;
+			-- now it arms the wall and waits for a flame. Without the lighter you are stood in
+			-- front of three live crates with no way to set them off, which is exactly the
+			-- prompt to go and find the four pieces.
+			if hasLighter then
+				notify("💥 All charges set -- LIGHT THEM!", DYN_RED)
+				if lightPrompt then lightPrompt.Enabled = true end
+				if blastCF then pointTo(blastCF.Position) end
+			else
+				notify("\xF0\x9F\x94\xA5 Charges set -- but you need a LIGHTER to fire them!", GOLD)
+				for _, o in ipairs(lighterPieces) do
+					if not o.taken and o.model and o.model.Parent then
+						pointTo(o.model:GetPivot().Position); break
+					end
+				end
+			end
+			updateObjective()
 		else
 			notify(("💥 Charge %d/%d set -- grab another!"):format(placedCrates, CRATES_NEEDED), DYN_RED)
 			-- nudge back toward the TNT source (the brick, or a leftover ground crate)
@@ -2657,6 +3135,12 @@ local function beginQuest()
 	else
 		notify("💥 Blast Open the Tunnel! Carry 3 Dynamite Crates to the X.", DYN_RED)
 	end
+	task.delay(3.5, function()
+		if not hasLighter then
+			notify(("\xF0\x9F\x94\xA5 ...and find the %d lighter parts, or they will never go off!")
+				:format(LIGHTER_PARTS), GOLD)
+		end
+	end)
 	pointTo((tntBrick and firstBasePart(tntBrick) and firstBasePart(tntBrick).Position) or blastCF.Position)
 end
 
@@ -2705,13 +3189,16 @@ local function npcBubble(head, text, footer)
 end
 
 local function questPages()
-	if started then return { "The tunnel's blasting -- get down there and grab those diamonds! ⛏️" } end
+	if started then
+		return { "Blast that X open, then drill diamonds! ⛏️" }
+	end
+	-- the counts come from the constants, so re-tuning the quest can never leave the foreman
+	-- telling you a number the quest does not actually want
 	return {
-		"Well howdy! I'm the mine foreman. 🪓",
-		"There's a sealed tunnel deep in this canyon -- packed with DIAMONDS.",
-		"Grab the TNT and throw 3 charges onto the big red X to BLAST it open! 💥",
-		"Then head down, mine 10 diamond ore, load the cart, and climb back up.",
-		"Ready? Let's blow it open!",
+		"Foreman here. That sealed tunnel holds DIAMONDS.",
+		("1) Plant %d dynamite on the red X."):format(CRATES_NEEDED),
+		("2) Find %d LIGHTER parts and light fuses."):format(LIGHTER_PARTS),
+		("3) Hold Drill on %d ore, load cart."):format(NODES_NEEDED),
 	}
 end
 
@@ -2723,7 +3210,7 @@ local function wireQuestNPC(head)
 	local function close() local b = head:FindFirstChild("SpeechBubble"); if b then b:Destroy() end; index = 0; pages = nil; prompt.ActionText = "Talk" end
 	prompt.Triggered:Connect(function()
 		if started then close(); return end
-		if index == 0 then pages = questPages() end
+		if index == 0 then pages = (_G.capBubble and _G.capBubble(questPages())) or questPages() end
 		index += 1
 		if not pages or index > #pages then close(); beginQuest(); return end   -- read everything -> start
 		local last = index >= #pages
@@ -2789,6 +3276,13 @@ task.spawn(function()
 		buildStartBoard()
 	end
 
+	-- ⚠ THE LIGHTER PIECES GO OUT AT BOOT, NOT WHEN THE QUEST IS TAKEN. They used to be placed
+	-- inside beginQuest(), which meant your four 'lighter' parts sat there doing nothing until
+	-- after you had talked to the NPC -- and from the outside that is indistinguishable from the
+	-- markers not being read at all. They are scenery you can find early; picking one up before
+	-- the quest starts just means you are ahead.
+	placeLighterPieces()
+
 	print(("[TunnelQuest] ready on island11 -- blast zone at %.0f,%.0f,%.0f (%s); tnt=%s, npc=%s"):format(
 		blastCF.Position.X, blastCF.Position.Y, blastCF.Position.Z, marker and "marker" or "fallback",
 		tntBrick and "found" or "none", npc and "found" or "none"))
@@ -2852,20 +3346,33 @@ player.CharacterAdded:Connect(function(char)
 end)
 
 -- ============================================================================
--- DEV COMMANDS  (only near the blast zone):  /blast  = auto-run to the mine
+-- DEV COMMANDS:  /blast, /unlockcave  = auto-run to the mine   /mine = fill the cart
 -- ============================================================================
 local lastCmd, lastCmdAt = "", 0
 local function onCommand(msg)
+	-- DEV ONLY. QuestDevGate publishes this; read at command time so load order cannot matter,
+	-- and nil (gate not up yet) refuses. Without it any player could type their way to the whole realm.
+	if not _G.questDevOK then return end
 	local m = tostring(msg or ""):lower()
 	-- both TextChatService and player.Chatted fire for one message -> debounce identical commands
 	if m == lastCmd and (os.clock() - lastCmdAt) < 0.6 then return end
 	lastCmd = m; lastCmdAt = os.clock()
-	if m:sub(1, 6) == "/blast" then
+	-- /unlockcave is /blast under the name you actually reach for when what you want is to stand
+	-- IN the cave (checking the licorice dressing, the lamp, the nodes) rather than to test the
+	-- blast: begin the quest if needed, plant + detonate if the wall is still shut, then descend.
+	if m:sub(1, 6) == "/blast" or m:sub(1, 11) == "/unlockcave" then
 		if not started then beginQuest() end
 		-- auto-plant all charges + detonate, THEN auto-enter the mine (one-command test)
 		if phase == "blast" then
 			carryingCrate = false
 			if heldCrate then heldCrate:Destroy(); heldCrate = nil end
+			-- the cheat must not leave the gate shut or four pieces glowing on a done quest
+			hasLighter = true
+			lighterFound = LIGHTER_PARTS
+			for _, o in ipairs(lighterPieces) do
+				o.taken = true
+				if o.model and o.model.Parent then o.model:Destroy() end
+			end
 			while placedCrates < CRATES_NEEDED do
 				snapCrateToSlot(); placedCrates = placedCrates + 1
 			end
@@ -2880,7 +3387,8 @@ local function onCommand(msg)
 		elseif phase == "descend" then
 			enterMine()
 		end
-		print("[TunnelQuest][DEV] /blast -- charges auto-planted, entering mine")
+		print("[TunnelQuest][DEV] " .. (m:sub(1, 11) == "/unlockcave" and "/unlockcave" or "/blast")
+			.. " -- charges auto-planted, entering mine")
 	elseif m:sub(1, 5) == "/mine" then
 		-- fill the cart instantly (for testing phase 4)
 		if phase == "mine" then

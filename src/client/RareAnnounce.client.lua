@@ -73,14 +73,17 @@ task.spawn(function()
 
 		if _G.NotifyCenter and _G.NotifyCenter.push then
 			pcall(_G.NotifyCenter.push, {
+				-- Somebody else's hatch: demoted to the top-left pills by the banner budget
+				-- (kind = "other_hatch"). A 1-in-5000 pet is worth telling the server about; it is not worth
+				-- taking the slot the player's own island arrival, purchase or event needs. YOUR hatch is
+				-- announced by the crate reveal itself, which this file never touched.
+				kind = "other_hatch",
 				text = text,
 				color = mythic and MYTHIC or GOLD,
 				-- EVENT, not REWARD. This is somebody ELSE'S win: it should be impossible to miss, but it must
 				-- never sit on top of this player's own island landing or crate reveal.
 				priority = (_G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT) or 80,
 			})
-		elseif _G.showHudBanner then
-			_G.showHudBanner(text, mythic and MYTHIC or GOLD, 6)
 		else
 			print("[RareAnnounce] " .. text)
 		end

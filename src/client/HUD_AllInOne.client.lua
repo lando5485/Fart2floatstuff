@@ -695,12 +695,13 @@ task.spawn(function()
 	end
 
 	local tierDefs={
-		{name="Tiny Gut",     maxPower=100,  cost=0,      robux=false, emoji="\xF0\x9F\x91\xB6"},
-		{name="Small Gut",    maxPower=182,  cost=1600,   robux=false, emoji="\xF0\x9F\xA7\x92"},
-		{name="Medium Gut",   maxPower=520,  cost=3000,   robux=false, emoji="\xF0\x9F\x90\xB7"},
-		{name="Large Gut",    maxPower=1075, cost=5200,   robux=false, emoji="\xF0\x9F\x90\x98"},
-		{name="XL Gut",       maxPower=2146, cost=8000,   robux=false, emoji="\xF0\x9F\x92\xAA"},
-		{name="Iron Gut",     maxPower=3218, cost=11000,  robux=false, emoji="\xF0\x9F\x8F\x8B\xEF\xB8\x8F"},
+		{name="Tiny Gut",     maxPower=120,  cost=0,      robux=false, emoji="\xF0\x9F\x91\xB6"},
+		{name="Small Gut",    maxPower=270,  cost=1000,   robux=false, emoji="\xF0\x9F\xA7\x92"},
+		{name="Medium Gut",   maxPower=470,  cost=2000,   robux=false, emoji="\xF0\x9F\x90\xB7"},
+		{name="Large Gut",    maxPower=620, cost=4000,   robux=false, emoji="\xF0\x9F\x90\x98"},
+		{name="XL Gut",       maxPower=1080, cost=5000,   robux=false, emoji="\xF0\x9F\x92\xAA"},
+		{name="XXL Gut",      maxPower=1710, cost=6000,   robux=false, emoji="ð¦"},
+		{name="Iron Gut",     maxPower=2600, cost=11500,  robux=false, emoji="\xF0\x9F\x8F\x8B\xEF\xB8\x8F"},
 		{name="Infinite Gut", maxPower=9999, cost=499,    robux=true,  emoji="\xe2\x99\xbe\xef\xb8\x8f"},
 	}
 	local BuyStomachEvent=RS:WaitForChild("BuyStomachEvent",30)
@@ -819,12 +820,12 @@ task.spawn(function()
 	end
 
 	local stomachNames = {
-		[100]  = {"\xF0\x9F\x91\xB6", "Tiny Gut"},
-		[182]  = {"\xF0\x9F\xAB\x83", "Small Gut"},
-		[520]  = {"\xF0\x9F\x90\xB7", "Medium Gut"},
-		[1075] = {"\xF0\x9F\x90\x98", "Large Gut"},
-		[2146] = {"\xF0\x9F\x92\xAA", "XL Gut"},
-		[3218] = {"\xF0\x9F\x8F\x8B\xEF\xB8\x8F", "Iron Gut"},
+		[120]  = {"\xF0\x9F\x91\xB6", "Tiny Gut"},
+		[270]  = {"\xF0\x9F\xAB\x83", "Small Gut"},
+		[470]  = {"\xF0\x9F\x90\xB7", "Medium Gut"},
+		[620]  = {"\xF0\x9F\x90\x98", "Large Gut"},
+		[1080] = {"\xF0\x9F\x92\xAA", "XL Gut"},
+		[2600] = {"\xF0\x9F\x8F\x8B\xEF\xB8\x8F", "Iron Gut"},
 		[9999] = {"\xe2\x99\xbe\xef\xb8\x8f", "Infinite Gut"},
 	}
 	if StomachUpdateEvent then
@@ -903,7 +904,7 @@ do
 		dot.Size = UDim2.fromOffset(18, 18)
 		dot.AnchorPoint = Vector2.new(1, 0)
 		dot.Position = UDim2.new(1, -2, 0, -2)
-		dot.BackgroundColor3 = Color3.fromRGB(225, 50, 50)
+		dot.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
 		dot.ZIndex = 8
 		dot.Visible = false
 		dot.Parent = parent

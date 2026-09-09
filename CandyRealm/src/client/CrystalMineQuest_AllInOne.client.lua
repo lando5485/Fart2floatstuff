@@ -13,7 +13,18 @@
 --   * Talk to the Candy Npc -> accept -> you're handed a Pickaxe (built in code).
 --   * Equip it and swing (click) at a crystal you're facing: each hit chips it smaller
 --     (base stays planted), and the final hit SHATTERS it in a candy spark burst.
---   * Mine NEED of them (8, not the whole field) -> firework + banner + _G.crystalQuestComplete.
+--   * THE CRYSTALS ARE THE MINE'S LIGHT. Every crystal carries a PointLight, and a gloom
+--     wash deepens with each one mined -- the mine gets DARKER as you succeed, so the
+--     last few are dug out by helmet-lamp in the glow of whatever's left. Escalation
+--     for free, no new mechanic.
+--   * GOLDEN CRYSTALS: some spawn gold (1 in GOLD_CHANCE). A golden counts DOUBLE toward
+--     the quota and pays GOLD_COINS on the spot -- the "what did I just find" moment.
+--   * Halfway, the pickaxe is RE-FORGED and ONE-SHOTS crystals -- the back half of the
+--     quota feels powerful instead of longer.
+--   * Gas vents HISS for VENT_TELL seconds (glow + warning wisps) before they blow, so
+--     the gas is a dodge, not an ambush.
+--   * Mine NEED of them (8, not the whole field) -> firework + banner + COIN_REWARD
+--     coins + _G.crystalQuestComplete.
 --   * /complete finishes it instantly (near island8).
 --======================================================================
 
@@ -41,24 +52,41 @@ local CRYSTAL_NAME      = "crystal"          -- matched case-insensitively (== o
 local NPC_NAMES         = { "candy npc", "candynpc" }
 local TALK_DISTANCE     = 12
 local BANNER_RANGE      = 320
-local HITS_PER_CRYSTAL  = 6                  -- pickaxe hits to shatter a crystal
+local HITS_PER_CRYSTAL  = 4                  -- pickaxe hits to shatter a crystal (was 6 --
+                                             -- 38 cooldown-gated clicks for the quota was
+                                             -- the biggest raw click count in the realm)
 -- Halfway through, the NPC re-forges your pickaxe: it hits harder, so the back half of
 -- the job speeds up instead of dragging (the usual problem with "collect N" quests).
 local UPGRADE_AFTER     = 3                  -- crystals mined before the upgrade fires
 -- ⚠ HOW MANY YOU ACTUALLY HAVE TO MINE. The quest used to require EVERY crystal on the island,
--- and island8 has 25 of them: at six hits each that is ~125 swings of a pickaxe to finish one
+-- and island8 was believed to have 25 of them: at six hits each that is ~125 swings of a pickaxe
+-- to finish one
 -- island. No other island in this realm asks for anything close -- the cookie wants 6 chunks,
 -- the tractor 5 parts, the pancake 5 syrups.
 --
 -- So the field stays 25 strong (it should LOOK like a mine) and the quota is what closes the
 -- quest. Everything past the quota is still minable, still shatters, still stops its gas vent --
 -- it just is not homework. Clamped to what exists, so a world with fewer crystals still finishes.
+-- ⚠ THE "25" ABOVE WAS NEVER island8'S COUNT. It was measured before the scan was scoped to this
+-- island, so it included every object named crystal* anywhere in the realm -- island15's among
+-- them, 37,000 studs away. Scoped, the field comes out far smaller. goalCount() clamps NEED to
+-- whatever actually exists, so the quest completes either way; the census diagnostic at the bottom
+-- of this file prints the real number and what was rejected, so tune NEED against THAT, not this.
 local NEED              = 8
-local UPGRADED_HITS     = 4                  -- hits per crystal once it's upgraded
+local UPGRADED_HITS     = 1                  -- ONE-SHOT once re-forged: the upgrade should
+                                             -- feel like power, not like a shorter chore
+-- GOLDEN CRYSTALS -- the rarity roll. A golden spawns gold, sparkles harder, glows
+-- brighter, counts DOUBLE toward the quota and pays coins the moment it shatters.
+local GOLD_CHANCE       = 4                  -- 1 in this many crystals rolls golden
+local GOLD_COINS        = 150                -- paid on the spot per golden mined
+local COIN_REWARD       = 1500               -- paid on quest completion (was ZERO -- the
+                                             -- only quest in the realm that paid nothing)
 -- Cave hazards: gentle on purpose -- they push you back a step, they don't kill you.
 local HAZARDS_ON        = true
 local ROCK_DROP_NAME    = "rockdrop"         -- parts named "rock drop" are the ceiling holes
-local ROCKFALL_EVERY    = 12                 -- seconds between rockfalls at each drop point
+local ROCKFALL_EVERY    = 20                 -- seconds between rockfalls at each drop point.
+                                             -- 12 was a thud every ~2.4s island-wide with five
+                                             -- drops wired -- a drumbeat, not a hazard
 local ROCK_LINGER       = 4                  -- seconds a landed boulder stays solid before crumbling
 -- A boulder hitting the cave floor uses THE PLAYER'S OWN LANDING THUD -- the same asset, shaped the
 -- same way, that LandingImpact.client.luau plays when you slam into the ground (its THUD_ID). One
@@ -79,7 +107,10 @@ local VENT_MARGIN       = 14                 -- cloud reach BEYOND the vent part
 local VENT_PAIRS = {
 	-- ["gas vent 1"] = "crystal1",
 }
-local GAS_BLUR_TIME     = 4                  -- seconds the screen stays FULLY fogged...
+local VENT_TELL         = 2.0                -- seconds a vent HISSES (glow + wisps) before it
+                                             -- blows -- the gas is a dodge, not an ambush
+local GAS_BLUR_TIME     = 2.2                -- seconds the screen stays FULLY fogged... (was 4:
+                                             -- with a fair tell, a shorter blindfold is enough)
 local GAS_FADE_TIME     = 1.8                -- ...then this long fading back to clear
 local MINE_RANGE        = 14                 -- studs: how close/front a crystal must be to hit
 local FACING_DOT        = 0.15               -- must be roughly facing the crystal
@@ -159,6 +190,19 @@ local function findNPCNear(refPos)
 	return best
 end
 local function pointTo(pos) if pos and _G.guideTrailTo then pcall(function() _G.guideTrailTo(pos) end) end end
+-- rewards go through the realm's CoinEvent like every paying quest (tractor, park, finale)
+local function awardCoins(n)
+	pcall(function()
+		local ev = game:GetService("ReplicatedStorage"):FindFirstChild("CoinEvent")
+		if ev then ev:FireServer(n) end
+	end)
+end
+-- THE MINE GOES DARK AS YOU WIN: a gloom wash that deepens with every crystal mined.
+-- Ours alone to drive (like the gas tint), so no sky system is fought over; the loop
+-- that drives it lives with the hazards, where nearMine() exists.
+local gloom = Instance.new("ColorCorrectionEffect")
+gloom.Name = "MineGloom"; gloom.Enabled = false
+gloom.Parent = game:GetService("Lighting")
 
 -- ============================================================================
 -- STATE
@@ -220,9 +264,12 @@ end
 
 local function baseText()
 	-- "quota", not "all": you finish on NEED, and the rest of the field is still standing
-	if done then return "\xE2\x9B\x8F Quota filled -- nice work!" end
-	if not accepted then return "\xF0\x9F\x92\xAC Go talk to the Candy NPC!" end
-	return ("\xE2\x9B\x8F Equip your Pickaxe & mine the crystals:  %d/%d"):format(math.min(mined, goalCount()), goalCount())
+	if done then return "\xE2\x9B\x8F You mined every crystal we needed -- nice work!" end
+	if not accepted then
+		return "\xF0\x9F\x92\xAC Talk to the Candy NPC to start -- follow the green arrows!"
+	end
+	return ("\xE2\x9B\x8F Equip the Pickaxe from your backpack, then swing at the crystals:  %d/%d")
+		:format(math.min(mined, goalCount()), goalCount())
 end
 local flashTok = 0
 local function refreshBanner() objLabel.Text = baseText() end
@@ -309,10 +356,10 @@ end
 -- EVENT priority, deliberately: finishing a quest has to outrank the objective banner that is
 -- pinned underneath it (REWARD), but must not talk over a real Robux purchase (PURCHASE).
 local function winBanner()
-	local msg = "\xE2\x9B\x8F Crystals mined!"
+	local msg = ("\xE2\x9B\x8F Crystals mined! +%d coins"):format(COIN_REWARD)
 	if _G.NotifyCenter and _G.NotifyCenter.push then
 		pcall(function() _G.NotifyCenter.push({
-			top      = "â¨ QUEST COMPLETE",
+			top      = "\xE2\x9C\xA8 QUEST COMPLETE",
 			text     = msg,
 			color    = STROKE,
 			priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT or nil,
@@ -378,6 +425,7 @@ local function winQuest()
 	if done then return end
 	done = true
 	_G.crystalQuestComplete = true
+	awardCoins(COIN_REWARD)
 	refreshBanner()
 	local at = (islandRef or (player.Character and player.Character:GetPivot().Position)) + Vector3.new(0, 8, 0)
 	cinematicFinish(at)
@@ -389,13 +437,16 @@ end
 -- ============================================================================
 -- CRYSTALS -- register each, shrink on hit, shatter on the final hit
 -- ============================================================================
--- a subtle sparkle that twinkles around the crystal (a few at a time -- not a cloud)
-local function decorateCrystal(part)
-	part.Reflectance = math.max(part.Reflectance, 0.12) -- slight gem sheen
+-- a subtle sparkle that twinkles around the crystal (a few at a time -- not a cloud),
+-- plus the crystal's own LIGHT -- the mine is lit by its crystals, and each light dies
+-- with its crystal, which is what makes the mine go dark as the quota fills.
+local function decorateCrystal(part, gold)
+	part.Reflectance = math.max(part.Reflectance, gold and 0.2 or 0.12) -- gem sheen
 	local att = Instance.new("Attachment"); att.Name = "CrystalSparkle"; att.Parent = part
 	local pe = Instance.new("ParticleEmitter")
 	pe.Texture = "rbxasset://textures/particles/sparkles_main.dds"
-	pe.Color = ColorSequence.new(Color3.fromRGB(255, 240, 255), GOLD)
+	pe.Color = gold and ColorSequence.new(GOLD, Color3.fromRGB(255, 255, 255))
+		or ColorSequence.new(Color3.fromRGB(255, 240, 255), GOLD)
 	pe.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.05), NumberSequenceKeypoint.new(0.3, 0.4), NumberSequenceKeypoint.new(1, 0.02) })
 	pe.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.15), NumberSequenceKeypoint.new(1, 1) })
 	pe.Lifetime = NumberRange.new(0.7, 1.3)
@@ -404,9 +455,16 @@ local function decorateCrystal(part)
 	pe.SpreadAngle = Vector2.new(180, 180)
 	pe.Acceleration = Vector3.new(0, 1.2, 0)
 	pe.LightEmission = 0.7
-	pe.Rate = 4 -- subtle: only a few twinkles floating at once
+	pe.Rate = gold and 10 or 4 -- subtle on a common; a golden twinkles hard enough to spot
 	pe.Parent = att
-	return pe
+	local pl = Instance.new("PointLight")
+	pl.Name = "CrystalLight"
+	pl.Color = gold and GOLD or Color3.fromRGB(255, 170, 215)
+	pl.Brightness = gold and 2.4 or 1.5
+	pl.Range = gold and 24 or 17
+	pl.Shadows = false
+	pl.Parent = part
+	return pe, pl
 end
 -- ⚠ ISLAND8 ONLY. scanCrystals() sweeps the WHOLE Workspace by name -- deliberately, so the
 -- quest does not depend on finding an "island8" model -- but isCrystalName() matches anything
@@ -431,31 +489,60 @@ end
 -- 500 studs: the island is 300 x 357, so its half-diagonal is ~233 -- this covers the whole island
 -- with room to spare, and the nearest confusable crystals (island15's, in the run that exposed
 -- this) are 37,844 studs away. There is no ambiguity to get wrong.
-local ISLAND8_RADIUS = 500
-local island8Pos = nil
+-- ⚠ THE REFERENCE MUST NOT BE CACHED FROM A HALF-STREAMED ISLAND, and the first version did
+-- exactly that. It took island8's bounding box the FIRST time the box had any size at all --
+-- which, with StreamingEnabled, is whenever the first few parts happen to arrive. A partial
+-- island's box is centred on whatever loaded first, so the "centre of island8" could be sitting
+-- in one corner of it, and every crystal more than 500 studs from that corner was rejected
+-- permanently -- the purge ran once, against that wrong point, and never revisited it.
+--
+-- So the box is re-measured until it STABILISES (same size two sweeps running), and the radius is
+-- derived from the size it settles at rather than being a magic 500: half the diagonal plus a
+-- margin, which fits the island the world actually has instead of the one that was assumed.
+local island8Pos, island8Radius = nil, nil
+local lastBoxSize, stableCount = nil, 0
+
 local function resolveIsland8Pos()
-	if island8Pos then return island8Pos end
+	if island8Pos then return island8Pos, island8Radius end
 	local isle = findIsland8()
 	if not isle then return nil end
-	if isle:IsA("Model") then
-		local cf, size = isle:GetBoundingBox()
-		-- a streamed-out Model is a HOLLOW SHELL whose box is a point at the origin. Taking that as
-		-- the island's position would put the filter 21,000 studs from the cave and reject every
-		-- real crystal -- so it does not count as resolved until there is geometry in it.
-		if size.Magnitude > 1 then island8Pos = cf.Position end
-	else
+
+	if not isle:IsA("Model") then
 		local bp = firstBasePart(isle)
-		if bp then island8Pos = bp.Position end
+		if bp then island8Pos, island8Radius = bp.Position, 500 end
+		return island8Pos, island8Radius
 	end
-	return island8Pos
+
+	local cf, size = isle:GetBoundingBox()
+	-- a streamed-out Model is a hollow shell: its box is a point at the origin, and taking that as
+	-- the island would put the filter 21,000 studs from the cave and reject every real crystal
+	if size.Magnitude <= 1 then return nil end
+
+	-- growing still? wait. Two sweeps at the same size is the cheapest reliable "it has all arrived".
+	if lastBoxSize and (size - lastBoxSize).Magnitude < 1 then
+		stableCount += 1
+	else
+		stableCount = 0
+	end
+	lastBoxSize = size
+	if stableCount < 1 then return nil end
+
+	island8Pos = cf.Position
+	-- half-diagonal covers the island's own footprint; +180 is headroom for a cave that runs out
+	-- past the box, and for markers sitting just off the edge. Floored at 500 so this can never
+	-- come out TIGHTER than the fixed number it replaced.
+	island8Radius = math.max(500, size.Magnitude * 0.5 + 180)
+	print(("[CrystalMine] island8 measured: %.0f x %.0f x %.0f -> crystals accepted within %.0f studs of centre")
+		:format(size.X, size.Y, size.Z, island8Radius))
+	return island8Pos, island8Radius
 end
 
 local function onIsland8(inst)
-	local ref = resolveIsland8Pos()
-	if not ref then return true end   -- position not trustworthy yet: accept, and purge below once it is
+	local ref, rad = resolveIsland8Pos()
+	if not ref then return true end   -- not trustworthy yet: accept, and purge below once it is
 	local part = inst:IsA("BasePart") and inst or (inst.PrimaryPart or largestBasePart(inst))
 	if not part then return true end
-	return (part.Position - ref).Magnitude <= ISLAND8_RADIUS
+	return (part.Position - ref).Magnitude <= rad
 end
 
 local shimmerPhase = 0
@@ -468,8 +555,14 @@ local function registerCrystal(inst)
 	if crystals[part] then return end
 	part.Anchored = true -- crystals never fall (also lets the mining shrink stay put)
 	shimmerPhase += 1.7
+	-- the rarity roll: a golden is recoloured, sparkles harder, glows brighter -- you can
+	-- spot one across the cave, which is the point
+	local isGold = (math.random(GOLD_CHANCE) == 1)
+	if isGold then part.Color = GOLD end
 	local startHits = pickaxeUpgraded and UPGRADED_HITS or HITS_PER_CRYSTAL
-	crystals[part] = { hits = startHits, maxHits = startHits, size = part.Size, cframe = part.CFrame, phase = shimmerPhase, pe = decorateCrystal(part) }
+	local pe, pl = decorateCrystal(part, isGold)
+	crystals[part] = { hits = startHits, maxHits = startHits, size = part.Size, cframe = part.CFrame,
+		phase = shimmerPhase, pe = pe, light = pl, gold = isGold }
 	total += 1
 	refreshBanner()
 end
@@ -479,12 +572,13 @@ end
 -- arriving after it does.
 local purgedOnce = false
 local function scopeToIsland8()
-	local ref = resolveIsland8Pos()
+	local ref, rad = resolveIsland8Pos()
 	if not ref or purgedOnce then return end
 	local dropped = 0
 	for part, rec in pairs(crystals) do
-		if (part.Position - ref).Magnitude > ISLAND8_RADIUS then
+		if (part.Position - ref).Magnitude > rad then
 			if rec.pe and rec.pe.Parent then rec.pe.Parent:Destroy() end
+			if rec.light then rec.light:Destroy() end
 			crystals[part] = nil
 			total -= 1
 			dropped += 1
@@ -492,10 +586,10 @@ local function scopeToIsland8()
 	end
 	purgedOnce = true
 	if dropped > 0 then
-		print(("[CrystalMine] dropped %d crystal(s) more than %d studs from island8 -- %d left. "
+		print(("[CrystalMine] dropped %d crystal(s) more than %.0f studs from island8 -- %d left. "
 			.. "(Named crystal* but sitting on another island; counting them dragged the quest's "
 			.. "centre off the cave, which is what broke the NPC prompt and the hazards.)")
-			:format(dropped, ISLAND8_RADIUS, total))
+			:format(dropped, rad, total))
 		refreshBanner()
 	end
 end
@@ -621,17 +715,28 @@ local function mineHit(part)
 		reseatCracks(part, rec)      -- ...and keep them all on the shrinking surface
 		hitFlash(part); sparkBurst(part, 10, PINK)
 	else
-		sparkBurst(part, 28, GOLD)
+		sparkBurst(part, rec.gold and 48 or 28, GOLD)
 		shardsToPlayer(part)   -- the crystal comes to you
 		clearCracks(rec)
 		part.Transparency = 1; part.CanCollide = false; part.CanQuery = false
 		if rec.pe then rec.pe.Enabled = false; Debris:AddItem(rec.pe.Parent, 1.5) end -- stop the shimmer sparkle
-		mined += 1
+		if rec.light then rec.light:Destroy(); rec.light = nil end -- its light dies with it: the mine dims
+		mined += rec.gold and 2 or 1     -- a golden counts DOUBLE toward the quota
 		if killVentsFor then killVentsFor(part) end   -- its geyser stops for good
-		flashBanner(("\xE2\x9B\x8F Crystal mined!  %d/%d"):format(math.min(mined, goalCount()), goalCount()))
+		if rec.gold then
+			awardCoins(GOLD_COINS)
+			flashBanner(("\xF0\x9F\x92\xB0 GOLDEN CRYSTAL -- counts double, +%d coins!  %d/%d")
+				:format(GOLD_COINS, math.min(mined, goalCount()), goalCount()), 3)
+			if _G.NotifyCenter then pcall(function() _G.NotifyCenter.push({
+				text = ("\xF0\x9F\x92\xB0 GOLDEN crystal! +%d coins (%d/%d)"):format(GOLD_COINS, math.min(mined, goalCount()), goalCount()),
+				color = GOLD }) end) end
+		else
+			flashBanner(("\xE2\x9B\x8F Crystal mined!  %d/%d"):format(math.min(mined, goalCount()), goalCount()))
+			if _G.NotifyCenter then pcall(function() _G.NotifyCenter.push({ text = ("\xE2\x9B\x8F Crystal mined (%d/%d)"):format(math.min(mined, goalCount()), goalCount()), color = STROKE }) end) end
+		end
 		refreshBanner()
-		if _G.NotifyCenter then pcall(function() _G.NotifyCenter.push({ text = ("\xE2\x9B\x8F Crystal mined (%d/%d)"):format(math.min(mined, goalCount()), goalCount()), color = STROKE }) end) end
-		if upgradePickaxe and mined == UPGRADE_AFTER and mined < goalCount() then upgradePickaxe() end
+		-- >= not ==: a golden's double-count can step straight over the upgrade mark
+		if upgradePickaxe and mined >= UPGRADE_AFTER and mined < goalCount() then upgradePickaxe() end
 		if mined >= goalCount() then winQuest() end
 	end
 end
@@ -799,11 +904,39 @@ local function buildPickaxe()
 		weldPart(Vector3.new(0.3, 0.2, 0.3),  GOLD, Enum.Material.Metal, CFrame.new(0, -1.32, 0))                                -- pommel cap
 	end
 
-	-- rest pose (held ready). Extra 90° clockwise roll on top of the 180° flip. Tweak if odd.
-	local rest = CFrame.new(0, -0.35, 0) * CFrame.Angles(math.rad(-12), math.rad(180), 0) * CFrame.Angles(0, 0, math.rad(-90))
+	--======================================================================
+	-- HOW IT SITS IN THE HAND -- the Space Realm's Mars hold, ported
+	--======================================================================
+	-- The 65-deg upright carry still read as stiff. The hold that looks right is the
+	-- Mars pickaxe's (SpaceRealmStuff, MarsNPC.server.luau buildPickaxe):
+	--     tool.Grip = CFrame.new(0, -0.7, 0) * CFrame.Angles(math.rad(20), 0, 0)
+	-- A Tool with an IDENTITY Grip has the Handle's +Y pointing straight FORWARD out of
+	-- the fist (the RightGrip weld carries CFrame.Angles(-pi/2, 0, 0)), and Grip rotations
+	-- apply INVERSELY to the handle -- so Mars's Rx(+20) is the shaft jutting forward and
+	-- dipping 20 deg, hand closed 0.6 studs above the base, head riding out front.
+	--
+	-- Two numbers translate because the two pickaxes are built on different axes:
+	--   * Mars's shaft is 2.6 studs (hand at -0.7 = 0.6 above the base). This shaft is
+	--     2.8, so the same 0.6 above the base is GRIP_Y = -0.8 -- still on the pink wrap
+	--     (welded at -0.85, 0.75 tall).
+	--   * Mars's pick points run along its handle's +/-Z, so with zero roll they stand in
+	--     the vertical plane. THIS head runs along +/-X (tip welded at +1.32 X), so it
+	--     takes TIP_ROLL = 90 to roll it into that same plane: tip up-and-forward, exactly
+	--     where Mars's front point rides.
+	local SHAFT_TILT = -20     -- deg up from straight-forward; Mars carries it 20 BELOW
+	local TIP_ROLL   = 90      -- deg around the shaft; 90 = the Mars vertical-plane head
+	local GRIP_Y     = -0.8    -- Mars's 0.6-above-the-base, on this shaft (still on the wrap)
+	local rest = CFrame.new(0, GRIP_Y, 0)
+		* CFrame.Angles(0, math.rad(TIP_ROLL), 0)
+		* CFrame.Angles(math.rad(-SHAFT_TILT), 0, 0)
 	tool.Grip = rest
-	local windup = rest * CFrame.Angles(math.rad(-78), 0, math.rad(8))   -- raise
-	local strike = rest * CFrame.Angles(math.rad(72), 0, math.rad(-6))   -- chop
+
+	-- THE SWING AXIS MOVES WITH THE GRIP. The chop turns about the shoulder axis, which is
+	-- the handle's Z -- but the roll is +90 now where it used to be -90, so handle +Z points
+	-- along the character's LEFT where it pointed right, and every chop angle flips sign
+	-- with it: a NEGATIVE Z-angle now raises the head, a positive one drives it down.
+	local windup = rest * CFrame.Angles(0, 0, math.rad(-78))   -- raise: head goes up and back
+	local strike = rest * CFrame.Angles(0, 0, math.rad(72))    -- chop: head drives down and forward
 
 	-- ---- natural swing: ease in/out through wind-up -> fast chop -> rebound -> settle ----
 	local function ease(a, kind)
@@ -864,7 +997,7 @@ local function buildPickaxe()
 			step(rest, windup, base, armUp, 0.17, "out")      -- wind up: raise the arm overhead
 			step(windup, strike, armUp, armDown, 0.08, "in")  -- chop down fast (arm drives it)
 			if crystal and crystal.Parent then lastFire = os.clock(); mineHit(crystal) end -- impact at the bottom
-			local rebound = strike * CFrame.Angles(math.rad(10), 0, 0)
+			local rebound = strike * CFrame.Angles(0, 0, math.rad(-10))  -- same axis as the chop, back toward windup
 			step(strike, rebound, armDown, armDown, 0.05, "out") -- small bounce off the crystal
 			step(rebound, rest, armDown, base, 0.24, "inout")    -- settle arm + tool back to ready
 			if shoulderJoint and shoulderJoint.Parent and base then shoulderJoint.C0 = base end
@@ -927,26 +1060,45 @@ local function giveHelmet()
 	piece("StrapL", Vector3.new(0.1, 0.85, 0.16), CFrame.new(-0.96, 0.02, 0.12), RUBBER)
 	piece("StrapR", Vector3.new(0.1, 0.85, 0.16), CFrame.new( 0.96, 0.02, 0.12), RUBBER)
 
-	-- LAMP: steel housing, chrome bezel, glowing lens, and a visible shaft of light
+	-- LAMP: steel housing, chrome bezel, glowing lens -- all FACING FORWARD. They used to
+	-- be rotated Angles(0,0,90) like the Brim, and a Z-roll stands a cylinder's axis
+	-- VERTICAL: the whole lamp was a stack of flat pucks lying on the hat. Ry(90) points
+	-- the axis down -Z, so the bezel and lens now face where you look. (That also moves
+	-- the lens's local axes: its +X is now the forward direction, hence Face = Right and
+	-- beam attachments along +X below.)
 	piece("LampMount", Vector3.new(0.7, 0.5, 0.22), CFrame.new(0, 0.72, -0.92), RUBBER)
-	piece("LampBody",  Vector3.new(0.34, 0.62, 0.62), CFrame.new(0, 0.74, -1.06) * CFrame.Angles(0, 0, math.rad(90)),
+	piece("LampBody",  Vector3.new(0.44, 0.62, 0.62), CFrame.new(0, 0.74, -1.08) * CFrame.Angles(0, math.rad(90), 0),
 		STEELC, Enum.Material.Metal, Enum.PartType.Cylinder)
-	piece("LampBezel", Vector3.new(0.12, 0.72, 0.72), CFrame.new(0, 0.74, -1.2) * CFrame.Angles(0, 0, math.rad(90)),
+	piece("LampBezel", Vector3.new(0.14, 0.72, 0.72), CFrame.new(0, 0.74, -1.32) * CFrame.Angles(0, math.rad(90), 0),
 		Color3.fromRGB(206, 210, 220), Enum.Material.Metal, Enum.PartType.Cylinder)
 
-	local lens = piece("Lens", Vector3.new(0.1, 0.56, 0.56), CFrame.new(0, 0.74, -1.24) * CFrame.Angles(0, 0, math.rad(90)),
+	local lens = piece("Lens", Vector3.new(0.1, 0.56, 0.56), CFrame.new(0, 0.74, -1.38) * CFrame.Angles(0, math.rad(90), 0),
 		Color3.fromRGB(255, 248, 214), Enum.Material.Neon, Enum.PartType.Cylinder)
 
-	-- a faint shaft of light hanging in the cave air. Kept short (12 studs) on purpose --
-	-- a long one pokes through walls and looks worse than no beam at all.
-	local shaft = piece("Beam", Vector3.new(12, 1.3, 1.3), CFrame.new(0, 0.74, -7.2) * CFrame.Angles(0, math.rad(90), 0),
-		Color3.fromRGB(255, 246, 208), Enum.Material.Neon, Enum.PartType.Cylinder)
-	shaft.Transparency = 0.93
-	shaft.CastShadow = false
+	-- the visible shaft of light: a Beam CONE that fades to nothing, replacing the old
+	-- solid neon cylinder (one flat brightness for 12 studs, ending in a hard floating
+	-- circle). This starts lens-width, spreads, and dies out -- so where it does clip a
+	-- cave wall there is almost nothing left of it to clip.
+	local a0 = Instance.new("Attachment"); a0.Position = Vector3.new(0.06, 0, 0);  a0.Parent = lens
+	local a1 = Instance.new("Attachment"); a1.Position = Vector3.new(16, 0, 0);    a1.Parent = lens
+	local cone = Instance.new("Beam")
+	cone.Attachment0 = a0; cone.Attachment1 = a1
+	cone.Width0 = 0.55; cone.Width1 = 4.5
+	cone.Color = ColorSequence.new(Color3.fromRGB(255, 246, 208))
+	cone.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.82),
+		NumberSequenceKeypoint.new(0.55, 0.93),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	cone.LightEmission = 1; cone.LightInfluence = 0
+	cone.FaceCamera = true
+	cone.Parent = lens
 
+	-- tighter and brighter than before (58 deg at brightness 4 was a dim wash): a real
+	-- lamp disc on the wall you are facing. Face = Right because the lens's +X is forward.
 	local beam = Instance.new("SpotLight")
-	beam.Color = Color3.fromRGB(255, 246, 214); beam.Brightness = 4
-	beam.Range = 48; beam.Angle = 58; beam.Face = Enum.NormalId.Front
+	beam.Color = Color3.fromRGB(255, 246, 214); beam.Brightness = 6
+	beam.Range = 56; beam.Angle = 44; beam.Face = Enum.NormalId.Right
 	beam.Shadows = true; beam.Parent = lens
 
 	-- a soft pool of light right in front of you too, so the ground isn't pitch black
@@ -1011,10 +1163,10 @@ upgradePickaxe = function()
 	reforge(bp and bp:FindFirstChild("Pickaxe"))
 	reforge(player.Character and player.Character:FindFirstChild("Pickaxe"))
 
-	flashBanner("\xE2\x9B\x8F Your pickaxe has been RE-FORGED -- it hits harder now!", 3.5)
+	flashBanner("\xE2\x9B\x8F Your pickaxe has been RE-FORGED -- one swing, one crystal!", 3.5)
 	if _G.NotifyCenter then
 		pcall(function() _G.NotifyCenter.push({
-			text = "\xE2\x9B\x8F Pickaxe re-forged! Crystals break faster now.", color = GOLD }) end)
+			text = "\xE2\x9B\x8F Pickaxe re-forged! One swing breaks a crystal now.", color = GOLD }) end)
 	end
 	print("[CrystalMine] pickaxe upgraded")
 end
@@ -1052,6 +1204,28 @@ local function nearMine()
 	if not hrp then return false end
 	return (hrp.Position - islandRef).Magnitude <= HAZARD_RANGE
 end
+
+-- THE GLOOM DRIVER: darkness tracks the quota. 0 mined = the mine as-built; quota filled
+-- would be full dark, except the win lifts it (done -> off). Only while you're actually at
+-- the mine, and it eases rather than steps so a shatter reads as the lights going out.
+task.spawn(function()
+	local cur = 0
+	while true do
+		local frac = 0
+		if accepted and not done and goalCount() > 0 then
+			frac = math.clamp(mined / goalCount(), 0, 1)
+		end
+		if not nearMine() then frac = 0 end
+		cur = cur + (frac - cur) * 0.15          -- ease toward the target darkness
+		gloom.Enabled = cur > 0.02
+		if gloom.Enabled then
+			gloom.Brightness = -0.32 * cur
+			gloom.Saturation = -0.35 * cur
+			gloom.TintColor = Color3.fromRGB(255, 255, 255):Lerp(Color3.fromRGB(186, 172, 214), cur)
+		end
+		task.wait(0.25)
+	end
+end)
 
 local function nudgeCamera(strength, seconds)
 	local cam = workspace.CurrentCamera
@@ -1180,9 +1354,20 @@ local function rockfallFrom(dropPart)
 			if a >= 1 then
 				conn:Disconnect()
 
-				-- IMPACT
+				-- IMPACT -- SCALED BY HOW CLOSE YOU ARE, and silent past 90 studs. Every landing
+				-- used to shake the camera at full strength and thud at full volume wherever you
+				-- stood on the island; with five drops cycling that was a constant, annoying
+				-- drumbeat from rocks you could not even see. A fall right next to you still
+				-- hits exactly as hard as before -- the far side of the cave just minds its own
+				-- business now.
+				local lhrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+				local near01 = 0
+				if lhrp then
+					near01 = math.clamp(1 - (lhrp.Position
+						- Vector3.new(start.X, land.Y, start.Z)).Magnitude / 90, 0, 1)
+				end
 				sparkBurst(core, 18, PINK)
-				nudgeCamera(1.6, 0.4)
+				if near01 > 0 then nudgeCamera(1.6 * near01, 0.4) end
 
 				-- THE THUD -- LandingImpact's curve, with the boulder's size standing in for fall speed:
 				-- volume up and PITCH DOWN together, because the same sample played lower reads as a bigger
@@ -1191,7 +1376,11 @@ local function rockfallFrom(dropPart)
 				-- It gets its OWN anchored emitter rather than being parented to the boulder: the boulder is
 				-- crumbled and destroyed a few seconds later, and a Sound dies with its parent -- close enough
 				-- to the tail to clip it. The emitter is invisible, collides with nothing and removes itself.
-				do
+				-- ...and skipped entirely when you are too far to care (near01 == 0). The 220-stud
+				-- rolloff meant every corner of the island heard every landing; 120 with a tapered
+				-- curve keeps the thud for anyone actually in the chamber, and the near01 factor on
+				-- top means a rock across the cave lands as a distant knock, not a hit.
+				if near01 > 0 then
 					local t = math.clamp((rockScale - 0.9) / 0.5, 0, 1) * 0.3 + 0.68
 					local emit = Instance.new("Part")
 					emit.Anchored = true; emit.CanCollide = false; emit.CanQuery = false; emit.CastShadow = false
@@ -1200,9 +1389,11 @@ local function rockfallFrom(dropPart)
 					emit.Parent = workspace
 					local s = Instance.new("Sound")
 					s.SoundId       = THUD_ID
-					s.Volume        = 0.25 + 0.75 * t
+					s.Volume        = (0.15 + 0.55 * t) * (0.35 + 0.65 * near01)
 					s.PlaybackSpeed = 1.45 - 0.75 * t
-					s.RollOffMaxDistance = 220
+					s.RollOffMode        = Enum.RollOffMode.InverseTapered
+					s.RollOffMinDistance = 12
+					s.RollOffMaxDistance = 120
 					s.Parent = emit
 					s:Play()
 					Debris:AddItem(emit, 6)
@@ -1395,15 +1586,18 @@ inActiveGas = function(pos)
 	return false
 end
 
--- one eruption from a specific vent part
+-- one eruption from a specific vent part -- ALWAYS preceded by its tell: VENT_TELL
+-- seconds of pulsing glow and small warning wisps during which the gas is NOT active
+-- (inActiveGas stays false, nothing fogs you). See it hiss, step out of the circle,
+-- keep mining somewhere else. Standing in it anyway is now a choice.
 local function erupt(v)
 	local part = v.part
 	if not (part and part.Parent) then return end
 	if v.dead then return end                                     -- its crystal is mined; capped
-	if v.active then return end                                   -- already blowing
+	if v.active or v.telling then return end                      -- already blowing (or winding up)
 	if v.lastBlow and (os.clock() - v.lastBlow) < VENT_EVERY then return end  -- still on cooldown
 	v.lastBlow = os.clock()
-	v.active = true
+	v.telling = true
 
 	-- the gas comes off the WHOLE block: puffs are seeded right across its top face,
 	-- in its own local space, so a rotated or long vent erupts along its full length
@@ -1411,8 +1605,30 @@ local function erupt(v)
 	local topLocalY = part.Size.Y * 0.5
 
 	local glow = Instance.new("PointLight")
-	glow.Color = Color3.fromRGB(180, 255, 210); glow.Brightness = 3; glow.Range = v.radius or 24
+	glow.Color = Color3.fromRGB(180, 255, 210); glow.Brightness = 0.4; glow.Range = v.radius or 24
 	glow.Parent = part
+
+	-- THE TELL: the glow pulses up and thin wisps leak out for VENT_TELL seconds
+	local t0 = os.clock()
+	while os.clock() - t0 < VENT_TELL and part.Parent and not v.dead do
+		glow.Brightness = 0.4 + math.abs(math.sin((os.clock() - t0) * 9)) * 2.4
+		local wisp = Instance.new("Part")
+		wisp.Anchored = true; wisp.CanCollide = false; wisp.CanQuery = false; wisp.CastShadow = false
+		wisp.Shape = Enum.PartType.Ball
+		wisp.Size = Vector3.new(1.4, 1.4, 1.4)
+		wisp.Color = Color3.fromRGB(196, 255, 214); wisp.Material = Enum.Material.Neon
+		wisp.Transparency = 0.55
+		wisp.CFrame = part.CFrame * CFrame.new((math.random() - 0.5) * sx, topLocalY, (math.random() - 0.5) * sz)
+		wisp.Parent = workspace
+		TweenService:Create(wisp, TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			CFrame = wisp.CFrame + Vector3.new(0, 6, 0), Transparency = 1, Size = Vector3.new(3.4, 3.4, 3.4) }):Play()
+		Debris:AddItem(wisp, 0.9)
+		task.wait(0.14)
+	end
+	v.telling = false
+	if not (part.Parent and not v.dead) then glow:Destroy(); return end
+	v.active = true
+	glow.Brightness = 3
 
 	-- billowing cloud for as long as the vent is blowing
 	task.spawn(function()
@@ -1488,8 +1704,14 @@ end
 -- ---------------------------------------------------------------------------
 local function buildWarningSigns()
 	local made = 0
+	-- ⚠ onIsland8, NOT just the name. This scanned ALL of Workspace for a part called "sign" and
+	-- planted a POISON SUGAR GAS board on every hit -- so the hay bale factory on island 19, which
+	-- builds its own board named "Sign" for the shed frontage, got a gas warning bolted above it.
+	-- Same family as the crystals that were being registered from 85,452 studs away: a name is not
+	-- an address in a world where thirteen islands share one Workspace. The helper is already here
+	-- and already used by the crystal scan; this scan simply never called it.
 	for _, d in ipairs(workspace:GetDescendants()) do
-		if d:IsA("BasePart") and loose(d.Name) == "sign" then
+		if d:IsA("BasePart") and loose(d.Name) == "sign" and onIsland8(d) then
 			made += 1
 			local base = CFrame.new(d.Position - Vector3.new(0, d.Size.Y * 0.5, 0)) * (d.CFrame - d.CFrame.Position)
 			d.Transparency = 1; d.CanCollide = false; d.CanQuery = false   -- marker only
@@ -1692,12 +1914,17 @@ end
 -- NPC DIALOGUE
 -- ============================================================================
 local function questPages()
-	if done then return { "That's the load we needed -- sweet work! \xE2\x9B\x8F" } end
-	if accepted then return { ("You've mined %d of %d crystals."):format(math.min(mined, goalCount()), goalCount()), "Equip your Pickaxe and swing at them!" } end
+	if done then return { ("Sweet work! \xE2\x9B\x8F Here's %d coins!"):format(COIN_REWARD) } end
+	if accepted then
+		return { ("You've mined %d of %d crystals."):format(math.min(mined, goalCount()), goalCount()),
+			"Equip the Pickaxe and swing at glowing ones!",
+			"GOLDEN ones count double. And they pay!" }
+	end
 	return {
 		"Our candy crystals need harvesting!",
-		"Take this Pickaxe -- equip it and swing at each crystal to mine it.",
-		("Mine %d of them and come back!"):format(NEED),
+		"EQUIP this Pickaxe, swing at glowing crystals.",
+		"GOLDEN crystals count DOUBLE and pay coins!",
+		("The crystals ARE the light. Mine %d!"):format(NEED),
 	}
 end
 local function wireNPC(head)
@@ -1718,7 +1945,7 @@ local function wireNPC(head)
 		end)
 	end
 	prompt.Triggered:Connect(function()
-		if index == 0 then pages = questPages() end
+		if index == 0 then pages = (_G.capBubble and _G.capBubble(questPages())) or questPages() end
 		index += 1
 		if not pages or index > #pages then close(); return end
 		if index == 2 and not accepted then
@@ -1726,8 +1953,10 @@ local function wireNPC(head)
 			if crystals then for part in pairs(crystals) do pointTo(part.Position); break end end
 		end
 		local last = index >= #pages
-		showBubble(head, pages[index], true, last and "[E] close" or ("[E] more  (%d/%d)"):format(index, #pages))
-		prompt.ActionText = last and "Close" or "Continue"
+		-- no "[E] ..." badge in the bubble: the ProximityPrompt IS the E prompt, and the page
+		-- count rides its ActionText instead of a second floating HUD over the NPC's head
+		showBubble(head, pages[index], true, nil)
+		prompt.ActionText = last and "Close" or ("Continue  (%d/%d)"):format(index, #pages)
 		watch()
 	end)
 	prompt.PromptHidden:Connect(function() if index ~= 0 then close() end end)
@@ -1831,6 +2060,36 @@ task.spawn(function()
 		end)
 	end
 
+	-- CENSUS. Runs whenever the field comes out SMALLER THAN THE QUOTA, which is the only case
+	-- where the count is worth arguing about: it lists every crystal-named object in Workspace with
+	-- its distance from island8's centre and whether it was taken, so "island8 only has 7" can be
+	-- confirmed or disproved from the log instead of guessed at.
+	task.delay(12, function()
+		if total >= NEED then return end
+		local ref, rad = resolveIsland8Pos()
+		if not ref then return end
+		warn(("[CrystalMine] only %d crystal(s) on island8 but NEED is %d -- the quota clamped to %d. "
+			.. "Every crystal-named object in Workspace, with its distance from island8's centre:")
+			:format(total, NEED, math.min(NEED, total)))
+		local shown = 0
+		for _, d in ipairs(Workspace:GetDescendants()) do
+			if isCrystalName(d.Name) and (d:IsA("BasePart") or d:IsA("Model")) and shown < 40 then
+				local bp = d:IsA("BasePart") and d or (d.PrimaryPart or largestBasePart(d))
+				if bp then
+					shown += 1
+					local dist = (bp.Position - ref).Magnitude
+					warn(("    %-28s %-9s %7.0f studs  %s"):format(
+						d.Name, d.ClassName, dist,
+						(dist <= rad) and (crystals[bp] and "TAKEN" or "in range, not registered")
+							or "REJECTED (too far)"))
+				end
+			end
+		end
+		warn("[CrystalMine] if the ones you expect say REJECTED, the island8 model does not contain "
+			.. "them and the radius is the thing to raise; if they say 'in range, not registered', "
+			.. "they are being filtered as vents or have no BasePart.")
+	end)
+
 	-- DIAGNOSTIC: if nothing matched, list objects whose name has 'crystal'/'island8' so the real name shows
 	task.delay(6, function()
 		if total == 0 then
@@ -1852,6 +2111,9 @@ end)
 -- /complete -- test command: instantly mine everything (near island8)
 -- ============================================================================
 local function onCommand(msg)
+	-- DEV ONLY. QuestDevGate publishes this; read at command time so load order cannot matter,
+	-- and nil (gate not up yet) refuses. Without it any player could type their way to the whole realm.
+	if not _G.questDevOK then return end
 	if tostring(msg or ""):lower():sub(1, 9) ~= "/complete" then return end
 	-- only completes when you're actually ON island8 (near its NPC / the mine), so /complete
 	-- typed on another island never fires this quest's banner/win.
@@ -1861,7 +2123,7 @@ local function onCommand(msg)
 	if (hrp.Position - ref).Magnitude > BANNER_RANGE then return end
 	accepted = true
 	for part, rec in pairs(crystals) do
-		if rec.hits > 0 then rec.hits = 0; part.Transparency = 1; part.CanCollide = false; part.CanQuery = false; if rec.pe then rec.pe.Enabled = false end; mined += 1 end
+		if rec.hits > 0 then rec.hits = 0; part.Transparency = 1; part.CanCollide = false; part.CanQuery = false; if rec.pe then rec.pe.Enabled = false end; if rec.light then rec.light:Destroy(); rec.light = nil end; mined += 1 end
 	end
 	if total == 0 then total = mined end
 	winQuest()

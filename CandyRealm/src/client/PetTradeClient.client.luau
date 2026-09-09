@@ -163,8 +163,9 @@ end
 --======================================================================
 -- TRADE OVERLAY (covers the panel body) -- Food's geometry, line for line
 --======================================================================
-local tradeOverlay = Instance.new("Frame"); tradeOverlay.Name = "TradeOverlay"; tradeOverlay.Size = UDim2.new(1, -24, 1, -116); tradeOverlay.Position = UDim2.new(0, 12, 0, 110)
+local tradeOverlay = Instance.new("Frame"); tradeOverlay.Name = "TradeOverlay"; tradeOverlay.Size = UDim2.new(1, -24, 1, -130); tradeOverlay.Position = UDim2.new(0, 12, 0, 110) -- -130: same band outline as the hub's pages, clear of the panel's rounded corner
 tradeOverlay.BackgroundColor3 = Color3.fromRGB(140, 16, 81); tradeOverlay.Visible = false; tradeOverlay.ZIndex = 3; tradeOverlay.Parent = hubPanel; uicorner(tradeOverlay, 12); uistroke(tradeOverlay, Color3.fromRGB(100, 10, 55), 2)
+tradeOverlay.ClipsDescendants = true -- same band-clip as the hub's other pages: nothing inside may cross the border stroke
 local ovTitle = Instance.new("TextLabel"); ovTitle.Size = UDim2.new(1, -120, 0, 28); ovTitle.Position = UDim2.new(0, 12, 0, 8); ovTitle.BackgroundTransparency = 1; ovTitle.ZIndex = 4
 ovTitle.Font = Enum.Font.GothamBold; ovTitle.TextSize = 18; ovTitle.TextColor3 = Color3.fromRGB(255, 215, 0); ovTitle.TextXAlignment = Enum.TextXAlignment.Left; ovTitle.Text = "Trade"; ovTitle.Parent = tradeOverlay
 local ovBack = Instance.new("TextButton"); ovBack.Size = UDim2.new(0, 100, 0, 28); ovBack.Position = UDim2.new(1, -108, 0, 8); ovBack.BackgroundColor3 = Color3.fromRGB(120, 120, 120); ovBack.ZIndex = 4

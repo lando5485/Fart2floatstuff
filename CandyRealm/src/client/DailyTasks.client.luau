@@ -265,7 +265,11 @@ local function setOpen(open)
 end
 
 close.MouseButton1Click:Connect(function() setOpen(false) end)
-catcher.MouseButton1Click:Connect(function() setOpen(false) end)
+-- BACKDROP TAPS CLOSE NOTHING. This is the realm's one banned menu behaviour: a panel must only
+-- ever be shut by its X. The button stays (it swallows the click so it cannot reach the world or
+-- the buttons behind the panel) -- it just does not act on it. Losing a full-screen menu to a
+-- mis-aimed tap, mid-scroll or mid-read, is indistinguishable from the menu crashing.
+catcher.MouseButton1Click:Connect(function() end)
 
 -- Let the manager slam us shut when another menu opens over us.
 --

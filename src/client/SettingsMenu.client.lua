@@ -489,62 +489,8 @@ local function makeToggleRow(order, labelText, getState, onChanged)
 	return row, paint
 end
 
--- A labeled CYCLING selector: label left, a "< Option >" pill right that steps to the next option on tap.
-local function makeSelectorRow(order, labelText, optionLabels, getIndex, onPick)
-	local row = Instance.new("Frame")
-	row.Name = labelText .. "Row"
-	row.LayoutOrder = order
-	row.Size = UDim2.new(1, 0, 0, 56)
-	row.BackgroundColor3 = C.row          -- house row blue (was Space Realm's near-black 10,14,34)
-	row.BackgroundTransparency = 0
-	row.ZIndex = 3
-	row.Parent = rows
-	corner(row, 12)
-	stroke(row, C.line, 1.5)              -- light-blue inner line, the house row edge
-
-	local lbl = Instance.new("TextLabel")
-	lbl.BackgroundTransparency = 1
-	lbl.Text = labelText
-	lbl.Font = Enum.Font.FredokaOne
-	lbl.TextColor3 = WHITE
-	lbl.TextScaled = true
-	lbl.TextXAlignment = Enum.TextXAlignment.Left
-	lbl.Size = UDim2.new(1, -160, 0, 24)
-	lbl.Position = UDim2.new(0, 14, 0.5, 0)
-	lbl.AnchorPoint = Vector2.new(0, 0.5)
-	lbl.ZIndex = 4
-	lbl.Parent = row
-	textStroke(lbl)
-	maxText(lbl, 20)
-
-	local valueBtn = Instance.new("TextButton")
-	valueBtn.Name = "Value"
-	valueBtn.AnchorPoint = Vector2.new(1, 0.5)
-	valueBtn.Position = UDim2.new(1, -14, 0.5, 0)
-	valueBtn.Size = UDim2.new(0, 134, 0, 34)
-	valueBtn.AutoButtonColor = true
-	valueBtn.BackgroundColor3 = C.panelDk
-	valueBtn.Font = Enum.Font.FredokaOne
-	valueBtn.TextColor3 = WHITE
-	valueBtn.TextScaled = true
-	valueBtn.Text = ""
-	valueBtn.ZIndex = 4
-	valueBtn.Parent = row
-	corner(valueBtn, 10)
-	stroke(valueBtn, WHITE, 2)            -- white rim, like every other button in this game
-	maxText(valueBtn, 17)
-
-	local function refresh()
-		valueBtn.Text = "\xE2\x97\x80 " .. optionLabels[getIndex()] .. " \xE2\x96\xB6"
-	end
-	valueBtn.Activated:Connect(function()
-		if _G.playUIClick then pcall(_G.playUIClick) end
-		onPick((getIndex() % #optionLabels) + 1)   -- cycle forward (wraps)
-		refresh()
-	end)
-	refresh()
-	return row, refresh
-end
+-- (The "< Option >" CYCLING SELECTOR row helper was removed with the Graphics row -- it was the only
+-- thing that ever used it. If a future setting needs three-plus states, it is in the git history.)
 
 makeToggleRow(1, "Music", function() return musicOn end, function(v)
 	musicOn = v
@@ -555,38 +501,34 @@ makeToggleRow(2, "Sound Effects", function() return sfxOn end, function(v)
 	applySFX()
 end)
 
--- GRAPHICS -- Quality / Performance, same row Space Realm ships. "auto" resolves to Performance on phones
--- (PhoneHUD.isPhone(), the same detector ResponsiveUI uses). The choice is published as the LocalPlayer
--- attribute "PerformanceMode" and _G.performanceMode -- Space Realm's CosmeticLOD + SkyFX read that live.
--- NOTE: nothing in THIS game reads it yet, so today the row remembers the choice and nothing thins out;
--- point any FX/LOD script at the attribute and it starts working with no change here.
-local perfPref = "auto"   -- "auto" | "quality" | "performance"
--- Resolved ONCE, without yielding: this runs while the panel is being built, and a WaitForChild here would
--- stall the whole build if PhoneHUD were ever missing. If it can't be read we just say "not a phone".
-local isPhoneDevice = false
-do
-	local ok, phone = pcall(function()
-		local mod = game:GetService("ReplicatedStorage"):FindFirstChild("PhoneHUD")
-		return mod and require(mod).isPhone() or false
-	end)
-	isPhoneDevice = ok and phone == true
+-- VIBRATION -- the master gate for Haptics.client.luau. Some players genuinely do not want their phone
+-- buzzing, and the flight hum is a continuous effect that also costs battery, so this has to be switchable
+-- BEFORE it is everywhere rather than after the complaints. Off means off: one-shots, loops, the lot, and
+-- any hum already running is torn down the moment this flips.
+-- Defaults ON, and is remembered as a player attribute so other scripts can read it without a require.
+local vibrationOn = true
+local function applyVibration()
+	player:SetAttribute("VibrationEnabled", vibrationOn)
+	if _G.hapticEnabled then pcall(_G.hapticEnabled, vibrationOn) end
 end
-local function performanceOn()
-	if perfPref == "performance" then return true end
-	if perfPref == "quality" then return false end
-	return isPhoneDevice   -- "auto"
-end
-local function applyPerformance()
-	local on = performanceOn()
-	player:SetAttribute("PerformanceMode", on)
-	_G.performanceMode = on
-end
-makeSelectorRow(3, "Graphics", { "Quality", "Performance" },
-	function() return performanceOn() and 2 or 1 end,
-	function(i)
-		perfPref = (i == 2) and "performance" or "quality"
-		applyPerformance()
-	end)
+makeToggleRow(3, "Vibration", function() return vibrationOn end, function(v)
+	vibrationOn = v
+	applyVibration()
+	-- Confirm the new state in the hand -- turning it ON should immediately prove it works.
+	if v and _G.hapticPulse then pcall(_G.hapticPulse, "tock") end
+end)
+applyVibration()
+
+-- REMOVED: the GRAPHICS row (Quality / Performance).
+--
+-- It was carried over from the Space Realm, where CosmeticLOD and SkyFX genuinely read the PerformanceMode
+-- attribute and thin the world out when it is on. NOTHING in this game reads it -- so the row cycled between
+-- two words, saved the choice, and changed absolutely nothing on screen. A kid who taps "Performance" because
+-- the game is stuttering and sees no difference does not conclude "this setting is unimplemented", they
+-- conclude the settings menu is broken. Better no control than a control that lies.
+--
+-- Bringing it back is a revert of this block plus the selector helper above -- but only once something in
+-- this realm actually reads player:GetAttribute("PerformanceMode").
 
 -- REMOVED: Colorblind mode and the Glitter Trail toggle.
 --
@@ -624,10 +566,6 @@ corner(credits, 12)
 stroke(credits, C.line, 1.5)
 do local pad = Instance.new("UIPadding"); pad.PaddingLeft = UDim.new(0, 10); pad.PaddingRight = UDim.new(0, 10); pad.Parent = credits end
 maxText(credits, 16)
-
--- Publish the Graphics attribute immediately, so anything that starts reading it has a value from the first
--- frame rather than nil. (applyColorblind used to be called here too; it went with the Colorblind row.)
-applyPerformance()
 
 -- Open/close. The X is the only way out -- the backdrop deliberately does nothing (see above).
 gearBtn.MouseButton1Click:Connect(function()

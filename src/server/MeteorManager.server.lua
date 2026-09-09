@@ -35,13 +35,7 @@ local CONFIG = {
 	MAIN_DURATION = 45,           -- MAIN phase length (the real meteor barrage)
 	ENDING_DURATION = 8,          -- ENDING phase length (frequency tapers, sky restores)
 
-	-- ---------------- INTRO SOUND (server-wide, looped, first 10s only) ----------------
-	-- Plays SERVER-WIDE the moment the storm begins, LOOPED, then stops after
-	-- INTRO_DURATION. Separate from the impact + storm sounds. The clip is ~6s,
-	-- so looping covers the full window (plays through ~twice in 10s).
-	INTRO_SOUND_ID = "rbxassetid://109362273688140",
-	INTRO_DURATION = 20,          -- seconds to play the looped intro before stopping (~6s clip loops a few times)
-	INTRO_VOLUME = 1,             -- reasonable volume
+	-- (The intro alarm and its asset id live in MeteorUI.client.lua now -- see the note further down.)
 	METEOR_INTERVAL_MIN = 1.2,    -- min seconds between meteor spawns in MAIN
 	METEOR_INTERVAL_MAX = 3.0,    -- max seconds between meteor spawns in MAIN
 	METEOR_FALL_TIME_MIN = 2.2,   -- min seconds a meteor takes to fall to impact
@@ -152,51 +146,18 @@ MeteorSpawn.init(CONFIG, MeteorImpact)
 local eventRunning = false   -- guard so we never run two storms at once
 
 --======================================================================
--- INTRO SOUND (server-wide, looped, first INTRO_DURATION seconds only).
--- The Sound is parented to a Folder in Workspace (a non-BasePart), so it plays
--- globally / 2D for EVERY client regardless of position -- server-wide. Created
--- on the server => replicates to all. A generation token lets the auto-stop /
--- reset cancel cleanly without affecting a later run.
+-- THE INTRO ALARM LIVES ON THE CLIENT NOW (MeteorUI.client.lua).
 --======================================================================
-local introSoundGen = 0      -- bumped to invalidate a pending auto-stop
-local introHolder = nil      -- Folder hosting the global intro sound
-
--- stopIntroSound(): stop + remove the intro sound. Idempotent (safe to call at
--- the auto-stop AND again in the reset/error path).
-local function stopIntroSound()
-	introSoundGen = introSoundGen + 1   -- invalidate any pending auto-stop
-	if introHolder and introHolder.Parent then introHolder:Destroy() end
-	introHolder = nil
-end
-
--- startIntroSound(): play the looped intro now; auto-stop after INTRO_DURATION
--- so it never keeps looping past the opening window.
-local function startIntroSound()
-	introSoundGen = introSoundGen + 1
-	local myGen = introSoundGen
-
-	local holder = Instance.new("Folder")
-	holder.Name = "MeteorStormIntroSound"
-	holder.Parent = workspace      -- Folder (non-BasePart) => global / server-wide
-	introHolder = holder
-
-	local snd = Instance.new("Sound")
-	snd.Name = "IntroSound"
-	snd.SoundId = CONFIG.INTRO_SOUND_ID
-	snd.Volume = CONFIG.INTRO_VOLUME
-	snd.Looped = true              -- loop the ~6s clip through the intro window
-	snd.Parent = holder
-	snd:Play()
-
-	-- Hard-stop after INTRO_DURATION (no looping past the intro window).
-	task.delay(CONFIG.INTRO_DURATION, function()
-		if myGen == introSoundGen then
-			stopIntroSound()
-		end
-	end)
-end
-
---======================================================================
+-- It used to be built here: a Folder + Sound created in Workspace at event start so it played 2D for
+-- everyone. That is server-wide, but it is also SLOW -- the instances have to replicate to every client
+-- before a single note is heard, while the "start" phase RemoteEvent arrives instantly. So the banner and
+-- the red sky landed first and the alarm caught up afterwards, which is backwards: the alarm is the thing
+-- that is supposed to make you look up.
+--
+-- MeteorUI now plays it the moment the "start" phase message arrives, from a Sound it built at join and
+-- EventSoundPreload already warmed. Same one-cycle alarm, same server-wide result (every client gets the
+-- same message on the same frame), no replication in front of it. INTRO_SOUND_ID / INTRO_VOLUME /
+-- INTRO_DURATION moved there with it; nothing on the server owns the alarm any more.
 -- TARGETING: find a random island impact point.
 -- Scan Workspace for the island models (named "Island_<n>_..."), take a
 -- model's horizontal center, and RAYCAST DOWN to its top surface so the
@@ -322,7 +283,7 @@ local function runEvent()
 		-- ---- 1) START ----
 		-- Sky to dark red/orange, embers, distant streaks, rumble + banner.
 		meteorPhase("start", "\u{2604} METEOR SHOWER INCOMING!")
-		startIntroSound()  -- server-wide looped intro for the first INTRO_DURATION seconds
+		-- (the intro alarm fires on the client, off this same "start" phase -- see MeteorUI)
 
 		-- ---- 2) WARNING (~WARNING_DURATION) ----
 		-- Sirens, harmless small streaks, occasional slight shake / distant booms.
@@ -375,7 +336,6 @@ local function runEvent()
 	end
 
 	-- ---- 7) RESET: tell clients to restore sky + destroy everything ----
-	stopIntroSound()                   -- safety: stop the intro if the event errored within its first 10s
 	MeteorSync:FireAllClients("reset") -- clients restore Lighting/sky fully
 	MeteorSpawn.cleanup()
 	MeteorImpact.cleanup()

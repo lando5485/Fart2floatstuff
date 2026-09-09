@@ -16,12 +16,12 @@ local GutSkins = require(RS:WaitForChild("Shared"):WaitForChild("GutSkins")) -- 
 
 -- GUT TIERS in RANK ORDER (smallest -> largest), matching PlayerStats.stomachTiers. The maxPower the belly
 -- keys off MUST be ascending, and TIER_SCALE MUST be strictly increasing so each tier renders bigger than the
--- one below it. Iron (rank 6) is bigger than XL (rank 5).
---   rank  1      2       3        4       5      6       7
---   name  Tiny   Small   Medium   Large   XL     Iron    Infinite
-local TIERS      = {100,  182,    520,     1075,   2146,  3218,   9999} -- maxPower per rank (ascending)
-local TIER_NAMES = {"Tiny","Small","Medium","Large","XL",  "Iron", "Infinite"}
-local TIER_SCALE = {1.00, 1.20,   1.40,    1.60,   1.80,  2.00,   2.20} -- size scale per rank (strictly increasing)
+-- one below it. Iron (rank 7) is bigger than XXL (rank 6).
+--   rank  1      2       3        4       5      6      7       8
+--   name  Tiny   Small   Medium   Large   XL     XXL    Iron    Infinite
+local TIERS      = {120,  270,    470,     620,    1080,  1710,   2600,   9999} -- maxPower per rank (ascending) -- matches PlayerStats.stomachTiers
+local TIER_NAMES = {"Tiny","Small","Medium","Large","XL",  "XXL",  "Iron", "Infinite"}
+local TIER_SCALE = {1.00, 1.20,   1.40,    1.60,   1.80,  2.00,   2.20,   2.40} -- size scale per rank (strictly increasing)
 
 local function tierIndex(maxPower)
 	-- highest rank whose maxPower threshold the gut has reached

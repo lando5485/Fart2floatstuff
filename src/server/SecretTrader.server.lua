@@ -2,7 +2,11 @@
 -- SECRET CAVE TRADER  (Script, server)
 --======================================================================
 -- The hooded trader who lives in the cave behind the 'secretcave' door. He sells things sold nowhere else,
--- for coins and for crate tokens.
+-- and since 2026-09-06 EVERYTHING he sells costs crate TICKETS, never coins (the user's call: "make shady
+-- sal's stuff cost tickets not coins"). The two rows that used to take coins -- the once-ever Starter Crate
+-- and the Pouch of Tickets -- both SOLD tickets, and tickets-for-tickets is either a loss or a printer, so
+-- they are gone rather than repriced. The `currency` field and the coin charge path are kept so a row can
+-- be moved back onto coins with one word if that decision is ever reversed.
 --
 -- ===== WHY THE SHOP LIVES ON THE SERVER WHEN THE CAVE DOES NOT =====
 -- The cave itself is built entirely client-side (see SecretCave.client.lua) -- it is decoration, it costs the
@@ -92,10 +96,11 @@ end
 -- `units` is how many exist THIS WINDOW on THIS server. nil = unlimited (the permanent staples). A rotating
 -- item without units would defeat the restock: the scarcity is what gets people into the cave.
 --
--- ===== SAL DEALS IN TOKENS =====
--- Most items price in Crate Tokens rather than coins, with deliberate exceptions marked below. The prices
--- are struck at roughly 1 token to 20 coins. Retune by editing `price` on the row; `currency` is what decides
--- which wallet is charged, so a single word moves an item back onto coins.
+-- ===== SAL DEALS IN TICKETS, ONLY =====
+-- Every row prices in Crate Tickets. The prices are struck at roughly 1 ticket to 20 coins, and the `street`
+-- ("up top") figure is in tickets too, so the whole panel reads in one currency. Retune by editing `price`
+-- on the row; `currency` is what decides which wallet is charged, so a single word moves an item back onto
+-- coins -- but there is no coin-priced row today, on purpose.
 
 -- Hot Coins would be an infinite money printer without a cooldown: net positive per click, clicked forever.
 -- One shipment per player per 5 minutes keeps it a treat rather than an exploit. This is a PER-PLAYER guard
@@ -104,16 +109,16 @@ local hotCoinsAt = {}
 Players.PlayerRemoving:Connect(function(p) hotCoinsAt[p] = nil end)
 
 -- ===== PERMANENT: always on the shelf, every window =====
--- These two are the reason the cave is never a wasted trip. Both carry their own per-player limit (a cooldown
--- and a once-ever flag), which is why neither needs unit counts on top.
+-- Hot Coins is the reason the cave is never a wasted trip. It carries its own per-player cooldown, which is
+-- why it needs no unit count on top.
 local PERMANENT = {
 	{
 		id     = "hotcoins",
 		name   = "Hot Coins",
-		desc   = "A thousand coins for forty tokens. They fell off a blimp. Don't ask which blimp.",
+		desc   = "A thousand coins for forty tickets. They fell off a blimp. Don't ask which blimp.",
 		price  = 40,
 		currency = "tokens",
-		street = 1000,
+		street = 50,
 		grant  = function(player)
 			local now = os.clock()
 			if hotCoinsAt[player] and now - hotCoinsAt[player] < 300 then
@@ -124,27 +129,6 @@ local PERMANENT = {
 			hotCoinsAt[player] = now
 			coins.Value = coins.Value + 1000
 			return true
-		end,
-	},
-	{
-		-- \xE2\x9A\xA0 PRICED IN COINS ON PURPOSE. This row SELLS 250 tokens. Pricing it in tokens makes it
-		-- pay-tokens-to-get-tokens: either a straight loss or an infinite printer depending on the number, and
-		-- its whole pitch ("no Robux asked") is that it's the one way to get tokens WITHOUT premium currency.
-		-- The once-ever flag is what keeps it from being a faucet.
-		id     = "basiccrate",
-		name   = "Starter Crate, Paid in Coins",
-		desc   = "250 tokens -- exactly one Starter Crate, no Robux asked. ONE per customer, ever. Sal's rules.",
-		price  = 2000,
-		currency = "coins",
-		street = 0,   -- up top these tokens are Robux-only; there IS no coin price, which is the whole appeal
-		grant  = function(player)
-			if player:GetAttribute("BoughtSalBasicCrate") then
-				return false, "One per customer. Sal remembers faces."
-			end
-			if type(_G.addSkinTokens) ~= "function" then return false, "Sal's crate supplier got caught." end
-			if _G.addSkinTokens(player, 250, "secret trader basic crate") == false then return false end
-			player:SetAttribute("BoughtSalBasicCrate", true)
-			return true, "250 tokens, straight off the truck. Go open that crate."
 		end,
 	},
 }
@@ -171,7 +155,7 @@ local POOL = {
 		id     = "boost2x",
 		name   = "2x Coins (5 min)",
 		desc   = "Sal greases the right palms and your flights pay DOUBLE for five minutes.",
-		price  = 30, currency = "tokens", street = 1500, units = 8,
+		price  = 30, currency = "tokens", street = 75, units = 8,
 		grant  = grantTimedBoost("SalCoinBoostUntil", 300,
 			"Your last batch is still burning. Use it up first.",
 			"Deal. Five minutes of DOUBLE coins -- fly, now!"),
@@ -180,7 +164,7 @@ local POOL = {
 		id     = "boostspeed",
 		name   = "Rocket Gas (5 min)",
 		desc   = "Off-the-books fuel additive. Fly 35% faster for five minutes. Probably safe.",
-		price  = 25, currency = "tokens", street = 1200, units = 8,
+		price  = 25, currency = "tokens", street = 60, units = 8,
 		grant  = grantTimedBoost("SalSpeedBoostUntil", 300,
 			"Your tank's still fizzing from the last dose.",
 			"Topped up. Five minutes of rocket gas -- try to land gently."),
@@ -204,7 +188,7 @@ local POOL = {
 		id     = "boost2xlong",
 		name   = "The Long Con (2x Coins, 15 min)",
 		desc   = "Same trick, three times the run. Fifteen minutes of double coins. Sal is not doing this again today.",
-		price  = 75, currency = "tokens", street = 5000, units = 4,
+		price  = 75, currency = "tokens", street = 250, units = 4,
 		grant  = grantTimedBoost("SalCoinBoostUntil", 900,
 			"You've already got a batch burning. Sal doesn't double-dip.",
 			"Fifteen minutes. Don't waste them standing in a cave."),
@@ -213,7 +197,7 @@ local POOL = {
 		id     = "jetfuel",
 		name   = "Jet Fuel (15 min)",
 		desc   = "Not fuel. Sal won't say what it is. Fly 35% faster for a quarter of an hour.",
-		price  = 65, currency = "tokens", street = 4000, units = 4,
+		price  = 65, currency = "tokens", street = 200, units = 4,
 		grant  = grantTimedBoost("SalSpeedBoostUntil", 900,
 			"Still fizzing. Let the last dose wear off.",
 			"That's the good stuff. Fifteen minutes -- go."),
@@ -235,7 +219,7 @@ local POOL = {
 		id     = "doubledip",
 		name   = "The Full Package",
 		desc   = "Double coins AND rocket gas, five minutes of both. Sal's own blend. Three only.",
-		price  = 50, currency = "tokens", street = 2700, units = 3,
+		price  = 50, currency = "tokens", street = 135, units = 3,
 		grant  = function(player)
 			local now = workspace:GetServerTimeNow()
 			-- Both halves must be free, and both are checked BEFORE either is set: granting the speed half and
@@ -247,23 +231,6 @@ local POOL = {
 			player:SetAttribute("SalCoinBoostUntil",  now + 300)
 			player:SetAttribute("SalSpeedBoostUntil", now + 300)
 			return true, "Double coins AND rocket gas. Five minutes. Fly like you stole it."
-		end,
-	},
-	{
-		-- \xE2\x9A\xA0 ECONOMY CALL -- THIS ROW IS THE ONE TO DELETE IF TOKEN SALES DIP.
-		-- It is a COINS -> TOKENS faucet, the only repeatable one in the game (basiccrate above is once-ever).
-		-- It is deliberately the scarcest thing Sal stocks: ONE unit, per server, per 20-minute window, and only
-		-- in the windows the draw happens to deal it. That bound is what keeps it from competing with Robux --
-		-- but it IS a bound and not a wall, so if token revenue moves, this is the row that moved it. Deleting
-		-- these lines needs no other change anywhere.
-		id     = "tokenpouch",
-		name   = "Pouch of Tokens",
-		desc   = "Sixty crate tokens for cold coins. Sal has exactly one and he's already regretting it.",
-		price  = 12000, currency = "coins", street = 0, units = 1,
-		grant  = function(player)
-			if type(_G.addSkinTokens) ~= "function" then return false, "Sal's token counter is busted." end
-			if _G.addSkinTokens(player, 60, "secret trader token pouch") == false then return false end
-			return true, "Sixty tokens. Sal is already looking like he wants them back."
 		end,
 	},
 }
@@ -410,7 +377,7 @@ remote.OnServerEvent:Connect(function(player, id)
 
 	if usingTokens then
 		if type(_G.getSkinTokens) ~= "function" or type(_G.spendSkinTokens) ~= "function" then
-			reply:FireClient(player, false, "Sal's token counter is busted. Try again in a minute.")
+			reply:FireClient(player, false, "Sal's ticket counter is busted. Try again in a minute.")
 			warn("[SecretTrader] token hooks missing -- is SkinCrateService running?")
 			return
 		end

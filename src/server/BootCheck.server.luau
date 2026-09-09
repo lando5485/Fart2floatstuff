@@ -34,10 +34,10 @@ local REPORT_AFTER = 20
 
 -- Generated from default.project.json. Regenerate when you add or remove a server script.
 local EXPECTED = {
-	"BeamCollision", "BeamEffects", "BeamGeneration", "BeamKnockback", "BeamPattern", "BellySystem",
+	"AFKTokenFarm", "BeamCollision", "BeamEffects", "BeamGeneration", "BeamKnockback", "BeamPattern", "BellySystem",
 	"BigEventScheduler", "BlackHoleTeleport", "BlimpService", "Campfire", "ComebackNudge",
 	"CommunityGarden", "CrateService", "DailyTasks", "DevCommands", "EasterEggManager", "FarmerNPC",
-	"GardenBird", "GardenFeeding", "GardenGnomes", "GardenerWave", "GutSkinService", "HeldItemSync",
+	"GardenBird", "PetAbilityService", "GardenFeeding", "GardenGnomes", "GardenerWave", "GutSkinService", "HeldItemSync",
 	"IslandNPCs", "IslandStreaming", "LateJoinEventSync", "LeaderboardService", "MeatballShooter",
 	"MeteorImpact", "MeteorManager", "MeteorReward", "MeteorSpawn", "MilkCap", "MusicManager",
 	"PetSystem", "PlanetSelectService", "PlayerState", "PlayerStats", "PopcornTrees",

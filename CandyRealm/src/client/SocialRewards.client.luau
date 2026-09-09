@@ -44,7 +44,7 @@ local state = { like = false, favorite = false, group = false, isMember = false 
 --------------------------------------------------------------------------------
 -- panel
 --------------------------------------------------------------------------------
-local dim = Instance.new("TextButton") -- transparent tap-outside-to-close catcher (matches the other menus)
+local dim = Instance.new("TextButton") -- transparent click CATCHER (it swallows taps; it does not close)
 dim.Size = UDim2.fromScale(1, 1); dim.BackgroundTransparency = 1
 dim.Text = ""; dim.AutoButtonColor = false; dim.Visible = false; dim.Parent = screen
 
@@ -155,7 +155,11 @@ local function setOpen(o)
 end
 _G.toggleSocialRewards = function() setOpen(not panel.Visible) end
 closeBtn.MouseButton1Click:Connect(function() setOpen(false) end)
-dim.MouseButton1Click:Connect(function() setOpen(false) end)
+-- BACKDROP TAPS CLOSE NOTHING. This is the realm's one banned menu behaviour: a panel must only
+-- ever be shut by its X. The button stays (it swallows the click so it cannot reach the world or
+-- the buttons behind the panel) -- it just does not act on it. Losing a full-screen menu to a
+-- mis-aimed tap, mid-scroll or mid-read, is indistinguishable from the menu crashing.
+dim.MouseButton1Click:Connect(function() end)
 
 -- STALE-DUPLICATE DEFENSE: an old baked-in copy prints "[Social] client ready" at a DIFFERENT line, builds
 -- its own SocialRewardsGui (the empty black toast = "the black bar") AND steals _G.toggleSocialRewards.

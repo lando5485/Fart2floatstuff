@@ -24,31 +24,55 @@ local PlayerGui        = player:WaitForChild("PlayerGui")
 
 -- island, name, quest, and how to read its progress. The `state` function returns
 -- (done, detail) -- detail is the small grey text on the right.
+--
+-- ===== THREE THINGS THIS TABLE USED TO GET WRONG =====
+--   1. THE ISLAND NAMES WERE THE FOOD REALM'S. Every row read "Bean Farm", "Broccoli Bluff",
+--      "Popcorn Pinnacle" and so on -- the fourteen islands of the OTHER game, copied across with
+--      the file. Candy's islands are named in IslandOrder.NAMES and none of them match, so a player
+--      opening the journal was told to go somewhere that does not exist in this realm. The names
+--      below now come from IslandOrder.NAMES, indexed by the island model number.
+--   2. TWO ISLAND NUMBERS WERE SWAPPED. Summit Bell was listed on island8 and Crystal Mine on
+--      island11. The quests themselves say otherwise -- SummitBellQuest is ISLAND_NAME = "island4"
+--      and CrystalMineQuest is ISLAND_NAME = "island8" -- which is the same swap DoneCommand
+--      documents and works around. Nothing keys off this column, so it broke nothing internally; it
+--      simply sent players to the wrong island, which is the whole job of this panel.
+--   3. IT CLAIMED TO READ AS THE CLIMB AND DID NOT. The rows were in island-NUMBER order, but
+--      SLOT_TO_ISLAND is a deliberate scramble ({1,9,3,13,5,8,2,11,4,14,15}), so island9 is the
+--      SECOND island you reach and island2 the seventh. Ordered below by climb slot, which is what
+--      a player actually walks, with the three off-ladder islands after the summit.
+--
+-- Still deliberately hand-written rather than derived from IslandOrder: the off-ladder islands
+-- (16/18/19) are not in it at all, and a journal that silently dropped three quests to stay
+-- derivable would be worse than one that has to be kept in step.
 local ROWS = {
-	{ 1,  "Bean Farm",       "Gumball Hunt",    function() return _G.candyQuestComplete end },
-	{ 2,  "Broccoli Bluff",  "Jelly Tower",     function() return _G.jellyQuestComplete end },
-	{ 3,  "Cabbage Cliffs",  "Cookie Repair",   function() return _G.cookieQuestComplete end },
-	{ 4,  "Turnip Tranquil", "Campfire Freeze", function() return _G.campfireQuestComplete end },
-	{ 5,  "Coconut Cove",    "Taffy Storm",     function() return _G.stormQuestComplete end },
-	{ 8,  "Popcorn Pinnacle","Summit Bell",     function() return _G.summitQuestComplete end },
-	{ 9,  "Milk Marsh",      "Reactor Cleanup", function() return _G.cleanupQuestComplete end },
-	{ 11, "Ice Cream Isle",  "Tunnel Blast",    function() return _G.tunnelQuestComplete end },
-	{ 11, "Ice Cream Isle",  "Crystal Mine",    function() return _G.crystalQuestComplete end },
-	{ 13, "Burrito Barrens", "Ancient Tree",    function()
+	-- ---- THE LADDER, in climb order (slot 1 -> 11) --------------------------------------
+	{ 1,  "Candy Cane Court",     "Gumball Hunt",    function() return _G.candyQuestComplete end },
+	{ 9,  "Cocoa Reactor",        "Reactor Cleanup", function() return _G.cleanupQuestComplete end },
+	{ 3,  "Cookie Crumble",       "Cookie Repair",   function() return _G.cookieQuestComplete end },
+	{ 13, "Gumtree Park",         "Ancient Tree",    function()
 		if _G.parkQuestComplete then return true end
 		local st = tonumber(_G.parkQuestStep) or 0
 		return false, (st > 0) and ("step %d of 3"):format(math.min(st, 3)) or nil
 	end },
-	{ 14, "Pizza Palms",     "Camp S'mores",    function() return _G.smoresQuestComplete end },
-	{ 15, "Bakery Isle",     "The Great Bake-Off", function()
+	{ 5,  "Taffy Town",           "Taffy Storm",     function() return _G.stormQuestComplete end },
+	{ 8,  "Crystal Candy Caves",  "Crystal Mine",    function() return _G.crystalQuestComplete end },
+	-- Jelly Tower (island2) REMOVED from the journal: the quest is retired and the island was
+	-- never built -- a row that can never tick reads as the player's failure, not the game's
+	{ 11, "Licorice Tunnels",     "Tunnel Blast",    function() return _G.tunnelQuestComplete end },
+	-- island4 is the one slot with TWO quests on it
+	{ 4,  "Frostbell Peak",       "Campfire Freeze", function() return _G.campfireQuestComplete end },
+	{ 4,  "Frostbell Peak",       "Summit Bell",     function() return _G.summitQuestComplete end },
+	{ 14, "Marshmallow Camp",     "Camp S'mores",    function() return _G.smoresQuestComplete end },
+	{ 15, "Bakery Summit",        "The Great Bake-Off", function()
 		return _G.bakeryQuestComplete == true, _G.bakeryQuestStep
 	end },
-	-- island18 is OFF THE LADDER (reached by command/wormhole, not by a crossing), so it sits
-	-- after the summit here rather than in island-number order -- the journal reads as the climb.
-	{ 18, "Pancake Peak",    "Wake the Pancake Monster", function()
+	-- ---- PROMOTED RUNGS (slots 8/7/12) -- their island names must match IslandOrder.NAMES,
+	-- or the journal, the wormhole and the HUD call the same island three different things.
+	{ 16, "Pop Rock Quarry",      "Candy Mine Explosion", function() return _G.candyMineQuestComplete end },
+	{ 18, "Pancake Arena",        "Wake the Pancake Monster", function()
 		return _G.pancakeQuestComplete == true, _G.pancakeQuestStep
 	end },
-	{ 19, "Harvest Hollow",  "Broken Tractor", function()
+	{ 19, "Sugarbeet Farm",       "Broken Tractor", function()
 		return _G.tractorQuestComplete == true, _G.tractorQuestStep
 	end },
 }
@@ -192,7 +216,11 @@ local function setOpen(on)
 end
 
 close.MouseButton1Click:Connect(function() setOpen(false) end)
-shade.MouseButton1Click:Connect(function() setOpen(false) end)
+-- THE BACKDROP DELIBERATELY DOES NOT CLOSE THIS. It is a TextButton only so that clicks land on it
+-- instead of falling through to the world behind the panel; swallowing the click is the whole job.
+-- Closing on it is this realm's one banned menu behaviour -- a kid tapping to scroll a list of
+-- fifteen quests loses the panel, with no idea what they did. The X button is the only way out.
+shade.MouseButton1Click:Connect(function() end)
 
 _G.toggleJournal = function() setOpen(not gui.Enabled) end
 

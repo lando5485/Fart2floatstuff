@@ -51,8 +51,13 @@ local RunService = game:GetService("RunService")
 --
 -- With all three false the loop never starts at all, so this costs nothing while it is off.
 -- ============================================================================================================
-local ENABLE_BREATHE = false
-local ENABLE_WATCH   = false
+-- BREATHE and WATCH are ON. Four garden props that never move read as furniture; a gnome that breathes
+-- and turns its head to follow you is the cheapest "this place is alive" there is, and both are rooted --
+-- neither can walk a gnome somewhere it was not placed, so nothing in the garden layout can drift.
+-- CREEP stays OFF deliberately: it RELOCATES them, which is a different promise (a horror beat, and one
+-- that can end with a gnome standing somewhere the build did not account for). Turn it on knowingly.
+local ENABLE_BREATHE = true
+local ENABLE_WATCH   = true
 local ENABLE_CREEP   = false
 
 -- ===== TUNING =====

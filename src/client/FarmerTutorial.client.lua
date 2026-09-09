@@ -9,14 +9,30 @@ local ProximityPromptService = game:GetService("ProximityPromptService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
+-- FOUR SLIDES, EIGHT WORDS EACH. These six lines ran 7 to 15 words, and capWords below turns anything
+-- over eight into TWO slides -- so the 'six-line' tutorial was really TEN Next presses before a new
+-- player had touched anything. Four that cannot split: welcome, buy + fart, land, coins.
+-- FOUR SLIDES, EIGHT WORDS EACH. These six lines ran 7 to 15 words, and capWords below turns anything
+-- over eight into TWO slides -- so the 'six-line' tutorial was really TEN Next presses before a new
+-- player had touched anything. Four that cannot split: welcome, buy + fart, land, coins.
 local LINES = {
 	"\xC2\xA1Hola, amigo! Welcome to Fart to Float!",
-	"Buy food from the stand to fill your GAS METER.",
-	"Then hit the FART button to blast off and fly up!",
-	"Land on the next island to unlock it and keep climbing.",
-	"Earn coins by flying high \xE2\x80\x94 save up for a BIGGER STOMACH to fly even higher!",
-	"Good luck, partner! See you at the top!",
+	"Buy food, then HOLD the FART button.",
+	"Land higher to unlock the next island.",
+	"Coins buy bigger guts. Good luck, partner!",
 }
+
+-- EIGHT WORDS A SLIDE. The panel already pages with a Next button, so a long line does not need to be cut --
+-- it needs to be SPLIT, and the reader gets the same words one readable slide at a time. Defensive require:
+-- a missing module must cost you long lines, not a tutorial that never opens.
+local capWords = function(lines) return lines end
+do
+	local ok, mod = pcall(function()
+		return require(game:GetService("ReplicatedStorage"):WaitForChild("Shared", 10):WaitForChild("BubbleWords", 10))
+	end)
+	if ok and type(mod) == "table" and mod.cap then capWords = mod.cap end
+end
+LINES = capWords(LINES)
 
 -- ===== dialog UI (built once, hidden until triggered) =====
 local gui = Instance.new("ScreenGui")

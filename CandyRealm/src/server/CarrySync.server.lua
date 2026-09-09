@@ -49,7 +49,7 @@ local KINDS = {
 	part_rad    = true,
 	part_steer  = true,
 	tractor     = true,   -- island19: you are DRIVING -- draw a tractor under the driver
-	axe         = true,   -- island4  (Camp S'mores): the chopping axe, welded to the hand
+	chainsaw    = true,   -- island14 (Camp S'mores): the felling chainsaw, welded to the hand
 	pickaxe     = true,   -- island11 (Tunnel Blast): the mining pickaxe, same
 	dynamite    = true,   -- island11: a crate of dynamite being walked to the X
 }

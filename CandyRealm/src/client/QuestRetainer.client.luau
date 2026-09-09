@@ -73,8 +73,17 @@ local SETTLE        = 12    -- seconds given to a re-run before it is judged
 local LONG_QUESTS = { summit = 150 }
 
 -- id -> { flag published at the quest's ready print, the LocalScript's name, the island model }
--- The ids and islands match IslandTaskWatcher's QUESTS table; the island column is the MODEL
--- name in Workspace, which is what RequestStreamAroundAsync needs a position for.
+-- The ids match IslandTaskWatcher's QUESTS table; the island column is the MODEL name in Workspace,
+-- which is what RequestStreamAroundAsync needs a position for.
+--
+-- THE ISLAND COLUMN HERE HAS ALWAYS BEEN THE CORRECT ONE. IslandTaskWatcher's comments, QuestJournal's
+-- rows and CrateTokens' ladder all used to read `summit` as island8 and `crystal` as island11, which is
+-- backwards -- SummitBellQuest is ISLAND_NAME = "island4", CrystalMineQuest is "island8". This file got
+-- it right, and getting it right is load-bearing here in a way it is not there: an id with the wrong
+-- island force-streams the wrong region and then reports MISSING ISLAND for one that exists. The other
+-- three are corrected now, so all four agree.
+--
+-- island4 appears TWICE on purpose -- Frostbell Peak hosts both the campfire and the summit bell.
 local QUESTS = {
 	{ id = "candy",    script = "CandyGumballQuest_AllInOne",       island = "island1"  },
 	{ id = "cleanup",  script = "RadioactiveCleanupQuest_AllInOne", island = "island9"  },
@@ -82,7 +91,8 @@ local QUESTS = {
 	{ id = "park",     script = "AncientTreeQuest_AllInOne",        island = "island13" },
 	{ id = "storm",    script = "TaffyStormQuest_AllInOne",         island = "island5"  },
 	{ id = "crystal",  script = "CrystalMineQuest_AllInOne",        island = "island8"  },
-	{ id = "jelly",    script = "JellyTowerQuest_AllInOne",         island = "island2"  },
+	-- jelly (island2) REMOVED: the island was never built and the quest script is retired --
+	-- keeping the row here only bought a MISSING ISLAND warning every boot
 	{ id = "tunnel",   script = "TunnelBlastQuest_AllInOne",        island = "island11" },
 	{ id = "summit",   script = "SummitBellQuest_AllInOne",         island = "island4"  },
 	{ id = "campfire", script = "CampfireFreezeQuest_AllInOne",     island = "island4"  },
@@ -90,6 +100,7 @@ local QUESTS = {
 	{ id = "bakery",   script = "BakeryQuest_AllInOne",             island = "island15" },
 	{ id = "pancake",  script = "PancakeMonsterQuest_AllInOne",     island = "island18" },
 	{ id = "tractor",  script = "BrokenTractorQuest_AllInOne",      island = "island19" },
+	{ id = "candymine", script = "CandyMineExplosionQuest_AllInOne", island = "island16" },
 }
 
 -- ============================================================================

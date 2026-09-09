@@ -45,7 +45,18 @@ local IslandOrder = require(game:GetService("ReplicatedStorage")
 -- Kept SEPARATE from IslandOrder rather than added to it: SLOT_TO_ISLAND is the climb ladder and the
 -- economy is solved against its length. Adding an island there is a re-solve of SLOT_POS, CandyData.FOODS,
 -- FlightTuning.TIERS and StomachTiers; adding one here costs nothing and changes no gameplay numbers.
-local EXTRA_PERSIST = { 16, 18, 19 }   -- island16 Candy Mine, island18 Pancake Monster, island19 Broken Tractor.
+-- EMPTY, AND THAT IS THE POINT. Every built island in this realm is now ON the tower, so they
+-- all arrive through SLOT_TO_ISLAND and get Persistent from there. island16, island18 and
+-- island19 used to be listed here because the ladder did not reach them; the space-economy
+-- port promoted all three (slots 8, 7 and 12), and listing them again would only mark them
+-- twice.
+--
+-- island2 is not here either, and not by oversight: no model of that name was ever built (see
+-- QuestRetainer, which reports it as MISSING ISLAND). Listing a model that does not exist just
+-- buys a warning every boot for nothing.
+--
+-- Kept as a table rather than deleted so a future off-ladder island is one number away.
+local EXTRA_PERSIST = {}
                                    -- Both are OFF THE LADDER (not in SLOT_TO_ISLAND), so nothing
                                    -- else in the tower plumbing touches them -- but their quests
                                    -- read marker parts at distance, and without Persistent those

@@ -33,6 +33,7 @@ local PlayerGui = player:WaitForChild("PlayerGui")
 local Shared      = ReplicatedStorage:WaitForChild("Shared")
 local PetSkins    = require(Shared:WaitForChild("PetSkins"))
 local PetTraits   = require(Shared:WaitForChild("PetTraits"))
+local PetTier     = require(Shared:WaitForChild("PetTier"))
 local SkinCrates  = require(Shared:WaitForChild("SkinCrates"))
 local CrateTokens = require(Shared:WaitForChild("CrateTokens"))
 local PetCollection = require(Shared:WaitForChild("PetCollection"))
@@ -51,6 +52,7 @@ local AssignPetLevels = SkinRemotes:WaitForChild("AssignPetLevels")  -- c->s RF:
 local levelPickerRefresh = nil
 local TradeUpRF      = SkinRemotes:WaitForChild("TradeUp")
 local CollectAnnounce = SkinRemotes:WaitForChild("CollectAnnounce")
+local FreeCrateReveal = SkinRemotes:WaitForChild("FreeCrateReveal")  -- s->c: a crate the server opened for us
 
 -- ===== SOUNDS =====
 -- REVEAL is the game's existing crate/wheel payoff sound, reused deliberately so the three random-reward systems
@@ -75,15 +77,40 @@ end
 -- ===== HOUSE UI HELPERS (same shape as the Shop / HUD scripts) =====
 local function mkCorner(p, r) local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r); c.Parent = p; return c end
 local function mkStroke(p, col, t) local s = Instance.new("UIStroke"); s.Color = col; s.Thickness = t; s.Parent = p; return s end
-local function mkLabel(p, props) local l = Instance.new("TextLabel"); l.BackgroundTransparency = 1; for k, v in pairs(props) do l[k] = v end; l.Parent = p; return l end
-local function mkFrame(p, props) local f = Instance.new("Frame"); for k, v in pairs(props) do f[k] = v end; f.Parent = p; return f end
-local function mkButton(p, props) local b = Instance.new("TextButton"); for k, v in pairs(props) do b[k] = v end; b.Parent = p; return b end
+-- ===== BorderSizePixel = 0 ON ALL THREE. READ THIS BEFORE REMOVING IT. =====
+-- Roblox defaults every GuiObject to BorderSizePixel = 1 in BLACK, and that border is drawn as a SQUARE
+-- rectangle that ignores UICorner. So every rounded thing this file builds -- cards, chips, pills, tiles,
+-- the icon discs -- was being outlined by a 1px black box whose corners poked out past the rounding. That
+-- shows up as little black dots at the corners of each card and a thin dark edge under the tab row, and it
+-- is why the odds chips read as flat rectangles even though they have had a UICorner all along.
+--
+-- Setting it here rather than on each call site fixes it for every element in the panel at once, including
+-- the ones written before this note. `body` already set it by hand, which is the tell that this had been
+-- hit and patched in one place before.
+--
+-- It is set BEFORE the props loop, so any caller that genuinely wants a border can still pass one.
+local function mkLabel(p, props) local l = Instance.new("TextLabel"); l.BackgroundTransparency = 1; l.BorderSizePixel = 0; for k, v in pairs(props) do l[k] = v end; l.Parent = p; return l end
+local function mkFrame(p, props) local f = Instance.new("Frame"); f.BorderSizePixel = 0; for k, v in pairs(props) do f[k] = v end; f.Parent = p; return f end
+local function mkButton(p, props) local b = Instance.new("TextButton"); b.BorderSizePixel = 0; for k, v in pairs(props) do b[k] = v end; b.Parent = p; return b end
 
 -- House palette: bright blue / white / lime / gold. No dark panels.
 local PANEL      = Color3.fromRGB( 30, 120, 220)
 local PANEL_DARK = Color3.fromRGB( 20,  60, 160)
 local HEADER     = Color3.fromRGB( 15,  60, 140)
 local CARD       = Color3.fromRGB( 20,  90, 200)
+-- THE UNSELECTED TAB FILL -- the Pet Hub's exact value (PetFollow's syncNav paints 18,66,150), NOT this
+-- panel's CARD blue. The two four-tab bars are meant to read as ONE bar that follows you between the two
+-- panels, and they almost did: same geometry, same gold selected state, same strokes -- but unselected tabs
+-- here sat on CARD (20,90,200) while the hub's sat on 18,66,150, so every hand-off visibly repainted the
+-- three tabs you had NOT pressed. One constant, shared meaning; if the hub's bar is ever retuned, change
+-- this to match it, not to match CARD.
+local TAB_IDLE   = Color3.fromRGB( 18,  66, 150)
+-- THE UNSELECTED TAB'S OUTLINE AND WORD. Both used to be pure white / gold at full strength, which made the
+-- four tabs read as four equally-important buttons and left the selected one having to shout to be heard.
+-- A soft blue edge and a near-white word are legible on the navy without competing: the SELECTED tab is the
+-- only thing in the bar allowed to be a solid colour, which is what makes it obvious at a glance.
+local TAB_EDGE   = Color3.fromRGB( 72, 126, 214)
+local TAB_INK    = Color3.fromRGB(214, 230, 255)
 local GOLD       = Color3.fromRGB(255, 220,   0)
 local LIME       = Color3.fromRGB( 50, 220,  50)
 local LIME_DARK  = Color3.fromRGB( 30, 130,  30)
@@ -148,16 +175,29 @@ local function applyRarityFlair(frame, tier, lite)
 		t:Play(); mine[#mine + 1] = t
 	end
 
-	-- (2) SHIMMER SWEEP -- a soft diagonal highlight crossing the card. ClipsDescendants keeps it inside the
-	-- rounded corners; the gradient makes it a soft band rather than a hard white bar.
+	-- (2) SHIMMER SWEEP -- a soft diagonal highlight crossing the card.
+	--
+	-- THE BAND ITSELF IS NO LONGER ROTATED, AND THAT IS THE WHOLE FIX. It used to be a Frame with
+	-- Rotation = 14, and a ROTATED GuiObject IGNORES ClipsDescendants -- its own and every ancestor's. So
+	-- this 1.8x-tall band spilled out of the reel cell, out of the reel window, out of the crate panel and
+	-- swept across the entire screen during an opening, with a dozen Epic+ cells doing it at once. The
+	-- clipping was set correctly the whole time; the rotation was quietly cancelling it.
+	--
+	-- The tilt now lives on the UIGradient instead. Gradient rotation is a paint-time property -- it tilts
+	-- the highlight without rotating the frame, so clipping applies again. Same white, same 0.72
+	-- transparency, same soft-edged band, same 0.85s Sine sweep and the same `f.sweep` gap between passes:
+	-- the only thing that changed is that it can no longer leave the frame it belongs to.
 	if f.sweep then
 		frame.ClipsDescendants = true
 		local shine = Instance.new("Frame")
 		shine.Name = "RarityShine"; shine.BackgroundColor3 = Color3.new(1, 1, 1); shine.BackgroundTransparency = 0.72
-		shine.BorderSizePixel = 0; shine.Rotation = 14
+		shine.BorderSizePixel = 0
+		-- 0.22 wide, 1.8 tall starting at -0.4: the overhang top and bottom guarantees the band covers the
+		-- full height at every point of its travel, and the frame's own clipping trims it to the card.
 		shine.Size = UDim2.new(0.22, 0, 1.8, 0); shine.Position = UDim2.new(-0.35, 0, -0.4, 0)
 		shine.ZIndex = (frame.ZIndex or 1) + 6; shine.Parent = frame
 		local g = Instance.new("UIGradient", shine)
+		g.Rotation = 14 -- the diagonal, moved off the Frame and onto the paint
 		g.Transparency = NumberSequence.new({
 			NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0.15), NumberSequenceKeypoint.new(1, 1),
 		})
@@ -278,6 +318,11 @@ end
 local previewBase = {}     -- [petId] = one unparented model, built once and cloned from
 local previewQueue = {}
 local previewWorking = false
+
+-- The Trait Crate reel's stand-in: every cell shows the trait worn by this pet in the Classic skin, because
+-- the real ride-along is rolled at open time. One species for every cell on purpose -- the MODEL reads as
+-- "demo mannequin" and the TRAIT reads as the thing that changes cell to cell.
+local TRAIT_DEMO_PET = "ButterDuck"
 
 local function basePetModel(petId)
 	local cached = previewBase[petId]
@@ -436,49 +481,137 @@ local panel = mkFrame(gui, {
 	Size = UDim2.new(0, 700, 0, 520), Position = UDim2.new(0.5, 0, 0.5, -45),
 	AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = PANEL, Active = true, ClipsDescendants = true,
 })
-mkCorner(panel, 20); mkStroke(panel, PANEL_DARK, 3)
+local PANEL_RADIUS = 20   -- the panel's own rounding; the scrolling body matches it (see below)
+mkCorner(panel, PANEL_RADIUS); mkStroke(panel, PANEL_DARK, 3)
+
+-- ===== STARFIELD =====
+-- Faint stars scattered across the panel's own fill, behind everything. The crate cards are dark and
+-- self-contained, so the blue between them was a large flat empty area -- this gives it depth without
+-- putting anything there you could mistake for content. Nothing is interactive and nothing moves.
+--
+-- THEY ARE BUILT FIRST, and that -- not a ZIndex -- is what puts them behind everything. Among siblings of
+-- equal ZIndex Roblox draws in creation order, and the header, tab bar, body and banner are all created
+-- after this block, so they all cover it. Using ZIndex 0 would express the same intent while relying on
+-- below-default values behaving, which is a needless bet when the ordering is already free.
+-- The body scroll is transparent, which is what lets the stars show through the gaps between cards -- the
+-- only place they are actually visible.
+--
+-- SEEDED, not math.random: a fixed seed means every player sees the same sky and a reload cannot reshuffle
+-- it into a clump. Two sizes and two shapes so it reads as scattered rather than as a dot grid.
+do
+	local rnd = Random.new(20260902)
+	for k = 1, 22 do
+		local big = (k % 5 == 0)
+		local s = big and 11 or 6
+		mkLabel(panel, {
+			Text = big and "\xE2\x9C\xA6" or "\xE2\x80\xA2", Font = Enum.Font.FredokaOne,
+			TextSize = s, TextScaled = true, TextColor3 = WHITE,
+			TextTransparency = big and 0.86 or 0.92,
+			Size = UDim2.fromOffset(s, s),
+			-- FROM y=118, NOT 64. The tab bar is a TRANSPARENT frame spanning 66..104, so stars placed in that
+			-- band showed through the gaps between the four tab pills as speckle under the row. The body
+			-- starts at 120, so 118 is the first row of pixels where a star has an actual backdrop.
+			Position = UDim2.new(0, rnd:NextInteger(14, 676), 0, rnd:NextInteger(118, 452)),
+		}):SetAttribute("BTS_Skip", true)
+	end
+end
 
 local header = mkFrame(panel, { Size = UDim2.new(1, 0, 0, 60), BackgroundColor3 = HEADER })
 mkCorner(header, 20)
+
+-- ===== PAW-PRINT WATERMARK =====
+-- Four paws scattered across the header at 92% transparency and a few degrees of rotation each. It is
+-- texture, not decoration: a flat navy bar 700px wide reads as a placeholder, and the paw is already this
+-- feature's motif (the Pet Hut's sign, its mat and its wall plaques all carry one).
+--
+-- ZINDEX IS LOAD-BEARING. These are siblings of the title, the pill and the X inside `header`, and the
+-- default ZIndexBehavior is Sibling -- so without an explicit order the paws would draw ON TOP of whatever
+-- was built before them. They sit at 1 and every piece of real content below is raised to 3.
+do
+	for _, s in ipairs({ { 20, -6, 44, -18 }, { 196, 22, 34, 14 }, { 330, -10, 38, 8 }, { 470, 18, 30, -12 } }) do
+		local w = mkLabel(header, {
+			Text = "\xF0\x9F\x90\xBE", Font = Enum.Font.FredokaOne, TextSize = s[3], TextScaled = true,
+			TextColor3 = WHITE, TextTransparency = 0.92, Rotation = s[4],
+			Size = UDim2.new(0, s[3], 0, s[3]), Position = UDim2.new(0, s[1], 0, s[2]), ZIndex = 1,
+		})
+		-- The legibility sweep would repaint a 92%-transparent watermark as readable text.
+		w:SetAttribute("BTS_Skip", true)
+	end
+end
+
+-- WHITE, not gold. The title is the loudest thing on the panel and gold-on-navy was competing with the
+-- token pill (also gold) two inches to its right; white with the black outline it already had is both
+-- stronger and leaves gold to mean "tickets" everywhere on this screen.
 local titleLbl = mkLabel(header, {
 	Text = "\xF0\x9F\x8E\x81 PET SKIN CRATES", Font = Enum.Font.FredokaOne, TextSize = 26, TextScaled = true,
-	TextColor3 = GOLD, Size = UDim2.new(0, 330, 0, 34), Position = UDim2.new(0, 14, 0, 6),
-	TextXAlignment = Enum.TextXAlignment.Left,
+	TextColor3 = WHITE, Size = UDim2.new(0, 330, 0, 34), Position = UDim2.new(0, 14, 0, 6),
+	TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3,
 })
 mkStroke(titleLbl, Color3.new(0, 0, 0), 2)
 mkLabel(header, {
-	Text = "Collect skins for every pet. Traits roll separately.", Font = Enum.Font.Gotham, TextSize = 13,
+	-- A BULLET, not a plus. "Skin + a Trait" reads as arithmetic -- as though the two combine into one
+	-- thing -- and they do not: they are two independent rolls that are then scored together, which is
+	-- exactly what the rest of the sentence says.
+	Text = "Every pull is a Skin \xE2\x80\xA2 a Trait. Together they set the pet's Tier.",
+	Font = Enum.Font.Gotham, TextSize = 13,
 	TextScaled = true, TextColor3 = Color3.fromRGB(215, 228, 255), Size = UDim2.new(0, 330, 0, 15),
-	Position = UDim2.new(0, 14, 0, 40), TextXAlignment = Enum.TextXAlignment.Left,
+	Position = UDim2.new(0, 14, 0, 40), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3,
 })
 
--- token balance pill, top-right of the header
+-- ===== TOKEN BALANCE PILL =====
+-- The ticket icon is RED and the number is dark brown, as two labels rather than one string. One label
+-- cannot do it: a TextLabel has a single TextColor3, so "icon + number" in one string forces the icon to
+-- take the number's colour. Red is the ticket's own colour everywhere else on this panel (the tile on every
+-- pack row, the pair on the footer banner), and it is what makes the pill scan as tickets rather than coins.
 local tokenPill = mkFrame(header, {
-	Size = UDim2.new(0, 158, 0, 34), Position = UDim2.new(1, -212, 0, 13), BackgroundColor3 = GOLD,
+	Size = UDim2.new(0, 158, 0, 34), Position = UDim2.new(1, -212, 0, 13), BackgroundColor3 = GOLD, ZIndex = 3,
 })
 mkCorner(tokenPill, 17); mkStroke(tokenPill, Color3.fromRGB(180, 122, 20), 2)
+mkLabel(tokenPill, {
+	Text = CrateTokens.ICON, Font = Enum.Font.FredokaOne, TextSize = 20, TextScaled = true,
+	TextColor3 = RED, Size = UDim2.new(0, 26, 0, 26), Position = UDim2.new(0, 8, 0.5, 0),
+	AnchorPoint = Vector2.new(0, 0.5), ZIndex = 4,
+}):SetAttribute("BTS_Skip", true)
 local tokenLbl = mkLabel(tokenPill, {
-	Text = CrateTokens.ICON .. " 0", Font = Enum.Font.FredokaOne, TextSize = 18, TextScaled = true,
-	TextColor3 = Color3.fromRGB(92, 58, 8), Size = UDim2.new(1, -10, 1, 0), Position = UDim2.new(0, 5, 0, 0),
-	TextXAlignment = Enum.TextXAlignment.Center,
+	Text = "0", Font = Enum.Font.FredokaOne, TextSize = 18, TextScaled = true,
+	TextColor3 = Color3.fromRGB(92, 58, 8), Size = UDim2.new(1, -46, 1, -6), Position = UDim2.new(0, 38, 0, 3),
+	TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 4,
 })
+do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 20; c.Parent = tokenLbl end
 
+-- ===== THE X, AND WHY IT IS A CHILD LABEL IN A DIFFERENT FONT =====
+-- The button rendered EMPTY. Two things were wrong and both had to be fixed:
+--
+--   1. FredokaOne does not carry U+2715 (the ✕ this was switched to). A display font's glyph coverage is
+--      basically Latin, digits and common punctuation -- ask it for a dingbat and you get nothing at all,
+--      which is exactly what a blank red square is. GothamBold carries it. (The original "X" was an ASCII
+--      capital letter, which is why the old button was never blank.)
+--   2. Even with a glyph, a UIStroke on a FILLED text object outlines the object's BORDER, not its letters,
+--      so the dark edge that keeps the mark readable on red can only come from a transparent label on top.
+--      That is the same rule the tab bar, the buy buttons and the bottom nav all follow in this file.
 local closeBtn = mkButton(header, {
 	Size = UDim2.new(0, 40, 0, 40), Position = UDim2.new(1, -48, 0, 10), BackgroundColor3 = RED,
-	Text = "X", Font = Enum.Font.FredokaOne, TextSize = 20, TextScaled = true, TextColor3 = WHITE,
+	Text = "", Font = Enum.Font.GothamBold, TextSize = 20, TextColor3 = WHITE, ZIndex = 3,
 })
-mkCorner(closeBtn, 8); mkStroke(closeBtn, Color3.fromRGB(150, 40, 32), 2)
+mkCorner(closeBtn, 12); mkStroke(closeBtn, Color3.fromRGB(150, 40, 32), 2)
+do
+	local x = mkLabel(closeBtn, {
+		Text = "\xE2\x9C\x95", Font = Enum.Font.GothamBold, TextSize = 20, TextScaled = true,
+		TextColor3 = WHITE, Size = UDim2.new(1, -12, 1, -12), Position = UDim2.new(0, 6, 0, 6),
+		TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 4,
+	})
+	mkStroke(x, Color3.fromRGB(70, 12, 8), 2)
+	local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 22; c.Parent = x
+	closeBtn:SetAttribute("BTS_Skip", true); x:SetAttribute("BTS_Skip", true)
+end
 
--- BACK -> the Pet Hub. Only shown when this panel was opened FROM the Pet Hub (its CRATES chip closes the hub
--- so the two 700x520 panels don't stack, which otherwise leaves no way back except reopening Pets from MORE+).
--- Opened any other way -- the MORE+ row, /crates -- there is nothing to go "back" to, so it stays hidden.
-local backBtn = mkButton(header, {
-	Size = UDim2.new(0, 70, 0, 30), Position = UDim2.new(1, -290, 0, 15), BackgroundColor3 = CARD,
-	Text = "\xE2\x9D\xAE BACK", Font = Enum.Font.FredokaOne, TextSize = 14, TextScaled = true,
-	TextColor3 = WHITE, Visible = false,
-})
-mkCorner(backBtn, 8); mkStroke(backBtn, WHITE, 1.5)
-do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 14; c.Parent = backBtn end
+-- NO BACK BUTTON. THE TAB BAR IS THE WAY BACK.
+--
+-- There used to be one here, shown only when this panel was opened from the Pet Hub. That made it a second
+-- door to a place the first door already goes: the PETS tab at the top of this panel closes this and reopens
+-- the hub, and it does that on EVERY page -- whereas BACK appeared on some openings and not others. Two
+-- controls for one destination, one of which comes and goes, is harder to learn than one that is always
+-- there, and it was crowding the header beside the token chip and the X.
 
 -- ===== TABS =====
 -- Five tabs across a 680px bar. Widths are authored (not scale-based) because the bar sits inside the panel's
@@ -525,12 +658,24 @@ end
 local tabButtons = {}
 for i, t in ipairs(TABS) do
 	local b = mkButton(tabBar, {
-		Size = UDim2.new(0, TAB_W, 1, 0), LayoutOrder = i, BackgroundColor3 = CARD, Text = t.label,
-		-- GOLD, not WHITE: pure white on the blue card is the brightest thing on the panel and was pulling
-		-- the eye away from the content. This is the same tone as the 'PET SKIN CRATES' title.
-		Font = Enum.Font.FredokaOne, TextSize = 15, TextScaled = true, TextColor3 = GOLD,
+		Size = UDim2.new(0, TAB_W, 1, 0), LayoutOrder = i, BackgroundColor3 = TAB_IDLE, Text = "",
+		Font = Enum.Font.FredokaOne, TextSize = 15, TextColor3 = TAB_INK,
 	})
-	mkCorner(b, 10); mkStroke(b, WHITE, 1.5)
+	mkCorner(b, 12); mkStroke(b, TAB_EDGE, 1.5)
+	-- THE WORD IS A CHILD LABEL, NOT THE BUTTON'S OWN TEXT -- identical to the Pet Hub's copy of this bar.
+	-- A UIStroke on a FILLED text object outlines the object's BORDER, not its glyphs, so the stroke these
+	-- tabs already had was the white/gold edge round the tab and the word itself could not be outlined from
+	-- the same instance. A transparent label on top has no border to draw, so its stroke lands on the
+	-- letters. GOLD, not WHITE: pure white on the blue card was the brightest thing on the panel and pulled
+	-- the eye off the content -- this is the same tone as the 'PET SKIN CRATES' title.
+	local lbl = Instance.new("TextLabel"); lbl.Name = "Label"
+	lbl.Size = UDim2.new(1, -8, 1, -6); lbl.Position = UDim2.new(0, 4, 0, 3)
+	lbl.BackgroundTransparency = 1; lbl.Text = t.label
+	lbl.Font = Enum.Font.FredokaOne; lbl.TextSize = 15; lbl.TextScaled = true
+	lbl.TextColor3 = TAB_INK; lbl.ZIndex = b.ZIndex + 1; lbl.Parent = b
+	mkStroke(lbl, Color3.new(0, 0, 0), 2)
+	lbl:SetAttribute("BTS_Skip", true)
+	do local lc = Instance.new("UITextSizeConstraint"); lc.MaxTextSize = 15; lc.Parent = lbl end
 	-- HANDS OFF -- SAME REASON AS THE PET HUB'S COPY OF THIS BAR (PetFollow's HubNav).
 	-- The refresh below paints selected as dark-on-gold with a 2.5px gold-brown outline and unselected as
 	-- gold-on-blue with a 1.5px white one: the colour IS which tab you're on. ButtonTextStyle's legibility
@@ -548,23 +693,248 @@ for i, t in ipairs(TABS) do
 end
 
 -- one scrolling body shared by the tabs; each tab rebuilds its contents into it
+local BODY_PAD, BODY_BAR = 10, 6
+-- What a full-width card actually gets, spelled out rather than rediscovered per card:
+--   panel 700  -  body inset 2*10  -  BODY_PAD 10  -  (BODY_PAD 10 + BODY_BAR 6)  =  654
+local CARD_W = 700 - 20 - BODY_PAD - (BODY_PAD + BODY_BAR)
 local body = Instance.new("ScrollingFrame")
-body.Position = UDim2.new(0, 10, 0, 110); body.Size = UDim2.new(1, -20, 1, -122)
+-- ===== WHERE THE BODY STARTS AND STOPS =====
+-- BOTTOM: the bottom navigation is 56 tall and sits 10 off the panel's bottom edge, so the body stops 66
+-- short of it plus a 10px gap. Shortening the body is what keeps the bar OUT of the scroll -- park it
+-- inside and it scrolls away with the crates.
+--
+-- TOP: y=120, not 110. The tab bar runs 66..104, so the body used to begin 6px under it -- close enough
+-- that the first card read as welded to the tabs, and the moment you scrolled, a card passing the top
+-- boundary got sliced flat right beneath them with nothing between the two. 120 puts a clear 16px lane
+-- there. The height compensates by the same 10 (1,-196 from 1,-186) so the BOTTOM edge does not move and
+-- the gap above the bottom nav is unchanged.
+-- -204, not -196: the bottom bar grew from a bare 56px button row to a 64px GET TICKETS banner (see below),
+-- and the body has to give back the 8 or the banner's top edge eats the last card's rounded lip.
+body.Position = UDim2.new(0, 10, 0, 120); body.Size = UDim2.new(1, -20, 1, -204)
 body.BackgroundTransparency = 1; body.BorderSizePixel = 0
-body.ScrollBarThickness = 6; body.ScrollBarImageColor3 = GOLD
+-- A THIN, LIGHT BAR. It was gold, which put a bright saturated stripe down the right edge of every page --
+-- the same gold the token pill, the value stars and the GET TICKETS banner use, so it read as one more thing
+-- demanding attention rather than as a scroll position. Pale blue at 6px states where you are and nothing else.
+body.ScrollBarThickness = BODY_BAR; body.ScrollBarImageColor3 = Color3.fromRGB(150, 190, 245)
 body.CanvasSize = UDim2.new(0, 0, 0, 0); body.AutomaticCanvasSize = Enum.AutomaticSize.Y
-body.ScrollingDirection = Enum.ScrollingDirection.Y; body.Parent = panel
+body.ScrollingDirection = Enum.ScrollingDirection.Y
+-- ===== A ROUNDED CLIP REGION, MATCHING THE PANEL =====
+-- A ScrollingFrame clips its canvas by definition, and by default that clip is a hard rectangle -- so the
+-- corners of the list were square inside a panel whose own corners are round, and a card reaching the top
+-- was cut with a straight edge across its full width. ClipsDescendants + UICorner makes the mask itself
+-- rounded, so the list ends in the same curve the panel does.
+--
+-- BE HONEST ABOUT WHAT THIS DOES AND DOES NOT FIX: it rounds the boundary, it does not soften it. A card
+-- scrolling PAST the top edge is still cut where it crosses -- that is what a scroll region is. What the
+-- rounding and the padding below fix is the resting state, which is where the flat edge was actually
+-- being seen.
+body.ClipsDescendants = true
+mkCorner(body, PANEL_RADIUS)
+body.Parent = panel
 do
 	local ll = Instance.new("UIListLayout"); ll.FillDirection = Enum.FillDirection.Vertical
-	ll.Padding = UDim.new(0, 10); ll.SortOrder = Enum.SortOrder.LayoutOrder
+	ll.Padding = UDim.new(0, 14); ll.SortOrder = Enum.SortOrder.LayoutOrder
 	ll.HorizontalAlignment = Enum.HorizontalAlignment.Center; ll.Parent = body
-	local pd = Instance.new("UIPadding"); pd.PaddingBottom = UDim.new(0, 10); pd.Parent = body
+	-- THE SCROLLBAR WAS BEING DRAWN OVER THE CARDS. Roblox paints a ScrollingFrame's bar INSIDE the frame's
+	-- own rect, so a card sized to the full width runs underneath it -- which is why the right-hand column of
+	-- every crate card (the token cost and the OPEN / NEED TOKENS button) looked clipped.
+	--
+	-- BODY_PAD is the inset on both sides, BODY_BAR is the bar's width reserved on the right, and every card
+	-- below is scale-sized to what is left, so nothing has to guess at a magic negative offset again.
+	local pd = Instance.new("UIPadding")
+	-- PaddingTop was simply absent, which is why the first card sat flush against the very top of the
+	-- scroll: its rounded top corners landed exactly on the clip boundary and got shaved off, and the card
+	-- read as cut straight across. 8px is enough for the corner radius and the stroke to sit inside the
+	-- mask instead of on it.
+	pd.PaddingTop = UDim.new(0, 8)
+	pd.PaddingBottom = UDim.new(0, 10)
+	pd.PaddingLeft = UDim.new(0, BODY_PAD)
+	pd.PaddingRight = UDim.new(0, BODY_PAD + BODY_BAR)
+	pd.Parent = body
+end
+
+-- ============================================================================================================
+-- PERMANENT BOTTOM NAVIGATION
+-- ============================================================================================================
+-- ONE BUTTON. This bar carried MY SKINS, COLLECTION and TOKENS; the first two are gone.
+--
+-- MY SKINS was a flat list of every skin you own -- but a skin is already shown on the pet it belongs to,
+-- reached by tapping that pet in the hub. Two places to look for the same thing is worse than one, and the
+-- pet is the one a player actually thinks in terms of. The COLLECTION BOOK was a third view of the same
+-- data, sorted a third way.
+--
+-- TOKENS stays because it is not a view of anything -- it is where you get more, and it has to be reachable
+-- from every page of this panel rather than only from the crate you happened to be looking at.
+--
+-- Same design system as the tab bar above it: TAB_IDLE fill (the shared unselected-tab blue -- the top bar
+-- and this one sitting two different blues apart read as a mistake, not a hierarchy), 1.5px white edge,
+-- FredokaOne, and the same lit-gold selected state -- so the top bar says which hub page you are on and
+-- this one says which part of Crates.
+-- ===== IT IS A BANNER NOW, NOT A BUTTON ROW =====
+-- This was one 220px pill floating in a transparent strip, which read as an afterthought parked at the
+-- bottom of the panel -- and it is the only route to the thing that funds every crate on the shelf. As a
+-- filled banner it becomes the panel's foot: a darker navy plinth the body sits on, with the offer stated in
+-- words (a headline and a reason) and the button as its call to action rather than as the whole feature.
+--
+-- ONE BUTTON STILL, and the same click it always had. `bottomNavButtons` keeps its shape so refreshTabs'
+-- lit-state loop below needs no change.
+local bottomNav = mkFrame(panel, {
+	Size = UDim2.new(1, -20, 0, 64), Position = UDim2.new(0, 10, 1, -74),
+	BackgroundColor3 = Color3.fromRGB(11, 42, 104), ClipsDescendants = true,
+})
+mkCorner(bottomNav, 16); mkStroke(bottomNav, Color3.fromRGB(58, 108, 190), 1.5)
+local bottomNavButtons = {}
+do
+	-- RADIAL GLOW, built from three concentric discs rather than an image. UIGradient is linear-only and
+	-- there is no radial one, so the alternative would be shipping a texture asset -- three rounded frames at
+	-- 0.88 / 0.93 / 0.97 transparency give the same warm falloff behind the tickets for nothing, and cannot
+	-- break if an asset id is ever mis-typed or moderated.
+	-- Centred on x=48, the single ticket's centre -- it was 62, which was the midpoint of the old overlapping
+	-- pair and left the glow sitting off to the ticket's right once that became one icon.
+	for _, r in ipairs({ { 132, 0.88 }, { 96, 0.93 }, { 60, 0.97 } }) do
+		local d = mkFrame(bottomNav, {
+			Size = UDim2.new(0, r[1], 0, r[1]), Position = UDim2.new(0, 48, 0.5, 0),
+			AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = GOLD, BackgroundTransparency = r[2],
+			ZIndex = 1,
+		})
+		mkCorner(d, math.floor(r[1] / 2))
+	end
+
+	-- ===== ONE BIG TICKET, NOT TWO =====
+	-- The pair was two rotated 30/34px glyphs overlapping at x=26 and x=52. Rotation grows an object's
+	-- bounding box, the banner clips its descendants, and the left one sat 11px from the edge -- so its
+	-- corner was shaved off and the pair read as broken rather than as a handful. One larger upright ticket
+	-- has nothing to clip and is a stronger mark at this size anyway.
+	--
+	-- IT IS A TEXT GLYPH, NOT AN ImageLabel. CrateTokens.ICON is the 🎟 emoji -- this project has no ticket
+	-- IMAGE asset anywhere, and an ImageLabel needs a real rbxassetid. Inventing one renders an empty box.
+	-- Swap this for an ImageLabel the moment there is an uploaded ticket asset to point at.
+	mkLabel(bottomNav, {
+		Text = CrateTokens.ICON, Font = Enum.Font.FredokaOne, TextSize = 46, TextScaled = true,
+		TextColor3 = RED, Size = UDim2.fromOffset(46, 46), Position = UDim2.new(0, 48, 0.5, 0),
+		AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 3,
+	}):SetAttribute("BTS_Skip", true)
+	for _, sp in ipairs({ { 14, 10, 12, 0.3 }, { 72, 38, 10, 0.45 }, { 62, 6, 9, 0.5 } }) do
+		mkLabel(bottomNav, {
+			Text = "\xE2\x9C\xA6", Font = Enum.Font.FredokaOne, TextSize = sp[3], TextScaled = true,
+			TextColor3 = GOLD, TextTransparency = sp[4],
+			Size = UDim2.new(0, sp[3], 0, sp[3]), Position = UDim2.new(0, sp[1], 0, sp[2]), ZIndex = 4,
+		}):SetAttribute("BTS_Skip", true)
+	end
+
+	-- ----- the words -----
+	local hl = mkLabel(bottomNav, {
+		Text = "GET TICKETS!", Font = Enum.Font.FredokaOne, TextSize = 26, TextScaled = true,
+		TextColor3 = GOLD, Size = UDim2.new(0, 250, 0, 30), Position = UDim2.new(0, 100, 0, 8),
+		TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 4,
+	})
+	mkStroke(hl, Color3.new(0, 0, 0), 2)
+	do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 26; c.Parent = hl end
+	hl:SetAttribute("BTS_Skip", true)
+	-- WHITE, not the muted blue it started as: under a gold headline on a dark plinth this is the line that
+	-- has to carry, and pale blue on navy was the weakest text on the panel.
+	local sub = mkLabel(bottomNav, {
+		Text = "More tickets. More pulls. More pets!", Font = Enum.Font.GothamBold, TextSize = 13,
+		TextScaled = true, TextColor3 = WHITE,
+		Size = UDim2.new(0, 250, 0, 18), Position = UDim2.new(0, 100, 0, 38),
+		TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 4,
+	})
+	do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 13; c.Parent = sub end
+
+	-- ----- the call to action -----
+	-- YELLOW, not the tab bar's blue: on this plinth it is the only thing the player is being asked to press,
+	-- and gold is already what "tickets" means everywhere on this panel.
+	-- The bottom shadow is a darker slab sitting 4px lower, drawn BEFORE the button so the button covers all
+	-- but its bottom lip -- the same physical-key treatment the crate OPEN buttons and the Pet Hut's primary
+	-- buttons use, so every button in the feature presses the same way.
+	do
+		local sh = mkFrame(bottomNav, {
+			Size = UDim2.new(0, 208, 0, 44), Position = UDim2.new(1, -12, 0.5, 4),
+			AnchorPoint = Vector2.new(1, 0.5), BackgroundColor3 = Color3.fromRGB(150, 100, 14), ZIndex = 3,
+		})
+		mkCorner(sh, 16)
+	end
+	local b = mkButton(bottomNav, {
+		Size = UDim2.new(0, 208, 0, 44), Position = UDim2.new(1, -12, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5), BackgroundColor3 = GOLD, Text = "",
+		Font = Enum.Font.FredokaOne, TextSize = 16, TextColor3 = Color3.fromRGB(92, 58, 8), ZIndex = 4,
+	})
+	mkCorner(b, 16); mkStroke(b, Color3.fromRGB(180, 122, 20), 2.5)
+	b.ClipsDescendants = true
+	-- SPEED LINES. Three tapering bars raked across the button's left edge, in the darker gold of its own
+	-- outline at low opacity. They imply the button is moving toward you rather than sitting still, which is
+	-- the whole difference between a call to action and a label -- and being clipped by the button means they
+	-- run off its edge instead of stopping in mid-air.
+	for _, ln in ipairs({ { 6, 10, 34 }, { 2, 22, 46 }, { 8, 34, 28 } }) do
+		local sl = mkFrame(b, {
+			Size = UDim2.fromOffset(ln[3], 4), Position = UDim2.new(0, ln[1], 0, ln[2]),
+			BackgroundColor3 = Color3.fromRGB(180, 122, 20), BackgroundTransparency = 0.6,
+			Rotation = -12, ZIndex = 4,
+		})
+		mkCorner(sl, 2)
+	end
+	local lbl = mkLabel(b, {
+		Name = "Label", Size = UDim2.new(1, -12, 1, -10), Position = UDim2.new(0, 6, 0, 5),
+		Text = "\xF0\x9F\x8E\x9F\xEF\xB8\x8F GET TICKETS!", Font = Enum.Font.FredokaOne, TextSize = 16,
+		TextScaled = true, TextColor3 = Color3.fromRGB(92, 58, 8), ZIndex = 5,
+	})
+	do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 18; c.Parent = lbl end
+	b:SetAttribute("BTS_Skip", true); lbl:SetAttribute("BTS_Skip", true)
+	bottomNavButtons.tokens = b
+
+	b.MouseButton1Click:Connect(function()
+		playUIClick()
+		-- ALREADY ON THE PACKS? Then switching page would do nothing visible and the button would feel dead.
+		-- Scroll the shelf back to the top and pulse every row's edge instead, so the press always answers.
+		if activeTab == "tokens" then
+			body.CanvasPosition = Vector2.new(0, 0)
+			for _, ch in ipairs(body:GetChildren()) do
+				local st = ch:IsA("GuiObject") and ch:FindFirstChildOfClass("UIStroke")
+				if st then
+					local was, wasT = st.Color, st.Thickness
+					st.Color, st.Thickness = GOLD, 3
+					TweenService:Create(st, TweenInfo.new(0.55, Enum.EasingStyle.Quad),
+						{ Color = was, Thickness = wasT }):Play()
+				end
+			end
+			return
+		end
+		activeTab = "tokens"; refreshTabs()
+	end)
 end
 
 local function clearBody()
 	for _, ch in ipairs(body:GetChildren()) do
 		if ch:IsA("GuiObject") then ch:Destroy() end
 	end
+
+	-- ===== THE TAIL SPACER, AND WHY PaddingBottom IS NOT ENOUGH =====
+	-- body already sets PaddingBottom = 10, and that is genuinely not what reserves the room:
+	-- AutomaticCanvasSize measures the ScrollingFrame's CHILDREN, and a UIPadding is not a child. So the
+	-- canvas ends flush with the bottom of the last card and the scroll simply cannot travel any further --
+	-- the card's 2.5px stroke and its bottom rounded lip are the part that falls outside, which reads as
+	-- "the last row has square corners" even though its UICorner is right there in the code.
+	--
+	-- A spacer IS a child, so it is measured, and the canvas grows by exactly its height. Built here rather
+	-- than at the end of each build function so it cannot be forgotten: clearBody runs before every tab, so
+	-- every page gets it, including any page added later.
+	-- 76 = the GET TICKETS banner's 64 + 12 of breathing room.
+	--
+	-- WHY THE SPACER AND NOT UIPadding.PaddingBottom: the note above is the whole reason -- AutomaticCanvasSize
+	-- measures CHILDREN, and a UIPadding is not one, so PaddingBottom does not extend the scrollable range by
+	-- a single pixel. It was 16, which cleared the last card's stroke and its rounded lip but left the card
+	-- bottom sitting right on the clip boundary with the banner immediately beneath it -- so the last crate
+	-- read as sliced flat and tucked under the footer even though the two never actually overlap (the body
+	-- ends at y=436 and the banner starts at 446). At 76 the last card can travel clear of the edge and the
+	-- gap between it and the banner is visible, which is what makes it read as "below" rather than "under".
+	local tail = Instance.new("Frame")
+	tail.Name = "TailSpacer"
+	tail.Size = UDim2.new(1, 0, 0, 76)
+	tail.BackgroundTransparency = 1
+	tail.BorderSizePixel = 0
+	-- Far above any real row's order (the crates tab's footer note uses 999) so nothing can sort past it.
+	tail.LayoutOrder = 100000
+	tail.Parent = body
 end
 
 -- ============================================================================================================
@@ -573,71 +943,193 @@ end
 local openRequestInFlight = false
 local doOpenCrate -- forward (defined with the reveal, below)
 
+-- ===== PER-CRATE CARD THEME =====
+-- Each crate gets its own colour story rather than all seven sharing one blue card: the Pet Level Crate is
+-- cool and electric, the Pet Crate is warm and gold. That is the difference between a list of rows and a
+-- shelf of products, and it is the fastest way to tell two crates apart before reading either name.
+--
+-- ONLY THE TWO HEADLINE CRATES ARE AUTHORED. Everything else falls back to a navy card tinted with its own
+-- `crate.color` (SkinCrates already gives every crate one), so the five other crates keep working and a
+-- crate added later styles itself. This table is decoration only -- no price, no odds, nothing the server
+-- reads -- so it can never disagree with the crate config.
+--   fill/edge  : the card and its outline        glow/disc : the lit disc behind the icon
+--   descA/descB: first sentence / the rest       muted     : the NEED TICKETS button
+--   pedestal   : draw a plinth under the icon instead of leaving it floating on the disc
+local CRATE_SKIN = {
+	PetLevels = {
+		fill = Color3.fromRGB( 16,  46, 104), edge = Color3.fromRGB( 64, 150, 255),
+		glow = Color3.fromRGB( 70, 190, 255), disc = Color3.fromRGB( 26,  84, 176),
+		descA = Color3.fromRGB(168, 212, 255), descB = Color3.fromRGB(168, 212, 255),
+		muted = Color3.fromRGB( 40,  78, 142), mutedEdge = Color3.fromRGB( 74, 124, 196),
+	},
+	Pets = {
+		fill = Color3.fromRGB( 72,  44,  20), edge = Color3.fromRGB(255, 176,  64),
+		glow = Color3.fromRGB(255, 194,  96), disc = Color3.fromRGB(190, 134,  40),
+		descA = Color3.fromRGB(255, 176,  64), descB = Color3.new(1, 1, 1),
+		muted = Color3.fromRGB( 88,  58,  30), mutedEdge = Color3.fromRGB(154, 110,  56),
+		pedestal = true,
+	},
+}
+
 local function buildCratesTab()
-	-- SUB-PAGE ROW. Inventory, Trade Up and Collection stopped being top-level tabs when the bar became the
-	-- hub's five pages -- but they are still whole features, so they get their entry point here, on the page
-	-- they belong to. Losing a working system to a layout change would be a bad trade.
-	do
-		local row = mkFrame(body, { Size = UDim2.new(1, -8, 0, 34), BackgroundTransparency = 1, LayoutOrder = 0 })
-		local rl = Instance.new("UIListLayout"); rl.FillDirection = Enum.FillDirection.Horizontal
-		rl.Padding = UDim.new(0, 8); rl.SortOrder = Enum.SortOrder.LayoutOrder
-		rl.HorizontalAlignment = Enum.HorizontalAlignment.Center; rl.Parent = row
-		for j, sub in ipairs({
-			{ id = "inventory",  label = "\xF0\x9F\x91\x95 MY SKINS" },
-			{ id = "tradeup",    label = "\xE2\x86\x91 TRADE UP"    },
-			{ id = "collection", label = "\xF0\x9F\x93\x96 COLLECTION" },
-			-- TOKENS lives here now, not on the top bar: it is the crates page's shop, not a
-			-- collection of its own -- one fewer top-level tab is the whole de-overwhelm.
-			{ id = "tokens",     label = "\xF0\x9F\x8E\x9F TOKENS" },
-		}) do
-			local b = mkButton(row, {
-				Size = UDim2.new(0, 128, 1, 0), LayoutOrder = j, BackgroundColor3 = CARD, Text = sub.label,
-				Font = Enum.Font.FredokaOne, TextSize = 14, TextScaled = true, TextColor3 = GOLD,
-			})
-			mkCorner(b, 8); mkStroke(b, WHITE, 1.5)
-			do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 14; c.Parent = b end
-			b.MouseButton1Click:Connect(function() playUIClick(); activeTab = sub.id; refreshTabs() end)
-		end
-	end
+	-- NO SUB-PAGE ROW. This page is the crates and nothing else.
+	--
+	-- TRADE UP used to sit here as a button above the crate cards, which put it on the one page it has least
+	-- to do with: trading up burns DUPLICATE SKINS YOU ALREADY OWN and hands back a better one. It never
+	-- opens a crate and it never costs a token. Its entry point is the Pet Hub's PETS page now, next to the
+	-- pets whose duplicates it consumes -- the page moved, the page itself did not change (see
+	-- _G.openSkinTradeUp at the bottom of this file).
 	for i, crate in ipairs(SkinCrates.CRATES) do
 		-- The Pet Level Crate card is now the same height as every other crate card. It used to be 44px
 		-- taller to carry a "LEVELS GO TO:" picker, which asked you to choose a pet BEFORE opening -- i.e.
 		-- before you knew whether you had won +1 or +7, which is the fact that decides which pet you want to
 		-- feed. That picker is gone; you choose after the reveal instead. See levelPickerRefresh below.
-		local card = mkFrame(body, { Size = UDim2.new(1, -8, 0, 132), BackgroundColor3 = CARD, LayoutOrder = i })
-		mkCorner(card, 14); mkStroke(card, crate.color or WHITE, 2.5)
+		-- 152, not 132. Removing the TRADE UP sub-row above gave this page 44px back, and the card was the
+		-- thing that needed it: name, blurb, six odds pills, a price and a 44px button inside 132px left the
+		-- pills sitting 16px off the bottom edge and the whole card reading as full to bursting.
+		-- ===== THE CARD'S INTERNAL GRID =====
+		-- Everything on this card was positioned with its own hand-picked negative offset (-260, -244, -266,
+		-- -162), so no two columns agreed where the right-hand edge was: the odds chips ran past it, the blurb
+		-- ran into the token cost, and the cost and button sat flush on the border with the scrollbar over
+		-- them. Four numbers now define the whole card and every element is derived from one of them.
+		-- ===== THE CARD'S INTERNAL GRID, REVISED =====
+		-- The odds row runs the FULL WIDTH of the card now instead of living inside the text column. Six chips
+		-- crammed into a 332px column are 54px each, which is where "Legendary 0.9%" turns into an unreadable
+		-- smear; across the whole 622px they get 98px each and can carry the band name and the number at a
+		-- size worth reading. It also gives the row an identity -- it is the odds, stated once, along the
+		-- bottom -- rather than being a fourth thing competing inside the text column.
+		local CARD_INSET = 16
+		local ICON_BOX   = 92                              -- the lit disc + glyph
+		local RIGHT_COL  = 168                             -- the ticket cost + OPEN button column
+		local TEXT_X     = CARD_INSET + ICON_BOX + 14      -- 122
+		local TEXT_W     = CARD_W - TEXT_X - RIGHT_COL - CARD_INSET * 2   -- 332
+		local sk = CRATE_SKIN[crate.id] or {
+			-- The generic fallback: this panel's usual card blue, outlined and lit in the crate's own colour.
+			fill = CARD, edge = crate.color or WHITE, glow = crate.color or WHITE,
+			disc = Color3.fromRGB(20, 70, 158),
+			descA = Color3.fromRGB(205, 224, 255), descB = Color3.fromRGB(205, 224, 255),
+			muted = Color3.fromRGB(58, 74, 104), mutedEdge = Color3.fromRGB(96, 116, 152),
+		}
 
-		mkLabel(card, {
-			Text = crate.icon or "\xF0\x9F\x93\xA6", Font = Enum.Font.FredokaOne, TextSize = 46, TextScaled = true,
-			Size = UDim2.new(0, 70, 0, 70), Position = UDim2.new(0, 12, 0, 12),
-			TextXAlignment = Enum.TextXAlignment.Center,
-		})
+		-- Full width: the body reserves the scrollbar's lane, so the card no longer has to dodge it.
+		local card = mkFrame(body, { Size = UDim2.new(1, 0, 0, 168), BackgroundColor3 = sk.fill, LayoutOrder = i })
+		mkCorner(card, 16); mkStroke(card, sk.edge, 2.5)
+		do
+			-- Depth down the card. UIGradient MULTIPLIES the fill, so white at the top leaves the authored
+			-- colour untouched and the grey at the bottom darkens it -- there is no multiplier above 1, and a
+			-- gradient can only ever take light away. On the Pet Crate's brown this is the "warm gradient";
+			-- on the others it is a shadow that stops the card reading as a flat rectangle.
+			local g = Instance.new("UIGradient")
+			g.Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(176, 176, 176))
+			g.Rotation = 90; g.Parent = card
+		end
+
+		-- ---- the lit icon ------------------------------------------------------------------
+		-- Three concentric discs for the glow (UIGradient is linear-only, so a real radial would mean shipping
+		-- a texture), the crate's own glyph on top, and three sparkles scattered around it.
+		do
+			local cx, cy = CARD_INSET + ICON_BOX / 2, 14 + ICON_BOX / 2
+			-- FIVE RINGS, NOT THREE, and they now run PAST the icon box (up to +16) rather than stopping at
+			-- its edge. Three hard steps read as three concentric plates; five with a gentle transparency
+			-- ramp that fades out beyond the disc is what actually reads as a glow, and spilling over the box
+			-- edge is what stops it looking like a rounded square with a light in it.
+			for _, d in ipairs({
+				{ ICON_BOX + 16, 0.93 }, { ICON_BOX + 2, 0.86 }, { ICON_BOX - 14, 0.74 },
+				{ ICON_BOX - 30, 0.56 }, { ICON_BOX - 46, 0.34 },
+			}) do
+				local disc = mkFrame(card, {
+					Size = UDim2.fromOffset(d[1], d[1]), Position = UDim2.new(0, cx, 0, cy),
+					AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = sk.glow,
+					BackgroundTransparency = d[2], ZIndex = 2,
+				})
+				mkCorner(disc, math.floor(d[1] / 2))
+			end
+			-- The lit disc the glyph stands on. 66 of the 92 box, and a true circle -- half the side length as
+			-- the corner radius is what makes UICorner produce a circle rather than a rounded square.
+			local CORE = 66
+			local core = mkFrame(card, {
+				Size = UDim2.fromOffset(CORE, CORE), Position = UDim2.new(0, cx, 0, cy),
+				AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = sk.disc, ZIndex = 3,
+			})
+			mkCorner(core, CORE // 2); mkStroke(core, sk.glow, 2)
+			-- A PLINTH, for a crate whose icon is an object that should be standing on something (the egg).
+			-- Drawn before the glyph so the glyph sits on it.
+			if sk.pedestal then
+				local ped = mkFrame(card, {
+					Size = UDim2.fromOffset(ICON_BOX - 26, 12), Position = UDim2.new(0, cx, 0, cy + 28),
+					AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = GOLD, ZIndex = 4,
+				})
+				mkCorner(ped, 6); mkStroke(ped, Color3.fromRGB(180, 122, 20), 1.5)
+			end
+			-- ~75% OF THE BOX (69 of 92), up from 50. It was a 50px frame holding a TextScaled glyph, and an
+			-- emoji does not fill its own line box -- so the drawn star was nearer 34px inside a 92px disc and
+			-- read as a small mark floating in a large empty circle.
+			mkLabel(card, {
+				Text = crate.icon or "\xF0\x9F\x93\xA6", Font = Enum.Font.FredokaOne, TextSize = 62,
+				TextScaled = true, Size = UDim2.fromOffset(69, 69),
+				Position = UDim2.new(0, cx, 0, cy - (sk.pedestal and 6 or 0)),
+				AnchorPoint = Vector2.new(0.5, 0.5), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 5,
+			}):SetAttribute("BTS_Skip", true)
+			for _, sp in ipairs({ { -6, -8, 15, 0.2 }, { 74, 4, 11, 0.4 }, { 66, 68, 13, 0.3 } }) do
+				mkLabel(card, {
+					Text = "\xE2\x9C\xA6", Font = Enum.Font.FredokaOne, TextSize = sp[3], TextScaled = true,
+					TextColor3 = sk.glow, TextTransparency = sp[4],
+					Size = UDim2.fromOffset(sp[3], sp[3]),
+					Position = UDim2.new(0, CARD_INSET + sp[1], 0, 14 + sp[2]), ZIndex = 6,
+				}):SetAttribute("BTS_Skip", true)
+			end
+		end
+
+		-- WHITE, not gold. Gold is what "tickets" means on this panel (the balance pill, the price on this very
+		-- card), and painting the crate's NAME the same colour made the two read as one object.
 		local nameLbl = mkLabel(card, {
-			Text = crate.displayName, Font = Enum.Font.FredokaOne, TextSize = 22, TextScaled = true,
-			TextColor3 = GOLD, Size = UDim2.new(1, -260, 0, 26), Position = UDim2.new(0, 92, 0, 12),
-			TextXAlignment = Enum.TextXAlignment.Left,
+			Text = crate.displayName:upper(), Font = Enum.Font.FredokaOne, TextSize = 24, TextScaled = true,
+			TextColor3 = WHITE,
+			Size = UDim2.fromOffset(TEXT_W - (crate.limited and 82 or 0), 30),
+			Position = UDim2.new(0, TEXT_X, 0, 16),
+			TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3,
 		})
 		mkStroke(nameLbl, Color3.new(0, 0, 0), 2)
+		do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 24; c.Parent = nameLbl end
 		-- LIMITED crates (events / Season Pass / Robux bundles) are called out so nobody assumes the pool is
 		-- permanent. They're still openable with tokens here -- the tag is about the COLLECTION rotating, not
 		-- about the button being disabled.
 		if crate.limited then
 			local tag = mkFrame(card, {
-				Size = UDim2.new(0, 74, 0, 18), Position = UDim2.new(1, -244, 0, 16),
-				BackgroundColor3 = Color3.fromRGB(240, 96, 180),
+				Size = UDim2.fromOffset(74, 18),
+				Position = UDim2.new(0, TEXT_X + TEXT_W - 74, 0, 21),
+				BackgroundColor3 = Color3.fromRGB(240, 96, 180), ZIndex = 3,
 			})
-			mkCorner(tag, 9)
+			mkCorner(tag, 9); mkStroke(tag, Color3.fromRGB(160, 50, 120), 1.5)
 			mkLabel(tag, {
 				Text = "LIMITED", Font = Enum.Font.GothamBold, TextSize = 11, TextScaled = true, TextColor3 = WHITE,
-				Size = UDim2.new(1, -6, 1, 0), Position = UDim2.new(0, 3, 0, 0),
+				Size = UDim2.new(1, -6, 1, 0), Position = UDim2.new(0, 3, 0, 0), ZIndex = 4,
 			})
 		end
-		mkLabel(card, {
-			Text = crate.blurb or "", Font = Enum.Font.Gotham, TextSize = 13, TextScaled = true,
-			TextColor3 = Color3.fromRGB(205, 224, 255), Size = UDim2.new(1, -260, 0, 32),
-			Position = UDim2.new(0, 92, 0, 40), TextXAlignment = Enum.TextXAlignment.Left,
-			TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true,
-		})
+
+		-- ---- the description, split at its first full stop -----------------------------------
+		-- Two labels rather than one wrapped block, because a TextLabel has ONE TextColor3 and the Pet Crate
+		-- wants its opening claim ("A pet at a rolled rarity.") in its accent colour with the consequence
+		-- ("Duplicates stack -- fuse them to climb the ladder.") in white underneath. Splitting on the first
+		-- sentence is generic: a crate whose two colours are the same -- which is every other crate -- simply
+		-- renders as one paragraph across two lines, exactly as it did before.
+		do
+			local blurb = crate.blurb or ""
+			local a, b = blurb:match("^(.-%.)%s+(.+)$")
+			if not a then a, b = blurb, nil end
+			mkLabel(card, {
+				Text = a, Font = Enum.Font.GothamBold, TextSize = 14, TextScaled = true, TextColor3 = sk.descA,
+				Size = UDim2.fromOffset(TEXT_W, 20), Position = UDim2.new(0, TEXT_X, 0, 52),
+				TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3,
+			})
+			if b then
+				mkLabel(card, {
+					Text = b, Font = Enum.Font.Gotham, TextSize = 13, TextScaled = true, TextColor3 = sk.descB,
+					Size = UDim2.fromOffset(TEXT_W, 20), Position = UDim2.new(0, TEXT_X, 0, 74),
+					TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3,
+				})
+			end
+		end
 
 		-- contents summary: how many items in each rarity band
 		local counts = {}
@@ -645,10 +1137,25 @@ local function buildCratesTab()
 		-- At half size all six pills fit ONE row again (6*58 + 5*4 = 368) inside the 418px this row has before
 		-- the OPEN button's column starts -- so nothing wraps and nothing runs underneath the button, which is
 		-- what used to hide the Legendary and Gold chances.
-		local bandRow = mkFrame(card, { Size = UDim2.new(1, -266, 0, 16), Position = UDim2.new(0, 92, 0, 84), BackgroundTransparency = 1 })
+		-- The chips are sized to DIVIDE the row rather than to a fixed 58 that happened to fit six of them.
+		-- A crate with a different number of bands now fills the row instead of overflowing it or leaving a
+		-- gap, and the row itself is exactly the text column, so the last chip can never cross the card edge.
+		local BAND_GAP = 6
+		local shownBands = 0
+		for _, r in ipairs(SkinCrates.RARITY_ORDER) do
+			if (counts[r] or 0) > 0 then shownBands = shownBands + 1 end
+		end
+		-- FULL CARD WIDTH, not the text column: see the grid note at the top of this loop. Six chips get 98px
+		-- each here instead of 54, which is the difference between reading "Legendary 0.9%" and guessing at it.
+		local BAND_W = CARD_W - CARD_INSET * 2
+		local pillW = 98
+		if shownBands > 0 then
+			pillW = math.floor((BAND_W - BAND_GAP * (shownBands - 1)) / shownBands)
+		end
+		local bandRow = mkFrame(card, { Size = UDim2.fromOffset(BAND_W, 32), Position = UDim2.new(0, CARD_INSET, 0, 120), BackgroundTransparency = 1, ZIndex = 3 })
 		do
 			local ll = Instance.new("UIListLayout"); ll.FillDirection = Enum.FillDirection.Horizontal
-			ll.Padding = UDim.new(0, 4); ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Parent = bandRow
+			ll.Padding = UDim.new(0, BAND_GAP); ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Parent = bandRow
 		end
 		-- THE PILLS SHOW *YOUR* ODDS, not the base table. luckFor() folds in rebirth luck (from the replicated
 		-- Rebirths leaderstat) and the Lucky Pass, so a player who has paid for better odds is shown the better
@@ -659,39 +1166,96 @@ local function buildCratesTab()
 		local odds = SkinCrates.effectiveOdds(crate.id, Gamepasses.luckFor(player))
 		for oi, rarity in ipairs(SkinCrates.RARITY_ORDER) do
 			if (counts[rarity] or 0) > 0 then
+				-- EACH CHIP IS OUTLINED IN ITS OWN COLOUR, DARKENED, rather than all six sharing one navy edge.
+				-- A single dark outline on six different fills reads as a grid of boxes; a darker shade of the
+				-- fill reads as the edge of that chip, which is what makes the row scan as six separate
+				-- rarities. 55% of each channel is a shade down without going muddy or shifting hue.
+				local bc = PetSkins.tierColor(rarity)
 				local pill = mkFrame(bandRow, {
-					Size = UDim2.new(0, 58, 1, 0), LayoutOrder = oi,
-					BackgroundColor3 = PetSkins.tierColor(rarity),
+					Size = UDim2.fromOffset(pillW, 32), LayoutOrder = oi,
+					BackgroundColor3 = bc, ZIndex = 4,
 				})
-				mkCorner(pill, 8)
+				mkCorner(pill, 10)
+				mkStroke(pill, Color3.new(bc.R * 0.55, bc.G * 0.55, bc.B * 0.55), 2)
+				-- TWO LINES: the band name over its percentage. On one line the name and the number competed
+				-- for the same 98px and TextScaled shrank both to fit; stacked, each gets the full width and
+				-- the number -- the thing you are actually comparing between crates -- can be the bigger of
+				-- the two. Dark ink on every chip: all six band colours are light enough to carry it, which
+				-- is what keeps the row legible without a per-colour contrast rule.
 				mkLabel(pill, {
-					-- one decimal, not two: at half width "79.92%" was eating the tier name off the front of the pill
-				Text = string.format("%s %.1f%%", rarity, odds[rarity] or 0), Font = Enum.Font.GothamBold,
-					TextSize = 11, TextScaled = true, TextColor3 = Color3.fromRGB(30, 30, 40),
-					Size = UDim2.new(1, -6, 1, 0), Position = UDim2.new(0, 3, 0, 0),
-					TextXAlignment = Enum.TextXAlignment.Center,
+					Text = rarity:upper(), Font = Enum.Font.GothamBold, TextSize = 10, TextScaled = true,
+					TextColor3 = Color3.fromRGB(28, 32, 44), Size = UDim2.new(1, -8, 0, 11),
+					Position = UDim2.new(0, 4, 0, 4), TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 5,
+				})
+				-- one decimal, not two: "79.92%" is more precision than the chip has room to mean
+				mkLabel(pill, {
+					Text = string.format("%.1f%%", odds[rarity] or 0), Font = Enum.Font.FredokaOne,
+					TextSize = 14, TextScaled = true, TextColor3 = Color3.fromRGB(20, 24, 34),
+					Size = UDim2.new(1, -8, 0, 14), Position = UDim2.new(0, 4, 0, 15),
+					TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 5,
 				})
 			end
 		end
 
-		-- price + OPEN
+		-- ---- price + OPEN --------------------------------------------------------------------
+		-- THE PRICE IS THE TICKET ICON IN RED plus the number in gold, as two labels. One label has one
+		-- TextColor3, and red-for-tickets is the rule the whole panel follows now (the balance pill, every
+		-- pack row's tile, the footer banner).
 		local canAfford = state.tokens >= crate.price
+		mkLabel(card, {
+			Text = CrateTokens.ICON, Font = Enum.Font.FredokaOne, TextSize = 20, TextScaled = true,
+			TextColor3 = RED, Size = UDim2.fromOffset(24, 24),
+			Position = UDim2.new(1, -CARD_INSET - 72, 0, 18), AnchorPoint = Vector2.new(1, 0), ZIndex = 3,
+		}):SetAttribute("BTS_Skip", true)
 		local priceLbl = mkLabel(card, {
-			Text = CrateTokens.ICON .. " " .. CrateTokens.format(crate.price), Font = Enum.Font.FredokaOne,
-			TextSize = 18, TextScaled = true, TextColor3 = canAfford and GOLD or Color3.fromRGB(255, 150, 150),
-			Size = UDim2.new(0, 150, 0, 24), Position = UDim2.new(1, -162, 0, 14),
-			TextXAlignment = Enum.TextXAlignment.Right,
+			Text = CrateTokens.format(crate.price), Font = Enum.Font.FredokaOne,
+			TextSize = 22, TextScaled = true, TextColor3 = canAfford and GOLD or Color3.fromRGB(255, 150, 150),
+			Size = UDim2.fromOffset(68, 26),
+			Position = UDim2.new(1, -CARD_INSET, 0, 17), AnchorPoint = Vector2.new(1, 0),
+			TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 3,
 		})
 		mkStroke(priceLbl, Color3.new(0, 0, 0), 2)
+		do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 22; c.Parent = priceLbl end
 
+		-- THE UNAFFORDABLE STATE IS TINTED TO THE CARD, not the same grey slab on every crate. A neutral grey
+		-- button on a warm brown card reads as broken UI; a muted version of the card's own colour reads as
+		-- "not yet". It is still obviously inert next to the green -- that is what the saturation drop does --
+		-- and it still leads somewhere: the click sends you to the ticket packs rather than doing nothing.
 		local openBtn = mkButton(card, {
-			Size = UDim2.new(0, 150, 0, 44), Position = UDim2.new(1, -162, 0, 72),
-			BackgroundColor3 = canAfford and LIME or Color3.fromRGB(120, 130, 145),
-			Text = canAfford and "OPEN" or "NEED TOKENS", Font = Enum.Font.FredokaOne,
-			TextSize = canAfford and 20 or 14, TextScaled = true, TextColor3 = WHITE,
-			AutoButtonColor = canAfford,
+			Size = UDim2.fromOffset(RIGHT_COL, 52),
+			Position = UDim2.new(1, -CARD_INSET, 0, 56), AnchorPoint = Vector2.new(1, 0),
+			BackgroundColor3 = canAfford and LIME or sk.muted,
+			Text = "", Font = Enum.Font.FredokaOne, TextSize = 20, TextColor3 = WHITE,
+			AutoButtonColor = canAfford, ZIndex = 3, ClipsDescendants = true,
 		})
-		mkCorner(openBtn, 12); mkStroke(openBtn, canAfford and LIME_DARK or Color3.fromRGB(80, 88, 100), 2)
+		mkCorner(openBtn, 14); mkStroke(openBtn, canAfford and LIME_DARK or sk.mutedEdge, 2)
+		if not canAfford then
+			-- A big faint ticket bleeding off the button's right edge -- it says what the button is short of
+			-- without spending any of the 168px the words need. Clipped by the button itself.
+			mkLabel(openBtn, {
+				Text = CrateTokens.ICON, Font = Enum.Font.FredokaOne, TextSize = 54, TextScaled = true,
+				TextColor3 = WHITE, TextTransparency = 0.87,
+				Size = UDim2.fromOffset(54, 54), Position = UDim2.new(1, -6, 0.5, 0),
+				AnchorPoint = Vector2.new(1, 0.5), Rotation = -12, ZIndex = 4,
+			}):SetAttribute("BTS_Skip", true)
+		else
+			local g = Instance.new("UIGradient")
+			g.Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(188, 188, 188))
+			g.Rotation = 90; g.Parent = openBtn
+		end
+		-- The word is a CHILD label: a UIStroke on a FILLED text object outlines the object's border, not its
+		-- glyphs, so the black edge that keeps white text readable can only come from a transparent label.
+		local openLbl = mkLabel(openBtn, {
+			Name = "Label", Text = canAfford and "OPEN" or "NEED TICKETS",
+			Font = Enum.Font.FredokaOne, TextSize = canAfford and 24 or 15, TextScaled = true,
+			TextColor3 = WHITE, Size = UDim2.new(1, -14, 1, -12), Position = UDim2.new(0, 7, 0, 6), ZIndex = 5,
+		})
+		mkStroke(openLbl, Color3.new(0, 0, 0), 2)
+		do
+			local c = Instance.new("UITextSizeConstraint")
+			c.MaxTextSize = canAfford and 26 or 16; c.Parent = openLbl
+		end
+		openBtn:SetAttribute("BTS_Skip", true); openLbl:SetAttribute("BTS_Skip", true)
 		openBtn.MouseButton1Click:Connect(function()
 			playUIClick()
 			if not canAfford then
@@ -709,7 +1273,7 @@ local function buildCratesTab()
 	-- Every label here needs TextScaled + a UITextSizeConstraint rather than a plain TextSize: CoreClient's
 	-- repositionGUIs sweep force-sets TextScaled = true on every TextLabel under PlayerGui, so an authored
 	-- TextSize gets blown up to fill its frame. The constraint is the only thing that actually holds a size.
-	local note = mkFrame(body, { Size = UDim2.new(1, -8, 0, 62), BackgroundColor3 = HEADER, LayoutOrder = 999 })
+	local note = mkFrame(body, { Size = UDim2.new(1, 0, 0, 62), BackgroundColor3 = HEADER, LayoutOrder = 999 })
 	mkCorner(note, 12); mkStroke(note, GOLD, 1.5)
 	local noteTitle = mkLabel(note, {
 		Text = "\xE2\xAD\x90 THESE ARE THE REAL DROP CHANCES",
@@ -728,335 +1292,221 @@ local function buildCratesTab()
 end
 
 -- ============================================================================================================
--- TAB: INVENTORY
+-- TAB: TICKETS  --  the buy ladder, and nothing else.
 -- ============================================================================================================
-local function buildInventoryTab()
-	-- flatten the owned map into a sortable list
-	local items = {}
-	for key, count in pairs(state.skins) do
-		local petId, skinId, traitId = PetSkins.parseKey(key)
-		if petId then
-			items[#items + 1] = {
-				key = key, pet = petId, skin = skinId, trait = traitId,
-				count = tonumber(count) or 1, tier = PetSkins.tierOf(skinId),
-			}
-		end
-	end
-	-- rarest first, then by pet, then by skin -- the order a collector wants to see
-	table.sort(items, function(a, b)
-		local ra, rb = PetSkins.TierRank[a.tier] or 0, PetSkins.TierRank[b.tier] or 0
-		if ra ~= rb then return ra > rb end
-		if a.pet ~= b.pet then return a.pet < b.pet end
-		if a.skin ~= b.skin then return a.skin < b.skin end
-		return (a.trait or "") < (b.trait or "")
-	end)
-
-	if #items == 0 then
-		local empty = mkFrame(body, { Size = UDim2.new(1, -8, 0, 120), BackgroundColor3 = CARD, LayoutOrder = 1 })
-		mkCorner(empty, 14); mkStroke(empty, WHITE, 2)
-		mkLabel(empty, {
-			Text = "No skins yet!\nOpen a crate to start your collection.", Font = Enum.Font.FredokaOne,
-			TextSize = 20, TextScaled = true, TextColor3 = WHITE, Size = UDim2.new(1, -20, 1, -20),
-			Position = UDim2.new(0, 10, 0, 10), TextXAlignment = Enum.TextXAlignment.Center, TextWrapped = true,
-		})
-		return
-	end
-
-	for i, it in ipairs(items) do
-		local tierCol = PetSkins.tierColor(it.tier)
-		local unlockedPet = state.unlocked[it.pet] == true
-		local eq = state.equipped[it.pet]
-		local isEquipped = eq and eq.skin == it.skin and (eq.trait or nil) == (it.trait or nil)
-
-		local row = mkFrame(body, { Size = UDim2.new(1, -8, 0, 72), BackgroundColor3 = CARD, LayoutOrder = i })
-		mkCorner(row, 12)
-		mkStroke(row, isEquipped and LIME or tierCol, isEquipped and 3 or 2)
-		applyRarityFlair(row, it.tier) -- Rare+ pulses, Epic+ shimmers, Legendary+ sparkles, Gold glows
-
-		-- rarity stripe down the left edge: the colour tells you the tier before you read anything
-		local stripe = mkFrame(row, { Size = UDim2.new(0, 8, 1, -12), Position = UDim2.new(0, 6, 0, 6), BackgroundColor3 = tierCol })
-		mkCorner(stripe, 4)
-		-- The same thumbnail the reel uses, so an item looks identical everywhere you meet it.
-		makePetPreview(row, it.pet, it.skin, it.trait, UDim2.new(0, 58, 0, 58), UDim2.new(0, 20, 0, 7), true)
-
-		local nameLbl = mkLabel(row, {
-			-- Pet-crate rows carry no skin. displayName would not crash there (it falls back to "?") but it
-			-- would list sixty rows reading "? Bean Buddy", so a skinless entry is labelled by species alone.
-			Text = it.skin and PetSkins.displayName(it.skin, PetSkins.prettyPet(it.pet)) or PetSkins.prettyPet(it.pet),
-			Font = Enum.Font.FredokaOne, TextSize = 19,
-			TextScaled = true, TextColor3 = WHITE, Size = UDim2.new(1, -360, 0, 24),
-			Position = UDim2.new(0, 84, 0, 8), TextXAlignment = Enum.TextXAlignment.Left,
-		})
-		mkStroke(nameLbl, Color3.new(0, 0, 0), 2)
-
-		-- tier + trait + duplicate count on one line
-		local metaBits = { it.tier }
-		if not PetTraits.isNone(it.trait) then metaBits[#metaBits + 1] = "Trait: " .. PetTraits.displayName(it.trait) end
-		if it.count > 1 then metaBits[#metaBits + 1] = "x" .. it.count end
-		mkLabel(row, {
-			Text = table.concat(metaBits, "   \xE2\x80\xA2   "), Font = Enum.Font.GothamBold, TextSize = 13,
-			TextScaled = true, TextColor3 = PetTraits.isNone(it.trait) and Color3.fromRGB(205, 224, 255) or PetTraits.color(it.trait),
-			Size = UDim2.new(1, -360, 0, 18), Position = UDim2.new(0, 84, 0, 34),
-			TextXAlignment = Enum.TextXAlignment.Left,
-		})
-
-		if not unlockedPet then
-			-- LOCKED PET: the skin is owned and safe, it just can't be worn yet. Say exactly what to do about it.
-			local lock = mkFrame(row, {
-				Size = UDim2.new(0, 250, 0, 34), Position = UDim2.new(1, -262, 0.5, 0),
-				AnchorPoint = Vector2.new(0, 0.5), BackgroundColor3 = Color3.fromRGB(120, 130, 145),
-			})
-			mkCorner(lock, 10)
-			mkLabel(lock, {
-				Text = "\xF0\x9F\x94\x92 Unlock " .. it.pet .. " to equip", Font = Enum.Font.GothamBold,
-				TextSize = 13, TextScaled = true, TextColor3 = WHITE, Size = UDim2.new(1, -10, 1, 0),
-				Position = UDim2.new(0, 5, 0, 0), TextXAlignment = Enum.TextXAlignment.Center,
-			})
-		else
-			local btn = mkButton(row, {
-				Size = UDim2.new(0, 130, 0, 38), Position = UDim2.new(1, -142, 0.5, 0),
-				AnchorPoint = Vector2.new(0, 0.5),
-				BackgroundColor3 = isEquipped and Color3.fromRGB(120, 160, 110) or LIME,
-				Text = isEquipped and "EQUIPPED \xE2\x9C\x93" or "EQUIP", Font = Enum.Font.FredokaOne,
-				TextSize = 16, TextScaled = true, TextColor3 = WHITE,
-			})
-			mkCorner(btn, 10); mkStroke(btn, LIME_DARK, 2)
-			btn.MouseButton1Click:Connect(function()
-				playUIClick()
-				if isEquipped then
-					EquipSkin:FireServer(it.pet, false)          -- toggle off -> back to the pet's natural look
-				else
-					EquipSkin:FireServer(it.pet, it.skin, it.trait or false)
-				end
-			end)
-		end
-	end
-end
-
--- ============================================================================================================
--- TAB: TOKENS
--- ============================================================================================================
--- ============================================================================================================
--- TAB: TOKENS  --  earn them, or buy them. Nothing else.
--- ============================================================================================================
--- TWO EQUAL COLUMNS, 320 wide each with a 12px gutter (320 + 12 + 320 = 652, the body's usable width).
--- Earning is on the LEFT because it is the side a player should see first: tokens are a thing you can play for,
--- and putting the Robux packs first would frame them as the only way. Both panels are the same height and the
--- same card style, so neither reads as the 'real' option.
+-- ONE ROW PER PACK, IN THE PAGE'S OWN SCROLL.
 --
--- Every earn amount is read from CrateTokens.REWARDS -- the same table the SERVER pays out of -- so this list
--- physically cannot advertise a number the game does not honour.
+-- This page used to be a card (`column("BUY TICKETS")`) holding a ScrollingFrame of its own, sitting inside
+-- `body`, which is itself a ScrollingFrame. Two nested scrolls over the same axis is the worst thing a
+-- touch UI can do: a drag that starts on the inner list scrolls the inner list, the same drag two pixels
+-- higher scrolls the outer one, and neither ever reaches the end of the other's content. It also meant two
+-- scrollbars on screen at once, two sets of padding to keep in step, and a card height computed from the
+-- panel's height by hand (`BODY_RUN = 388`) that had to be re-derived every time anything above it moved.
 --
--- ---- WHY THIS PAGE IS SHORT ---------------------------------------------------------------------------------
--- It shows FOUR ways to earn and THREE packs, and that is deliberately the whole list. A tall scrolling column of
--- near-identical rows reads as a wall and gets skimmed; four big rows get read. The entries that went were the
--- ones carrying the least: Daily and Weekly were the same sentence written twice (now one row quoting both
--- numbers), and "Events & Updates" only pays while an event happens to be running, so most of the time it
--- advertised nothing. Nothing became harder to earn -- every one of those payouts still fires exactly as before,
--- this page just stopped listing the ones a player cannot act on right now.
+-- The rows go straight into `body` now. It already scrolls, already reserves its own scrollbar lane on the
+-- right (BODY_PAD + BODY_BAR), already has the UIListLayout, and already knows how tall it is -- so the
+-- ladder inherits all of that and this function stops owning any geometry it does not need to.
 --
--- ---- WHY EVERY HEIGHT IS COMPUTED ---------------------------------------------------------------------------
--- body is 398 tall inside the 520 panel and reserves 10 for its own bottom padding: 388 pixels of run, not one
--- more. The TEST MODE strip, when it exists, eats into that. Rather than hand-typing card heights that fit one of
--- those two states and overflow the other -- which is what the old numbers did, 384 + 10 + 40 = 434 against a 388
--- budget, so this page has been quietly scrolling -- the columns take whatever is left and the cards divide it.
--- The page fits by construction in both states, and stays fitting if a pack or an earn row is ever added.
+-- ---- EVERY NUMBER ON A ROW IS COMPUTED FROM SkinCrates.TOKEN_PACKS ------------------------------------------
+-- The amount, the price, the tickets-per-R$ and the +% VALUE chip are all derived from the same table the
+-- SERVER charges against, so this shelf physically cannot advertise a rate or a price the purchase does not
+-- honour. Nothing here is a typed-in figure that can drift out of step with the products.
 local function buildTokensTab()
-	local BODY_RUN = 388
-	local warnH    = SkinCrates.TEST_MODE and 34 or 0
-	local rowH     = BODY_RUN - (warnH > 0 and (warnH + 10) or 0)
-	local row = mkFrame(body, { Size = UDim2.new(1, -8, 0, rowH), BackgroundTransparency = 1, LayoutOrder = 1 })
+	local ROW_H     = 82
+	local ROW_INSET = 12
+	local TILE      = 56    -- the ticket-icon square
+	local BUY_W     = 156   -- the green button on the right
+	local TEXT_X    = ROW_INSET + TILE + 14
 
-	-- one shared panel shell, so the two columns are identical by construction rather than by copy-paste
-	local function column(x, titleText)
-		local col = mkFrame(row, { Size = UDim2.new(0, 320, 1, 0), Position = UDim2.new(0, x, 0, 0),
-			BackgroundColor3 = CARD })
-		mkCorner(col, 12); mkStroke(col, GOLD, 1.5)
-		local h = mkLabel(col, {
-			Text = titleText, Font = Enum.Font.FredokaOne, TextSize = 17, TextScaled = true, TextColor3 = GOLD,
-			Size = UDim2.new(1, -20, 0, 24), Position = UDim2.new(0, 10, 0, 8),
-			TextXAlignment = Enum.TextXAlignment.Left,
-		})
-		mkStroke(h, Color3.new(0, 0, 0), 2)
-		-- CoreClient force-sets TextScaled on every PlayerGui label, so the ceiling must come from a constraint
-		do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 17; c.Parent = h end
-		return col
-	end
+	-- ROW COLOURS. Deliberately NOT the CARD blue the crate cards use: this is a shop shelf rather than a
+	-- collection, and the darker navy is what lets the white amount and the green button carry the row.
+	local ROW_BG    = Color3.fromRGB( 17,  58, 130)
+	local TILE_BG   = Color3.fromRGB(  9,  34,  86)
+	local SUBTEXT   = Color3.fromRGB(158, 180, 214)
+	local POPULAR   = Color3.fromRGB( 48, 132, 255)
+	local VALUE_INK = Color3.fromRGB(126, 206, 255)
 
-	-- ---------------------------------------------------------------- LEFT: earn free tokens
-	local left = column(0, "EARN FREE TOKENS")
-	-- Biggest payout first, so the largest number is the first thing read. `amountText` is an override for the one
-	-- merged row that has two rates to quote; every other row still formats straight out of REWARDS.
-	local EARN = {
-		{ icon = "\xF0\x9F\x8F\x9D", name = "Complete Realms",     amount = CrateTokens.REWARDS.realmComplete,
-			note = "Finish a realm's island run" },
-		{ icon = "\xF0\x9F\x94\xA5", name = "7 Day Login Streak",  amount = CrateTokens.LOGIN_STREAK[#CrateTokens.LOGIN_STREAK],
-			note = "Day 7 payout. Days 1-6 build up to it" },
-		{ icon = "\xF0\x9F\x90\xBE", name = "Finish Pet Quests",   amount = CrateTokens.REWARDS.petQuest,
-			note = "Each pet you unlock" },
-		-- Daily and Weekly were two rows saying the same thing. One row now, both rates, both full-list bonuses.
-		{ icon = "\xF0\x9F\x93\x85", name = "Daily & Weekly Tasks", amount = CrateTokens.REWARDS.dailyTask,
-			amountText = "+" .. CrateTokens.REWARDS.dailyTask .. " / " .. CrateTokens.REWARDS.weeklyTask,
-			note = "Per task. Clear a list for +" .. CrateTokens.REWARDS.dailyAllTasks
-				.. " / +" .. CrateTokens.REWARDS.weeklyAllTasks },
-	}
-	-- Fill the column exactly: whatever height the scroll ends up with gets split between the rows. Fewer rows are
-	-- therefore not merely fewer -- they are BIGGER, which is the whole point of dropping the other two.
-	local EARN_GAP = 12
-	local earnRowH = math.floor(((rowH - 100) - EARN_GAP * (#EARN - 1)) / #EARN)
-	-- name (17) + 4 + note (14) = a 35px text block, centred in whatever height the row came out as
-	local earnTextY = math.floor((earnRowH - 35) / 2)
-	-- The list scrolls; the GO TO QUESTS button is pinned OUTSIDE it at the bottom so it can never be scrolled
-	-- out of reach -- it is the one action on this side of the page.
-	local earnList = Instance.new("ScrollingFrame"); earnList.Name = "EarnList"
-	earnList.Size = UDim2.new(1, -16, 1, -100); earnList.Position = UDim2.new(0, 8, 0, 38)
-	earnList.BackgroundTransparency = 1; earnList.BorderSizePixel = 0; earnList.ScrollBarThickness = 4
-	earnList.ScrollBarImageColor3 = GOLD; earnList.CanvasSize = UDim2.new(0, 0, 0, 0)
-	earnList.AutomaticCanvasSize = Enum.AutomaticSize.Y; earnList.Parent = left
-	do
-		local ll = Instance.new("UIListLayout"); ll.Padding = UDim.new(0, EARN_GAP)
-		ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Parent = earnList
-	end
-	for ei, e in ipairs(EARN) do
-		-- The FRAME grows; every label inside keeps its exact height, so the type stays the size it always was and
-		-- the entire gain lands as whitespace. That is "less crowded" without being "redesigned".
-		local r = mkFrame(earnList, { Size = UDim2.new(1, -6, 0, earnRowH), BackgroundColor3 = HEADER, LayoutOrder = ei })
-		mkCorner(r, 10); mkStroke(r, Color3.fromRGB(90, 130, 200), 1.5)
-		mkLabel(r, {
-			Text = e.icon, Font = Enum.Font.FredokaOne, TextSize = 20, TextScaled = true, TextColor3 = WHITE,
-			Size = UDim2.new(0, 26, 0, 26), Position = UDim2.new(0, 8, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5),
-		})
-		mkLabel(r, {
-			Text = e.name, Font = Enum.Font.FredokaOne, TextSize = 14, TextScaled = true, TextColor3 = WHITE,
-			Size = UDim2.new(1, -110, 0, 17), Position = UDim2.new(0, 42, 0, earnTextY),
-			TextXAlignment = Enum.TextXAlignment.Left,
-		})
-		mkLabel(r, {
-			Text = e.note, Font = Enum.Font.Gotham, TextSize = 11, TextScaled = true,
-			TextColor3 = Color3.fromRGB(190, 210, 240), Size = UDim2.new(1, -110, 0, 14),
-			Position = UDim2.new(0, 42, 0, earnTextY + 21), TextXAlignment = Enum.TextXAlignment.Left,
-		})
-		local amt = mkLabel(r, {
-			Text = e.amountText or ("+" .. CrateTokens.format(e.amount or 0)), Font = Enum.Font.FredokaOne, TextSize = 15,
-			TextScaled = true, TextColor3 = GOLD, Size = UDim2.new(0, 60, 0, 22),
-			Position = UDim2.new(1, -66, 0.5, 0), AnchorPoint = Vector2.new(0, 0.5),
-			TextXAlignment = Enum.TextXAlignment.Right,
-		})
-		mkStroke(amt, Color3.new(0, 0, 0), 2)
-	end
+	-- The Robux glyph. U+E002 is Roblox's own private-use character for it and renders in the client's
+	-- built-in fonts, which is why the price can be an icon plus a number instead of the string "R$".
+	-- IF IT EVER SHOWS AS AN EMPTY BOX (a font that does not carry the private-use range), set this to ""
+	-- and the button falls back to reading "25 R$" -- the " R$" suffix below is kept for exactly that reason.
+	local ROBUX = "\xEE\x80\x82"
 
-	local toQuests = mkButton(left, {
-		Size = UDim2.new(1, -16, 0, 46), Position = UDim2.new(0, 8, 1, -54),
-		BackgroundColor3 = LIME, Text = "\xE2\x96\xB6 GO TO QUESTS", Font = Enum.Font.FredokaOne,
-		TextSize = 17, TextScaled = true, TextColor3 = WHITE,
-	})
-	mkCorner(toQuests, 12); mkStroke(toQuests, LIME_DARK, 2)
-	do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 17; c.Parent = toQuests end
-	toQuests.MouseButton1Click:Connect(function()
-		playUIClick()
-		-- Quests is a PET HUB page, so this is the same hand-off the QUESTS tab performs: close this panel, wake
-		-- the hub, then route it. Firing PetInvToggle alone would reopen the hub on whatever page it was left on.
-		setOpen(false)
-		local ev = PlayerGui:FindFirstChild("PetInvToggle")
-		if ev and ev:IsA("BindableEvent") then ev:Fire() end
-		task.defer(function() if _G.PetHub and _G.PetHub.showPage then _G.PetHub.showPage("quests") end end)
-	end)
-
-	-- ---------------------------------------------------------------- RIGHT: buy tokens
-	local right = column(332, "BUY TOKENS")
-	local packList = Instance.new("ScrollingFrame"); packList.Name = "PackList"
-	packList.Size = UDim2.new(1, -16, 1, -46); packList.Position = UDim2.new(0, 8, 0, 38)
-	packList.BackgroundTransparency = 1; packList.BorderSizePixel = 0; packList.ScrollBarThickness = 4
-	packList.ScrollBarImageColor3 = GOLD; packList.CanvasSize = UDim2.new(0, 0, 0, 0)
-	packList.AutomaticCanvasSize = Enum.AutomaticSize.Y; packList.Parent = right
-	-- CHEAPEST FIRST. Sorted here rather than trusting the order they happen to be authored in, so adding a pack
-	-- to SkinCrates.TOKEN_PACKS can never drop it in the middle of the ladder.
-	--
-	-- ALL OF THEM. This used to keep only the cheapest three, because back when the column had to fit its
-	-- contents without scrolling a fourth rung squeezed every card down to 77px and cost the other three
-	-- their air.
-	--
-	-- That trade is gone: the cards now have a minimum height and the list is a ScrollingFrame, so a pack
-	-- that does not fit scrolls into view instead of shrinking everything. Truncating is also the worse
-	-- failure by far -- the two most expensive packs were silently dropped, which looks exactly like a
-	-- broken scroll from the player's side and quietly hid the best-value rung the whole ladder builds up
-	-- to. A list that scrolls is a list; a list that deletes its own last rows is a bug.
-	local PACK_GAP = 16
+	-- CHEAPEST FIRST, sorted here rather than trusting the authored order, so adding a pack to
+	-- SkinCrates.TOKEN_PACKS can never drop it into the middle of the ladder.
 	local packs = {}
 	for _, pk in ipairs(SkinCrates.TOKEN_PACKS) do packs[#packs + 1] = pk end
 	table.sort(packs, function(a, b) return (a.robux or 0) < (b.robux or 0) end)
-	do
-		local ll = Instance.new("UIListLayout"); ll.Padding = UDim.new(0, PACK_GAP)
-		ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Parent = packList
-	end
-	-- same rule as the earn rows: divide the column, never guess it
-	-- Divide the row between the packs, but never below what a card actually needs.
-	--
-	-- This used to be a pure division, which quietly assumed the pack count would never change. It just
-	-- did -- four packs became five -- and an unclamped divide answers that by shrinking every card ~20%
-	-- until the buy button is hanging out of the bottom of its own frame. The list is a ScrollingFrame with
-	-- AutomaticCanvasSize on, so the honest answer to "they do not all fit" is to let it scroll rather than
-	-- to crush them until they do.
-	local packCardH = math.max(96, math.floor(((rowH - 46) - PACK_GAP * (#packs - 1)) / #packs))
-	-- amount (26) + 6 + rate (14) + 10 + button (28) = an 84px stack, centred in the card
-	local packTextY = math.max(6, math.floor((packCardH - 84) / 2))
-	for i, pack in ipairs(packs) do
-		local card = mkFrame(packList, { Size = UDim2.new(1, -6, 0, packCardH), BackgroundColor3 = HEADER, LayoutOrder = i })
-		mkCorner(card, 12); mkStroke(card, GOLD, 2)
-		local nameLbl = mkLabel(card, {
-			Text = CrateTokens.ICON .. "  " .. CrateTokens.format(pack.tokens),
-			Font = Enum.Font.FredokaOne, TextSize = 22, TextScaled = true, TextColor3 = GOLD,
-			Size = UDim2.new(1, -20, 0, 26), Position = UDim2.new(0, 10, 0, packTextY),
-			TextXAlignment = Enum.TextXAlignment.Left,
-		})
-		mkStroke(nameLbl, Color3.new(0, 0, 0), 2)
-		mkLabel(card, {
-			Text = (pack.tag and (pack.tag .. "   \xE2\x80\xA2   ") or "")
-				.. math.floor(pack.tokens / math.max(1, pack.robux) * 10) / 10 .. " tokens per R$",
-			Font = Enum.Font.Gotham, TextSize = 11, TextScaled = true, TextColor3 = Color3.fromRGB(205, 224, 255),
-			Size = UDim2.new(1, -20, 0, 14), Position = UDim2.new(0, 10, 0, packTextY + 32),
-			TextXAlignment = Enum.TextXAlignment.Left,
-		})
 
-		-- EXTRA VALUE BADGE. How much further a Robux goes on THIS pack than on the smallest one.
-		--
-		-- Measured against the cheapest pack because that is a price a player can actually pay. The usual way
-		-- to get a percentage onto every card is to invent a "single token" price nobody sells and discount
-		-- everything off that -- but a saving against a price that does not exist is a made-up saving, and
-		-- made-up savings are what consumer rules and storefront policy are both written about. This number is
-		-- real: at +100% a Robux genuinely buys twice what it buys on the 25 R$ pack, and the card shows the
-		-- tokens-per-R$ right next to it so anyone can check.
-		--
-		-- The entry pack therefore carries no badge. It is the thing everything else is better THAN, and
-		-- stamping it with a discount against itself would be the one dishonest label on the shelf.
-		local basePack = SkinCrates.TOKEN_PACKS[1]
-		local baseRate = basePack and (basePack.tokens / math.max(1, basePack.robux)) or 0
-		local thisRate = pack.tokens / math.max(1, pack.robux)
-		local bonus    = (baseRate > 0) and math.floor((thisRate / baseRate - 1) * 100 + 0.5) or 0
-		-- The badge is the extra value a bigger pack buys, so only the packs that HAVE extra value carry one.
-		-- The entry pack is the baseline every percentage is measured from -- a badge there would either be
-		-- a number measured against itself or a slogan pretending to be one, and a bare card next to four
-		-- badged ones makes the ladder read at a glance anyway.
-		if bonus >= 1 then
-			local badge = mkFrame(card, {
-				Size = UDim2.new(0, 96, 0, 26), Position = UDim2.new(1, -104, 0, packTextY - 2),
-				BackgroundColor3 = Color3.fromRGB(46, 168, 84),
-			})
-			mkCorner(badge, 8); mkStroke(badge, Color3.fromRGB(24, 96, 48), 2)
-			local bl = mkLabel(badge, {
-				Text = "+" .. bonus .. "% VALUE",
-				Font = Enum.Font.FredokaOne, TextSize = 14, TextScaled = true, TextColor3 = WHITE,
-				Size = UDim2.new(1, -6, 1, -6), Position = UDim2.new(0, 3, 0, 3),
-			})
-			mkStroke(bl, Color3.new(0, 0, 0), 2)
-		end
-		local buy = mkButton(card, {
-			Size = UDim2.new(1, -20, 0, 28), Position = UDim2.new(0, 10, 0, packTextY + 56),
-			BackgroundColor3 = LIME, Text = pack.robux .. " R$", Font = Enum.Font.FredokaOne, TextSize = 17,
-			TextScaled = true, TextColor3 = WHITE,
+	-- THE BASELINE THE VALUE CHIPS ARE MEASURED AGAINST is the cheapest pack, because that is a price a
+	-- player can actually pay. The usual way to get a percentage onto every row is to invent a
+	-- "single ticket" price nobody sells and discount everything off that -- but a saving against a price
+	-- that does not exist is a made-up saving. This one is real, and the tickets-per-R$ sits right beside it
+	-- so anyone can check the arithmetic. The entry pack therefore carries no chip: it is the thing the
+	-- others are better THAN, and stamping it with a discount against itself would be the one dishonest
+	-- label on the shelf.
+	local basePack = packs[1]
+	local baseRate = basePack and (basePack.tokens / math.max(1, basePack.robux)) or 0
+
+	for i, pack in ipairs(packs) do
+		local row = mkFrame(body, {
+			Size = UDim2.new(1, 0, 0, ROW_H), BackgroundColor3 = ROW_BG, LayoutOrder = i,
 		})
-		mkCorner(buy, 10); mkStroke(buy, LIME_DARK, 2)
-		do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 17; c.Parent = buy end
+		mkCorner(row, 14); mkStroke(row, Color3.fromRGB(70, 120, 200), 1.5)
+		-- GLOSS -- A SEPARATE WHITE OVERLAY, NOT A GRADIENT ON THE ROW ITSELF.
+		-- UIGradient MULTIPLIES its parent's BackgroundColor3, so a gradient parented to the row can only ever
+		-- make the navy darker; there is no multiplier above 1 and therefore no way to add a highlight that
+		-- way. A faint white child with its own top-to-bottom transparency ramp is the only thing that adds
+		-- light. It is created FIRST so every sibling built after it draws on top (equal ZIndex resolves by
+		-- creation order), and it fades to fully clear well above the text, so the navy that the amount and
+		-- the subtext were contrast-checked against is untouched where they actually sit.
+		do
+			local gloss = mkFrame(row, {
+				Size = UDim2.new(1, 0, 0, 36), BackgroundColor3 = WHITE, BackgroundTransparency = 0.88,
+				ZIndex = 1,
+			})
+			mkCorner(gloss, 14)
+			local g = Instance.new("UIGradient")
+			g.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0),
+				NumberSequenceKeypoint.new(1, 1),
+			})
+			g.Rotation = 90
+			g.Parent = gloss
+		end
+
+		-- ---- the ticket tile ----------------------------------------------------------------
+		local tile = mkFrame(row, {
+			Size = UDim2.new(0, TILE, 0, TILE), Position = UDim2.new(0, ROW_INSET, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5), BackgroundColor3 = TILE_BG,
+		})
+		mkCorner(tile, 14); mkStroke(tile, Color3.fromRGB(52, 96, 172), 1.5)
+		mkLabel(tile, {
+			Text = CrateTokens.ICON, Font = Enum.Font.FredokaOne, TextSize = 28, TextScaled = true,
+			TextColor3 = RED, Size = UDim2.new(1, -12, 1, -12), Position = UDim2.new(0, 6, 0, 6), ZIndex = 2,
+		})
+		-- SPARKLES. Three four-point stars tucked into the tile's corners, gold and half-faded, at three
+		-- different sizes so they read as a scatter rather than as a pattern. They say "this is the treat you
+		-- are buying" on a tile that is otherwise a dark square with an icon in it.
+		for _, sp in ipairs({ { 4, 3, 13, 0.25 }, { 42, 8, 9, 0.45 }, { 8, 39, 10, 0.4 } }) do
+			mkLabel(tile, {
+				Text = "\xE2\x9C\xA6", Font = Enum.Font.FredokaOne, TextSize = sp[3], TextScaled = true,
+				TextColor3 = GOLD, TextTransparency = sp[4],
+				Size = UDim2.new(0, sp[3], 0, sp[3]), Position = UDim2.new(0, sp[1], 0, sp[2]), ZIndex = 3,
+			}):SetAttribute("BTS_Skip", true)
+		end
+
+		-- ---- line 1: the amount, then the value chip ----------------------------------------
+		-- The amount is measured, not stretched: a TextScaled label given the whole remaining width would
+		-- blow "100" up to the height of the row and leave the chip beside it looking like a footnote.
+		local amountW = 96
+		local amt = mkLabel(row, {
+			Text = CrateTokens.format(pack.tokens), Font = Enum.Font.FredokaOne, TextSize = 30,
+			TextScaled = true, TextColor3 = WHITE,
+			Size = UDim2.new(0, amountW, 0, 32), Position = UDim2.new(0, TEXT_X, 0, 14),
+			TextXAlignment = Enum.TextXAlignment.Left,
+		})
+		mkStroke(amt, Color3.new(0, 0, 0), 2)
+		do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 30; c.Parent = amt end
+
+		local thisRate = pack.tokens / math.max(1, pack.robux)
+		local bonus = (baseRate > 0) and math.floor((thisRate / baseRate - 1) * 100 + 0.5) or 0
+		if bonus >= 1 then
+			-- OUTLINED, not filled. The row already carries a filled green button and (on one row) a filled
+			-- blue chip; a third filled colour is where a shelf starts looking like a warning label. An
+			-- outline reads as a note ON the amount rather than as another thing competing with it.
+			-- 116, not 104: the star costs about a character of width, and TextScaled would otherwise pay for
+			-- it by shrinking "+57% VALUE" -- the number is the point of the chip and must not get smaller.
+			local vchip = mkFrame(row, {
+				Size = UDim2.new(0, 116, 0, 24), Position = UDim2.new(0, TEXT_X + amountW + 4, 0, 18),
+				BackgroundColor3 = VALUE_INK, BackgroundTransparency = 0.86,
+			})
+			-- 10, not 8. Every other corner on this row is 12-14, and a chip two steps sharper than the
+			-- card it sits on is what makes a row look like it has square corners even when it does not.
+			-- Not the full 12: on a 24px-tall chip that is halfway to a lozenge.
+			mkCorner(vchip, 10); mkStroke(vchip, VALUE_INK, 1.5)
+			mkLabel(vchip, {
+				-- The star is part of the chip's own text rather than a second label: at 24px tall there is no
+				-- room for two boxes, and TextScaled shrinks the whole phrase together so the star can never
+				-- end up a different size from the words beside it.
+				Text = "\xE2\xAD\x90 +" .. bonus .. "% VALUE", Font = Enum.Font.GothamBold, TextSize = 12,
+				TextScaled = true, TextColor3 = VALUE_INK,
+				Size = UDim2.new(1, -10, 1, -8), Position = UDim2.new(0, 5, 0, 4),
+			})
+		end
+
+		-- ---- line 2: the POPULAR chip, then the rate ----------------------------------------
+		-- rateX walks right as things are placed before it, so the chip and the sentence can never overlap
+		-- and the sentence sits flush against the amount above it when there is no chip at all.
+		local rateX = TEXT_X
+		if pack.tag then
+			local chip = mkFrame(row, {
+				Size = UDim2.new(0, 84, 0, 22), Position = UDim2.new(0, TEXT_X, 0, 50),
+				BackgroundColor3 = POPULAR,
+			})
+			mkCorner(chip, 10); mkStroke(chip, Color3.fromRGB(18, 62, 140), 2)
+			local cl = mkLabel(chip, {
+				Text = pack.tag:upper(), Font = Enum.Font.GothamBold, TextSize = 12, TextScaled = true,
+				TextColor3 = WHITE, Size = UDim2.new(1, -8, 1, -6), Position = UDim2.new(0, 4, 0, 3),
+			})
+			mkStroke(cl, Color3.new(0, 0, 0), 1.5)
+			rateX = TEXT_X + 84 + 8
+		end
+		-- One decimal, with a bare "4" rather than "4.0" -- a trailing zero on a rate reads as more
+		-- precision than the number has.
+		local rate = math.floor(thisRate * 10 + 0.5) / 10
+		local rateText = (rate % 1 == 0) and tostring(math.floor(rate)) or tostring(rate)
+		local rateLbl = mkLabel(row, {
+			Text = rateText .. " tickets per R$", Font = Enum.Font.Gotham, TextSize = 13, TextScaled = true,
+			TextColor3 = SUBTEXT,
+			Size = UDim2.new(1, -(rateX + BUY_W + ROW_INSET + 12), 0, 20),
+			Position = UDim2.new(0, rateX, 0, 51),
+			TextXAlignment = Enum.TextXAlignment.Left,
+		})
+		do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 13; c.Parent = rateLbl end
+
+		-- ---- the buy button ------------------------------------------------------------------
+		-- THE DARKER BOTTOM EDGE is a separate slab sitting 4px lower than the button, not a gradient on it:
+		-- that is what makes it read as a physical key with a lip you press down onto, which is the button
+		-- language this whole game uses (the Pet Hut's DROP OFF and WAKE UP are built the same way). A
+		-- gradient would only make the button look shaded.
+		local buyBase = mkFrame(row, {
+			Size = UDim2.new(0, BUY_W, 0, 48), Position = UDim2.new(1, -ROW_INSET, 0.5, 4),
+			AnchorPoint = Vector2.new(1, 0.5), BackgroundColor3 = LIME_DARK,
+		})
+		mkCorner(buyBase, 14)
+		local buy = mkButton(row, {
+			Size = UDim2.new(0, BUY_W, 0, 48), Position = UDim2.new(1, -ROW_INSET, 0.5, 0),
+			AnchorPoint = Vector2.new(1, 0.5), BackgroundColor3 = LIME, Text = "",
+			Font = Enum.Font.FredokaOne, TextSize = 18, TextColor3 = WHITE, ZIndex = 2,
+		})
+		mkCorner(buy, 14); mkStroke(buy, LIME_DARK, 2.5)
+		do
+			-- A gentle top-to-bottom shade on the key face, so the lip below it has something to be the shadow
+			-- of. WHITE at the top and grey at the bottom because UIGradient MULTIPLIES the fill: white is 1.0
+			-- (the button's own green, unchanged) and the grey darkens the bottom toward the lip. Starting
+			-- from a lighter green instead would not work -- there is no multiplier above 1, so a gradient can
+			-- only ever take light away.
+			local g = Instance.new("UIGradient")
+			g.Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(188, 188, 188))
+			g.Rotation = 90; g.Parent = buy
+		end
+		-- The word is a CHILD label, same rule the tab bar and the bottom nav follow: a UIStroke on a FILLED
+		-- text object outlines the object's BORDER, not its glyphs, so the black edge that keeps white text
+		-- readable on this green can only come from a transparent label sitting on top of the button.
+		local buyLbl = mkLabel(buy, {
+			Name = "Label", Text = ROBUX .. " " .. pack.robux .. " R$",
+			Font = Enum.Font.FredokaOne, TextSize = 18, TextScaled = true, TextColor3 = WHITE,
+			Size = UDim2.new(1, -14, 1, -12), Position = UDim2.new(0, 7, 0, 6), ZIndex = buy.ZIndex + 1,
+		})
+		mkStroke(buyLbl, Color3.new(0, 0, 0), 2)
+		do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 20; c.Parent = buyLbl end
+		-- HANDS OFF: ButtonTextStyle's legibility sweep repaints button text from whatever contrast it
+		-- computes, which would undo the white-on-green the outline is built around.
+		buy:SetAttribute("BTS_Skip", true); buyLbl:SetAttribute("BTS_Skip", true)
+
+		-- UNCHANGED PURCHASE PATH. Same remote, same pack id, same server handler as before the rebuild --
+		-- this is a visual change and the money must not move an inch.
 		buy.MouseButton1Click:Connect(function()
 			playUIClick()
 			BuyTokens:FireServer(pack.id)
@@ -1064,13 +1514,11 @@ local function buildTokensTab()
 	end
 
 	if SkinCrates.TEST_MODE then
-		-- One line at warnH, not two at 40. It is a note to the developer rather than part of the page, and every
-		-- pixel it takes comes off the cards above it -- rowH is computed from this exact number.
-		local warn = mkFrame(body, { Size = UDim2.new(1, -8, 0, warnH),
-			BackgroundColor3 = Color3.fromRGB(255, 160, 20), LayoutOrder = 2 })
+		local warn = mkFrame(body, { Size = UDim2.new(1, 0, 0, 34),
+			BackgroundColor3 = Color3.fromRGB(255, 160, 20), LayoutOrder = #packs + 1 })
 		mkCorner(warn, 10)
 		mkLabel(warn, {
-			Text = "TEST MODE: packs credit tokens with no Robux charge. Set SkinCrates.TEST_MODE = false at launch.",
+			Text = "TEST MODE: packs credit tickets with no Robux charge. Set SkinCrates.TEST_MODE = false at launch.",
 			Font = Enum.Font.GothamBold, TextSize = 12, TextScaled = true, TextColor3 = Color3.fromRGB(70, 40, 0),
 			Size = UDim2.new(1, -12, 1, -6), Position = UDim2.new(0, 6, 0, 3),
 			TextXAlignment = Enum.TextXAlignment.Center, TextWrapped = true,
@@ -1205,7 +1653,7 @@ local function confirmTradeUp(tier, target, keys, onYes)
 end
 
 local function buildTradeUpTab()
-	local intro = mkFrame(body, { Size = UDim2.new(1, -8, 0, 62), BackgroundColor3 = HEADER, LayoutOrder = 1 })
+	local intro = mkFrame(body, { Size = UDim2.new(1, 0, 0, 62), BackgroundColor3 = HEADER, LayoutOrder = 1 })
 	mkCorner(intro, 12); mkStroke(intro, GOLD, 1.5)
 	mkLabel(intro, {
 		Text = "TRADE UP MACHINE\nGive " .. SkinCrates.TRADE_UP.COST .. " skins of one rarity, get 1 random skin "
@@ -1217,12 +1665,15 @@ local function buildTradeUpTab()
 
 	local need = SkinCrates.TRADE_UP.COST
 	for i, tier in ipairs(SkinCrates.RARITY_ORDER) do
+		-- Gold is a pet/crate band, not a skin tier -- no skin can ever sit in it, so a Gold contract row
+		-- would be a permanent dead line. Skip it entirely; Legendary is the ladder's visible top.
+		if tier == SkinCrates.GOLD_TIER then continue end
 		local target = SkinCrates.tradeUpTarget(tier)
 		local keys, total = planTradeUp(tier)
 		local canDo = target ~= nil and #keys >= need
 		local tierCol = PetSkins.tierColor(tier)
 
-		local row = mkFrame(body, { Size = UDim2.new(1, -8, 0, 72), BackgroundColor3 = CARD, LayoutOrder = i + 1 })
+		local row = mkFrame(body, { Size = UDim2.new(1, 0, 0, 72), BackgroundColor3 = CARD, LayoutOrder = i + 1 })
 		mkCorner(row, 12); mkStroke(row, tierCol, canDo and 3 or 2)
 		if canDo then applyRarityFlair(row, tier) end -- only draw the eye to a contract that's actually ready
 
@@ -1295,128 +1746,58 @@ local function buildTradeUpTab()
 end
 
 -- ============================================================================================================
--- TAB: COLLECTION BOOK
--- ============================================================================================================
--- Every skin for every pet, owned or not, so a player always knows what they're missing. Completion is
--- trait-agnostic (see PetCollection) -- a Galaxy Pizza Dragon ticks Galaxy off whether or not it came Crowned.
-local function buildCollectionTab()
-	-- collapse the inventory to [pet] = { [skin] = true }, dropping traits
-	local sets = {}
-	for key, count in pairs(state.skins) do
-		if (tonumber(count) or 0) > 0 then
-			local petId, skinId = PetSkins.parseKey(key)
-			if petId and skinId then
-				local t = sets[petId]; if not t then t = {}; sets[petId] = t end
-				t[skinId] = true
-			end
-		end
-	end
-
-	-- Which pets to show. Prefer the server's unlocked list plus anything we hold a skin for; fall back to the
-	-- crate contents so the book is never blank on a fresh account with nothing unlocked yet.
-	local petSet = {}
-	for petId in pairs(state.unlocked) do petSet[petId] = true end
-	for petId in pairs(sets) do petSet[petId] = true end
-	for _, crate in ipairs(SkinCrates.CRATES) do
-		for _, pool in pairs(crate.contents) do
-			for _, e in ipairs(pool) do petSet[e.pet] = true end
-		end
-	end
-	local pets = {}
-	for petId in pairs(petSet) do pets[#pets + 1] = petId end
-	table.sort(pets)
-
-	local completed = (state.collection and state.collection.completedPets) or {}
-
-	-- summary header
-	local doneCount = 0
-	for _, petId in ipairs(pets) do if completed[petId] then doneCount = doneCount + 1 end end
-	local intro = mkFrame(body, { Size = UDim2.new(1, -8, 0, 62), BackgroundColor3 = HEADER, LayoutOrder = 1 })
-	mkCorner(intro, 12); mkStroke(intro, GOLD, 1.5)
-	mkLabel(intro, {
-		Text = "COLLECTION BOOK   \xE2\x80\xA2   " .. doneCount .. " / " .. #pets .. " pets completed\n"
-			.. "Complete a pet's set for a title, an aura, a badge and an exclusive skin.",
-		Font = Enum.Font.GothamBold, TextSize = 13, TextScaled = true, TextColor3 = Color3.fromRGB(215, 228, 255),
-		Size = UDim2.new(1, -16, 1, -8), Position = UDim2.new(0, 8, 0, 4),
-		TextXAlignment = Enum.TextXAlignment.Center, TextWrapped = true,
-	})
-
-	for pi, petId in ipairs(pets) do
-		local rows, owned, total = PetCollection.page(sets[petId])
-		local isDone = completed[petId] == true
-
-		-- One card per pet: a header line, then a wrapped grid of every skin as a tick or a cross.
-		local perRow = 5
-		local cellH, cellPad = 26, 4
-		local gridRows = math.ceil(#rows / perRow)
-		local cardH = 40 + gridRows * (cellH + cellPad) + 8
-
-		local card = mkFrame(body, { Size = UDim2.new(1, -8, 0, cardH), BackgroundColor3 = CARD, LayoutOrder = pi + 1 })
-		mkCorner(card, 12); mkStroke(card, isDone and GOLD or Color3.fromRGB(90, 130, 200), isDone and 3 or 2)
-		if isDone then applyRarityFlair(card, "Gold") end -- a finished set gets the jackpot treatment
-
-		local hdr = mkLabel(card, {
-			Text = (isDone and "\xE2\x9C\x94 " or "") .. PetSkins.prettyPet(petId) .. "   " .. owned .. " / " .. total,
-			Font = Enum.Font.FredokaOne, TextSize = 18, TextScaled = true,
-			TextColor3 = isDone and GOLD or WHITE, Size = UDim2.new(1, -20, 0, 26),
-			Position = UDim2.new(0, 12, 0, 6), TextXAlignment = Enum.TextXAlignment.Left,
-		})
-		mkStroke(hdr, Color3.new(0, 0, 0), 2)
-
-		local grid = mkFrame(card, {
-			Size = UDim2.new(1, -20, 0, gridRows * (cellH + cellPad)), Position = UDim2.new(0, 10, 0, 36),
-			BackgroundTransparency = 1,
-		})
-		do
-			local gl = Instance.new("UIGridLayout")
-			gl.CellSize = UDim2.new(0, 128, 0, cellH)
-			gl.CellPadding = UDim2.new(0, cellPad, 0, cellPad)
-			gl.SortOrder = Enum.SortOrder.LayoutOrder
-			gl.Parent = grid
-		end
-		for ri, r in ipairs(rows) do
-			local cell = mkFrame(grid, {
-				Size = UDim2.new(0, 128, 0, cellH), LayoutOrder = ri,
-				BackgroundColor3 = r.owned and r.color or Color3.fromRGB(58, 66, 80),
-				BackgroundTransparency = r.owned and 0.25 or 0.4,
-			})
-			mkCorner(cell, 6)
-			mkLabel(cell, {
-				Text = (r.owned and "\xE2\x9C\x85 " or "\xE2\x9D\x8C ") .. r.name,
-				Font = Enum.Font.GothamBold, TextSize = 12, TextScaled = true,
-				TextColor3 = r.owned and WHITE or Color3.fromRGB(150, 160, 175),
-				Size = UDim2.new(1, -8, 1, 0), Position = UDim2.new(0, 4, 0, 0),
-				TextXAlignment = Enum.TextXAlignment.Left,
-			})
-		end
-	end
-end
-
--- ============================================================================================================
 -- TAB SWITCHING
 -- ============================================================================================================
 refreshTabs = function()
-	tokenLbl.Text = CrateTokens.ICON .. " " .. CrateTokens.format(state.tokens)
-	-- A sub-page keeps its PARENT tab lit: sitting on Collection with no tab highlighted reads as being lost.
+	-- The icon is its own red label inside the pill now (see the pill build), so this carries only the number.
+	tokenLbl.Text = CrateTokens.format(state.tokens)
+	-- A sub-page keeps its PARENT tab lit: a page with no tab highlighted reads as being lost.
+	--
+	-- They light DIFFERENT parents, because they belong to different ones. TOKENS is the crate shop, so it
+	-- lights CRATES. TRADE UP burns duplicate skins and is entered from the hub's PETS page, so it lights
+	-- PETS -- it used to light CRATES, which made pressing TRADE UP look like it had dumped you in the crate
+	-- list, on a page that has nothing to do with crates.
 	local litTab = activeTab
-	if litTab == "inventory" or litTab == "tradeup" or litTab == "collection" or litTab == "tokens" then litTab = "crates" end
+	if litTab == "tokens" then litTab = "crates"
+	elseif litTab == "tradeup" then litTab = "pets" end
 	for id, b in pairs(tabButtons) do
 		local on = (id == litTab)
-		-- Selected = yellow, unselected = blue, matching the Pet Hub's tab styling.
-		b.BackgroundColor3 = on and GOLD or CARD
+		-- Selected = yellow, unselected = TAB_IDLE -- the hub bar's exact blue, see the constant.
+		b.BackgroundColor3 = on and GOLD or TAB_IDLE
 		-- Selected = dark-on-gold (max contrast, unmistakably the active tab); unselected = gold-on-blue,
 		-- matching the panel title rather than shouting in pure white.
-		b.TextColor3 = on and Color3.fromRGB(92, 58, 8) or GOLD
+		-- The word lives in a child label now (see the tab build): paint that, or the selected tab keeps
+		-- the unselected tab's gold text. b.TextColor3 is kept in step so nothing reading it goes stale.
+		b.TextColor3 = on and Color3.fromRGB(92, 58, 8) or TAB_INK
+		local lbl = b:FindFirstChild("Label")
+		if lbl then lbl.TextColor3 = b.TextColor3 end
 		local st = b:FindFirstChildOfClass("UIStroke")
-		if st then st.Color = on and Color3.fromRGB(180, 122, 20) or WHITE; st.Thickness = on and 2.5 or 1.5 end
+		if st then st.Color = on and Color3.fromRGB(180, 122, 20) or TAB_EDGE; st.Thickness = on and 2.5 or 1.5 end
+	end
+	-- BOTTOM NAV: lit on the page you are actually on. activeTab is the real page id here (the top bar
+	-- collapses all four crate pages to "crates" via litTab above -- that is what makes the two bars say
+	-- different, complementary things: Crates, and then which part of Crates).
+	-- THE BANNER BUTTON IS NOT A PAGE INDICATOR ANY MORE, so it is no longer repainted here. It used to be one
+	-- of a row of nav pills that lit gold on the page they led to; now it is the single call to action on the
+	-- GET TICKETS plinth, and it is gold on every page by design. Dimming it to navy whenever you were not
+	-- already on the packs would grey out the one button the banner exists to sell.
+	--
+	-- The loop stays (over an unchanged bottomNavButtons) so a second nav pill can be added back without
+	-- re-plumbing, and so the label lookup below keeps working.
+	for _, b in pairs(bottomNavButtons) do
+		local st = b:FindFirstChildOfClass("UIStroke")
+		if st then st.Thickness = (activeTab == "tokens") and 3 or 2 end
 	end
 	if not gui.Enabled then return end -- don't rebuild a hidden panel
 	clearBody()
-	-- crates/tokens are top-level pages; inventory/tradeup/collection are sub-pages reached from them. A hub
-	-- page id can never reach here (the click handler hands those off before touching activeTab).
-	if activeTab == "inventory" then buildInventoryTab()
-	elseif activeTab == "tradeup" then buildTradeUpTab()
-	elseif activeTab == "collection" then buildCollectionTab()
+	-- CRATES is the page this panel exists for; TOKENS is its shop and TRADE UP is an action on the skins you
+	-- already own, opened from the Pet Hub. A hub page id can never reach here (the click handler hands those
+	-- off before touching activeTab).
+	--
+	-- MY SKINS and the COLLECTION BOOK used to be two more pages here and are gone on purpose. Every skin you
+	-- own is already on the pet it belongs to, reached by tapping that pet -- a second, flat list of the same
+	-- skins was a second place to look for one thing, and the collection book was a third.
+	if activeTab == "tradeup" then buildTradeUpTab()
 	elseif activeTab == "tokens" then buildTokensTab()
 	else buildCratesTab() end
 end
@@ -1781,39 +2162,32 @@ local function buildCell(parent, x, item)
 		return cell
 	end
 
-	-- A TRAIT CRATE cell. Like the level cell there is no pet to draw -- the reward IS the effect -- so the
-	-- cell is the trait's name in the trait's own colour. Not masked at Gold either: the crate holds exactly
-	-- one trait per band, so there is no which-item secret to protect.
+	-- A TRAIT CRATE cell shows THE GOODS the same way a skin cell does: a real 3D pet actually WEARING the
+	-- trait (accessories and all), against a backdrop tinted the trait's own colour. Every cell uses the
+	-- same DEMO MODEL -- a Classic Butter Duck -- because the actual ride-along pet+skin is rolled at open
+	-- time and cannot be known while the reel spins; the payoff flips the winning card to the real grant.
+	-- Not masked at Gold: the crate holds exactly one trait per band, so there is no which-item secret.
 	if item.trait then
-		local plate = mkFrame(cell, {
+		local swatch = mkFrame(cell, {
 			Size = UDim2.new(1, -24, 0, 222), Position = UDim2.new(0, 12, 0, 20),
-			BackgroundColor3 = isTop and Color3.fromRGB(46, 34, 8) or Color3.fromRGB(18, 34, 66),
+			BackgroundColor3 = PetTraits.color(item.trait) or tierCol, BackgroundTransparency = 0.35,
 		})
-		mkCorner(plate, 12); mkStroke(plate, tierCol, 3)
-		local disc = mkFrame(plate, {
-			Size = UDim2.fromOffset(132, 132), Position = UDim2.new(0.5, 0, 0.5, 0),
-			AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = PetTraits.color(item.trait) or tierCol,
-		})
-		do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(1, 0); c.Parent = disc end
-		mkStroke(disc, Color3.fromRGB(12, 24, 48), 2)
-		do local g = Instance.new("UIGradient"); g.Rotation = 90; g.Parent = disc
-			g.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), PetTraits.color(item.trait) or tierCol) end
-		mkLabel(disc, {
-			Text = "â¨", Font = Enum.Font.FredokaOne, TextSize = 56, TextScaled = true,
-			TextColor3 = Color3.fromRGB(18, 34, 66), Size = UDim2.new(1, -22, 1, -22),
-			Position = UDim2.new(0, 11, 0, 11),
-		})
-		mkLabel(cell, {
+		mkCorner(swatch, 12); mkStroke(swatch, Color3.new(0, 0, 0), 1)
+		makePetPreview(cell, TRAIT_DEMO_PET, "Classic", item.trait,
+			UDim2.new(1, -24, 0, 222), UDim2.new(0, 12, 0, 20), true)
+		local traitLbl = mkLabel(cell, {
 			Text = PetTraits.displayName(item.trait), Font = Enum.Font.FredokaOne, TextSize = 15, TextScaled = true,
 			TextColor3 = PetTraits.color(item.trait) or (isTop and GOLD or WHITE),
 			Size = UDim2.new(1, -16, 0, 44), Position = UDim2.new(0, 8, 0, 250),
 			TextXAlignment = Enum.TextXAlignment.Center,
 		})
-		mkLabel(cell, {
+		traitLbl.Name = "SkinName" -- same caption names as a skin cell, so the payoff can rewrite them in place
+		local subLbl2 = mkLabel(cell, {
 			Text = "TRAIT", Font = Enum.Font.Gotham, TextSize = 20, TextScaled = true,
 			TextColor3 = Color3.fromRGB(205, 224, 255), Size = UDim2.new(1, -16, 0, 28),
 			Position = UDim2.new(0, 8, 0, 292), TextXAlignment = Enum.TextXAlignment.Center, TextWrapped = true,
 		})
+		subLbl2.Name = "PetName"
 		applyRarityFlair(cell, item.rarity, true)
 		return cell
 	end
@@ -1901,8 +2275,17 @@ local function unmaskWinner(cell, petId, skinId, traitId)
 	makePetPreview(cell, petId, skinId, traitId, UDim2.new(1, -24, 0, 222), UDim2.new(0, 12, 0, 20), true)
 	local sn = cell:FindFirstChild("SkinName")
 	if sn then sn.Text = (skin and skin.displayName) or skinId end
+	-- the trait is half the prize, so the card says it out loud in the trait's own colour instead of leaving
+	-- it to the small print on the result band below
 	local pn = cell:FindFirstChild("PetName")
-	if pn then pn.Text = PetSkins.prettyPet(petId) end
+	if pn then
+		if traitId and not PetTraits.isNone(traitId) then
+			pn.Text = PetSkins.prettyPet(petId) .. "  \xE2\x80\xA2  " .. PetTraits.displayName(traitId) .. " Trait"
+			pn.TextColor3 = PetTraits.color(traitId) or pn.TextColor3
+		else
+			pn.Text = PetSkins.prettyPet(petId)
+		end
+	end
 	return true
 end
 
@@ -2038,6 +2421,10 @@ local function openReveal(crate, result)
 			-- a whole cell of travel in ONE frame is flat out; the last few ticks crawl in near zero
 			local v = math.clamp(travel / CELL_W, 0, 1)
 			playSound(TICK_SOUND, 0.20 + v * 0.12, 1.02 + v * 0.68)
+			-- ONE TAP PER CELL. The reel already slows into the stop, so the taps space out with it -- the
+			-- payoff is felt building, not just watched. Haptics throttles `tick`, so the fast opening blur
+			-- cannot turn into a solid hum.
+			if _G.hapticPulse then pcall(_G.hapticPulse, "tick") end
 		end
 	end)
 
@@ -2169,6 +2556,9 @@ local function openReveal(crate, result)
 	if settled then return end -- a second entrant would re-apply the win visuals on top of the first
 	settled = true
 	local isGold = result.isGold == true
+	-- THE PAYOFF. Gold gets the five-tap `rare` rhythm; every other pull gets `unlock`. Both outrank
+	-- the reel's ticks, so the strip of taps stops dead and the result lands as its own thing.
+	if _G.hapticPulse then pcall(_G.hapticPulse, isGold and "rare" or "unlock") end
 	local tierCol = PetSkins.tierColor(result.rarity)
 
 	if isGold then
@@ -2201,11 +2591,52 @@ local function openReveal(crate, result)
 			-- Hold the rosette for a beat so "...is that the GOLD?" lands, THEN flip the card to the real prize.
 			-- Delayed rather than immediate because unmasking on the same frame the reel stops reads as the card
 			-- having been the pet all along, and throws away the pause the whole mask exists to create.
+			-- checked BEFORE the delays fire: unmaskWinner destroys the plate, so asking again inside the
+			-- skin-flip's own delay would see "not masked" and paint a second preview over the unmasked one
+			local wasMasked = won:FindFirstChild("MysteryPlate") ~= nil
 			task.delay(0.42, function()
 				if won.Parent and unmaskWinner(won, result.pet, result.skin, result.trait) then
 					playSound(REVEAL_SOUND, 0.55, 1.25)
 				end
 			end)
+			-- SKIN pull: the reel scrolled with bare pet+skin cells (the trait belongs to the PULL, not the
+			-- cell -- painting it on every cell would spoil the roll mid-spin). Once the winner is parked,
+			-- flip its preview to the full prize -- skin AND trait rendered together -- and name the trait on
+			-- the card, same 0.42s beat as the Gold unmask so both flips read as the same reveal.
+			if not result.kind and not wasMasked and result.pet and result.skin
+				and result.trait and not PetTraits.isNone(result.trait) then
+				task.delay(0.42, function()
+					if not won.Parent then return end
+					local vp = won:FindFirstChildWhichIsA("ViewportFrame", true)
+					if vp then vp:Destroy() end
+					makePetPreview(won, result.pet, result.skin, result.trait,
+						UDim2.new(1, -24, 0, 222), UDim2.new(0, 12, 0, 20), true)
+					local pn = won:FindFirstChild("PetName")
+					if pn then
+						pn.Text = PetSkins.prettyPet(result.pet) .. "  \xE2\x80\xA2  "
+							.. PetTraits.displayName(result.trait) .. " Trait"
+						pn.TextColor3 = PetTraits.color(result.trait) or pn.TextColor3
+					end
+					playSound(REVEAL_SOUND, 0.45, 1.35)
+				end)
+			end
+			-- TRAIT pull: the reel's cells all wore the trait on the demo duck; once the reel has landed,
+			-- the winning card flips to the ACTUAL ride-along the server granted -- same beat, same 0.42s
+			-- pause as the Gold unmask, so the flip reads as a reveal rather than a glitch.
+			if result.kind == "trait" and result.pet and result.skin then
+				task.delay(0.42, function()
+					if not won.Parent then return end
+					local vp = won:FindFirstChildWhichIsA("ViewportFrame", true)
+					if vp then vp:Destroy() end
+					makePetPreview(won, result.pet, result.skin, result.trait,
+						UDim2.new(1, -24, 0, 222), UDim2.new(0, 12, 0, 20), true)
+					local sn = won:FindFirstChild("SkinName")
+					if sn then sn.Text = PetSkins.displayName(result.skin, PetSkins.prettyPet(result.pet)) end
+					local pn = won:FindFirstChild("PetName")
+					if pn then pn.Text = PetTraits.displayName(result.trait) .. " TRAIT" end
+					playSound(REVEAL_SOUND, 0.55, 1.25)
+				end)
+			end
 			local wonScale = won:FindFirstChild("Focus")
 			if wonScale then
 				TweenService:Create(wonScale, TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
@@ -2244,8 +2675,16 @@ local function openReveal(crate, result)
 	else
 		resultName.Text = PetSkins.displayName(result.skin, PetSkins.prettyPet(result.pet))
 	end
-	resultTier.Text = result.rarity
-	resultTier.TextColor3 = tierCol
+	if result.skin and not result.kind then
+		-- A skin pull's tier line is the OVERALL TIER -- the one label the pet will wear overhead, computed
+		-- from the hidden skin+trait values. The skin's own band already spoke through the reel colour.
+		local overall = result.overallTier or PetTier.overall(result.skin, result.trait) or result.rarity
+		resultTier.Text = "Tier: " .. tostring(overall)
+		resultTier.TextColor3 = PetSkins.tierColor(overall)
+	else
+		resultTier.Text = result.rarity
+		resultTier.TextColor3 = tierCol
+	end
 
 	-- One clean line, always the same shape ("Trait: Smoky"), so the eye knows where to look whether or not
 	-- the pull had a trait. The old SHOUTED, sparkle-wrapped version changed width on every reveal.
@@ -2260,13 +2699,18 @@ local function openReveal(crate, result)
 		resultTrait.Text = "Rarity is permanent \xE2\x80\x94 it grows from Baby as you play"
 		resultTrait.TextColor3 = Color3.fromRGB(150, 255, 170)
 	elseif result.kind == "trait" then
-		resultTrait.Text = "A permanent effect â stacks with other traits"
+		-- the trait is the prize; this line names the ride-along it arrived on
+		resultTrait.Text = "Comes on: " .. PetSkins.displayName(result.skin, PetSkins.prettyPet(result.pet))
 		resultTrait.TextColor3 = PetTraits.color(result.trait) or Color3.fromRGB(150, 255, 170)
 	elseif PetTraits.isNone(result.trait) then
 		resultTrait.Text = "Trait: None"
 		resultTrait.TextColor3 = Color3.fromRGB(180, 190, 205)
 	else
-		resultTrait.Text = "Trait: " .. PetTraits.displayName(result.trait)
+		-- The trait NEVER joins the pet's name -- this line is where it lives, styled as the second prize it
+		-- is ("Wizard Trait  \xE2\x80\xA2  Epic"), not as metadata small print.
+		local tTier = PetTraits.tierOf(result.trait)
+		resultTrait.Text = PetTraits.displayName(result.trait) .. " Trait"
+			.. (tTier and ("  \xE2\x80\xA2  " .. tTier) or "")
 		resultTrait.TextColor3 = PetTraits.color(result.trait)
 	end
 
@@ -2282,8 +2726,14 @@ local function openReveal(crate, result)
 			or "Added to your pets"
 		resultNote.TextColor3 = Color3.fromRGB(150, 255, 170)
 	elseif result.kind == "trait" then
-		resultNote.Text = "In your Trait Collection â open INVENTORY to pick its pet"
-		resultNote.TextColor3 = Color3.fromRGB(150, 255, 170)
+		if result.locked then
+			resultNote.Text = "Unlock " .. PetSkins.prettyPet(result.pet) .. " to wear it"
+			resultNote.TextColor3 = Color3.fromRGB(255, 200, 120)
+		else
+			local ov = result.overallTier or PetTier.overall(result.skin, result.trait)
+			resultNote.Text = "Ready to Equip!" .. (ov and ("   Tier: " .. tostring(ov)) or "")
+			resultNote.TextColor3 = Color3.fromRGB(150, 255, 170)
+		end
 	elseif result.locked then
 		-- prettyPet, not the raw id: "Unlock Burrito Armadillo", never "Unlock BurritoArmadillo".
 		resultNote.Text = "Unlock " .. PetSkins.prettyPet(result.pet) .. " to equip this skin"
@@ -2503,6 +2953,9 @@ showTradeUpResult = function(result)
 	if not result or not result.skin then return end
 	local tierCol = PetSkins.tierColor(result.rarity)
 	local isGold = result.isGold == true
+	-- THE PAYOFF. Gold gets the five-tap `rare` rhythm; every other pull gets `unlock`. Both outrank
+	-- the reel's ticks, so the strip of taps stops dead and the result lands as its own thing.
+	if _G.hapticPulse then pcall(_G.hapticPulse, isGold and "rare" or "unlock") end
 
 	-- reelTitle lives INSIDE reelPanel, so the panel stays up; only the scrolling window is hidden and the
 	-- panel collapses to a title-only banner above the card.
@@ -2516,16 +2969,21 @@ showTradeUpResult = function(result)
 
 	showResultPet(result.pet, result.skin, result.trait)
 	resultName.Text = PetSkins.displayName(result.skin, PetSkins.prettyPet(result.pet))
-	resultTier.Text = result.rarity
-	resultTier.TextColor3 = tierCol
+	do
+		local overall = result.overallTier or PetTier.overall(result.skin, result.trait) or result.rarity
+		resultTier.Text = "Tier: " .. tostring(overall)
+		resultTier.TextColor3 = PetSkins.tierColor(overall)
+	end
 
-	-- One clean line, always the same shape ("Trait: Smoky"), so the eye knows where to look whether or not
-	-- the pull had a trait. The old SHOUTED, sparkle-wrapped version changed width on every reveal.
+	-- One clean line, always the same shape ("Trait: King  \xE2\x80\xA2  Epic"), so the eye knows where to
+	-- look whether or not the pull had a trait.
 	if PetTraits.isNone(result.trait) then
 		resultTrait.Text = "Trait: None"
 		resultTrait.TextColor3 = Color3.fromRGB(180, 190, 205)
 	else
+		local tTier = PetTraits.tierOf(result.trait)
 		resultTrait.Text = "Trait: " .. PetTraits.displayName(result.trait)
+			.. (tTier and ("  \xE2\x80\xA2  " .. tTier) or "")
 		resultTrait.TextColor3 = PetTraits.color(result.trait)
 	end
 
@@ -2568,7 +3026,7 @@ doOpenCrate = function(crate)
 		if not result.ok then
 			-- Every refusal is a real server-side reason; surface it rather than failing silently.
 			local msg = ({
-				not_enough_tokens = "Not enough Crate Tokens!",
+				not_enough_tokens = "Not enough Crate Tickets!",
 				unknown_crate     = "That crate doesn't exist.",
 				empty_crate       = "That crate has no items yet.",
 				cooldown          = "Slow down a second!",
@@ -2583,6 +3041,22 @@ doOpenCrate = function(crate)
 		openReveal(crate, result)
 	end)
 end
+
+-- A CRATE SOMEBODY GAVE US. The server has already rolled it and banked the prize by the time this arrives, so
+-- there is nothing to validate and nothing to charge -- this is purely "show them what they got", through the
+-- exact same reveal a bought crate uses. Deliberately reusing openReveal rather than writing a gift-shaped
+-- variant: a free Mythic should feel identical to a paid one, and one reveal path means one thing to maintain.
+--
+-- It does NOT open the crates panel first. The reveal is its own full-screen ScreenGui, and the player is
+-- somewhere else when this fires (the Rewards hub, on day 7), so pulling up the shop behind it would leave
+-- them staring at the token store when the reel finishes.
+FreeCrateReveal.OnClientEvent:Connect(function(crateId, result)
+	if type(result) ~= "table" or not result.ok then return end
+	local crate = SkinCrates.getCrate(crateId)
+	if not crate then return end
+	if spinning then return end   -- already mid-reel: dropping it beats stacking two reveals on each other
+	openReveal(crate, result)
+end)
 
 -- ============================================================================================================
 -- TRADE BRIDGE
@@ -2637,6 +3111,52 @@ end
 --   kind = "earned" -> just for you: one or more collections you completed, with what they paid out.
 --   kind = "full"   -> server-wide: somebody finished EVERY skin on EVERY pet.
 -- Banners are staggered so completing two pets at once (which a trade can do) doesn't overwrite itself.
+-- ============================================================================================================
+-- COLLECTION REWARD BANNERS
+-- ============================================================================================================
+-- Completing a collection is how you earn a TITLE ("Bee Keeper" and friends), an aura and an exclusive skin.
+-- These used to go out through _G.showHudBanner at REWARD priority, which is the tier meant for NUDGES --
+-- "Daily Reward Ready", "Stomach Upgrade Available". At 40 a finished collection queued behind literally
+-- every other kind of news and never triggered the milestone haptic, which starts at TUTORIAL.
+--
+-- Three things this fixes:
+--   1. PRIORITY. Your own completion is a TUTORIAL-tier milestone -- exclusive, nothing plays beside it, and
+--      it buzzes. Somebody ELSE's completion stays low: it is news about a stranger, not about you.
+--   2. THE SILENT FALLBACK. The old code was `if _G.showHudBanner then ... else print(text) end`. CoreClient
+--      publishes that global, and if a collection ever completed before CoreClient finished loading the
+--      reward went to the OUTPUT WINDOW instead of the screen. This waits for NotifyCenter instead.
+--   3. PILE-UP. Multiple notices were fired 3.2s apart while each asked to be shown for 6s, so the queue
+--      grew faster than it drained and the last title in a batch arrived long after the crate was closed.
+--      Spacing is now taken from the duration, so they play back to back with a clean gap.
+local function collectionBanner(text, seconds, mine)
+	local NC = _G.NotifyCenter
+	if not NC or not NC.push then
+		-- NotifyCenter genuinely absent (stale-duplicate eviction mid-boot): retry briefly rather than
+		-- dropping a reward the player has earned. Never print-and-forget.
+		task.spawn(function()
+			for _ = 1, 40 do
+				task.wait(0.25)
+				if _G.NotifyCenter and _G.NotifyCenter.push then
+					pcall(_G.NotifyCenter.push, {
+						text = text, color = Color3.fromRGB(255, 214, 90),
+						priority = mine and _G.NotifyCenter.PRIORITY.TUTORIAL or _G.NotifyCenter.PRIORITY.REWARD,
+						duration = seconds,
+					})
+					return
+				end
+			end
+			warn("[SkinCrate] NotifyCenter never arrived -- collection banner lost: " .. tostring(text))
+		end)
+		return
+	end
+	pcall(NC.push, {
+		text     = text,
+		color    = Color3.fromRGB(255, 214, 90),
+		priority = mine and NC.PRIORITY.TUTORIAL or NC.PRIORITY.REWARD,
+		duration = seconds,
+	})
+end
+
 CollectAnnounce.OnClientEvent:Connect(function(info)
 	if type(info) ~= "table" then return end
 
@@ -2645,31 +3165,25 @@ CollectAnnounce.OnClientEvent:Connect(function(info)
 		local text = mine
 			and "\xF0\x9F\x8F\x86 YOU COMPLETED THE ENTIRE COLLECTION! Title unlocked: " .. tostring(info.title)
 			or string.format("\xF0\x9F\x8F\x86 %s completed the ENTIRE collection!", tostring(info.playerName))
-		if _G.showHudBanner then _G.showHudBanner(text, Color3.fromRGB(255, 214, 90), 10) else print(text) end
+		collectionBanner(text, 10, mine)
 		return
 	end
 
 	if info.kind == "earned" and type(info.notices) == "table" then
 		for i, n in ipairs(info.notices) do
-			task.delay((i - 1) * 3.2, function()
+			-- 7s apart for a 6s banner: one clean gap between titles instead of a queue that outgrows itself.
+			task.delay((i - 1) * 7, function()
 				local text
+				-- FOUR WORDS EITHER WAY. Both of these used to carry the payout after the headline -- the title
+				-- on one, a "Title: X * Gold Aura * Sunset skin" list on the other -- and that tail was both the
+				-- part the five-word cap takes first and the part the player is already looking at: the crate
+				-- reveal panel is open in front of them, listing exactly those rewards, at exactly this moment.
 				if n.kind == "full" then
-					text = "\xF0\x9F\x8F\x86 FULL COLLECTION COMPLETE! Title: " .. tostring(n.title)
+					text = "\xF0\x9F\x8F\x86 FULL COLLECTION COMPLETE!"
 				else
-					local bits = {}
-					if n.title then bits[#bits + 1] = "Title: " .. n.title end
-					if n.aura and PetCollection.AURAS[n.aura] then
-						bits[#bits + 1] = PetCollection.AURAS[n.aura].name
-					end
-					if n.cosmetic then bits[#bits + 1] = PetSkins.displayName(n.cosmetic) .. " skin" end
-					text = "\xE2\x9C\x94 " .. tostring(n.petName or n.pet) .. " collection complete! "
-						.. table.concat(bits, "  \xE2\x80\xA2  ")
+					text = "\xE2\x9C\x94 " .. tostring(n.petName or n.pet) .. " COLLECTION COMPLETE!"
 				end
-				if _G.showHudBanner then
-					_G.showHudBanner(text, Color3.fromRGB(255, 214, 90), 6)
-				else
-					print("[SkinCrate] " .. text)
-				end
+				collectionBanner(text, 6, true)   -- always the player's own reward -> milestone tier
 				playSound(REVEAL_SOUND, 0.6, 1.1)
 			end)
 		end
@@ -2680,23 +3194,51 @@ end)
 -- ============================================================================================================
 -- GOLD ANNOUNCEMENT (server-wide)
 -- ============================================================================================================
+-- Server-wide pull news: GOLD (the knife pull) and any LEGENDARY unlock -- a Legendary skin, trait or pet.
+-- `tier` on the payload picks the fanfare; the banner names the legendary THING the way a player would say
+-- it out loud, because this line is read off the screen mid-flight, not parsed.
 GoldAnnounce.OnClientEvent:Connect(function(info)
 	if type(info) ~= "table" then return end
 	local mine = (info.playerName == player.Name)
-	-- A Gold from the TRAIT crate has no pet/skin -- the item is the trait itself.
+	local isLeg = (info.tier == "Legendary")
+
 	local what
-	if info.skin then what = PetSkins.displayName(info.skin, info.pet)
-	elseif info.trait then what = "the " .. PetTraits.displayName(info.trait) .. " Trait"
-	else what = "a Gold pull" end
-	local text = string.format("\xE2\xAD\x90 %s pulled %s from the %s!",
-		tostring(info.playerName), what, tostring(info.crateName or "crate"))
+	if info.petRarity then
+		-- a Pet Crate pull: the band IS the pet's permanent rarity
+		what = "a " .. string.upper(tostring(info.petRarity)) .. " " .. PetSkins.prettyPet(info.pet)
+	elseif info.skin then
+		-- name only the legendary half (or both) of a skin+trait pull, so the banner says what earned it
+		local bits = {}
+		if not isLeg or PetSkins.tierOf(info.skin) == "Legendary" then
+			bits[#bits + 1] = PetSkins.displayName(info.skin, PetSkins.prettyPet(info.pet))
+		end
+		if info.trait and (not isLeg or PetTraits.tierOf(info.trait) == "Legendary") and not PetTraits.isNone(info.trait) then
+			bits[#bits + 1] = "the " .. PetTraits.displayName(info.trait) .. " Trait"
+		end
+		if #bits == 0 then bits[1] = PetSkins.displayName(info.skin, PetSkins.prettyPet(info.pet)) end
+		what = table.concat(bits, " + ")
+	elseif info.trait then
+		what = "the " .. PetTraits.displayName(info.trait) .. " Trait"
+	else
+		what = isLeg and "a LEGENDARY pull" or "a Gold pull"
+	end
+
+	local text
+	if isLeg then
+		text = string.format("\xF0\x9F\x94\xA5 %s unlocked %s from the %s!",
+			tostring(info.playerName), what, tostring(info.crateName or "crate"))
+	else
+		text = string.format("\xE2\xAD\x90 %s pulled %s from the %s!",
+			tostring(info.playerName), what, tostring(info.crateName or "crate"))
+	end
 	if _G.showHudBanner then
-		_G.showHudBanner(text, Color3.fromRGB(255, 214, 90), 6)
+		-- Legendary rides its own tier colour so the two kinds of news read apart at a glance
+		_G.showHudBanner(text, isLeg and PetSkins.tierColor("Legendary") or Color3.fromRGB(255, 214, 90), 6)
 	else
 		print("[SkinCrate] " .. text)
 	end
 	-- The puller already hears their own jackpot sound in the reveal; don't double it up for them.
-	if not mine then playSound(REVEAL_SOUND, 0.35, 0.8) end
+	if not mine then playSound(REVEAL_SOUND, isLeg and 0.3 or 0.35, 0.8) end
 end)
 
 -- ============================================================================================================
@@ -2704,16 +3246,11 @@ end)
 -- ============================================================================================================
 _G.MainMenuManager.register("SkinCrates", function() gui.Enabled = false end)
 
--- fromHub: opened by the Pet Hub's CRATES chip, so the BACK button has somewhere to return to.
-local openedFromHub = false
-
 setOpen = function(open, fromHub, wantTab)
 	if open then
-		openedFromHub = fromHub == true
 		-- The hub's nav sends which page it wants (CRATES or TOKENS). Without this the panel always
 		-- opened on whatever tab was last used, so pressing TOKENS could land you on Crates.
 		if wantTab and tabButtons[wantTab] then activeTab = wantTab end
-		backBtn.Visible = openedFromHub
 		_G.MainMenuManager.notifyOpened("SkinCrates")
 		gui.Enabled = true
 		refreshTabs()
@@ -2735,19 +3272,27 @@ end
 -- outside falls through to the HUD menu buttons instead of dismissing the menu.
 closeBtn.MouseButton1Click:Connect(function() playUIClick(); setOpen(false) end)
 
--- BACK: close this panel, then reopen the Pet Hub on its main pets view. PetFollow owns a "PetInvToggle"
--- BindableEvent in PlayerGui (the same one the MORE+ Pets row fires) -- and since the CRATES chip closed the hub
--- on the way in, firing the toggle now re-OPENS it. Guarded: with PetFollow absent this just closes the panel.
-backBtn.MouseButton1Click:Connect(function()
-	playUIClick()
-	setOpen(false)
-	local ev = PlayerGui:FindFirstChild("PetInvToggle")
-	if ev and ev:IsA("BindableEvent") then ev:Fire() end
-end)
-
 -- `wantTab` lets the Pet Hub nav open this panel straight onto CRATES or TOKENS. Omitted elsewhere, which
 -- keeps the plain toggle behaviour every other caller already relies on.
+--
+-- `fromHub` is now IGNORED -- it only ever drove the BACK button's visibility, and there is no BACK button.
+-- The parameter stays so the existing callers (the hub's nav, _G.openSkinTradeUp) need no edit, and so a
+-- future opened-from-X behaviour has the signal already plumbed through.
 _G.toggleSkinCrates = function(fromHub, wantTab) setOpen(not gui.Enabled, fromHub, wantTab) end
+
+-- ===== TRADE UP, ENTERED FROM THE PET HUB =====
+-- Trading up burns DUPLICATE SKINS YOU ALREADY OWN and hands back one of the next rarity. It opens no crate
+-- and costs no token, so its door belongs beside the pets whose duplicates it eats, not on the crate list.
+-- The PAGE is unchanged and still lives in this file -- only the entrance moved, the same way Wormhole moved
+-- into MORE+ without its panel changing.
+--
+-- activeTab is set directly rather than handed to setOpen as `wantTab`: that argument is validated against
+-- the four TOP-BAR tabs and "tradeup" is a sub-page, so it would be ignored. The second argument is the
+-- now-vestigial fromHub (see above): getting back to the hub is the PETS tab, here as on every other page.
+_G.openSkinTradeUp = function()
+	activeTab = "tradeup"
+	setOpen(true, true)
+end
 
 -- ===== SKIN METADATA, for the Pet Hub's Pet Skins page =====
 -- PetFollow draws that page but cannot require PetSkins: it sits at Luau's 200-locals-per-scope ceiling and
@@ -2769,6 +3314,23 @@ end
 -- How many skins exist in total, for the page's 'Skins Owned: X / N' readout. +1 for the Default look, which
 -- every pet owns from the start and which the page lists as a real card.
 _G.petSkinTotal = function() return #PetSkins.Order + 1 end
+
+-- Trait metadata for the same page (name, rarity, a ready-made "King  \xC2\xB7  Epic" label, and the accent
+-- colour). Published for the same 200-locals reason as petSkinMeta: PetFollow draws the row but cannot
+-- require PetTraits.
+_G.petTraitMeta = function(traitId)
+	if PetTraits.isNone(traitId) then
+		return { name = "None", label = "None", tier = nil, color = Color3.fromRGB(180, 200, 230) }
+	end
+	local tier = PetTraits.tierOf(traitId)
+	local name = PetTraits.displayName(traitId)
+	return {
+		name  = name,
+		tier  = tier,
+		label = name .. (tier and ("  \xC2\xB7  " .. tier) or ""),
+		color = PetTraits.color(traitId),
+	}
+end
 
 -- Chat shortcut so the panel can be opened without going through the Pet Hub or the MORE+ list. Type /crates.
 -- [REMOVE BEFORE LAUNCH] along with the other dev conveniences.
@@ -2809,4 +3371,4 @@ task.spawn(function()
 end)
 
 print("[SkinCrateClient] ready -- " .. #SkinCrates.CRATES .. " crates, " ..
-	#SkinCrates.TOKEN_PACKS .. " token packs. Open with _G.toggleSkinCrates()")
+	#SkinCrates.TOKEN_PACKS .. " ticket packs. Open with _G.toggleSkinCrates()")

@@ -107,8 +107,11 @@ local function playSound(id, volume)
 end
 
 local SND_TAP        = 101638558691673 -- tap/open attempt; button presses -- STANDARD UI click (NOT the food-eat sound)
-local SND_SHAKE      = 9116367700       -- meteor shake begins (vol 0.5)
-local SND_CRACK      = 199578212        -- cracks form (vol 0.6)
+-- SND_SHAKE/SND_CRACK are the retired opening animation's cues. They are kept ONLY because the preload
+-- list below still warms them and both ids currently fail to resolve in Studio -- leaving them named makes
+-- that failure legible in the log instead of anonymous. Nothing plays them any more.
+local SND_SHAKE      = 9116367700       -- (unused) meteor shake begins
+local SND_CRACK      = 199578212        -- (unused) cracks form
 local SND_BURST      = 4612378364       -- burst, non-Legendary (vol 0.85)
 local SND_BURST_LEG  = 4612378364       -- burst, Legendary, larger (vol 0.85)
 
@@ -545,108 +548,23 @@ local function freshReveal()
 	return closeReveal
 end
 
--- playMeteor(big, onDone): the OPENING animation — meteor shake -> cracks -> burst — then onDone().
--- `big` = larger Mythical-style burst + the heavier burst sound.
-local function playMeteor(big, onDone)
-	-- The meteor: a circular, cratered rock with a hot core that swells as it shakes harder and harder,
-	-- then splits with radial cracks before the burst. (Ported from the Space Realm MeteorBreak look.)
-	local meteor = Instance.new("Frame")
-	meteor.Name = "Meteor"
-	meteor.AnchorPoint = Vector2.new(0.5, 0.5)
-	meteor.Position = UDim2.fromScale(0.5, 0.5)
-	meteor.Size = UDim2.fromOffset(180, 180)
-	meteor.BackgroundColor3 = Color3.fromRGB(96, 86, 78)
-	meteor.BorderSizePixel = 0
-	meteor.ZIndex = 4
-	meteor.Parent = revealGui
-	local mc = Instance.new("UICorner"); mc.CornerRadius = UDim.new(1, 0); mc.Parent = meteor
-	local ms = Instance.new("UIStroke"); ms.Color = Color3.fromRGB(255, 170, 60); ms.Thickness = 4; ms.Transparency = 0.1; ms.Parent = meteor
-
-	-- a few craters for texture
-	for _ = 1, 5 do
-		local crater = Instance.new("Frame")
-		crater.AnchorPoint = Vector2.new(0.5, 0.5)
-		crater.Position = UDim2.new(math.random(25, 75) / 100, 0, math.random(25, 75) / 100, 0)
-		crater.Size = UDim2.fromOffset(math.random(16, 34), math.random(16, 34))
-		crater.BackgroundColor3 = Color3.fromRGB(70, 62, 56)
-		crater.BorderSizePixel = 0
-		crater.ZIndex = 5
-		crater.Parent = meteor
-		local cc = Instance.new("UICorner"); cc.CornerRadius = UDim.new(1, 0); cc.Parent = crater
-	end
-
-	-- hot inner glow (the crack-to-come), swells during the shake
-	local innerGlow = Instance.new("Frame")
-	innerGlow.AnchorPoint = Vector2.new(0.5, 0.5)
-	innerGlow.Position = UDim2.fromScale(0.5, 0.5)
-	innerGlow.Size = UDim2.fromOffset(10, 10)
-	innerGlow.BackgroundColor3 = Color3.fromRGB(255, 200, 120)
-	innerGlow.BackgroundTransparency = 0.2
-	innerGlow.BorderSizePixel = 0
-	innerGlow.ZIndex = 6
-	innerGlow.Parent = meteor
-	local ig = Instance.new("UICorner"); ig.CornerRadius = UDim.new(1, 0); ig.Parent = innerGlow
-
-	-- title hint above the meteor
-	local titleHint = Instance.new("TextLabel")
-	titleHint.BackgroundTransparency = 1
-	titleHint.Text = "MYSTERY CRATE"
-	titleHint.Font = Enum.Font.FredokaOne
-	titleHint.TextColor3 = Color3.fromRGB(255, 214, 92)
-	titleHint.TextScaled = true
-	titleHint.TextXAlignment = Enum.TextXAlignment.Center
-	titleHint.Size = UDim2.fromOffset(460, 40)
-	titleHint.Position = UDim2.fromScale(0.5, 0.24)
-	titleHint.AnchorPoint = Vector2.new(0.5, 0.5)
-	titleHint.ZIndex = 6
-	titleHint.Parent = revealGui
-	local ts = Instance.new("UIStroke"); ts.Color = Color3.new(0, 0, 0); ts.Thickness = 2; ts.Parent = titleHint
-	local tsc = Instance.new("UITextSizeConstraint"); tsc.MaxTextSize = 34; tsc.Parent = titleHint
-
-	task.spawn(function()
-		-- 1) shake: escalating jitter + the inner glow swelling
-		playSound(SND_SHAKE, 0.5)
-		local base = meteor.Position
-		for i = 1, 16 do
-			local mag = math.floor(2 + i * 0.9)
-			meteor.Position = base + UDim2.fromOffset(math.random(-mag, mag), math.random(-mag, mag))
-			innerGlow.Size = UDim2.fromOffset(10 + i * 4, 10 + i * 4)
-			innerGlow.BackgroundTransparency = math.max(0, 0.2 - i * 0.01)
-			task.wait(0.045)
-		end
-		meteor.Position = base
-
-		-- 2) cracks form, radiating from the centre
-		playSound(SND_CRACK, 0.6)
-		for i = 1, 6 do
-			local crack = Instance.new("Frame")
-			crack.AnchorPoint = Vector2.new(0.5, 0.5)
-			crack.Position = UDim2.fromScale(0.5, 0.5)
-			crack.Size = UDim2.fromOffset(4, 0)
-			crack.BackgroundColor3 = Color3.fromRGB(255, 220, 140)
-			crack.BorderSizePixel = 0
-			crack.Rotation = (360 / 6) * i + math.random(-15, 15)
-			crack.ZIndex = 6
-			crack.Parent = meteor
-			TweenService:Create(crack, TweenInfo.new(0.18, Enum.EasingStyle.Quad), { Size = UDim2.fromOffset(4, 150) }):Play()
-			task.wait(0.05)
-		end
-		task.wait(0.12)
-
-		-- 3) burst — fire the sound ~0.3s BEFORE the visual so its load/start latency lands with the
-		-- flash instead of trailing it (stops the boom from feeling laggy).
-		if big then playSound(SND_BURST_LEG, 0.85) else playSound(SND_BURST, 0.85) end
-		task.wait(0.3)
-		playBurst(big)
-		meteor:Destroy()
-		TweenService:Create(titleHint, TweenInfo.new(0.25), { TextTransparency = 1 }):Play()
-		TweenService:Create(ts, TweenInfo.new(0.25), { Transparency = 1 }):Play()
-		game:GetService("Debris"):AddItem(titleHint, 0.3)
-
-		-- 4) hand off to whatever shows next (picker / claim / result card)
-		task.wait(0.25)
+-- playMeteor(big, onDone): NO LONGER AN ANIMATION. The crate now opens STRAIGHT into the reveal.
+--
+-- What used to live here was a ~100-line set piece: a cratered rock that shook harder and harder, split
+-- along radial cracks, and burst. It was a good effect and it was in the wrong place -- it ran BEFORE the
+-- thing the player actually wants, every single time, and the crate reel that follows is itself a reveal
+-- animation. Two reveals stacked back to back makes the first one a loading screen with a rock on it.
+--
+-- Kept as a function rather than deleted at the call sites on purpose: both openers (the daily tap and the
+-- dev /crate result path) hand it an `onDone` and expect it to be called exactly once, so this is the one
+-- place that behaviour is defined. `big` is now unused -- the Mythical burst it selected has no animation
+-- left to scale, and the rarity still reads loud and clear on the card/reel that follows.
+--
+-- The old animation is in git history if it is ever wanted somewhere it does not delay a reward.
+local function playMeteor(_big, onDone)
+	if onDone then
 		onDone()
-	end)
+	end
 end
 
 -- showResultCard(result, closeReveal): ensure the pet's name is known, then build the result card
@@ -671,14 +589,14 @@ end
 ----------------------------------------------------------------------------------------
 
 -- claimAndReveal(petId, closeReveal): claim the chosen pet, then morph the already-open reveal into
--- the result card. The meteor/burst has already played; this only resolves what the card shows.
+-- the result card. This is the whole opening now; it resolves what the card shows.
 local function claimAndReveal(petId, closeReveal)
 	task.spawn(function()
 		local ok, result = pcall(function() return ClaimCrate:InvokeServer(petId) end)
 		if ok and type(result) == "table" then
 			-- THE DAILY IS A FREE SKIN CRATE. The server already opened it; all that is left is to show it,
 			-- and the crate shop's reel/result card is a far better payoff than this file's "+N levels" card
-			-- would be for a skin. So the meteor closes here and SkinCrateClient takes the screen.
+			-- would be for a skin. So this reveal closes here and SkinCrateClient takes the screen.
 			if result.ok and result.kind == "skincrate" and type(_G.skinCrateShowReveal) == "function" then
 				closeReveal()
 				local shown = select(2, pcall(_G.skinCrateShowReveal, result.crateId, result.crate))
@@ -1196,7 +1114,7 @@ local function showPicker(pets, roll, closeReveal, onPick)
 			'<font color="#7ed957"><b>%s</b></font> roll — pick a pet to grant <font color="#7ed957"><b>+%d level%s</b></font>.',
 			string.upper(rarity), levelsAdded, (levelsAdded == 1) and "" or "s")
 	else
-		subText = "Spend a token to grant the next level instantly."
+		subText = "Spend a ticket to grant the next level instantly."
 	end
 	mk("TextLabel", header, {
 		BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
@@ -1237,7 +1155,7 @@ local function showPicker(pets, roll, closeReveal, onPick)
 			confirmGrad.Color = ColorSequence.new(Color3.fromRGB(150, 170, 210), Color3.fromRGB(96, 124, 182)) -- dim
 			confirmBtn.AutoButtonColor = false
 			confirmLabel.TextColor3 = C.muted
-			confirmLabel.Text = (selected and tokens <= 0) and "Out of Tokens" or "Level Up"
+			confirmLabel.Text = (selected and tokens <= 0) and "Out of Tickets" or "Level Up"
 			costChip.Visible = false
 		end
 	end
@@ -1491,7 +1409,8 @@ attemptOpen = function()
 		-- Receive Levels" refusal (and the pet picker behind it) would now be turning people away from a
 		-- reward they can use. Both only survive as the fallback path, if the crate grant itself fails.
 		--
-		-- SEQUENCE: meteor shake -> cracks -> burst, then claim, then the crate shop's own reveal reel.
+		-- SEQUENCE: claim, then the crate shop's own reveal reel. No opening animation in front of it -- the
+		-- reel IS the reveal, and anything played before it is just a delay between the tap and the reward.
 		local closeReveal = freshReveal()
 		playMeteor(false, function()
 			claimAndReveal(nil, closeReveal)
@@ -1501,9 +1420,8 @@ end
 
 print("[CrateClient] fully loaded — Daily Rewards is now live")
 
--- Dev /crate path: the server already decided the result. Play the SAME full sequence (meteor shake
--- -> cracks -> burst -> result card); no picker (the server already chose the pet), and the burst is
--- rarity-aware here since we know the result up front.
+-- Dev /crate path: the server already decided the result. Same flow as a real open -- straight to the
+-- result card, no picker (the server already chose the pet).
 CrateResult.OnClientEvent:Connect(function(result)
 	if type(result) ~= "table" then return end
 	if result.ok then

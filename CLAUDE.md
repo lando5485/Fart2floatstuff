@@ -23,6 +23,10 @@ Every join starts as a brand-new player and **nothing is written to the DataStor
 (fast iteration on the opening minutes) but it is the single most destructive thing that can ship: live,
 every player loses all progress the moment they leave, unrecoverably. **Set it to `false` before publishing.**
 
+It is mirrored to `_G.FRESH_PLAYER_TESTING` for the rest of the server. **Any feature with its own
+DataStore must read that flag**, or it restores something a "brand-new" test player never earned and the
+gate it guards looks broken. `SecretTreeDoor`'s Gnome Home key did exactly that until 2026-09-06.
+
 `FRESH_PLAYER_TEST`, `SPAWN_AT_PIZZA_PALMS_TEST` and `FRESH_PLAYER_USERID` in the same file are **dead
 code** — declared, never read. Their comments claim to protect one account's save data. They do not, and
 never did. Flipping them changes nothing.
@@ -200,13 +204,36 @@ are low right after the gut) — the values were copied as-is and not retuned ar
 - Events and the 2x gamepass multiply speed without multiplying drain, so they extend the climb; events are
   bounded (×1.3 for 7s) but the 2x pass is a ×2 climb for its whole duration and can leak a gate.
 
+## Pet abilities (`src/shared/PetAbilities.luau`)
+Pets stopped being cosmetic-only on 2026-09-06. **`PetAbilities.DEFS` is the only place a pet bonus is
+defined**; `PetAbilityService.server.luau` resolves it against who is equipped and publishes each lever as a
+`PetAbil_<lever>` **player attribute** (server-written, client-read) plus `_G.petAbility(player, lever)` for
+server code. Adding a pet's ability is a row in DEFS and nothing else. Pets 7-14 are live; **1-6 are absent on
+purpose** -- a species with no row contributes nothing.
+
+**⚠ THE RULE: no ability may touch flight speed, climb height, gas drain, coast, or gas-bubble power.** Those
+lift the climb without lifting drain and eat the `climb[k] + coast < next tier's gaps` margin, which is only
+~1.9% of a climb. With up to 5 equip slots, duplicate stacking (100/60/38/27.5/20%) and enchants all
+multiplying, one speed lever would collapse the ladder, not just leak a rung. Every lever is therefore outside
+the flight maths: coins, prices, reach, luck, tokens, XP, defence. Deltas are **summed then finalised once** --
+never compounded, or five "+8%" pets would quietly become +47%.
+
+Wired at: `PlayerStats` CoinEvent (coinAll, after the budget check so it can't buy anti-cheat headroom),
+`SkinCrateService` luckFor (crateLuck), `AFKTokenFarm` (afkRate, on credited tokens only -- never the
+`paidUpTo` clock), `PetSystem.awardXP` (petXp), `CoreClient` descent pay (coinFall) and ring pickup
+(bubbleGolden). Tricks + Pollen Sweep's extra **coin** rings live in `PetTricks.client.luau`.
+`tools/ladder.py` reads only the `foods`/`stomachTiers` tables, so none of this moves the harness.
+
 ## Repo layout
 Three separate Roblox places, three separate repos:
 - **This repo** — the main Food Realm (14 islands).
 - `CandyRealm/` — subfolder here, its own `default.project.json`. **Runs this same food progression model
   since 2026-09-01** (slots 1–13 of the tower, the 7 guts, food rows 1–13, coins per stud) on its own
   shared modules; `CandyRealm/tools/ladder.py` is its harness and `CandyRealm/CANDY_ISLAND_SPACING_AND_ECONOMY.md`
-  the spec. Guts there are bought with coins and gated by island reached; quests gate the food stands only.
+  the spec. Guts there are bought with coins and gated by island reached. **Quests gate NOTHING since
+  2026-09-03** -- `STANDS_ALWAYS_OPEN` at the top of `src/client/Shop_AllInOne.client.lua` opens every
+  food stand on arrival, so a kid can climb the whole tower without doing a single quest; quests are
+  optional and pay coins + crate tokens. The `UnlockedSlot` quest gate is kept working behind that flag.
 - `../farttofloatdinosaurealm/` and `../SpaceRealmStuff/` — separate checkouts.
 
 **⚠ `CoreClient` sits at 199/200 locals and CandyRealm's `PetFollow` + `AncientTreeQuest` at 200/200.**

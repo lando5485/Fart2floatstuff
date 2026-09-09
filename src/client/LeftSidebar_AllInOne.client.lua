@@ -172,7 +172,7 @@ end
 do
 	local dot = Instance.new("Frame")
 	dot.Name = "MoreReadyDot"; dot.Size = UDim2.fromOffset(18,18); dot.AnchorPoint = Vector2.new(1,0)
-	dot.Position = UDim2.new(1,-2,0,-2); dot.BackgroundColor3 = Color3.fromRGB(225,50,50); dot.ZIndex = 8; dot.Visible = false; dot.Parent = stomachSideFrame
+	dot.Position = UDim2.new(1,-2,0,-2); dot.BackgroundColor3 = Color3.fromRGB(255,60,60); dot.ZIndex = 8; dot.Visible = false; dot.Parent = stomachSideFrame
 	local dc = Instance.new("UICorner"); dc.CornerRadius = UDim.new(1,0); dc.Parent = dot
 	local bang = Instance.new("TextLabel"); bang.BackgroundTransparency=1; bang.Size=UDim2.fromScale(1,1)
 	bang.Font=Enum.Font.GothamBlack; bang.Text="!"; bang.TextSize=13; bang.TextColor3=Color3.new(1,1,1); bang.ZIndex=9; bang.Parent=dot
@@ -184,8 +184,12 @@ do
 		while true do
 			local ready   = (_G.crateIsClaimable and _G.crateIsClaimable()) == true
 			local pending = (_G.dailyTasksPending and _G.dailyTasksPending()) == true
+			-- The DOT marks either (something in there wants you). The BUTTON moves only for what pressing
+			-- it can actually hand over: the REWARDS hub's own claimables across DAILY / TIMED / COMMUNITY.
+			-- Not the crate (not on that page any more) and not unfinished daily tasks (true nearly always).
+			-- Same rule as CoreClient's MORE+.
 			dot.Visible = ready or pending
-			if ready or pending then startWiggle() else stopWiggle() end
+			if (_G.rewardsPending and _G.rewardsPending()) == true then startWiggle() else stopWiggle() end
 			task.wait(1)
 		end
 	end)

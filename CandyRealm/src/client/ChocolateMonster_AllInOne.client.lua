@@ -90,9 +90,17 @@ local function pollFor(fn, t)
 	repeat local r = fn(); if r then return r end; task.wait(0.5) until os.clock() - t0 > (t or 45)
 	return fn()
 end
+-- ⚠ CHOCOLATE IS SHINY, and this monster was not: mk() set no Material at all, so every part
+-- came out the studio default Plastic -- flat, chalky, and the reason a creature made of
+-- chocolate read as a brown toy. Tempered chocolate has a hard gloss, so the default here is
+-- SmoothPlastic with a little Reflectance. Anything that passes its own Material or
+-- Reflectance still wins (props are applied after), which keeps the neon eyes and the matte
+-- bits exactly as they were.
 local function mk(props)
 	local p = Instance.new("Part")
 	p.Anchored = true; p.CanCollide = false; p.CanQuery = false; p.CastShadow = false
+	p.Material = Enum.Material.SmoothPlastic
+	p.Reflectance = 0.08
 	p.TopSurface = Enum.SurfaceType.Smooth; p.BottomSurface = Enum.SurfaceType.Smooth
 	for k, v in pairs(props) do p[k] = v end
 	return p
@@ -243,6 +251,13 @@ local function buildMonster(at)
 	eyeL = attach("EyeL", Vector3.new(1.4, 1.4, 0.7), CFrame.new(-1.4, 5, -2.5), Color3.fromRGB(255, 232, 120), Enum.PartType.Ball)
 	eyeR = attach("EyeR", Vector3.new(1.4, 1.4, 0.7), CFrame.new(1.4, 5, -2.5), Color3.fromRGB(255, 232, 120), Enum.PartType.Ball)
 	eyeL.Material = Enum.Material.Neon; eyeR.Material = Enum.Material.Neon
+	-- a light in each eye. Neon alone glows but lights NOTHING -- so at dusk, or in the shade of
+	-- the cookie, the one thing on the island that should be unmissable was a flat yellow dot.
+	for _, e in ipairs({ eyeL, eyeR }) do
+		local lt = Instance.new("PointLight")
+		lt.Color = Color3.fromRGB(255, 214, 90); lt.Brightness = 1.6
+		lt.Range = 16; lt.Shadows = false; lt.Parent = e
+	end
 	attach("PupL", Vector3.new(0.55, 0.6, 0.4), CFrame.new(-1.4, 4.9, -2.95), Color3.fromRGB(20, 10, 6), Enum.PartType.Ball)
 	attach("PupR", Vector3.new(0.55, 0.6, 0.4), CFrame.new(1.4, 4.9, -2.95), Color3.fromRGB(20, 10, 6), Enum.PartType.Ball)
 
@@ -300,6 +315,23 @@ local function buildMonster(at)
 			e.part.Reflectance = 0.12
 		end
 	end
+
+	-- THE SURFACE MOVES. Chocolate this warm should be running, and a static body with drip
+	-- particles in front of it reads as a statue standing in rain. A slow, low-amplitude
+	-- Reflectance pulse across the body makes the gloss travel over it -- cheap, no parts, and
+	-- it is the difference between "brown model" and "something molten".
+	task.spawn(function()
+		while m.Parent do
+			local t = os.clock()
+			for i, e in ipairs(monParts) do
+				local p = e.part
+				if p.Parent and p.Material ~= Enum.Material.Neon then
+					p.Reflectance = 0.06 + math.sin(t * 1.1 + i * 0.6) * 0.05
+				end
+			end
+			task.wait(0.08)
+		end
+	end)
 
 	-- melty chocolate drips off the body (particles)
 	local att = Instance.new("Attachment"); att.Position = Vector3.new(0, -4, 0); att.Parent = body
@@ -778,6 +810,22 @@ local function catchPlayer(hrp)
 		if root.Parent then root.CFrame = CFrame.new(mouthPos()) end
 		suckPE.Enabled = false
 		for _, b in ipairs(vortex) do b:Destroy() end
+		-- THE BITE LANDS: one fast FOV pinch as the jaws close (restored to whatever it was),
+		-- plus the big haptic. This is the single frame the whole sequence pivots on, and it
+		-- used to pass with no punctuation at all.
+		if _G.hapticPulse then pcall(_G.hapticPulse, "hatch") end
+		task.spawn(function()
+			local cam = Workspace.CurrentCamera
+			if not cam then return end
+			local f0 = cam.FieldOfView
+			TweenService:Create(cam, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+				{ FieldOfView = f0 - 16 }):Play()
+			task.delay(0.15, function()
+				if Workspace.CurrentCamera == cam then
+					TweenService:Create(cam, TweenInfo.new(0.35), { FieldOfView = f0 }):Play()
+				end
+			end)
+		end)
 		if _G.NotifyCenter then
 			pcall(function() _G.NotifyCenter.push({ text = "\xF0\x9F\x8D\xAB GULP! Swallowed by the Chocolate Monster!", color = Color3.fromRGB(120, 40, 20) }) end)
 		end
@@ -838,7 +886,8 @@ local function catchPlayer(hrp)
 		-- MASH E to escape (auto-frees after a few seconds so nobody gets stuck)
 		local struggle, NEED, tStart = 0, 6, os.clock()
 		local bodyBaseSize = monBody and monBody.Size or Vector3.new(9, 10, 9)
-		local function jiggle()   -- each tap pops the belly + fills the bar
+		local function jiggle()   -- each tap pops the belly + fills the bar (+ a tick you can feel)
+			if _G.hapticPulse then pcall(_G.hapticPulse, "tick") end
 			if monBody and monBody.Parent then
 				TweenService:Create(monBody, TweenInfo.new(0.08, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = bodyBaseSize * 1.14 }):Play()
 				task.delay(0.1, function() if monBody and monBody.Parent then TweenService:Create(monBody, TweenInfo.new(0.14), { Size = bodyBaseSize }):Play() end end)
@@ -846,7 +895,10 @@ local function catchPlayer(hrp)
 		end
 		local conn = UserInputService.InputBegan:Connect(function(input, gp)
 			if gp or not inBelly then return end
-			if input.KeyCode == Enum.KeyCode.E or input.KeyCode == Enum.KeyCode.Space then
+			-- ...and on a phone there is no E to mash: any screen tap is a wriggle too (taps on
+			-- GUI are gameProcessed and already filtered out above)
+			if input.KeyCode == Enum.KeyCode.E or input.KeyCode == Enum.KeyCode.Space
+				or input.UserInputType == Enum.UserInputType.Touch then
 				struggle += 1; jiggle()
 			end
 		end)
@@ -868,11 +920,34 @@ local function catchPlayer(hrp)
 		if suckAtt then suckAtt:Destroy() end
 		if maw and maw.Parent then TweenService:Create(maw, TweenInfo.new(0.25), { Size = mawBase }):Play() end
 		local land = spitLandingSpot()
-		root.Anchored = wasAnchored
-		hum.PlatformStand = false
-		if player.Character then player.Character:PivotTo(CFrame.new(land)) end
 		coatInChocolate(4)
-		setEatenHidden(false)   -- pop back into view, spat across the island
+		setEatenHidden(false)   -- visible again the moment you leave the mouth: everyone SEES the flight
+		-- ===== THE SPIT IS A FLIGHT, NOT A TELEPORT =====
+		-- You used to blink from the mouth straight to the landing spot -- the monster reared,
+		-- belched, and you were somehow already standing 60 studs away. Now you actually FLY:
+		-- a chocolate-coated tumble along a real arc, ~0.8s of air, and the dazed stagger below
+		-- starts where you thump down. The root stays anchored for the flight (physics cannot
+		-- fight a CFrame arc), and control is handed back exactly at touchdown.
+		task.spawn(function()
+			if _G.hapticPulse then pcall(_G.hapticPulse, "launch") end
+			local from = mouthPos() + Vector3.new(0, 2, 0)
+			local dist = (Vector3.new(land.X, 0, land.Z) - Vector3.new(from.X, 0, from.Z)).Magnitude
+			local arcH = math.clamp(dist * 0.35, 8, 26)
+			local dur, t0 = math.clamp(dist / 55, 0.55, 1.0), os.clock()
+			while root.Parent do
+				local a = (os.clock() - t0) / dur
+				if a >= 1 then break end
+				local p = from:Lerp(land, a) + Vector3.new(0, math.sin(a * math.pi) * arcH, 0)
+				root.CFrame = CFrame.new(p) * CFrame.Angles(a * math.pi * 4, a * 2.2, 0)
+				RunService.RenderStepped:Wait()
+			end
+			if root.Parent then root.CFrame = CFrame.new(land + Vector3.new(0, 3, 0)) end
+			root.Anchored = wasAnchored
+			hum.PlatformStand = false
+			-- the touchdown is a beat of its own: dust ring + a thud you can feel
+			if stompRing then pcall(stompRing, land) end
+			if _G.hapticPulse then pcall(_G.hapticPulse, "bump") end
+		end)
 
 		-- ESCAPE BURST: it heaves and blasts chocolate everywhere as it spits you out
 		if monBody and monBody.Parent then
@@ -1055,6 +1130,42 @@ RunService.RenderStepped:Connect(function(dt)
 			state = "sleep"
 			print("[ChocMonster] the shared monster's host went quiet -- ours is local again")
 		end
+		return
+	end
+
+	-- ===== BAIT BEATS BLOOD (island 3's "Feed the Monster") =====
+	-- CookieRepairQuest publishes _G.chocoLure as a Vector3 the moment a bait cookie hits the
+	-- ground, and _G.chocoLureEaten as the callback for when this thing reaches it. While bait
+	-- is down he wants THAT more than he wants anybody: he walks straight to it, ignores every
+	-- player on the way, and eats.
+	--
+	-- Checked BEFORE sleep and hunt, and it drops any lock he had -- the whole quest is built
+	-- on the promise that a placed cookie pulls him off you, so a chase must never outrank it.
+	-- Stun still wins (handled above): a shoved monster is not going anywhere for four seconds.
+	-- Nothing here touches `state`, so when the bait is gone he falls back into whatever he was
+	-- doing with no cleanup and no new state to unwind.
+	if _G.chocoLure then
+		local bait = _G.chocoLure
+		targetPlayer = nil                       -- he has forgotten about you entirely
+		local to = (bait - here) * Vector3.new(1, 0, 1)
+		if to.Magnitude <= 9 then
+			-- ARRIVED: eat it. The quest owns what that means, so tell it and clear the bait --
+			-- cleared FIRST so a slow callback cannot be re-entered by the next frame's check.
+			_G.chocoLure = nil
+			local cb = _G.chocoLureEaten
+			poseSwing = 0
+			if cb then pcall(cb, bait) end
+		else
+			poseSwing = 0.55                     -- a purposeful waddle: keener than a mooch,
+			                                     -- nowhere near the hunt gait
+			local dir = to.Unit
+			local np = here + dir * (WANDER_SPEED * 1.5) * dt
+			local y = groundY(np) + 8.5 + math.sin(now * 3.4) * 0.3
+			monBody.CFrame = CFrame.lookAt(Vector3.new(np.X, y, np.Z),
+				Vector3.new(bait.X, y, bait.Z)) * CFrame.Angles(0, 0, math.sin(now * 7) * 0.05)
+			dropFootprint(np)
+		end
+		poseMonster()
 		return
 	end
 

@@ -91,7 +91,7 @@ local donorStore = DataStoreService:GetOrderedDataStore("TopDonors_v1")
 local buyerStore = DataStoreService:GetOrderedDataStore("TopBuyers_v1")
 
 local topBuyers  = {}   -- [{name=, count=}] refreshed every BOARD_REFRESH
-local topDonors  = {}   -- [{name=, robux=}] refreshed every BOARD_REFRESH
+local topDonors  = {}   -- [{userId=, name=, robux=}] refreshed every BOARD_REFRESH
 local nameCache  = {}   -- [userId] = username (GetNameFromUserIdAsync is a web call; don't repeat it)
 
 -- =====================  DATA  =====================
@@ -127,7 +127,10 @@ local function refreshTopDonors()
 	end
 	local fresh = {}
 	for _, entry in ipairs(pages:GetCurrentPage()) do
-		fresh[#fresh + 1] = { name = userName(tonumber(entry.key)), robux = entry.value }
+		-- The userId is carried, not just the name: the board draws each donor's AVATAR, and rbxthumb needs
+		-- the id. entry.key is the string form of the UserId -- it is the only place it exists on this path.
+		local uid = tonumber(entry.key)
+		fresh[#fresh + 1] = { userId = uid, name = userName(uid), robux = entry.value }
 	end
 	topDonors = fresh
 end
@@ -199,6 +202,13 @@ end
 -- TILT: rotating about the blimp's forward (Z) axis by a negative angle swings that +X face downward, so
 -- the screen leans out over the island like a stadium scoreboard instead of standing vertical.
 local BOARD_TILT = math.rad(-28)
+-- THE STUDIO SLIDE IS A PICTURE. Page 1 used to be a text card (FART TO FLOAT / players online / event
+-- live) under an "MLR STUDIOS" header; it is now this uploaded image, full-bleed, with the header and rows
+-- hidden while it is up. Pages 2 and 3 are untouched.
+--
+-- It must be an IMAGE asset id (Studio's Asset Manager -> Images), not a Decal id -- a decal id renders as
+-- a blank board with no error. If the slide ever comes up empty, check that first, then check moderation.
+local BOARD_PICTURE_ID = "rbxassetid://137427044738819"
 local function board(model, name, offsetCF, title, accent)
 	-- everything is built in a TILTED frame, so the bezel, arms and panel all lean together
 	local cf = offsetCF * CFrame.Angles(0, 0, BOARD_TILT)
@@ -281,11 +291,45 @@ local function board(model, name, offsetCF, title, accent)
 	layout.SortOrder = Enum.SortOrder.LayoutOrder
 	layout.Parent    = rows
 
-	return rows, accent, htxt -- htxt so a rotating board can retitle itself per page
+	-- ===== THE PICTURE LAYER =====
+	-- A full-bleed ImageLabel sitting OVER the header and the rows, hidden by default. The studio page
+	-- draws it instead of text (see renderStudio), so page 1 is the artwork edge to edge and pages 2-3 are
+	-- the leaderboard exactly as they were.
+	--
+	-- ScaleType = Fit, not Stretch, ON PURPOSE. The board is 2.154:1 (56 x 26 studs, 1120 x 520 canvas) and
+	-- an image that is even slightly off that would be silently squashed by Stretch -- which on a logo is
+	-- the kind of wrong you stop noticing after ten minutes and ship. Fit letterboxes instead, against the
+	-- board's own dark background, so a mismatch reads as a deliberate border rather than as bad art.
+	local pic = Instance.new("ImageLabel")
+	pic.Name                   = "Picture"
+	pic.Size                   = UDim2.fromScale(1, 1)
+	pic.BackgroundColor3       = Color3.fromRGB(17, 19, 26) -- the letterbox bars, same ink as the board
+	pic.BorderSizePixel        = 0
+	pic.ScaleType              = Enum.ScaleType.Fit
+	pic.Image                  = BOARD_PICTURE_ID
+	pic.Visible                = false
+	pic.ZIndex                 = 5                          -- over the header bar and the rows
+	pic.Parent                 = bg
+	local pcorner = Instance.new("UICorner"); pcorner.CornerRadius = UDim.new(0, 18); pcorner.Parent = pic
+
+	return rows, accent, htxt, pic -- htxt so a rotating board can retitle itself per page; pic = the artwork page
 end
 
--- One row on a board: an optional coloured rank badge, a name, and a right-aligned value.
-local function addRow(rows, order, badgeText, badgeColor, leftText, rightText)
+-- One row on a board: an optional coloured rank badge, an optional AVATAR HEADSHOT, a name, and a
+-- right-aligned value.
+--
+-- ===== WHY THE FACE IS BIG =====
+-- This is a sign on the side of an airship doing laps two hundred studs up. A player reads it from the
+-- ground, at a glance, while flying -- which is why the rows are 74px and the name is 48pt. A face has to
+-- obey the same rule: at row height it is unmistakable, at "list avatar" size it is a smudge. So the
+-- portrait fills the row (64 of 74px), circular, ringed in the rank's own medal colour so first place still
+-- reads as first place from a distance where you cannot make out the number.
+--
+-- rbxthumb:// rather than GetUserThumbnailAsync -- the async call yields and throws on a deleted account, and
+-- this runs on the SERVER inside a board refresh. The content URL is a plain string Roblox resolves per
+-- client; a dead id renders blank. 150x150 because the sign is huge: asking for 48px art and scaling it up
+-- is how you get a blurry face on a billboard.
+local function addRow(rows, order, badgeText, badgeColor, leftText, rightText, faceUid, faceRing)
 	local row = Instance.new("Frame")
 	row.LayoutOrder            = order
 	row.Size                   = UDim2.new(1, 0, 0, 74) -- taller rows: fewer, bigger lines beat more, smaller ones
@@ -309,6 +353,24 @@ local function addRow(rows, order, badgeText, badgeColor, leftText, rightText)
 		badge.Parent           = row
 		local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(1, 0); bc.Parent = badge
 		x = x + 68
+	end
+
+	if faceUid then
+		local FACE = 64
+		local face = Instance.new("ImageLabel")
+		face.Name             = "Face"
+		face.Position         = UDim2.new(0, x, 0.5, -FACE / 2)
+		face.Size             = UDim2.fromOffset(FACE, FACE)
+		face.BackgroundColor3 = Color3.fromRGB(18, 20, 28)   -- shows while the thumbnail loads
+		face.BorderSizePixel  = 0
+		face.Image            = ("rbxthumb://type=AvatarHeadShot&id=%d&w=150&h=150"):format(faceUid)
+		face.Parent           = row
+		Instance.new("UICorner", face).CornerRadius = UDim.new(1, 0)
+		local fr = Instance.new("UIStroke")
+		fr.Color     = faceRing or Color3.fromRGB(238, 241, 248)
+		fr.Thickness = 3
+		fr.Parent    = face
+		x = x + FACE + 14
 	end
 
 	local nm = Instance.new("TextLabel")
@@ -570,7 +632,7 @@ beaconLight.Parent     = beacon
 -- behind the near one from the ground. This single board hangs off the STARBOARD flank, which is the side
 -- that faces the island (see the note on board()), pushed out to 13 so the 26-stud panel clears the hull's
 -- widest frame once tilted, and dropped slightly so the tilt aims it down the outside of the envelope.
-local boardRows, _, boardTitle = board(blimp, "MainBoard", CFrame.new(13, -2, -4), "MLR STUDIOS",
+local boardRows, _, boardTitle, boardPic = board(blimp, "MainBoard", CFrame.new(13, -2, -4), "MLR STUDIOS",
 	Color3.fromRGB(120, 200, 255))
 
 -- An explicit invisible root, rather than borrowing a hull slice -- the slice list is generated, so which
@@ -677,43 +739,193 @@ local function shortNum(n)
 	return tostring(n)
 end
 
+-- FORWARD DECLARATION. The rare-pull writer below repaints the sign the moment a Gold lands, and the
+-- pager assigns this further down -- so it has to be ONE local declared before either of them, not a
+-- second `local renderBoard` in the page section shadowing this one.
+local renderBoard
+-- Same reason: the rare-pull writer nudges the OTHER servers' blimps, and the broadcaster is set up much
+-- further down (it needs the refreshers AND renderBoard). One local, declared once, assigned later.
+local blimpBroadcast
+
+-- =====================  RAREST PULLS OF THE DAY (cross-server, resets midnight Eastern)  ===============
+-- Every server writes its rare crate pulls into ONE datastore key per day, and every server reads the same
+-- key back. So the board is not "what happened on this server" -- it is the rarest thing anybody in the
+-- whole game pulled today, which is the only version of this worth putting on a blimp.
+--
+-- ===== WHY A PLAIN DATASTORE AND NOT AN OrderedDataStore =====
+-- The donor and buyer boards are OrderedDataStores because they rank ONE integer per player. This board
+-- has to carry a name, a prize and a rarity together, and an OrderedDataStore can only hold a number. So
+-- it is one JSON list under one key, merged with UpdateAsync -- which is atomic across servers, so two
+-- servers landing a Gold in the same second cannot overwrite each other's entry.
+--
+-- ===== THE DAY KEY IS THE RESET =====
+-- The key is "RarestPulls_<YYYY-MM-DD in Eastern>". At midnight Eastern the key changes, the read comes
+-- back empty, and the board is clean -- no cron, no wipe, no "clear the store" job that could fail. The
+-- previous day's key just stops being read (and expires with the DataStore's own retention).
+local pullStore = DataStoreService:GetDataStore("RarestPulls_v1")
+
+-- Rank order, LOW to HIGH. This mirrors SkinCrates.RARITY_ORDER (src/shared/SkinCrates.luau) -- it is
+-- duplicated rather than required because this is a display board and must not be able to break a crate
+-- open if the shared module moves. If a tier is ever added there, add it here; an unknown rarity is
+-- ignored rather than guessed at.
+local RARITY_RANK = { Common = 1, Uncommon = 2, Rare = 3, Epic = 4, Legendary = 5, Gold = 6 }
+local RARITY_ABBR = { [3] = "R", [4] = "E", [5] = "L", [6] = "G" }
+local RARITY_TINT = {
+	[3] = Color3.fromRGB( 90, 170, 255),  -- Rare      blue
+	[4] = Color3.fromRGB(180, 120, 255),  -- Epic      purple
+	[5] = Color3.fromRGB(255, 170,  60),  -- Legendary orange
+	[6] = Color3.fromRGB(255, 215,  80),  -- Gold      gold
+}
+local RARE_MIN_RANK = 3   -- Rare and up. Common/Uncommon are most of every crate; they are not news.
+local RARE_KEEP     = 6   -- entries banked per day (3 shown; the spares cover a name that fails to resolve)
+
+-- ===== MIDNIGHT EASTERN, INCLUDING DAYLIGHT SAVING =====
+-- os.time() is UTC. "Midnight EST" in practice means midnight Eastern, and Eastern is UTC-5 in winter and
+-- UTC-4 under daylight saving -- so a fixed -5 would roll the board over at 1am local for eight months of
+-- the year. The US rule is deterministic and needs no external data: DST runs from 2am local on the SECOND
+-- Sunday of March to 2am local on the FIRST Sunday of November.
+--
+-- The test below works entirely in UTC fields. `day - (wday - 1)` is the date of this week's Sunday (it can
+-- go <= 0, which correctly means "that Sunday was last month"), so:
+--   March    -- we are on/after the second Sunday once that Sunday's date is >= 8
+--   November -- we are on/after the first Sunday once that Sunday's date is >= 1
+-- The switch happens at 07:00 UTC (March) and 06:00 UTC (November), which is 2am local on each side.
+-- Set FORCE_STANDARD_TIME = true to pin the board to true EST all year instead.
+local FORCE_STANDARD_TIME = false
+local function easternOffsetHours(t)
+	if FORCE_STANDARD_TIME then return -5 end
+	local u = os.date("!*t", t)
+	if u.month > 3 and u.month < 11 then return -4 end
+	if u.month < 3 or u.month > 11 then return -5 end
+	local weekSunday = u.day - (u.wday - 1)
+	if u.month == 3 then
+		if weekSunday > 8 then return -4 end                       -- past the second Sunday
+		if weekSunday < 8 then return -5 end                       -- before it
+		return (u.hour >= 7) and -4 or -5                          -- on it: flips at 07:00 UTC
+	end
+	if weekSunday > 1 then return -5 end                           -- past the first Sunday of November
+	if weekSunday < 1 then return -4 end                           -- before it
+	return (u.hour >= 6) and -5 or -4                              -- on it: flips at 06:00 UTC
+end
+local function easternDayKey()
+	local t = os.time()
+	return os.date("!%Y-%m-%d", t + easternOffsetHours(t) * 3600)
+end
+
+local topPulls   = {}   -- [{ name=, what=, rank= }] -- what the board draws, refreshed every BOARD_REFRESH
+local pendingPulls = {} -- pulls this server has seen but not yet written (see the flusher)
+
+local function refreshTopPulls()
+	local key = easternDayKey()
+	local ok, list = pcall(function() return pullStore:GetAsync(key) end)
+	if not ok then
+		warn("[Blimp] rare-pull read failed -- keeping the last good board")
+		return -- same rule as the other boards: a blip must not blank the sign
+	end
+	local fresh = {}
+	if type(list) == "table" then
+		for _, e in ipairs(list) do
+			if type(e) == "table" and e.n and e.w then
+				fresh[#fresh + 1] = { name = tostring(e.n), what = tostring(e.w), rank = tonumber(e.r) or RARE_MIN_RANK }
+			end
+		end
+	end
+	topPulls = fresh
+end
+
+-- THE WRITE IS BATCHED, ON PURPOSE. Roblox throttles repeated writes to the SAME key, and on a busy day
+-- every server in the game is writing to this one key. A pull is queued locally and the flusher folds
+-- everything waiting into a SINGLE UpdateAsync every FLUSH_SECONDS, so a run of lucky opens costs one write
+-- rather than five. A dropped entry is a missing line on a sign -- never worth retrying into a throttle.
+local FLUSH_SECONDS = 10
+local function flushPulls()
+	if #pendingPulls == 0 then return end
+	local batch = pendingPulls
+	pendingPulls = {}
+	local key = easternDayKey()
+	local ok, err = pcall(function()
+		pullStore:UpdateAsync(key, function(old)
+			local list = (type(old) == "table") and old or {}
+			for _, e in ipairs(batch) do list[#list + 1] = e end
+			-- Rarest first; among equals the EARLIEST wins, so the board is "who got there first today"
+			-- rather than a feed that a late pull of the same tier can bump you off.
+			table.sort(list, function(a, b)
+				local ra, rb = tonumber(a.r) or 0, tonumber(b.r) or 0
+				if ra ~= rb then return ra > rb end
+				return (tonumber(a.t) or 0) < (tonumber(b.t) or 0)
+			end)
+			while #list > RARE_KEEP do table.remove(list) end
+			return list
+		end)
+	end)
+	if not ok then
+		warn("[Blimp] rare-pull write failed (" .. tostring(err) .. ") -- " .. #batch .. " entr(ies) dropped")
+		return
+	end
+	refreshTopPulls()
+	if renderBoard then renderBoard() end -- a Gold should hit the sign now, not on the next 60s tick
+	if blimpBroadcast then blimpBroadcast("pull") end -- and every other server's sign, not just this one
+end
+
+-- Called by SkinCrateService after every crate open. Display-only: it can never fail an open, never yields
+-- in the caller (the write is queued), and silently ignores anything below Rare or any rarity it does not
+-- recognise.
+--
+-- `what` is the prize as a player would say it -- "Cosmic Duck" for a skin pull, the species for a pet
+-- crate. Trade-ups deliberately do NOT come through here: a trade-up is CRAFTED rarity, ten skins fed into
+-- a machine, and letting it onto a board about luck would make the board farmable.
+_G.blimpRecordPull = function(player, rarity, what)
+	if type(player) ~= "userdata" or type(what) ~= "string" or what == "" then return end
+	local rank = RARITY_RANK[rarity]
+	if not rank or rank < RARE_MIN_RANK then return end
+	pendingPulls[#pendingPulls + 1] = { n = player.Name, w = what, r = rank, t = os.time() }
+	print(string.format("[Blimp] rare pull queued: %s got %s [%s]", player.Name, what, tostring(rarity)))
+end
+
+task.spawn(function()
+	while true do
+		task.wait(FLUSH_SECONDS)
+		pcall(flushPulls)
+	end
+end)
+
 -- ===== SHORT PAGES ONLY. NOTHING THAT NEEDS READING TWICE. =====
--- The board previously ran four-line gameplay TIPS in sentence form. From 150 studus below, moving, at an
+-- The board previously ran four-line gameplay TIPS in sentence form. From 150 studs below, moving, at an
 -- angle, a sentence is a grey smear -- by the time you have parsed one the blimp has turned. Every page
 -- here is now a HEADLINE plus at most three short rows, sized big (48px on a 1120px canvas).
 --
--- Page 1  MLR STUDIOS      the studio card -- who made this. The default face of the ship.
+-- Page 1  (artwork)        the uploaded studio picture, full bleed -- no header, no rows.
 -- Page 2  TOP DONATORS     the podium, three names, cross-server.
--- Page 3  ANNOUNCEMENTS    whatever the server currently wants to say (see _G.blimpAnnounce below).
+-- Page 3  RAREST TODAY     the rarest crate pulls anybody in the game has had since midnight Eastern.
+-- Page 4  WHAT'S ON        the live event, its countdown, or when the next one is due.
 --
--- MOST PURCHASES is retired as a page: two near-identical leaderboards on one screen is the sort of thing
--- that reads as noise from the ground. The buyer store is still banked (it costs nothing and the data
--- keeps accruing), so the page can come back by adding one branch here.
-local ANNOUNCE_DEFAULT = {
-	{ "Fly higher, earn more", "" },
-	{ "New realms in the More menu", "" },
-	{ "Thanks for playing!", "" },
-}
+-- ANNOUNCEMENTS IS GONE AS A PAGE. It was a slot for live news that nothing ever wrote to -- _G.blimpAnnounce
+-- existed and no caller in the codebase has ever called it -- so in practice it was three hardcoded lines a
+-- player had already read on their first lap. The hook survives as an OVERRIDE on WHAT'S ON (below), which
+-- is where a "double coins for 10 minutes" line belongs anyway.
+--
+-- MOST PURCHASES is retired as a page too: two near-identical leaderboards on one screen reads as noise from
+-- the ground. The buyer store is still banked (it costs nothing and the data keeps accruing), so the page
+-- can come back by adding one branch here.
+local PAGE_PICTURE, PAGE_DONORS, PAGE_PULLS, PAGE_EVENT = 1, 2, 3, 4
+local PAGE_COUNT = 4
+
 -- Other scripts can put a short message on the ship: _G.blimpAnnounce("Double coins!", "next 10 min").
--- Kept deliberately tiny -- two short strings, no formatting, no queue. Cleared by calling with nil.
+-- Kept deliberately tiny -- two short strings, no formatting, no queue. Cleared by calling with nil. While
+-- one is set it TAKES OVER the WHAT'S ON page, because an announcement worth making outranks a countdown.
 local announceLines = nil
 _G.blimpAnnounce = function(line1, line2)
 	if line1 == nil then announceLines = nil; return end
 	announceLines = { { tostring(line1), tostring(line2 or "") } }
 end
 
-local page = 1 -- 1 = MLR STUDIOS, 2 = TOP DONATORS, 3 = ANNOUNCEMENTS
-local renderBoard
+local page = PAGE_PICTURE
 
+-- PAGE 1 IS THE PICTURE. The rows are still cleared rather than merely covered: they sit behind the
+-- artwork, and leaving last page's leaderboard parked under it is how a stale name shows through the one
+-- time the image fails to load.
 local function renderStudio()
 	clearRows(boardRows)
-	local n = #Players:GetPlayers()
-	addRow(boardRows, 1, nil, nil, "FART TO FLOAT", "")
-	addRow(boardRows, 2, nil, nil, "Players online", tostring(n))
-	local evt = Workspace:GetAttribute("ActiveServerEvent") -- PlayerStats publishes this, "" when idle
-	if type(evt) == "string" and evt ~= "" then
-		addRow(boardRows, 3, nil, nil, "EVENT LIVE", evt)
-	end
 end
 
 local function renderDonors()
@@ -724,42 +936,200 @@ local function renderDonors()
 	end
 	for i = 1, math.min(3, #topDonors) do -- THREE only: a podium reads from the ground, a top-8 list does not
 		local d = topDonors[i]
-		addRow(boardRows, i, tostring(i), MEDALS[i] or Color3.fromRGB(96, 104, 122),
-			d.name, shortNum(d.robux) .. " R$")
+		local medal = MEDALS[i] or Color3.fromRGB(96, 104, 122)
+		-- The face goes on the donor board and nowhere else on the blimp: these three are PEOPLE the server is
+		-- thanking by name, and a face is what makes that read as a person rather than a row of text. The
+		-- rarest-pet and event pages are about things, and a portrait there would just be noise.
+		addRow(boardRows, i, tostring(i), medal, d.name, shortNum(d.robux) .. " R$", d.userId, medal)
 	end
 end
 
-local function renderAnnounce()
+-- RAREST TODAY. Badge = the rarity as one big coloured letter (G/L/E/R) -- the row is 52px of circle and a
+-- single character is all that resolves from the ground anyway, and the COLOUR does most of the telling.
+--
+-- The prize goes on the LEFT and the player's name after it, both in the one truncating label: if something
+-- has to be cut off at the end of a long line it should be the name, not the thing everybody is looking at.
+-- No right-hand value column -- "Cosmic Duck" does not fit in 216px at this text size, and squeezing it
+-- there would shrink the whole board's value font for every other page.
+local function renderPulls()
 	clearRows(boardRows)
-	local lines = announceLines or ANNOUNCE_DEFAULT
-	for i, l in ipairs(lines) do
-		if i > 3 then break end
-		addRow(boardRows, i, nil, nil, l[1], l[2])
+	if #topPulls == 0 then
+		emptyNote(boardRows, "No rare pulls yet today -- be the first!")
+		return
 	end
+	for i = 1, math.min(3, #topPulls) do
+		local p = topPulls[i]
+		addRow(boardRows, i, RARITY_ABBR[p.rank] or "R", RARITY_TINT[p.rank] or Color3.fromRGB(90, 170, 255),
+			p.what .. "  \xC2\xB7  " .. p.name, nil)
+	end
+end
+
+-- WHAT'S ON. Three sources, in order of how much they matter to somebody standing on the island:
+--   1. a BIG event actually running   -- read live from _G.BigEvents[key].isRunning(), the same registry
+--      the scheduler and MusicDucking read, so this can never disagree with what is happening
+--   2. a MEDIUM event running         -- the workspace attributes PlayerStats publishes, with a countdown
+--   3. neither                        -- roughly when the next big one is due (NextBigEventAt)
+-- An announcement, if one is set, outranks all three.
+local BIG_EVENT_NAMES = { meteor = "\xE2\x98\x84 METEOR SHOWER", rocket = "\xF0\x9F\x9A\x80 ROCKET LAUNCH" }
+local function runningBigEvent()
+	local reg = _G.BigEvents
+	if type(reg) ~= "table" then return nil end
+	for key, label in pairs(BIG_EVENT_NAMES) do
+		local e = reg[key]
+		if type(e) == "table" and type(e.isRunning) == "function" then
+			local ok, running = pcall(e.isRunning)
+			if ok and running then return label end
+		end
+	end
+	return nil
+end
+
+local function mmss(sec)
+	sec = math.max(0, math.floor(sec))
+	return string.format("%d:%02d", math.floor(sec / 60), sec % 60)
+end
+
+local function renderEvent()
+	clearRows(boardRows)
+
+	if announceLines then
+		for i, l in ipairs(announceLines) do
+			if i > 3 then break end
+			addRow(boardRows, i, nil, nil, l[1], (l[2] ~= "" and l[2]) or nil)
+		end
+		return
+	end
+
+	local big = runningBigEvent()
+	if big then
+		addRow(boardRows, 1, nil, nil, big, "NOW")
+		addRow(boardRows, 2, nil, nil, "Look up!", nil)
+		return
+	end
+
+	local ev = Workspace:GetAttribute("ActiveServerEvent")
+	if type(ev) == "string" and ev ~= "" then
+		local label  = Workspace:GetAttribute("ActiveServerEventName")
+		local endsAt = tonumber(Workspace:GetAttribute("ActiveServerEventEndsAt"))
+		local left   = endsAt and (endsAt - os.time()) or nil
+		addRow(boardRows, 1, nil, nil, (type(label) == "string" and label ~= "" and label) or ev,
+			(left and left > 0) and mmss(left) or "NOW")
+		return
+	end
+
+	local nextAt = tonumber(Workspace:GetAttribute("NextBigEventAt"))
+	if nextAt and nextAt > os.time() then
+		addRow(boardRows, 1, nil, nil, "No event right now", nil)
+		addRow(boardRows, 2, nil, nil, "Next one in", "~" .. math.max(1, math.ceil((nextAt - os.time()) / 60)) .. " min")
+		return
+	end
+	emptyNote(boardRows, "No event right now -- keep climbing!")
 end
 
 renderBoard = function()
-	if page == 1 then
+	-- Page 1 is artwork, the rest are text: the header bar and the row area come off for the picture and go
+	-- back on for the boards. Driven from ONE place so the two can never disagree -- a picture with a
+	-- leaderboard header still sitting on top of it is the failure mode here.
+	local picturePage = (page == PAGE_PICTURE)
+	if boardPic then boardPic.Visible = picturePage end
+	if boardRows then boardRows.Visible = not picturePage end
+	if boardTitle and boardTitle.Parent then boardTitle.Parent.Visible = not picturePage end
+
+	if page == PAGE_PICTURE then
 		boardTitle.Text = "MLR STUDIOS"
 		renderStudio()
-	elseif page == 2 then
+	elseif page == PAGE_DONORS then
 		boardTitle.Text = "TOP DONATORS"
 		renderDonors()
+	elseif page == PAGE_PULLS then
+		boardTitle.Text = "RAREST TODAY"
+		renderPulls()
 	else
-		boardTitle.Text = "ANNOUNCEMENTS"
-		renderAnnounce()
+		boardTitle.Text = "WHAT'S ON"
+		renderEvent()
 	end
 end
 
+-- THE PAGER, plus a live tick for the countdown. Every page holds PAGE_SECONDS; the difference is that
+-- WHAT'S ON repaints every couple of seconds WHILE IT IS UP, because a countdown that only redraws when the
+-- page arrives would sit frozen on the number it happened to be showing 18 seconds ago. Nothing else
+-- repaints on the tick -- the other pages have nothing that changes second to second.
+--
+-- 4 pages x 18s = 72s against a 75s lap, so a player who watches the blimp go round once sees all four.
 task.spawn(function()
+	local held = 0
 	while true do
-		task.wait(PAGE_SECONDS)
-		page = page % 3 + 1
-		renderBoard()
+		task.wait(2)
+		held = held + 2
+		if page == PAGE_EVENT then renderBoard() end
+		if held >= PAGE_SECONDS then
+			held = 0
+			page = page % PAGE_COUNT + 1
+			renderBoard()
+		end
 	end
 end)
 
 renderBoard()
+
+-- =====================  ONE BOARD, EVERY SERVER  =====================
+-- ===== WHY THIS IS ALREADY GLOBAL =====
+-- Every page on this sign is fed by a store that lives OUTSIDE this server: TopDonors_v1 and TopBuyers_v1 are
+-- OrderedDataStores and the rare-pull board is one shared daily key. Nothing on the blimp is a tally of who
+-- happens to be in THIS server -- a donation on any server in the game counts on every blimp in the game, and
+-- always has. The 60s loop is what pulls each server's copy back into line.
+--
+-- ===== WHAT THIS ADDS =====
+-- Sixty seconds is a long time to stand in front of a sign that has not noticed you yet. When a server banks
+-- something board-worthy it now says so on a MessagingService topic and every other server re-reads and
+-- repaints AT ONCE -- so a kid who donates while a friend watches the blimp on another server sees their name
+-- go up on both, not a minute apart.
+--
+-- The message is a NUDGE, never data: it carries which board moved and nothing else, and the receiver goes to
+-- the DataStore for the actual numbers. That is deliberate -- the store stays the single authority, so a
+-- dropped, duplicated or out-of-order message can only ever cost a few seconds of freshness. MessagingService
+-- is rate-limited per topic, so publishing is confined to the moments that actually change a board and capped
+-- at one a second; and every call is wrapped, because a messaging outage must leave a working blimp on the old
+-- refresh cadence rather than a broken one.
+local MessagingService = game:GetService("MessagingService")
+local BOARD_TOPIC = "BlimpBoards_v1"
+
+do
+	local lastSent = 0
+	blimpBroadcast = function(what)
+		if os.clock() - lastSent < 1 then return end -- a crate spree only needs to be announced once
+		lastSent = os.clock()
+		task.spawn(function()
+			pcall(function() MessagingService:PublishAsync(BOARD_TOPIC, what) end)
+		end)
+	end
+
+	local ok, err = pcall(function()
+		MessagingService:SubscribeAsync(BOARD_TOPIC, function(msg)
+			local what = msg and msg.Data
+			task.spawn(function()
+				if what == "donor" then
+					refreshTopDonors()
+					refreshTopBuyers() -- a donation is a purchase too; both boards moved
+				elseif what == "buyer" then
+					refreshTopBuyers()
+				elseif what == "pull" then
+					refreshTopPulls()
+				else
+					refreshTopDonors(); refreshTopBuyers(); refreshTopPulls()
+				end
+				renderBoard() -- through the pager, so it only repaints the page actually on screen
+			end)
+		end)
+	end)
+	if ok then
+		print("[Blimp] boards are CROSS-SERVER: shared DataStores, re-read every " .. BOARD_REFRESH ..
+			"s and immediately whenever any server in the game reports a change")
+	else
+		warn("[Blimp] cross-server nudges unavailable (" .. tostring(err) .. ") -- the boards are still global "
+			.. "(shared DataStores); they just refresh on the " .. BOARD_REFRESH .. "s tick instead of at once")
+	end
+end
 
 -- =====================  PURCHASE HOOKS  =====================
 
@@ -772,6 +1142,7 @@ _G.blimpRecordPurchase = function(player, productId)
 	task.spawn(function()
 		bankPurchase(player) -- still banked (the data keeps accruing); no longer has its own board page
 		refreshTopBuyers()
+		blimpBroadcast("buyer") -- every other server's blimp re-reads now instead of on its next tick
 	end)
 	local info = PRODUCTS[productId]
 	if info and info.robux then
@@ -779,6 +1150,7 @@ _G.blimpRecordPurchase = function(player, productId)
 			bankDonation(player, info.robux)
 			refreshTopDonors() -- a donation should climb the board immediately, not on the next 60s tick
 			renderBoard()      -- through the pager, so it can only repaint the page actually on screen
+			blimpBroadcast("donor") -- ...and on every OTHER server's blimp, at the same moment
 		end)
 	end
 end
@@ -790,6 +1162,7 @@ MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, passI
 	task.spawn(function()
 		bankPurchase(player)
 		refreshTopBuyers()
+		blimpBroadcast("buyer")
 	end)
 end)
 
@@ -799,6 +1172,8 @@ task.spawn(function()
 	while true do
 		refreshTopDonors()
 		refreshTopBuyers()
+		refreshTopPulls() -- also what rolls the board over at midnight Eastern: the day key changes and the
+		                  -- read comes back empty, so no wipe job is needed
 		renderBoard() -- repaint whichever page is currently up, with the freshly-read data
 		task.wait(BOARD_REFRESH)
 	end

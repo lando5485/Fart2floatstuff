@@ -379,4 +379,66 @@ end
 -- So the prompt windowing moved to a file with a DIFFERENT NAME, which those copies cannot target.
 -- It also handles the campfire SIGN billboards, so nothing about it needs to live here.
 
-print("[Campfire] client ready -- roasting buttons wired")
+--======================================================================
+-- THE FIRESIDE REMINDER -- a banner every 7 minutes
+--======================================================================
+-- Nobody finds night on their own. It arrives every 25 minutes, lasts 8, and the thing worth seeing (the pig
+-- and the cow walking to the fire and telling each other stories) happens in one spot on one island while most
+-- players are a few thousand studs up buying beans. So the game says so, out loud, on a timer.
+--
+-- CLIENT-SIDE ON PURPOSE. Campfire.server already publishes the whole cycle as Workspace attributes --
+-- BeanFarmNight, NightSecondsLeft, NextNightIn -- so the banner needs no remote and no per-player state: it
+-- reads the clock everyone shares and writes into the NotifyCenter hero lane like every other banner. The
+-- server's only involvement is the NightBannerPing counter that /nightbanner bumps.
+--
+-- REWARD PRIORITY, never exclusive. This is a nudge, not news -- it must queue behind an island arrival, a
+-- purchase or a tutorial step, and it must never cover the garden watering directions. NotifyCenter handles
+-- that ordering itself; all this has to do is not shove.
+-- (BANNER_PERIOD is gone with the countdown that was the last thing reading it. The night cycle's real
+-- length lives on the server; nothing on this side needs to guess at it any more.)
+local BANNER_FIRST  = 100      -- first one this long after joining: past the intro, the starter pet and the
+                               -- landing banner, so it is not the fourth thing a new player is shown
+
+local function firesideBanner()
+	local N = _G.NotifyCenter
+	if not (N and N.push) then return end
+	-- Never talk over a teaching moment. Come back in a bit instead of dropping it.
+	if N.isExclusive and N.isExclusive() then task.delay(20, firesideBanner); return end
+
+	-- ===== ONLY WHEN IT IS ACTUALLY NIGHT =====
+	-- There used to be a second wording here for the daytime case: "NIGHT FALLS IN 14 MIN". That is a
+	-- countdown to something that has not happened, handed to a player who is usually eight islands up and
+	-- can do nothing with it, in the one strip of screen reserved for things that just happened to them.
+	-- Night falling IS the news, the sky says so at the same moment, and a whole night is plenty of time to
+	-- walk to the fire -- so if it is not night, there is nothing to say and we say nothing.
+	--
+	-- This also settles what /nightbanner does during the day: nothing, rather than showing a countdown that
+	-- no longer exists anywhere else in the game.
+	if workspace:GetAttribute("BeanFarmNight") ~= true then return end
+	N.push({ text = "STORIES AT THE CAMPFIRE", color = Color3.fromRGB(255, 170, 60), duration = 6 })
+end
+
+-- ONCE A NIGHT, WHEN NIGHT ACTUALLY FALLS -- not every 7 minutes on a timer.
+-- The 7-minute version fired three or four times per 25-minute cycle, and most of those said "night falls in
+-- N minutes" to somebody halfway up the tower who could do nothing about it. A reminder that repeats while
+-- nothing has changed is how a player learns to stop reading banners, which costs the ones that matter.
+-- Night falling IS the change, the sky says so at the same moment, and a whole night is plenty of time to
+-- walk to the fire. BANNER_FIRST still holds it off at boot, in case a player joins mid-night.
+task.spawn(function()
+	task.wait(BANNER_FIRST)
+	local wasNight = workspace:GetAttribute("BeanFarmNight") == true
+	if wasNight then pcall(firesideBanner) end
+	while true do
+		task.wait(5)
+		local night = workspace:GetAttribute("BeanFarmNight") == true
+		if night and not wasNight then pcall(firesideBanner) end
+		wasNight = night
+	end
+end)
+
+-- /nightbanner (server-side, allow-listed) bumps this counter to show the banner immediately on every client.
+workspace:GetAttributeChangedSignal("NightBannerPing"):Connect(function()
+	pcall(firesideBanner)
+end)
+
+print("[Campfire] client ready -- roasting buttons wired; fireside reminder fires once, when night falls (/nightbanner to test)")

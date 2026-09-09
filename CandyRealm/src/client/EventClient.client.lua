@@ -24,7 +24,7 @@ local JUNK_TEST_ON_ISLAND_1 = false -- junk spawns ONLY in JUNK_ZONES (islands 1
 -- the player dodges by maneuvering. No shooting while the player is LANDED (gated to airborne). At
 -- most 2 planes shoot at once. A projectile HIT reuses the rainbow knockdown (_G.applyBeamHit) ->
 -- knocked back to the most-recent island, EVERY hit, no grace.
-local PLANE_COUNT = 4              -- EXACTLY 4 planes in the gap zone (was a ~24-plane swarm)
+local PLANE_COUNT = 6              -- planes per gap zone (was 4; a ~24-plane swarm before that)
 local PLANE_SIZE = 36              -- target wingspan in studs (base build is 16) — bigger = more imposing aircraft
 local PLANE_SCALE = PLANE_SIZE / 16 -- derived uniform scale applied to the whole welded plane model
 local PLANE_SPEED = 72             -- studs/sec cruising/roaming speed
@@ -42,7 +42,7 @@ local CHASE_DURATION_MIN = 2.5     -- seconds a chase lasts before breaking off 
 local CHASE_DURATION_MAX = 4.5
 local CHASE_SPEED_MULT = 1.5       -- chasers fly a bit faster than cruise
 -- Ranged spread shooting
-local MAX_SHOOTERS = 2             -- HARD cap: never more than 2 planes shooting the player at once
+local MAX_SHOOTERS = 3             -- HARD cap: never more than 3 planes shooting the player at once
 local SHOOT_COOLDOWN_MIN = 3.5     -- seconds a plane rests between its OWN bursts (paced, not constant)
 local SHOOT_COOLDOWN_MAX = 6.5
 local SHOOT_RANGE = 280            -- studs: only lock on/shoot when the player is within this range
@@ -171,28 +171,48 @@ local screechSound=Instance.new("Sound"); screechSound.Name="ScreechSound"; scre
 _G.activeBirds = _G.activeBirds or {} -- nothing ever initialised this, so createBird threw on '#nil'
 
 local function createBird()
-	if #_G.activeBirds>=6 then return end
+	if #_G.activeBirds>=12 then return end   -- room for a 5-strong flock on top of 5 sightseers
 	local char=player.Character; local hrpTarget=char and char:FindFirstChild("HumanoidRootPart"); if not hrpTarget then return end
 	local angle=math.random()*math.pi*2
 	local spawnPos=hrpTarget.Position+Vector3.new(math.cos(angle)*50,0,math.sin(angle)*50)
-	local birdModel=Instance.new("Model"); birdModel.Name="AggressiveBird"; birdModel.Parent=workspace
+	-- A GINGERBREAD MAN GLIDER. The chase, the hit test, the despawn and the flap timing are all the
+	-- bird's, unchanged -- only what you SEE changed, plus the two arms now do the flapping the wings
+	-- used to. Body stays 3 x 1 x 1.5 because the 6-stud hit test below is tuned to it.
+	local GINGER = Color3.fromRGB(186,120,62)
+	local ICING  = Color3.fromRGB(252,248,244)
+	local birdModel=Instance.new("Model"); birdModel.Name="GingerbreadGlider"; birdModel.Parent=workspace
 	local body=Instance.new("Part"); body.Name="Body"; body.Size=Vector3.new(3,1,1.5)
-	body.Color=Color3.fromRGB(50,50,50); body.Material=Enum.Material.SmoothPlastic; body.CanCollide=false; body.Anchored=false; body.Position=spawnPos; body.Parent=birdModel
+	body.Color=GINGER; body.Material=Enum.Material.SmoothPlastic; body.CanCollide=false; body.Anchored=false; body.Position=spawnPos; body.Parent=birdModel
 	birdModel.PrimaryPart=body
 	local birdVel=Instance.new("BodyVelocity"); birdVel.MaxForce=Vector3.new(1e6,1e6,1e6); birdVel.Velocity=Vector3.new(0,0,0); birdVel.Parent=body
-	local function makeWing(name,ox)
-		local w=Instance.new("Part"); w.Name=name; w.Size=Vector3.new(3,0.2,0.8)
-		w.Color=Color3.fromRGB(50,50,50); w.Material=Enum.Material.SmoothPlastic; w.CanCollide=false; w.Parent=birdModel
-		local weld=Instance.new("Weld"); weld.Part0=body; weld.Part1=w; weld.C0=CFrame.new(ox,0,0); weld.Parent=body
-		return weld
+
+	local function bit(name, size, colour, c0, shape)
+		local p=Instance.new("Part"); p.Name=name; p.Size=size; p.Color=colour
+		p.Material=Enum.Material.SmoothPlastic; p.CanCollide=false; p.CastShadow=false; p.Parent=birdModel
+		if shape then pcall(function() p.Shape=shape end) end
+		local w=Instance.new("Weld"); w.Part0=body; w.Part1=p; w.C0=c0; w.Parent=body
+		return p, w
 	end
-	local weld1=makeWing("Wing1",-2.5); local weld2=makeWing("Wing2",2.5)
+
+	bit("Head", Vector3.new(1.5,1.4,1.4), GINGER, CFrame.new(0,0,-1.3), Enum.PartType.Ball)
+	for _, lx in ipairs({-0.55, 0.55}) do                                  -- legs
+		bit("Leg", Vector3.new(0.7,0.6,1.6), GINGER, CFrame.new(lx,0,1.3))
+	end
+	-- ARMS: these are what flap. Same weld handles the bird's wing loop drove, so the animation
+	-- below needs no change at all -- it just moves arms instead of wings now.
+	local _, weld1 = bit("ArmL", Vector3.new(2.6,0.6,0.9), GINGER, CFrame.new(-2.2,0,-0.4))
+	local _, weld2 = bit("ArmR", Vector3.new(2.6,0.6,0.9), GINGER, CFrame.new( 2.2,0,-0.4))
+	-- icing: three buttons, a collar zigzag, and a piped smile
+	for k=-1,1 do bit("Button", Vector3.new(0.4,0.4,0.4), ICING, CFrame.new(0,0.55,k*0.5), Enum.PartType.Ball) end
+	bit("Collar", Vector3.new(1.6,0.25,0.3), ICING, CFrame.new(0,0.4,-0.7))
+	bit("Smile",  Vector3.new(0.8,0.2,0.2),  ICING, CFrame.new(0,-0.1,-1.9))
+	-- currant eyes, kept NEON so they still read as a threat closing on you from a distance
 	local function makeEye(name,ox)
 		local e=Instance.new("Part"); e.Name=name; e.Shape=Enum.PartType.Ball; e.Size=Vector3.new(0.35,0.35,0.35)
-		e.Color=Color3.fromRGB(255,0,0); e.Material=Enum.Material.Neon; e.CanCollide=false; e.Parent=birdModel
-		local ew=Instance.new("Weld"); ew.Part0=body; ew.Part1=e; ew.C0=CFrame.new(ox,0.3,0.6); ew.Parent=body
+		e.Color=Color3.fromRGB(226,44,66); e.Material=Enum.Material.Neon; e.CanCollide=false; e.Parent=birdModel
+		local ew=Instance.new("Weld"); ew.Part0=body; ew.Part1=e; ew.C0=CFrame.new(ox,0.35,-1.75); ew.Parent=body
 	end
-	makeEye("Eye1",-0.4); makeEye("Eye2",0.4)
+	makeEye("Eye1",-0.35); makeEye("Eye2",0.35)
 	_G.birdSpawnedThisFlight = true -- [BALANCE LOGGING] flag-only: a bird spawned during this flight (read by CoreClient FLIGHT DEBUG)
 	local entry={model=birdModel,body=body}
 	table.insert(_G.activeBirds,entry)
@@ -201,8 +221,8 @@ local function createBird()
 		local flapUp=true
 		while birdModel.Parent do
 			local a=flapUp and 0.6 or -0.4
-			pcall(function() weld1.C0=CFrame.new(-2.5,0,0)*CFrame.Angles(0,0,a) end)
-			pcall(function() weld2.C0=CFrame.new(2.5,0,0)*CFrame.Angles(0,0,-a) end)
+			pcall(function() weld1.C0=CFrame.new(-2.2,0,-0.4)*CFrame.Angles(0,0,a) end)
+			pcall(function() weld2.C0=CFrame.new( 2.2,0,-0.4)*CFrame.Angles(0,0,-a) end)
 			flapUp=not flapUp; task.wait(0.25)
 		end
 	end)
@@ -221,6 +241,35 @@ local function createBird()
 				-- cooldown window, so we skip the feedback for ignored hits.
 				local applied = _G.applyBirdHalve and _G.applyBirdHalve()
 				if applied then
+					-- CRUMBLE. He does not survive the collision either: eight biscuit shards thrown
+					-- out from the impact, gone in 1.2s. Built before the shove so the burst appears
+					-- exactly where the two of you met, not where you get pushed to.
+					pcall(function()
+						for k=1,8 do
+							local sh=Instance.new("Part")
+							sh.Size=Vector3.new(0.5+math.random()*0.5, 0.4, 0.4+math.random()*0.4)
+							sh.Color=Color3.fromRGB(186,120,62); sh.Material=Enum.Material.SmoothPlastic
+							sh.CanCollide=false; sh.CastShadow=false
+							sh.CFrame=CFrame.new(body.Position)*CFrame.Angles(math.random()*6,math.random()*6,math.random()*6)
+							sh.AssemblyLinearVelocity=Vector3.new((math.random()-0.5)*70, math.random()*40, (math.random()-0.5)*70)
+							sh.Parent=workspace
+							game:GetService("Debris"):AddItem(sh, 1.2)
+							if k==1 then                                   -- one white icing chip in the mix
+								sh.Color=Color3.fromRGB(252,248,244)
+							end
+						end
+					end)
+					-- SIDEWAYS SHOVE. Horizontal only -- it knocks you off your line and costs you the
+					-- steering to get back, but never touches your climb, so it cannot drop you out of
+					-- the gap band the way a downward push would.
+					pcall(function()
+						local c2=player.Character; local h2=c2 and c2:FindFirstChild("HumanoidRootPart")
+						if h2 then
+							local away=Vector3.new(diff.X, 0, diff.Z)
+							away = (away.Magnitude > 0.1) and -away.Unit or Vector3.new(1,0,0)
+							h2.AssemblyLinearVelocity = h2.AssemblyLinearVelocity + away * 85
+						end
+					end)
 					pcall(function() screechSound:Play() end)
 					if _G.showFloatingText then _G.showFloatingText("\xF0\x9F\x90\xA6 BIRD ATTACK! Gas drained!",Color3.fromRGB(255,80,0)) end
 					pcall(function()
@@ -255,59 +304,180 @@ end
 -- per-flight chance, independent of how long the flight lasts. If the flight rolled a bird, it spawns as
 -- soon as the player is airborne — at ANY height, so the bird hazard attacks across the FULL climb
 -- (islands 1 through 14, all heights). Single tunable constant.
--- AGGRESSIVE BIRD REMOVED FOR NOW: chance set to 0 so no bird ever spawns/hits the player during
--- flight. (Set back to 1/15 to re-enable. Only the bird is affected — bullets, space-junk and other
--- hazards are untouched.)
-local BIRD_CHANCE_PER_FLIGHT = 0
-task.spawn(function()
-	if DISABLE_EVENTS or BIRD_CHANCE_PER_FLIGHT <= 0 then print("BIRDS DISABLED — no aggressive birds will spawn") return end
-	local wasFlying = false
-	local birdThisFlight = false
-	local spawnedThisFlight = false
-	while true do
-		task.wait(0.25)
-		local flyingNow = _G.isFlying and true or false
-		if flyingNow and not wasFlying then
-			-- New flight started: roll ONCE for whether a bird appears this flight.
-			birdThisFlight = (math.random() < BIRD_CHANCE_PER_FLIGHT)
-			spawnedThisFlight = false
-		elseif not flyingNow and wasFlying then
-			birdThisFlight = false; spawnedThisFlight = false -- flight ended; reset for next time
-		end
-		if flyingNow and birdThisFlight and not spawnedThisFlight then
-			local char=player.Character
-			local hrp=char and char:FindFirstChild("HumanoidRootPart")
-			if hrp then -- ANY height: birds now attack across all islands (1-14), no Y >= 600 gate
-				spawnedThisFlight = true
-				playBirdSound()
-				createBird()
-			end
-		end
-		wasFlying = flyingNow
-	end
-end)
 
 -- ===== SPACE-JUNK HAZARD =====
--- Assorted falling debris (tires / car doors / rocks) that drops from ABOVE the flying player, ONLY in
+-- Assorted falling CANDY (jawbreakers / peppermint wheels / candy canes) that drops from ABOVE the flying player, ONLY in
 -- the air gaps above island 6 (the 6->14 climb). Dodgeable medium trickle. On hit: END THE CURRENT RISE
 -- (player falls under gravity, same as running out of power) with the fart meter FULLY PRESERVED — no
 -- drain — plus an optional small downward shove (via _G.applyJunkHit in CoreClient). Each piece despawns
 -- after falling past the player or JUNK_LIFETIME (so it never piles up — capped for mobile). Independent
 -- of DISABLE_EVENTS.
--- ACTIVE SPAWN RANGE: junk ONLY falls on ISLANDS 10 AND UP (island 10 through island 14) — the upper
--- sky. Nowhere below island 10. Island 10 Y=11978, island 14 Y=24017 (hi has headroom above 14).
-local JUNK_ZONES = {
-	{lo = 11978, hi = 24500},  -- islands 10 -> 14 (and just above 14)
-}
+-- ACTIVE SPAWN RANGE: A DEBRIS FIELD IN THE GAP ABOVE EVERY 4th ISLAND.
+--
+-- WHAT WAS HERE, AND WHY IT NEVER FIRED. The band was
+--       { lo = 11978, hi = 24500 }   -- "islands 10 -> 14"
+-- and those are the FIRST REALM's heights, copied over with the rest of this file: Fart to Float's
+-- island 10 sits at Y=11978 and its island 14 at Y=24017. Candy's tower is a completely different
+-- shape -- slot 1 at 220 and the summit at 100,620. So on this realm that band lands somewhere
+-- between slot 5 (10,220) and slot 7 (21,620): an arbitrary strip a fifth of the way up, with
+-- nothing at all across the remaining ~79,000 studs of climb. The hazard was shipped, wired and
+-- effectively invisible.
+--
+-- DERIVED, NOT TYPED. The bands are computed from IslandOrder.SLOT_POS at boot, so they cannot
+-- drift the way the copied numbers did -- move an island and its debris field moves with it.
+-- One field per JUNK_EVERY islands, sitting in the AIR GAP above that slot with an 18% margin at
+-- each end: you get clear of the island you launched from before it starts, and it stops well
+-- short of the one you are aiming for, so arrivals are never pelted.
+local IslandOrder = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared")
+	:WaitForChild("IslandOrder"))
+
+-- EVERY OTHER ISLAND, not every fourth. Three bands over a thirteen-island tower meant most of the
+-- climb was empty sky; this puts something in six of the twelve gaps -- above slots 2, 4, 6, 8, 10
+-- and 12 -- so you are never more than two islands from the next one.
+--
+-- The FIRST gap is deliberately still clear. Starting at slot 2 means island1 -> island9, which is
+-- flown on a tier-2 gut with 28 seconds of tank and no idea what any of this is yet, stays a plain
+-- climb. Everything after it is contested.
+local JUNK_EVERY  = 2
+local JUNK_MARGIN = 0.18   -- fraction of the gap left clear at each end
+
+local JUNK_ZONES = {}
+for slot = JUNK_EVERY, IslandOrder.COUNT - 1, JUNK_EVERY do
+	local a, b = IslandOrder.SLOT_POS[slot], IslandOrder.SLOT_POS[slot + 1]
+	if a and b and b.Y > a.Y then
+		local gap = b.Y - a.Y
+		JUNK_ZONES[#JUNK_ZONES + 1] = {
+			lo   = a.Y + gap * JUNK_MARGIN,
+			hi   = b.Y - gap * JUNK_MARGIN,
+			slot = slot,
+			-- THE GAP'S OWN CENTRE LINE. The tower zig-zags -- slot 12 sits at X 340 and slot 13 at
+			-- X -360 -- so "the airspace between them" is nowhere near the world origin. The plane
+			-- patrol used to be a cylinder around X=0,Z=0 (realm 1's comment says so outright),
+			-- which on the top gap put it up to 350 studs off the line you actually fly.
+			cx = (a.X + b.X) * 0.5,
+			cz = (a.Z + b.Z) * 0.5,
+			-- and the islands either side, so a hazard can be made visible FROM one of them.
+			-- fromX/fromZ matter as much as fromY: the tower ZIG-ZAGS, so the gap's midpoint is
+			-- nowhere near the island you are stood on. Slot 12 sits at X 340 and slot 13 at X -360,
+			-- which puts their midpoint at X -10 -- 350 studs off the edge of Sugarbeet Farm.
+			fromX = a.X, fromY = a.Y, fromZ = a.Z,
+			toY   = b.Y,
+		}
+	end
+end
+do
+	local parts = {}
+	for _, z in ipairs(JUNK_ZONES) do
+		parts[#parts + 1] = ("above slot %d: %d..%d"):format(z.slot, math.floor(z.lo), math.floor(z.hi))
+	end
+	print(("[Junk] %d debris field(s), one per %d islands -- %s"):format(
+		#JUNK_ZONES, JUNK_EVERY, table.concat(parts, " | ")))
+end
 local function inJunkZone(y)
 	for _, z in ipairs(JUNK_ZONES) do
 		if y >= z.lo and y <= z.hi then return true end
 	end
 	return false
 end
-local JUNK_SPAWN_INTERVAL = 0.7   -- seconds between spawns (FASTER than before -> denser upper-sky debris)
+
+-- The band you are stood UNDER, if any. Used by the two hazards that otherwise only exist while you
+-- are inside one, so that from the island you can see what is waiting up there rather than
+-- launching into a surprise. Returns nil once you are actually in the band -- from that point the
+-- real hazard takes over.
+local function bandBelowMe(y)
+	for _, z in ipairs(JUNK_ZONES) do
+		if z.fromY and y >= z.fromY and y < z.lo then return z end
+	end
+	return nil
+end
+
+-- (Moved below inJunkZone on purpose: it is a LOCAL, so a reference to it from ABOVE this point
+-- resolves to a nil GLOBAL instead -- the loop would run and throw on its first band test.)
+--======================================================================
+-- GINGERBREAD GLIDERS -- THE THIRD GAP HAZARD
+--======================================================================
+-- The bird this is built from rolled ONCE per flight at a flat 1/15 and could appear at ANY height,
+-- and it was then switched off entirely (chance 0) so nothing ever spawned. Both of those are wrong
+-- for what this is now: it is a GAP hazard, and it belongs to the same bands as the planes and the
+-- falling candy. Something waits above every 4th island, and this is the part of it that comes to
+-- find you.
+--
+-- A FLOCK, NOT A SINGLE: three arrive together, staggered so they close on you in sequence rather
+-- than as one wall. createBird()'s own cap (6 alive) stops them stacking up if you linger.
+--
+-- ONE FLOCK PER VISIT. `armed` re-arms only when you leave the band, so hovering inside one cannot
+-- farm an endless stream -- the same reason the plane band has hysteresis.
+local GINGER_FLOCK     = 5   -- gliders per flock, once you are IN the band
+local AMBIENT_GLIDERS  = 5   -- how many drift in the band while you watch from the island below
+local GINGER_STAGGER = 0.7   -- seconds between them
+-- ⚠ DECLARED HERE, NOT DOWN BY randomGapPoint WHERE THEY ARE DOCUMENTED. These used to live at
+-- the plane-showcase section ~450 lines below -- AFTER the ambient-glider loop and createJunk
+-- had already referenced them. A Lua local is invisible to code above its declaration, so both
+-- call sites silently read nil GLOBALS instead and threw "attempt to perform arithmetic (mul)
+-- on nil" every time a glider or band-junk spawn fired -- the one recurring runtime error in
+-- every session log. The full story of what the showcase circuit IS stays with randomGapPoint.
+local SHOWCASE_LO     = 300   -- studs above the island: nearest the patrol comes
+local SHOWCASE_HI     = 700   -- ...and the top of the showcase slab
+local SHOWCASE_RADIUS = 130   -- tighter than GAP_RADIUS so the circuit stays over the island
+task.spawn(function()
+	if DISABLE_EVENTS then print("[Ginger] disabled (DISABLE_EVENTS)") return end
+	print(("[Ginger] gingerbread gliders armed -- %d per gap band, one flock per visit"):format(GINGER_FLOCK))
+	local armed = true
+	while true do
+		task.wait(0.25)
+		local char = player.Character
+		local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+		local inBand = hrp and _G.isFlying and inJunkZone(hrp.Position.Y)
+		if inBand and armed then
+			armed = false
+			-- CLEAR THE SIGHTSEERS. The ambient gliders you were watching from the island are still
+			-- alive up here, and createBird() caps how many can exist at once -- leaving them would
+			-- eat the slots the real flock needs. They have done their job the moment you arrive.
+			for i = #_G.activeBirds, 1, -1 do
+				local e = _G.activeBirds[i]
+				if e and e.model and e.model:GetAttribute("AmbientGlider") then
+					pcall(function() e.model:Destroy() end)
+					table.remove(_G.activeBirds, i)
+				end
+			end
+			playBirdSound()
+			for k = 1, GINGER_FLOCK do
+				task.delay((k - 1) * GINGER_STAGGER, function()
+					local c2 = player.Character
+					local h2 = c2 and c2:FindFirstChild("HumanoidRootPart")
+					if h2 and inJunkZone(h2.Position.Y) then createBird() end
+				end)
+			end
+		elseif not inBand then
+			armed = true                      -- left the band: the next one can send a flock again
+			-- ...and while you are stood UNDER a band, a couple of them drift about up there so the
+			-- gap is visibly occupied. createBird() spawns relative to the player, so these are moved
+			-- up into the band right after and left to their own chase loop -- which, from that far
+			-- away, reads as circling. They are cleaned up by the same 15s despawn as the real ones.
+			local band = hrp and bandBelowMe(hrp.Position.Y)
+			if band and #_G.activeBirds < AMBIENT_GLIDERS and math.random() < 0.45 then
+				createBird()
+				local e = _G.activeBirds[#_G.activeBirds]
+				if e and e.model then
+					-- TAGGED, so entering the band can clear them (see the flock spawn above). Without
+					-- this, five ambient gliders would fill createBird's alive-cap and the real flock
+					-- would arrive two strong.
+					e.model:SetAttribute("AmbientGlider", true)
+				end
+				if e and e.body then
+					local a = math.random() * 2 * math.pi
+					local r = SHOWCASE_RADIUS * math.sqrt(math.random())
+					e.body.CFrame = CFrame.new((band.fromX or band.cx or 0) + math.cos(a) * r,
+						(band.fromY or band.lo) + SHOWCASE_LO + math.random() * (SHOWCASE_HI - SHOWCASE_LO),
+						(band.fromZ or band.cz or 0) + math.sin(a) * r)
+				end
+			end
+		end
+	end
+end)
+local JUNK_SPAWN_INTERVAL = 0.45  -- seconds between spawns -- denser candyfall through every gap
 local JUNK_LIFETIME       = 6     -- seconds before auto-despawn (>= 220/55 fall time so it reaches the player from the higher spawn)
-local JUNK_MAX_ACTIVE     = 16    -- cap concurrent debris (raised for the denser upper sky; still mobile-safe)
+local JUNK_MAX_ACTIVE     = 24    -- cap concurrent debris (raised with the rate; still mobile-safe)
 local activeJunk = {}
 -- Each debris type is built as ONE Model (2-5 parts welded to a PrimaryPart) so it falls/hits/despawns
 -- as a single rigid unit. Sizes derive from the tunables (rock from JUNK_ROCK_SIZE, the rest from
@@ -326,137 +496,148 @@ local function jPart(model, sz, col, mat, shape, transp)
 end
 local function jWeld(body, p) local w = Instance.new("WeldConstraint"); w.Part0 = body; w.Part1 = p; w.Parent = body end
 
+--======================================================================
+-- WHAT FALLS OUT OF THE CANDY SKY
+--======================================================================
+-- All eight pieces were the first realm's junkyard: a rock, a tire, a car door, a satellite, an
+-- oil drum, an old TV, a rocket booster and a washing machine. Correct for Fart to Float's sky and
+-- completely wrong over a tower of candy islands -- a corroded washing machine falling past Taffy
+-- Town reads as a bug, not a hazard.
+--
+-- Same eight slots, same part counts, same nominalMax maths (the hit radius is derived from it, so
+-- getting that wrong would give phantom hits or pass-throughs). Only the SUBJECT changed, and each
+-- one is re-skinned into the shape it was already closest to -- the tire was a disc, so it is a
+-- peppermint wheel; the door was a flat panel, so it is a chocolate bar; the booster was a tall
+-- cylinder, so it is an ice cream cone. Nothing about the physics moved.
 local function buildJunk()
 	local v = 0.8 + math.random() * 0.4          -- +/-20% size variation (whole piece)
 	local D, R = JUNK_DEBRIS_SIZE, JUNK_ROCK_SIZE
-	local model = Instance.new("Model"); model.Name = "SpaceJunk"
+	local model = Instance.new("Model"); model.Name = "CandyJunk"
 	local body, nominalMax
 	local pick = math.random(8)
-	if pick == 1 then            -- ROCK (7 parts): a craggy asteroid of clustered rough chunks
-		body = jPart(model, Vector3.new(R*0.7, R*0.64, R*0.68)*v, Color3.fromRGB(96,88,76), Enum.Material.Slate, Enum.PartType.Block)
+
+	if pick == 1 then            -- JAWBREAKER (7 parts): a knobbly boiled sweet, layers showing
+		body = jPart(model, Vector3.new(R*0.72, R*0.72, R*0.72)*v, Color3.fromRGB(250,240,230), Enum.Material.SmoothPlastic, Enum.PartType.Ball)
 		body.CFrame = CFrame.Angles(math.random()*6, math.random()*6, math.random()*6)
-		for _=1,6 do
-			local cs = R*(0.3+math.random()*0.4)*v
-			local c = jPart(model, Vector3.new(cs, cs*(0.7+math.random()*0.5), cs*(0.7+math.random()*0.5)), Color3.fromRGB(80+math.random(0,28),74+math.random(0,24),64+math.random(0,20)), Enum.Material.Slate, Enum.PartType.Block)
-			c.CFrame = body.CFrame * CFrame.new((math.random()-0.5)*R*v*0.7,(math.random()-0.5)*R*v*0.7,(math.random()-0.5)*R*v*0.7) * CFrame.Angles(math.random()*6,math.random()*6,math.random()*6)
+		local shell = { Color3.fromRGB(236,72,110), Color3.fromRGB(120,210,235), Color3.fromRGB(255,205,90),
+			Color3.fromRGB(150,225,140), Color3.fromRGB(196,140,240), Color3.fromRGB(255,140,90) }
+		for k = 1, 6 do
+			local cs = R*(0.34+math.random()*0.3)*v
+			local c = jPart(model, Vector3.new(cs, cs, cs), shell[k], Enum.Material.SmoothPlastic, Enum.PartType.Ball)
+			c.CFrame = body.CFrame * CFrame.new((math.random()-0.5)*R*v*0.62,(math.random()-0.5)*R*v*0.62,(math.random()-0.5)*R*v*0.62)
 			jWeld(body, c)
 		end
-		nominalMax = R*v
-	elseif pick == 2 then        -- TIRE (7 parts): treaded tire + metal rim/hub + 4 bolts
-		body = jPart(model, Vector3.new(D*0.34, D, D)*v, Color3.fromRGB(28,28,30), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
+		nominalMax = R*0.72*v
+
+	elseif pick == 2 then        -- PEPPERMINT WHEEL (7 parts): white disc, red spokes, mint hub
+		body = jPart(model, Vector3.new(D*0.34, D*1.5, D*1.5)*v, Color3.fromRGB(252,248,244), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
 		body.CFrame = CFrame.new()
-		local tread = jPart(model, Vector3.new(D*0.4, D*1.04, D*1.04)*v, Color3.fromRGB(18,18,20), Enum.Material.Slate, Enum.PartType.Cylinder)
-		tread.CFrame = body.CFrame; jWeld(body, tread)
-		local hub = jPart(model, Vector3.new(D*0.44, D*0.5, D*0.5)*v, Color3.fromRGB(150,150,160), Enum.Material.Metal, Enum.PartType.Cylinder)
+		local hub = jPart(model, Vector3.new(D*0.4, D*0.5, D*0.5)*v, Color3.fromRGB(150,225,190), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
 		hub.CFrame = body.CFrame; jWeld(body, hub)
-		for b=0,3 do
-			local ang = b*math.pi/2
-			local bolt = jPart(model, Vector3.new(D*0.12, D*0.1, D*0.1)*v, Color3.fromRGB(90,90,95), Enum.Material.Metal, Enum.PartType.Cylinder)
-			bolt.CFrame = body.CFrame * CFrame.new(D*0.2*v, math.cos(ang)*D*0.22*v, math.sin(ang)*D*0.22*v); jWeld(body, bolt)
+		for k = 0, 4 do          -- the swirl: five red wedges around the face
+			local sp = jPart(model, Vector3.new(D*0.38, D*1.34, D*0.2)*v, Color3.fromRGB(236,72,110), Enum.Material.SmoothPlastic, Enum.PartType.Block)
+			sp.CFrame = body.CFrame * CFrame.Angles(k*math.pi/5, 0, 0); jWeld(body, sp)
 		end
-		nominalMax = D*v
-	elseif pick == 3 then        -- CAR DOOR (6 parts): painted panel + framed window + handle + side mirror
-		body = jPart(model, Vector3.new(D*0.8, D*1.2, D*0.1)*v, Color3.fromRGB(150,45,45), Enum.Material.Metal, Enum.PartType.Block)
+		nominalMax = D*1.5*v
+
+	elseif pick == 3 then        -- CHOCOLATE BAR (6 parts): scored slab, foil back, a bitten corner
+		body = jPart(model, Vector3.new(D*1.5, D*0.28, D*1.0)*v, Color3.fromRGB(92,54,28), Enum.Material.SmoothPlastic, Enum.PartType.Block)
 		body.CFrame = CFrame.new()
-		local frame = jPart(model, Vector3.new(D*0.62, D*0.48, D*0.08)*v, Color3.fromRGB(40,40,45), Enum.Material.Metal, Enum.PartType.Block)
-		frame.CFrame = body.CFrame * CFrame.new(0, D*0.32*v, D*0.04*v); jWeld(body, frame)
-		local win = jPart(model, Vector3.new(D*0.54, D*0.4, D*0.06)*v, Color3.fromRGB(150,180,205), Enum.Material.Glass, Enum.PartType.Block, 0.4)
-		win.CFrame = body.CFrame * CFrame.new(0, D*0.32*v, D*0.07*v); jWeld(body, win)
-		local handle = jPart(model, Vector3.new(D*0.28, D*0.08, D*0.12)*v, Color3.fromRGB(215,215,220), Enum.Material.Metal, Enum.PartType.Block)
-		handle.CFrame = body.CFrame * CFrame.new(-D*0.14*v, -D*0.06*v, D*0.1*v); jWeld(body, handle)
-		local marm = jPart(model, Vector3.new(D*0.06, D*0.12, D*0.1)*v, Color3.fromRGB(150,45,45), Enum.Material.Metal, Enum.PartType.Block)
-		marm.CFrame = body.CFrame * CFrame.new(D*0.42*v, D*0.42*v, D*0.05*v); jWeld(body, marm)
-		local mirror = jPart(model, Vector3.new(D*0.16, D*0.18, D*0.05)*v, Color3.fromRGB(120,150,180), Enum.Material.Glass, Enum.PartType.Block, 0.3)
-		mirror.CFrame = body.CFrame * CFrame.new(D*0.5*v, D*0.42*v, D*0.05*v); jWeld(body, mirror)
-		nominalMax = D*1.2*v
-	elseif pick == 4 then        -- SATELLITE (8 parts): body + 2 gridded solar wings + dish + 2 antenna rods
-		body = jPart(model, Vector3.new(D*1.1, D*0.6, D*0.6)*v, Color3.fromRGB(185,190,210), Enum.Material.Metal, Enum.PartType.Block)
+		for k = -1, 1 do         -- the scoring between squares
+			local sc = jPart(model, Vector3.new(D*0.06, D*0.34, D*1.0)*v, Color3.fromRGB(66,38,20), Enum.Material.SmoothPlastic, Enum.PartType.Block)
+			sc.CFrame = body.CFrame * CFrame.new(k*D*0.42*v, 0, 0); jWeld(body, sc)
+		end
+		local foil = jPart(model, Vector3.new(D*1.56, D*0.06, D*1.06)*v, Color3.fromRGB(226,226,232), Enum.Material.Foil, Enum.PartType.Block)
+		foil.CFrame = body.CFrame * CFrame.new(0, -D*0.18*v, 0); jWeld(body, foil)
+		local bite = jPart(model, Vector3.new(D*0.34, D*0.34, D*0.34)*v, Color3.fromRGB(120,74,42), Enum.Material.SmoothPlastic, Enum.PartType.Ball)
+		bite.CFrame = body.CFrame * CFrame.new(D*0.7*v, 0, D*0.46*v); jWeld(body, bite)
+		nominalMax = D*1.5*v
+
+	elseif pick == 4 then        -- LOLLIPOP (8 parts): swirled disc on a paper stick
+		body = jPart(model, Vector3.new(D*0.3, D*1.3, D*1.3)*v, Color3.fromRGB(255,255,250), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
 		body.CFrame = CFrame.new()
-		for s=-1,1,2 do
-			local wing = jPart(model, Vector3.new(D*0.7, D*0.5, D*0.05)*v, Color3.fromRGB(35,55,120), Enum.Material.SmoothPlastic, Enum.PartType.Block)
-			wing.CFrame = body.CFrame * CFrame.new(s*D*0.9*v, 0, 0); jWeld(body, wing)
-			local grid = jPart(model, Vector3.new(D*0.72, D*0.5, D*0.02)*v, Color3.fromRGB(120,140,200), Enum.Material.SmoothPlastic, Enum.PartType.Block)
-			grid.CFrame = wing.CFrame * CFrame.new(0, 0, D*0.04*v); jWeld(body, grid)
+		local swirl = { Color3.fromRGB(236,72,110), Color3.fromRGB(120,210,235), Color3.fromRGB(255,205,90), Color3.fromRGB(150,225,140) }
+		for k = 0, 3 do          -- four arms of the swirl, shrinking towards the centre
+			local arm = jPart(model, Vector3.new(D*0.34, D*(1.1 - k*0.2), D*0.22)*v, swirl[k+1], Enum.Material.SmoothPlastic, Enum.PartType.Block)
+			arm.CFrame = body.CFrame * CFrame.Angles(k*math.pi/4, 0, 0); jWeld(body, arm)
 		end
-		local dish = jPart(model, Vector3.new(D*0.12, D*0.42, D*0.42)*v, Color3.fromRGB(225,225,230), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
-		dish.CFrame = body.CFrame * CFrame.new(0, D*0.46*v, 0); jWeld(body, dish)
-		local antA = jPart(model, Vector3.new(D*0.03, D*0.6, D*0.03)*v, Color3.fromRGB(200,200,205), Enum.Material.Metal, Enum.PartType.Block)
-		antA.CFrame = body.CFrame * CFrame.new(D*0.3*v, D*0.45*v, D*0.2*v); jWeld(body, antA)
-		local antB = jPart(model, Vector3.new(D*0.03, D*0.45, D*0.03)*v, Color3.fromRGB(200,200,205), Enum.Material.Metal, Enum.PartType.Block)
-		antB.CFrame = body.CFrame * CFrame.new(-D*0.3*v, D*0.4*v, -D*0.2*v); jWeld(body, antB)
-		nominalMax = D*1.1*v
-	elseif pick == 5 then        -- OIL DRUM (6 parts): ribbed rusty cylinder + top/bottom rims + bung cap
-		body = jPart(model, Vector3.new(D*0.9, D*0.6, D*0.6)*v, Color3.fromRGB(120,72,46), Enum.Material.CorrodedMetal, Enum.PartType.Cylinder)
-		body.CFrame = CFrame.new()
-		for s=-1,1,2 do
-			local rim = jPart(model, Vector3.new(D*0.06, D*0.66, D*0.66)*v, Color3.fromRGB(82,50,32), Enum.Material.CorrodedMetal, Enum.PartType.Cylinder)
-			rim.CFrame = body.CFrame * CFrame.new(s*D*0.42*v, 0, 0); jWeld(body, rim)
-		end
-		for _,rx in ipairs({-0.18, 0.18}) do
-			local rib = jPart(model, Vector3.new(D*0.05, D*0.63, D*0.63)*v, Color3.fromRGB(100,62,40), Enum.Material.CorrodedMetal, Enum.PartType.Cylinder)
-			rib.CFrame = body.CFrame * CFrame.new(rx*D*v, 0, 0); jWeld(body, rib)
-		end
-		local bung = jPart(model, Vector3.new(D*0.1, D*0.14, D*0.14)*v, Color3.fromRGB(70,44,28), Enum.Material.Metal, Enum.PartType.Cylinder)
-		bung.CFrame = body.CFrame * CFrame.new(D*0.45*v, D*0.18*v, 0); jWeld(body, bung)
-		nominalMax = D*0.9*v
-	elseif pick == 6 then        -- OLD TV (7 parts): worn casing + recessed screen + 2 antennae + 2 knobs
-		body = jPart(model, Vector3.new(D*0.7, D*0.7, D*0.7)*v, Color3.fromRGB(66,60,50), Enum.Material.Plastic, Enum.PartType.Block)
-		body.CFrame = CFrame.new()
-		local bezel = jPart(model, Vector3.new(D*0.6, D*0.56, D*0.04)*v, Color3.fromRGB(45,42,36), Enum.Material.Plastic, Enum.PartType.Block)
-		bezel.CFrame = body.CFrame * CFrame.new(-D*0.06*v, D*0.04*v, D*0.34*v); jWeld(body, bezel)
-		local screen = jPart(model, Vector3.new(D*0.48, D*0.44, D*0.05)*v, Color3.fromRGB(28,30,40), Enum.Material.Glass, Enum.PartType.Block, 0.15)
-		screen.CFrame = body.CFrame * CFrame.new(-D*0.06*v, D*0.04*v, D*0.37*v); jWeld(body, screen)
-		for s=-1,1,2 do
-			local ant = jPart(model, Vector3.new(D*0.035, D*0.5, D*0.035)*v, Color3.fromRGB(185,185,190), Enum.Material.Metal, Enum.PartType.Block)
-			ant.CFrame = body.CFrame * CFrame.new(s*D*0.16*v, D*0.5*v, 0) * CFrame.Angles(0,0,s*0.35); jWeld(body, ant)
-		end
-		for kk=0,1 do
-			local knob = jPart(model, Vector3.new(D*0.08, D*0.08, D*0.08)*v, Color3.fromRGB(30,28,24), Enum.Material.Plastic, Enum.PartType.Cylinder)
-			knob.CFrame = body.CFrame * CFrame.new(D*0.26*v, D*0.18*v - kk*D*0.2*v, D*0.36*v); jWeld(body, knob)
-		end
-		nominalMax = D*0.7*v
-	elseif pick == 7 then        -- ROCKET BOOSTER (9 parts): tall body + nozzle + nose + 2 bands + 4 fins
-		body = jPart(model, Vector3.new(D*1.8, D*0.9, D*0.9)*v, Color3.fromRGB(180,180,185), Enum.Material.Metal, Enum.PartType.Cylinder)
-		body.CFrame = CFrame.new()
-		local nozzle = jPart(model, Vector3.new(D*0.4, D*1.05, D*1.05)*v, Color3.fromRGB(40,38,36), Enum.Material.Metal, Enum.PartType.Cylinder)
-		nozzle.CFrame = body.CFrame * CFrame.new(-D*1.0*v, 0, 0); jWeld(body, nozzle)
-		local nose = jPart(model, Vector3.new(D*0.45, D*0.7, D*0.7)*v, Color3.fromRGB(200,80,70), Enum.Material.Metal, Enum.PartType.Cylinder)
-		nose.CFrame = body.CFrame * CFrame.new(D*1.0*v, 0, 0); jWeld(body, nose)
-		for _,bx in ipairs({-0.4, 0.4}) do
-			local band = jPart(model, Vector3.new(D*0.12, D*0.98, D*0.98)*v, Color3.fromRGB(120,120,125), Enum.Material.Metal, Enum.PartType.Cylinder)
-			band.CFrame = body.CFrame * CFrame.new(bx*D*v, 0, 0); jWeld(body, band)
-		end
-		for f=0,3 do
-			local fin = jPart(model, Vector3.new(D*0.5, D*0.7, D*0.08)*v, Color3.fromRGB(150,60,55), Enum.Material.Metal, Enum.PartType.Block)
-			fin.CFrame = body.CFrame * CFrame.new(-D*0.75*v, 0, 0) * CFrame.Angles(f*math.pi/2, 0, 0) * CFrame.new(0, D*0.6*v, 0); jWeld(body, fin)
-		end
-		nominalMax = D*1.8*v
-	else                          -- WASHING MACHINE (9 parts): box + glass door + rim + handle + top panel + 4 feet
-		body = jPart(model, Vector3.new(D*1.2, D*1.3, D*1.2)*v, Color3.fromRGB(150,120,95), Enum.Material.CorrodedMetal, Enum.PartType.Block)
-		body.CFrame = CFrame.new()
-		local rim = jPart(model, Vector3.new(D*0.1, D*0.95, D*0.95)*v, Color3.fromRGB(110,110,115), Enum.Material.Metal, Enum.PartType.Cylinder)
-		rim.CFrame = body.CFrame * CFrame.new(0, -D*0.05*v, D*0.56*v) * CFrame.Angles(0, math.rad(90), 0); jWeld(body, rim)
-		local door = jPart(model, Vector3.new(D*0.16, D*0.8, D*0.8)*v, Color3.fromRGB(30,32,42), Enum.Material.Glass, Enum.PartType.Cylinder, 0.25)
-		door.CFrame = body.CFrame * CFrame.new(0, -D*0.05*v, D*0.6*v) * CFrame.Angles(0, math.rad(90), 0); jWeld(body, door)
-		local panel = jPart(model, Vector3.new(D*1.1, D*0.18, D*0.5)*v, Color3.fromRGB(210,205,195), Enum.Material.Plastic, Enum.PartType.Block)
-		panel.CFrame = body.CFrame * CFrame.new(0, D*0.62*v, -D*0.3*v); jWeld(body, panel)
-		local handle = jPart(model, Vector3.new(D*0.08, D*0.28, D*0.1)*v, Color3.fromRGB(90,90,95), Enum.Material.Metal, Enum.PartType.Block)
-		handle.CFrame = body.CFrame * CFrame.new(D*0.34*v, -D*0.05*v, D*0.62*v); jWeld(body, handle)
-		for sx=-1,1,2 do for sz=-1,1,2 do
-			local foot = jPart(model, Vector3.new(D*0.18, D*0.2, D*0.18)*v, Color3.fromRGB(60,60,62), Enum.Material.Metal, Enum.PartType.Block)
-			foot.CFrame = body.CFrame * CFrame.new(sx*D*0.45*v, -D*0.72*v, sz*D*0.45*v); jWeld(body, foot)
-		end end
+		local stick = jPart(model, Vector3.new(D*0.14, D*1.1, D*0.14)*v, Color3.fromRGB(244,238,225), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
+		stick.CFrame = body.CFrame * CFrame.new(0, -D*1.0*v, 0) * CFrame.Angles(0, 0, math.rad(90)); jWeld(body, stick)
+		local wrap = jPart(model, Vector3.new(D*0.34, D*0.3, D*0.34)*v, Color3.fromRGB(236,226,255), Enum.Material.Foil, Enum.PartType.Ball, 0.35)
+		wrap.CFrame = body.CFrame * CFrame.new(0, D*0.1*v, 0); jWeld(body, wrap)
 		nominalMax = D*1.3*v
+
+	elseif pick == 5 then        -- GUMDROP (6 parts): sugared dome, crystals catching the light
+		body = jPart(model, Vector3.new(D*1.1, D*1.0, D*1.1)*v, Color3.fromRGB(236,72,110), Enum.Material.SmoothPlastic, Enum.PartType.Ball)
+		body.CFrame = CFrame.new()
+		local base = jPart(model, Vector3.new(D*0.3, D*1.05, D*1.05)*v, Color3.fromRGB(214,54,94), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
+		base.CFrame = body.CFrame * CFrame.new(0, -D*0.4*v, 0) * CFrame.Angles(0, 0, math.rad(90)); jWeld(body, base)
+		for k = 1, 4 do          -- the sugar crust
+			local g = jPart(model, Vector3.new(D*0.16, D*0.16, D*0.16)*v, Color3.fromRGB(255,250,240), Enum.Material.Sand, Enum.PartType.Block)
+			g.CFrame = body.CFrame * CFrame.Angles(0, k*math.pi/2, 0) * CFrame.new(D*0.5*v, D*0.2*v, 0)
+				* CFrame.Angles(math.random()*3, math.random()*3, math.random()*3)
+			jWeld(body, g)
+		end
+		nominalMax = D*1.1*v
+
+	elseif pick == 6 then        -- CANDY CANE (7 parts): striped shaft with a hooked crook
+		body = jPart(model, Vector3.new(D*0.32, D*1.6, D*0.32)*v, Color3.fromRGB(252,248,244), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
+		body.CFrame = CFrame.Angles(0, 0, math.rad(90))
+		for k = -2, 2 do         -- the red barber stripes
+			local st = jPart(model, Vector3.new(D*0.36, D*0.2, D*0.36)*v, Color3.fromRGB(236,72,110), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
+			st.CFrame = body.CFrame * CFrame.new(k*D*0.3*v, 0, 0) * CFrame.Angles(math.rad(22), 0, 0); jWeld(body, st)
+		end
+		local hook = jPart(model, Vector3.new(D*0.32, D*0.5, D*0.32)*v, Color3.fromRGB(252,248,244), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
+		hook.CFrame = body.CFrame * CFrame.new(D*0.8*v, D*0.28*v, 0) * CFrame.Angles(0, 0, math.rad(90)); jWeld(body, hook)
+		nominalMax = D*1.6*v
+
+	elseif pick == 7 then        -- ICE CREAM CONE (9 parts): waffle cone, two scoops, a cherry
+		body = jPart(model, Vector3.new(D*1.0, D*0.9, D*0.9)*v, Color3.fromRGB(214,164,96), Enum.Material.Sand, Enum.PartType.Cylinder)
+		body.CFrame = CFrame.Angles(0, 0, math.rad(90))
+		for k = -1, 1 do         -- the waffle scoring
+			local w = jPart(model, Vector3.new(D*1.02, D*0.1, D*0.94)*v, Color3.fromRGB(184,136,74), Enum.Material.Sand, Enum.PartType.Block)
+			w.CFrame = body.CFrame * CFrame.Angles(k*math.pi/3, 0, 0); jWeld(body, w)
+		end
+		local s1 = jPart(model, Vector3.new(D*0.85, D*0.85, D*0.85)*v, Color3.fromRGB(255,190,215), Enum.Material.SmoothPlastic, Enum.PartType.Ball)
+		s1.CFrame = body.CFrame * CFrame.new(0, D*0.62*v, 0); jWeld(body, s1)
+		local s2 = jPart(model, Vector3.new(D*0.7, D*0.7, D*0.7)*v, Color3.fromRGB(255,250,238), Enum.Material.SmoothPlastic, Enum.PartType.Ball)
+		s2.CFrame = body.CFrame * CFrame.new(0, D*1.16*v, 0); jWeld(body, s2)
+		local cherry = jPart(model, Vector3.new(D*0.26, D*0.26, D*0.26)*v, Color3.fromRGB(226,44,66), Enum.Material.SmoothPlastic, Enum.PartType.Ball)
+		cherry.CFrame = body.CFrame * CFrame.new(0, D*1.6*v, 0); jWeld(body, cherry)
+		local sprinkle = jPart(model, Vector3.new(D*0.1, D*0.28, D*0.1)*v, Color3.fromRGB(120,210,235), Enum.Material.SmoothPlastic, Enum.PartType.Block)
+		sprinkle.CFrame = body.CFrame * CFrame.new(D*0.3*v, D*0.9*v, D*0.2*v) * CFrame.Angles(0.6, 0.4, 0); jWeld(body, sprinkle)
+		nominalMax = D*1.7*v
+
+	else                          -- WRAPPED SWEET (9 parts): barrel of toffee, twisted foil ends
+		body = jPart(model, Vector3.new(D*0.9, D*1.0, D*1.0)*v, Color3.fromRGB(255,176,86), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
+		body.CFrame = CFrame.new()
+		for _, sx in ipairs({ -1, 1 }) do
+			local neck = jPart(model, Vector3.new(D*0.24, D*0.5, D*0.5)*v, Color3.fromRGB(255,236,190), Enum.Material.Foil, Enum.PartType.Cylinder, 0.15)
+			neck.CFrame = body.CFrame * CFrame.new(sx*D*0.55*v, 0, 0); jWeld(body, neck)
+			local twist = jPart(model, Vector3.new(D*0.3, D*0.72, D*0.72)*v, Color3.fromRGB(255,236,190), Enum.Material.Foil, Enum.PartType.Cylinder, 0.15)
+			twist.CFrame = body.CFrame * CFrame.new(sx*D*0.86*v, 0, 0) * CFrame.Angles(sx*0.7, 0, 0); jWeld(body, twist)
+			local frill = jPart(model, Vector3.new(D*0.08, D*0.8, D*0.8)*v, Color3.fromRGB(255,246,214), Enum.Material.Foil, Enum.PartType.Cylinder, 0.25)
+			frill.CFrame = body.CFrame * CFrame.new(sx*D*1.02*v, 0, 0); jWeld(body, frill)
+		end
+		local band = jPart(model, Vector3.new(D*0.94, D*0.22, D*1.04)*v, Color3.fromRGB(236,72,110), Enum.Material.SmoothPlastic, Enum.PartType.Block)
+		band.CFrame = body.CFrame; jWeld(body, band)
+		nominalMax = D*1.0*v
 	end
+
 	model.PrimaryPart = body
 	return model, nominalMax / 2
 end
 
-local function createJunk()
+-- `band` set = an AMBIENT piece: it falls through that band's airspace instead of onto the player,
+-- so from the island below you can see candy tumbling through the gap you are about to cross. The
+-- hit test further down is a distance check against the player, and an ambient piece is thousands
+-- of studs away from them, so it can never register -- these are scenery that happens to use the
+-- same builder, not a second hazard.
+local function createJunk(band)
 	if #activeJunk >= JUNK_MAX_ACTIVE then return end
 	local char=player.Character; local hrp=char and char:FindFirstChild("HumanoidRootPart")
 	if not hrp then return end
-	if not (JUNK_TEST_ON_ISLAND_1 or inJunkZone(hrp.Position.Y)) then return end
+	if not (band or JUNK_TEST_ON_ISLAND_1 or inJunkZone(hrp.Position.Y)) then return end
 	local model, hitRadius = buildJunk()
 	-- HOMING: a small fraction AIM at the player's CURRENT horizontal spot, but still spawn at the SAME
 	-- full JUNK_SPAWN_HEIGHT above and then fall STRAIGHT down (no continuous homing) — so the player has
@@ -464,7 +645,19 @@ local function createJunk()
 	local homing = math.random() < JUNK_HOMING_CHANCE
 	local ox = homing and 0 or math.random(-22, 22)
 	local oz = homing and 0 or math.random(-22, 22)
-	local spawnPos = hrp.Position + Vector3.new(ox, JUNK_SPAWN_HEIGHT, oz)
+	local spawnPos
+	if band then
+		-- Ambient: fall through the sky ABOVE THE ISLAND the player is stood on, for the same reason
+		-- the plane showcase does -- over the gap's midpoint it is off to one side and invisible.
+		-- Entering high enough to be a long visible fall, but centred where you are looking.
+		local a = math.random() * 2 * math.pi
+		local r = SHOWCASE_RADIUS * 1.6 * math.sqrt(math.random())
+		local cx = band.fromX or band.cx or 0
+		local cz = band.fromZ or band.cz or 0
+		spawnPos = Vector3.new(cx + math.cos(a) * r, (band.fromY or band.lo) + 1200, cz + math.sin(a) * r)
+	else
+		spawnPos = hrp.Position + Vector3.new(ox, JUNK_SPAWN_HEIGHT, oz)
+	end
 	model:PivotTo(CFrame.new(spawnPos) * CFrame.Angles(math.random()*6, math.random()*6, math.random()*6))
 	model.Parent = workspace
 	local body = model.PrimaryPart
@@ -504,10 +697,22 @@ end
 task.spawn(function()
 	while true do
 		task.wait(JUNK_SPAWN_INTERVAL)
-		if _G.isFlying then
-			local c=player.Character; local h=c and c:FindFirstChild("HumanoidRootPart")
-			-- test flag spawns anywhere (incl. island 1); otherwise ONLY inside the two junk zones (7-8, 12-13)
-			if h and (JUNK_TEST_ON_ISLAND_1 or inJunkZone(h.Position.Y)) then createJunk() end
+		local c=player.Character; local h=c and c:FindFirstChild("HumanoidRootPart")
+		if h then
+			if _G.isFlying and (JUNK_TEST_ON_ISLAND_1 or inJunkZone(h.Position.Y)) then
+				createJunk()                       -- the real thing: aimed at you, hits you
+			else
+				-- Stood on an island (or climbing toward one): if there is a band overhead, drop
+				-- pieces through IT so the gap visibly has candy falling in it. TWO per tick at the
+				-- full rate -- from the ground the pieces are small and spread over a 175-stud
+				-- cylinder, so a trickle reads as nothing at all. This is scenery competing with an
+				-- empty sky; it can afford to be generous.
+				local band = bandBelowMe(h.Position.Y)
+				if band then
+					createJunk(band)
+					createJunk(band)
+				end
+			end
 		end
 	end
 end)
@@ -521,7 +726,31 @@ end)
 -- state); landed = they just roam. At most 2 planes shoot at once. A projectile hit reuses the
 -- rainbow knockdown (_G.applyBeamHit) -> knocked back to the most-recent island, every hit, no grace.
 -- Planes/bullets exist ONLY while the player is inside the plane band; cleared otherwise.
-local PLANE_BANDS = { {lo=3580, hi=4820} }   -- ONLY between islands 5 and 6 (Y 3580 -> 4820)
+-- THE SAME COPIED-HEIGHTS BUG THE JUNK ZONES HAD. This was
+--       { {lo = 3580, hi = 4820} }   -- "between islands 5 and 6"
+-- and 3580 / 4820 are FART TO FLOAT's Coconut Cove and Bread Board. On Candy's tower that strip
+-- happens to land between Cookie Crumble (3620) and Gumtree Park (6420) -- so the planes did fly,
+-- but in one arbitrary low gap and nowhere else across the other 94,000 studs of climb.
+--
+-- Derived from IslandOrder now, on the same JUNK_EVERY cadence as the falling candy, so the two
+-- hazards share one rule: something is waiting in the gap above every 4th island.
+local PLANE_BANDS = {}
+for _, z in ipairs(JUNK_ZONES) do
+	-- carried through whole: cx/cz aim the patrol at the real gap, fromY makes it visible from the
+	-- island below it
+	PLANE_BANDS[#PLANE_BANDS + 1] = {
+		lo = z.lo, hi = z.hi, cx = z.cx, cz = z.cz, fromY = z.fromY, toY = z.toY, slot = z.slot,
+	}
+end
+do
+	local parts = {}
+	for _, b in ipairs(PLANE_BANDS) do
+		parts[#parts + 1] = ("slot %d: seen from Y%d, flown %d..%d, centred (%d, %d)")
+			:format(b.slot, math.floor(b.fromY), math.floor(b.lo), math.floor(b.hi),
+				math.floor(b.cx), math.floor(b.cz))
+	end
+	print(("[Planes] %d patrol band(s) -- %s"):format(#PLANE_BANDS, table.concat(parts, " | ")))
+end
 -- ⚠ HYSTERESIS, AND IT IS NOT A NICETY. The band test used to be a bare "is Y between lo and hi",
 -- checked every frame, with the driver clearing every plane the moment it answered no and building
 -- four new ones the moment it answered yes again. Hover on the boundary -- or lose your character
@@ -533,9 +762,19 @@ local PLANE_BANDS = { {lo=3580, hi=4820} }   -- ONLY between islands 5 and 6 (Y 
 -- Entering still takes the exact boundary, so the band is where it always was; only leaving is
 -- sticky, and a wobble of a few studs cannot toggle it.
 local BAND_EXIT_MARGIN = 120
+-- WHEN DO THE PLANES EXIST?
+--
+-- They used to exist only while you were INSIDE the band -- so from the island below you looked up
+-- at empty sky, launched, and four biplanes appeared around you with no warning. A hazard you
+-- cannot see until you are in it is not a hazard you can plan around; it is an ambush.
+--
+-- Existence now starts at the ISLAND BELOW the gap (b.fromY) and runs to the top of the band. Stand
+-- on Gumtree Park, look up, and the patrol is circling overhead where you are about to fly. What
+-- does NOT change is the shooting: that is gated on being airborne further down, so while you are
+-- stood on the island they only roam. You get to watch the thing that is going to shoot at you.
 local function planeBandFor(y, current)
 	for _,b in ipairs(PLANE_BANDS) do
-		local lo, hi = b.lo, b.hi
+		local lo, hi = (b.fromY or b.lo), b.hi
 		if current == b then lo, hi = lo - BAND_EXIT_MARGIN, hi + BAND_EXIT_MARGIN end
 		if y >= lo and y <= hi then return b end
 	end
@@ -554,31 +793,52 @@ local function pWeld(a,b) local w=Instance.new("WeldConstraint"); w.Part0=a; w.P
 
 -- One welded plane model (12 parts). Forward = local -Z (nose). Returns the model + the propeller blade
 -- (kept UNwelded so it can be spun around the forward axis each frame).
+-- A CHRISTMAS CANDY-CANE BIPLANE. Every dimension, weld offset and the un-welded Prop are exactly
+-- as they were -- the flight model, the bank, the ScaleTo and the bullet muzzle all key off this
+-- geometry, so moving any of it would change how the hazard plays. Only paint and two additions:
+-- red/white barber stripes banded down the fuselage and across the wing (the thing that actually
+-- says "candy cane" at 280 studs), and a holly sprig on the tail.
 local function buildPlane()
 	local model=Instance.new("Model"); model.Name="HazardPlane"
-	local paint=Color3.fromRGB(178,58,52)
-	local metal=Color3.fromRGB(120,124,134)
-	local fus=pPart(model, Vector3.new(3.6,3.6,16), paint, Enum.Material.Metal, Enum.PartType.Block)
+	local paint=Color3.fromRGB(236,72,110)          -- candy-cane red
+	local cane =Color3.fromRGB(252,248,244)         -- peppermint white
+	local metal=Color3.fromRGB(255,205,90)          -- gold sugar, where the bare metal was
+	local fus=pPart(model, Vector3.new(3.6,3.6,16), paint, Enum.Material.SmoothPlastic, Enum.PartType.Block)
 	fus.CFrame=CFrame.new(); model.PrimaryPart=fus
-	local nose=pPart(model, Vector3.new(3,3.4,3.4), metal, Enum.Material.Metal, Enum.PartType.Cylinder)
+	-- the stripes: four white bands wrapped round the fuselage, angled like a real cane's
+	for k=-1,2 do
+		local band=pPart(model, Vector3.new(3.8,3.8,1.5), cane, Enum.Material.SmoothPlastic, Enum.PartType.Block)
+		band.CFrame=fus.CFrame*CFrame.new(0,0,k*3.6)*CFrame.Angles(math.rad(18),0,0); pWeld(fus,band)
+	end
+	local nose=pPart(model, Vector3.new(3,3.4,3.4), metal, Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
 	nose.CFrame=fus.CFrame*CFrame.new(0,0,-8.5)*CFrame.Angles(0,math.rad(90),0); pWeld(fus,nose)
-	local wing=pPart(model, Vector3.new(16,0.7,4.5), paint, Enum.Material.Metal, Enum.PartType.Block)
+	local wing=pPart(model, Vector3.new(16,0.7,4.5), paint, Enum.Material.SmoothPlastic, Enum.PartType.Block)
 	wing.CFrame=fus.CFrame*CFrame.new(0,-0.3,-0.5); pWeld(fus,wing)
-	local fin=pPart(model, Vector3.new(0.5,3.5,3), paint, Enum.Material.Metal, Enum.PartType.Block)
+	-- ...and across the wing, so it reads as candy from above and below too
+	for k=-1,1,2 do
+		local ws=pPart(model, Vector3.new(2.4,0.9,4.6), cane, Enum.Material.SmoothPlastic, Enum.PartType.Block)
+		ws.CFrame=wing.CFrame*CFrame.new(k*4.6,0,0); pWeld(fus,ws)
+	end
+	local fin=pPart(model, Vector3.new(0.5,3.5,3), cane, Enum.Material.SmoothPlastic, Enum.PartType.Block)
 	fin.CFrame=fus.CFrame*CFrame.new(0,2,7); pWeld(fus,fin)
-	local stab=pPart(model, Vector3.new(7,0.5,2.5), paint, Enum.Material.Metal, Enum.PartType.Block)
+	local stab=pPart(model, Vector3.new(7,0.5,2.5), paint, Enum.Material.SmoothPlastic, Enum.PartType.Block)
 	stab.CFrame=fus.CFrame*CFrame.new(0,0.3,7); pWeld(fus,stab)
-	local cockpit=pPart(model, Vector3.new(3,1.8,4), Color3.fromRGB(120,170,200), Enum.Material.Glass, Enum.PartType.Block, 0.35)
+	local cockpit=pPart(model, Vector3.new(3,1.8,4), Color3.fromRGB(190,240,255), Enum.Material.Glass, Enum.PartType.Block, 0.35)
 	cockpit.CFrame=fus.CFrame*CFrame.new(0,2.2,-1); pWeld(fus,cockpit)
+	-- holly on the tail fin, the one green note
+	local holly=pPart(model, Vector3.new(2.6,0.4,1.4), Color3.fromRGB(86,168,104), Enum.Material.SmoothPlastic, Enum.PartType.Block)
+	holly.CFrame=fus.CFrame*CFrame.new(0,3.6,7)*CFrame.Angles(0,0,math.rad(20)); pWeld(fus,holly)
+	local berry=pPart(model, Vector3.new(0.8,0.8,0.8), Color3.fromRGB(226,44,66), Enum.Material.SmoothPlastic, Enum.PartType.Ball)
+	berry.CFrame=fus.CFrame*CFrame.new(0,3.9,7); pWeld(fus,berry)
 	for s=-1,1,2 do
-		local strut=pPart(model, Vector3.new(0.4,3,0.4), metal, Enum.Material.Metal, Enum.PartType.Block)
+		local strut=pPart(model, Vector3.new(0.4,3,0.4), cane, Enum.Material.SmoothPlastic, Enum.PartType.Block)
 		strut.CFrame=fus.CFrame*CFrame.new(s*2.5,-3,-2); pWeld(fus,strut)
-		local wheel=pPart(model, Vector3.new(0.6,2,2), Color3.fromRGB(25,25,28), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
+		local wheel=pPart(model, Vector3.new(0.6,2,2), Color3.fromRGB(92,54,28), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
 		wheel.CFrame=fus.CFrame*CFrame.new(s*2.5,-4.4,-2); pWeld(fus,wheel)
 	end
-	local hub=pPart(model, Vector3.new(1.2,1.4,1.4), metal, Enum.Material.Metal, Enum.PartType.Cylinder)
+	local hub=pPart(model, Vector3.new(1.2,1.4,1.4), metal, Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
 	hub.CFrame=fus.CFrame*CFrame.new(0,0,-9)*CFrame.Angles(0,math.rad(90),0); pWeld(fus,hub)
-	local blade=pPart(model, Vector3.new(0.5,10,1.4), Color3.fromRGB(45,45,50), Enum.Material.SmoothPlastic, Enum.PartType.Block)
+	local blade=pPart(model, Vector3.new(0.5,10,1.4), Color3.fromRGB(150,225,190), Enum.Material.SmoothPlastic, Enum.PartType.Block)
 	blade.Name="Prop"; blade.CFrame=fus.CFrame*CFrame.new(0,0,-9.2)  -- NOT welded; spun each frame
 	model:ScaleTo(PLANE_SCALE)  -- uniformly scale the whole plane (parts + welded offsets + blade) to PLANE_SIZE
 	return model, blade
@@ -608,11 +868,55 @@ end
 
 -- A random point inside the gap airspace cylinder (radius GAP_RADIUS around X=0,Z=0, height between
 -- the band's padded lo/hi). sqrt() makes the points area-uniform so they don't bunch at the centre.
+-- HOW FAR ABOVE THE ISLAND THE PATROL DROPS TO WHILE YOU ARE STOOD ON IT.
+--
+-- Making the planes merely EXIST while you are on the island was not enough to see them. The band
+-- starts a long way up -- 1,764 studs above Candy Mine Ridge, 3,420 above Sugarbeet Farm -- and a
+-- 36-stud plane at 3,420 studs is about sixteen pixels. Technically visible; not something you
+-- notice, and not a warning.
+--
+-- So while you are below the band they fly a SHOWCASE circuit a few hundred studs over your head,
+-- where they read properly, and they climb back into the band on their own as you rise -- no
+-- teleporting, they simply pick their next waypoint from wherever they belong now.
+--
+-- ⚠ THIS IS PURELY A VISUAL DESCENT. The shooting gate further down now also requires you to be
+-- inside the REAL band, so bringing them within 400 studs of the island cannot turn into being shot
+-- off the launchpad. They come close enough to look at, and no closer to being dangerous.
+-- (SHOWCASE_LO / SHOWCASE_HI / SHOWCASE_RADIUS are declared up by the glider constants -- the
+-- ambient-glider loop and createJunk use them hundreds of lines above this point, and a local
+-- declared here was nil to both of them. See the note at the declaration.)
+
 local function randomGapPoint(band)
 	local r = GAP_RADIUS * math.sqrt(math.random())
 	local a = math.random() * 2 * math.pi
-	local y = (band.lo + GAP_VMARGIN) + math.random() * ((band.hi - GAP_VMARGIN) - (band.lo + GAP_VMARGIN))
-	return Vector3.new(math.cos(a) * r, y, math.sin(a) * r)
+
+	local loY = band.lo + GAP_VMARGIN
+	local hiY = band.hi - GAP_VMARGIN
+	local cx, cz = (band.cx or 0), (band.cz or 0)
+
+	local ch  = player.Character
+	local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+	if hrp and band.fromY and hrp.Position.Y < band.lo then
+		-- BELOW THE BAND -> CIRCLE OVER THE ISLAND YOU ARE STOOD ON.
+		--
+		-- ⚠ AND OVER *IT*, NOT OVER THE GAP. Dropping the altitude alone was not enough and this is
+		-- why: the tower zig-zags, so band.cx/cz -- the midpoint of the two islands -- is hundreds of
+		-- studs to one side of either of them. From Sugarbeet Farm (X 340) the patrol was orbiting
+		-- X -10: 350 studs past the edge of the island, out over empty sky behind you. Present,
+		-- spawning, logged, and nowhere you would ever look.
+		--
+		-- The showcase circuit uses the ISLAND's own X/Z and a tighter radius, so it is genuinely
+		-- overhead. The moment you climb into the band it goes back to the gap's centre line.
+		loY = band.fromY + SHOWCASE_LO
+		hiY = band.fromY + SHOWCASE_HI
+		cx, cz = (band.fromX or cx), (band.fromZ or cz)
+		r = SHOWCASE_RADIUS * math.sqrt(math.random())
+	end
+	local y = loY + math.random() * (hiY - loY)
+
+	-- AROUND THE GAP, NOT AROUND THE ORIGIN. band.cx/cz is the midpoint of the two islands this gap
+	-- joins; a cylinder at X=0,Z=0 was patrolling empty sky beside the route on every offset gap.
+	return Vector3.new(cx + math.cos(a) * r, y, cz + math.sin(a) * r)
 end
 
 -- ===== ENGINE FLY-BY (ported from the Food realm's EventClient) =====
@@ -771,8 +1075,16 @@ RunService.Heartbeat:Connect(function(dt)
 
 	-- LANDED-vs-FLYING GATE: planes only target/shoot while the player is AIRBORNE (FloorMaterial Air).
 	-- Landed (standing on an island) = they just roam, no targeting/projectiles at the player.
+	--
+	-- ...AND INSIDE THE REAL BAND. The patrol now descends to a showcase circuit a few hundred studs
+	-- over the island so you can actually see it from the ground (see SHOWCASE_LO above), which puts
+	-- armed planes within range of someone who has not left yet. Without this second condition,
+	-- "visible from the island" would have quietly become "shot at the moment you lift off", and the
+	-- gap between islands would stop being where the danger lives. Existence and DANGER are now two
+	-- different questions: they are visible from band.fromY, they only shoot from band.lo.
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	local airborne = (hum ~= nil) and (hum.FloorMaterial == Enum.Material.Air)
+	local inHazardZone = hrp.Position.Y >= band.lo
+	local airborne = (hum ~= nil) and (hum.FloorMaterial == Enum.Material.Air) and inHazardZone
 	if airborne ~= lastAirborne then
 		if airborne then print("[Planes] player flying -> targeting allowed")
 		else print("[Planes] player landed -> planes stop targeting") end

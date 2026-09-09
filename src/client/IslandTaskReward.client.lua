@@ -228,7 +228,7 @@ local function celebrate(island, islandName, tokens, petName)
 	-- 4px was the same crowding problem one size up; 2 keeps the digits distinct against the blue card.
 	local amtStroke = amount:FindFirstChildOfClass("UIStroke"); if amtStroke then amtStroke.Thickness = 2 end
 
-	local sub = label(card, "CRATE TOKENS", 20, CREAM)
+	local sub = label(card, "CRATE TICKETS", 20, CREAM)
 	sub.Size = UDim2.new(1, -28, 0, 26)
 	sub.Position = UDim2.new(0.5, 0, 0, 184)
 	sub.AnchorPoint = Vector2.new(0.5, 0)

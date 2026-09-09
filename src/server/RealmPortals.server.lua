@@ -356,6 +356,102 @@ Workspace.DescendantAdded:Connect(function(d) -- a Portal built or streamed in a
 end)
 
 --------------------------------------------------------------------------------
+-- the Candy portal stands on the old "COMING SOON" board
+--------------------------------------------------------------------------------
+-- The hub kept its placeholder from before the Candy place existed -- a board reading LOCKED / COMING SOON
+-- -- while the Candy portal was seated on its own marker somewhere else. The board is where that portal was
+-- always going to stand, so on boot the Candy marker is moved onto it and the board is retired (hidden, not
+-- destroyed: it is still there in Studio). The board is found by its TEXT, not its name: it was hand-placed
+-- in Studio and nothing in the repo knows what its parts are called. Runs once PlayerStats has finished
+-- positioning the islands (StandsReady), because both the board and the markers ride with Island 1.
+-- If more than one board matches, the one that also mentions CANDY wins.
+local function findComingSoonBoard()
+	local first
+	for _, d in ipairs(Workspace:GetDescendants()) do
+		if d:IsA("TextLabel") or d:IsA("TextButton") then
+			local t = string.upper(d.Text or "")
+			if t:find("COMING SOON", 1, true) or t:find("COMINGSOON", 1, true)
+				or (t:find("LOCKED", 1, true) and t:find("SOON", 1, true)) then
+				local part = d:FindFirstAncestorWhichIsA("BasePart")
+				if part then
+					if t:find("CANDY", 1, true) then return part, d end
+					first = first or part
+				end
+			end
+		end
+	end
+	return first
+end
+
+local function floorUnder(pos, ignore)
+	local p = RaycastParams.new()
+	p.FilterType = Enum.RaycastFilterType.Exclude
+	p.FilterDescendantsInstances = ignore
+	local hit = Workspace:Raycast(pos + Vector3.new(0, 4, 0), Vector3.new(0, -60, 0), p)
+	return hit and hit.Position.Y or nil
+end
+
+local function seatCandyOnBoard()
+	local marker = partsByRealm.candy and partsByRealm.candy[1]
+	if not marker then
+		print("[RealmPortals] no Candy marker assigned -- nothing to move onto the COMING SOON board")
+		return
+	end
+	local boardPart = findComingSoonBoard()
+	if not boardPart then
+		print("[RealmPortals] no 'COMING SOON' board found in Workspace (looked for a TextLabel/TextButton "
+			.. "saying so) -- the Candy portal stays on its own marker at " .. tostring(marker.Position))
+		return
+	end
+	-- The board's footprint: its own Model if it is a small prop (post + board), else just the one part.
+	local board = boardPart
+	local model = boardPart:FindFirstAncestorOfClass("Model")
+	if model then
+		local ok, _, size = pcall(function() return model:GetBoundingBox() end)
+		if ok and size and size.X <= 20 and size.Y <= 20 and size.Z <= 20 then board = model end
+	end
+	local bcf, bsize
+	if board:IsA("Model") then bcf, bsize = board:GetBoundingBox() else bcf, bsize = board.CFrame, board.Size end
+	local boardParts = {}
+	if board:IsA("Model") then
+		for _, d in ipairs(board:GetDescendants()) do
+			if d:IsA("BasePart") then boardParts[#boardParts + 1] = d end
+		end
+	else
+		boardParts[1] = board
+	end
+
+	-- Keep the marker's own height above the ground it stands on; the board's ground may be a different slab.
+	local ignore = { marker }
+	for _, bp in ipairs(boardParts) do ignore[#ignore + 1] = bp end
+	local markerFloor = floorUnder(marker.Position, ignore)
+	local boardFloor  = floorUnder(Vector3.new(bcf.Position.X, bcf.Position.Y - bsize.Y * 0.5, bcf.Position.Z), ignore)
+	local y = marker.Position.Y
+	if markerFloor and boardFloor then y = boardFloor + (marker.Position.Y - markerFloor) end
+	local from = marker.Position
+	marker.CFrame = CFrame.new(bcf.Position.X, y, bcf.Position.Z) * (marker.CFrame - marker.CFrame.Position)
+
+	-- Retire the board: invisible, walk-through, no text. The client rebuilds the portal on the moved marker.
+	for _, bp in ipairs(boardParts) do
+		bp.Transparency = 1; bp.CanCollide = false; bp.CanQuery = false; bp.CastShadow = false
+		for _, d in ipairs(bp:GetDescendants()) do
+			if d:IsA("Decal") or d:IsA("Texture") then d.Transparency = 1
+			elseif d:IsA("SurfaceGui") or d:IsA("BillboardGui") then d.Enabled = false end
+		end
+	end
+	print(("[RealmPortals] Candy portal moved from %s onto the COMING SOON board '%s' at %s; the board is hidden")
+		:format(tostring(from), board:GetFullName(), tostring(marker.Position)))
+end
+
+task.spawn(function()
+	local waited = 0
+	while not Workspace:GetAttribute("StandsReady") and waited < 90 do task.wait(0.5); waited += 0.5 end
+	task.wait(0.5) -- let the marker and the board settle after the island move
+	local ok, err = pcall(seatCandyOnBoard)
+	if not ok then warn("[RealmPortals] Candy-on-board failed: " .. tostring(err)) end
+end)
+
+--------------------------------------------------------------------------------
 -- the teleport
 --------------------------------------------------------------------------------
 -- Is the player actually AT a portal for the realm they asked for? Stops a fired remote from teleporting

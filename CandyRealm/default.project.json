@@ -16,6 +16,11 @@
       "$path": "src/server"
     },
 
+    "ReplicatedFirst": {
+      "$className": "ReplicatedFirst",
+      "$path": "src/replicatedfirst"
+    },
+
     "ReplicatedStorage": {
       "$className": "ReplicatedStorage",
       "Shared": {

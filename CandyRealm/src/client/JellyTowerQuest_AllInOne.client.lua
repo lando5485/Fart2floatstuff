@@ -19,6 +19,18 @@
 --     "You conquered the Jelly Tower!" banner. /complete finishes it instantly.
 --======================================================================
 
+--======================================================================
+-- ⚠ RETIRED. There is no island2 -- the model was never built (QuestRetainer reported it as a
+-- MISSING ISLAND every boot) and the tiers, flag and NPC this quest needs were removed from the
+-- world when island18 took its ladder slot. Left running, the file spent 45s of polls per boot
+-- printing four "not found" warnings for things that cannot exist. It now stops here.
+--
+-- The whole build below is kept intact: if the Jelly Tower ever comes back, delete this return,
+-- restore its rows in QuestRetainer / IslandTaskWatcher / QuestJournal, and it runs as before.
+--======================================================================
+print("[JellyTower] retired -- island2 does not exist and the quest was removed from the ladder; not running")
+if true then return end
+
 local Players         = game:GetService("Players")
 local Workspace       = game:GetService("Workspace")
 local RunService      = game:GetService("RunService")
@@ -157,9 +169,12 @@ do local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 22; sz.Pare
    local pad = Instance.new("UIPadding"); pad.PaddingLeft = UDim.new(0,14); pad.PaddingRight = UDim.new(0,14); pad.Parent = objLabel end
 
 local function baseText()
-	if won then return "\xF0\x9F\x9A\xA9 You conquered the Jelly Tower!" end
-	if not questAccepted then return "\xF0\x9F\x9F\xA3 Go talk to the Candy NPC!" end
-	return ("\xF0\x9F\x9F\xA3 Bounce up the Jelly Tower!  Floor %d/%d"):format(math.min(reached, LEVELS), LEVELS)
+	if won then return "\xF0\x9F\x9A\xA9 You grabbed the flag at the top of the Jelly Tower!" end
+	if not questAccepted then
+		return "\xF0\x9F\x9F\xA3 Talk to the Candy NPC to start -- follow the green arrows!"
+	end
+	return ("\xF0\x9F\x9F\xA3 Jump on the jelly to bounce up the tower!  Floor %d/%d")
+		:format(math.min(reached, LEVELS), LEVELS)
 end
 local flashTok = 0
 local wantVisible = false
@@ -299,7 +314,7 @@ local function winBanner()
 	local msg = "\xF0\x9F\x9A\xA9 You conquered the Jelly Tower!"
 	if _G.NotifyCenter and _G.NotifyCenter.push then
 		pcall(function() _G.NotifyCenter.push({
-			top      = "â¨ QUEST COMPLETE",
+			top      = "\xE2\x9C\xA8 QUEST COMPLETE",
 			text     = msg,
 			color    = STROKE,
 			priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT or nil,
@@ -328,11 +343,15 @@ end
 -- ============================================================================
 local function questPages()
 	if won then return { "You made it to the top! Amazing! \xF0\x9F\x9A\xA9" } end
-	if questAccepted then return { "The Jelly Tower is slippery -- keep bouncing!", ("You've reached floor %d of %d."):format(math.min(reached, LEVELS), LEVELS) } end
+	if questAccepted then
+		return { ("You're on floor %d of %d."):format(math.min(reached, LEVELS), LEVELS),
+			"Keep jumping on the jelly to bounce higher!" }
+	end
 	return {
-		"That Jelly Tower is far too slippery to climb!",
-		"Bounce your way up all 3 jelly floors.",
-		"Reach the top and capture the flag!",
+		"That Jelly Tower is too slippery to climb!",
+		"But jelly BOUNCES!",
+		("Jump your way up all %d floors."):format(LEVELS),
+		"Grab the flag at the top!",
 	}
 end
 local function wireNPC(head)
@@ -353,7 +372,7 @@ local function wireNPC(head)
 		end)
 	end
 	prompt.Triggered:Connect(function()
-		if index == 0 then pages = questPages() end
+		if index == 0 then pages = (_G.capBubble and _G.capBubble(questPages())) or questPages() end
 		index += 1
 		if not pages or index > #pages then close(); return end
 		if index == 2 and not questAccepted then questAccepted = true; refreshBanner() end
@@ -456,6 +475,9 @@ end)
 -- /complete -- test command: instantly win (near the tower)
 -- ============================================================================
 local function onCommand(msg)
+	-- DEV ONLY. QuestDevGate publishes this; read at command time so load order cannot matter,
+	-- and nil (gate not up yet) refuses. Without it any player could type their way to the whole realm.
+	if not _G.questDevOK then return end
 	if tostring(msg or ""):lower():sub(1, 9) ~= "/complete" then return end
 	-- only completes when you're standing on island4 (near ITS NPC). If that NPC isn't found
 	-- yet, do nothing -- never complete on a "maybe", or /complete on another island fires this.

@@ -348,32 +348,24 @@ task.spawn(function()
 		closeBtn.Position = UDim2.new(1, -48, 0, 8)
 		local cc = closeBtn:FindFirstChildOfClass("UICorner"); if cc then cc.CornerRadius = UDim.new(0, 8) end
 	end
-	if not panel:FindFirstChild("CoinPill") then
-		local pill = new("Frame", { Name = "CoinPill", BackgroundColor3 = Color3.fromRGB(255, 200, 60), BorderSizePixel = 0,
-			Position = UDim2.new(1, -214, 0, 10), Size = UDim2.fromOffset(158, 36) }, panel)
-		corner(pill, 10); stroke(pill, Color3.fromRGB(190, 140, 20), 2)
-		local lbl = new("TextLabel", { Name = "Amount", Text = "\xF0\x9F\xAA\x99 0", Font = Enum.Font.FredokaOne,
-			TextScaled = true, TextColor3 = Color3.fromRGB(60, 40, 0), BackgroundTransparency = 1,
-			Size = UDim2.fromScale(1, 1) }, pill)
-		new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8),
-			PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6) }, lbl)
-		new("UITextSizeConstraint", { MaxTextSize = 22 }, lbl)
-		-- Read the SAME leaderstats value the HUD coin counter reads, and follow it, so the pill can never
-		-- disagree with the number on screen behind the shop.
-		local function bindCoins()
-			local ls = player:FindFirstChild("leaderstats")
-			local coins = ls and ls:FindFirstChild("Coins")
-			if not coins then return false end
-			local function paint() lbl.Text = "\xF0\x9F\xAA\x99 " .. tostring(coins.Value) end
-			coins.Changed:Connect(paint); paint()
-			return true
+	-- ===== NO COIN PILL =====
+	-- THIS file built it. The yellow pill in the shop header was created right here as panel.CoinPill, with a
+	-- panel.CoinPill.Amount label bound to leaderstats.Coins. (An earlier pass of mine blamed the separate
+	-- legacy CoinGui readout and hid that instead, which is why the pill kept coming back: the thing on screen
+	-- was never the thing being hidden.)
+	--
+	-- It is not built any more, and a sweep runs alongside that: any CoinPill already in the panel -- from a
+	-- stale baked-in copy of this script, or saved into the place file -- is destroyed, and ChildAdded keeps
+	-- destroying it. That is what makes it stay gone across open/close instead of only at startup.
+	--
+	-- The count is not lost: TokenHud's currency capsule (top right, beside the gear) shows coins the whole
+	-- time the shop is open, so the number is still on screen -- once instead of twice.
+	do
+		local function killPill(c)
+			if c and c.Name == "CoinPill" then c:Destroy() end
 		end
-		if not bindCoins() then
-			task.spawn(function()
-				local waited = 0
-				while waited < 30 and not bindCoins() do task.wait(0.5); waited += 0.5 end
-			end)
-		end
+		for _, c in ipairs(panel:GetChildren()) do killPill(c) end
+		panel.ChildAdded:Connect(killPill)
 	end
 
 	-- skins list lives in the same rect as the tier list, hidden until the Skins tab is picked

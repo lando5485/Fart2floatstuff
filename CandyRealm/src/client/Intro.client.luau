@@ -92,7 +92,21 @@ do
 	end)
 	if okTd and type(td) == "table" then arrivedByPortal = true end
 
-	if not arrivedByPortal then
+	-- ⚠ THE COVER IS ALREADY UP, AND WAS BEFORE THIS SCRIPT EXISTED. IntroCover.client.luau runs
+	-- from ReplicatedFirst -- the only place that executes before the rest of the game replicates
+	-- -- so the screen has been black since frame one. Building a second one here would be both
+	-- redundant and LATE: this file sits behind four 30s WaitForChild calls, and every one of
+	-- those is time the player would have spent looking at the world instead of the film.
+	--
+	-- The old code also only covered non-portal joins. It now covers ALWAYS: portal arrivals get
+	-- ArrivalCinematic at DisplayOrder 10000, which draws over this anyway, so there was never a
+	-- reason for the gap -- only a reason it was never noticed.
+	if _G.introCover and _G.introCover.gui and _G.introCover.gui.Parent then
+		coverGui = _G.introCover.gui
+	elseif not arrivedByPortal then
+		-- FALLBACK, and it should never run: ReplicatedFirst missing means the project is not
+		-- synced. Better a late cover than none, but say so, because it means the sync is wrong.
+		warn("[Intro] no ReplicatedFirst cover found -- is src/replicatedfirst synced? Building a late one.")
 		coverGui = Instance.new("ScreenGui")
 		coverGui.Name = "IntroPreRoll"
 		coverGui.ResetOnSpawn = false
@@ -115,7 +129,10 @@ end
 local function coverCut()
 	if coverDone then return end
 	coverDone = true
-	if coverGui then pcall(function() coverGui:Destroy() end) end
+	-- delegate to whoever OWNS the cover. Destroying it from here would leave IntroCover's own
+	-- backstop holding a dead instance, and its `done` flag still false.
+	if _G.introCover then pcall(_G.introCover.cut)
+	elseif coverGui then pcall(function() coverGui:Destroy() end) end
 	coverGui = nil
 end
 
@@ -124,6 +141,7 @@ end
 local function coverFade()
 	if coverDone then return end
 	coverDone = true
+	if _G.introCover then coverGui = nil; pcall(_G.introCover.fade); return end
 	local gui = coverGui
 	coverGui = nil
 	if not gui then return end
@@ -161,13 +179,18 @@ end)
 -- (the opening punch, both orbits, the crane landing -- shots built to be looked at), while the whips
 -- take only +0.3s each: a whip-by exists to rip past, and stretching one to 1.6s kills the very speed
 -- it is there to sell.
+-- ⚠ THESE ARE SLOT NUMBERS, SO THEY MOVE WHEN THE TOWER DOES. The space-economy port took the
+-- ladder from 11 rungs to 12, which shifted every one of these: the opening punch was written as
+-- "slot 11 = the summit" and slot 11 is now Marshmallow Camp, one island short of it, while slot 7
+-- was Chocolate Chasm -- an island that was never actually built, so the orbit shot had nothing to
+-- orbit. Re-pointed below; five of the six shots land on the SAME islands they always did.
 local SHOTS = {
-	{ slot = 11, move = "punch", t = 3.0, fov0 = 95, fov1 = 55 }, -- Bakery Summit      (was 1.8)
-	{ slot = 9,  move = "whip",  t = 1.3, fov0 = 90, fov1 = 95 }, -- Frostbell Peak     (was 1.0)
-	{ slot = 7,  move = "orbit", t = 2.4, fov0 = 70, fov1 = 62 }, -- Chocolate Chasm    (was 1.4)
-	{ slot = 5,  move = "whip",  t = 1.3, fov0 = 92, fov1 = 98 }, -- Taffy Town         (was 1.0)
-	{ slot = 3,  move = "orbit", t = 2.3, fov0 = 72, fov1 = 60 }, -- Cookie Crumble     (was 1.3)
-	{ slot = 1,  move = "crane", t = 3.6, fov0 = 80, fov1 = 70 }, -- Candy Cane Court   (was 2.4)
+	{ slot = 13, move = "punch", t = 3.0, fov0 = 95, fov1 = 55 }, -- Pop Rock Quarry    (the summit, whatever its number)
+	{ slot = 11, move = "whip",  t = 1.3, fov0 = 90, fov1 = 95 }, -- Marshmallow Camp
+	{ slot = 8,  move = "orbit", t = 2.4, fov0 = 70, fov1 = 62 }, -- Bakery Summit
+	{ slot = 5,  move = "whip",  t = 1.3, fov0 = 92, fov1 = 98 }, -- Taffy Town         (unchanged)
+	{ slot = 3,  move = "orbit", t = 2.3, fov0 = 72, fov1 = 60 }, -- Cookie Crumble     (unchanged)
+	{ slot = 1,  move = "crane", t = 3.6, fov0 = 80, fov1 = 70 }, -- Candy Cane Court   (unchanged)
 }
 
 local DEFAULT_FOV = 70

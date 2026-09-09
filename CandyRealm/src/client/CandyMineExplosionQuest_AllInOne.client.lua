@@ -3,10 +3,17 @@
 --======================================================================
 -- ISLAND 16 -- "CANDY MINE EXPLOSION"
 --
---   1. FIND     five unstable candy crystals around the cliffs (your parts named "unstable")
+--   1. FIND     four unstable candy crystals around the cliffs (your parts named "unstable")
 --   2. CARRY    each one back to the centre, to the giant candy
---   3. PLACE    they ring the giant candy, one charge per socket
---   4. BLOW IT  all five placed -> the charge sequence runs and the giant candy cracks open
+--   3. THE LIVE ONE  the FINAL crystal wakes up the moment you grab it: it is armed in your
+--                hands, the fuse HUD becomes its clock, and you have ARM_SECONDS to sprint it
+--                onto a pad. Too slow -> it fizzles and flies home; grab it and go again.
+--                No death, no lost progress -- just a finale with a finale mechanic in it.
+--   4. THE FUSE  seating the LAST charge arms the shot: a 10s countdown runs (no prompt to
+--                press), the island's light DIES second by second, and the HUD reads your
+--                actual distance -- "SAFE -- KEEP GOING!" vs "TOO CLOSE -- RUN!!". Standing
+--                inside LAUNCH_RANGE at zero gets you comedically flung (harmless), because
+--                a countdown someone can ignore point-blank was a countdown about nothing.
 --
 -- ⚠ ISLAND 16 IS OFF THE LADDER, ON PURPOSE (your call). It is NOT in IslandOrder.SLOT_TO_ISLAND, so
 -- IslandLayout leaves it wherever Studio has it and no crossing leads to it -- reach it with /island16 or
@@ -65,8 +72,17 @@ local PICKUP_RANGE   = 12             -- how close to grab a crystal
 -- mean to. Also reused as the BLOW IT prompt's range on the candy itself, where it is measured from the
 -- candy and so is the "standing at the ring" distance -- which is what you want for the detonator.
 local PLACE_RANGE    = 26
-local CHARGES        = 5              -- one per crystal; the ring around the candy has this many sockets
+local CHARGES        = 4              -- one per crystal; the ring around the candy has this many sockets.
+                                      -- 4, not 5: island16 only has four crystals you can actually pick
+                                      -- up, and a fifth socket meant a ring with a permanently empty hole
+                                      -- and a counter that could never reach its own target. This ONE
+                                      -- number drives the socket ring, the crystal cap, every "x of y"
+                                      -- line and the BLOW IT gate, so they cannot drift apart.
 local RING_GAP       = 8              -- studs out from the candy's edge that the sockets sit
+local ARM_SECONDS    = 15             -- how long the LIVE final crystal gives you to reach a pad
+                                      -- before it fizzles and flies home (retry, never a fail)
+local LAUNCH_RANGE   = 60             -- inside this at detonation = comedically flung (harmless);
+                                      -- also what the fuse HUD's SAFE / TOO CLOSE line reads
 
 -- Audio: "" = silent and nothing is created. Same rule as every other quest here.
 local SOUND_PICKUP   = ""
@@ -125,6 +141,17 @@ local accepted   = false
 local finished   = false
 local carrying   = nil    -- the crystal record currently in hand
 local placedCount = 0
+-- THE FUSE. Seating the LAST charge arms the shot; nothing is pressed. fuseLeft is the second
+-- currently on the clock (nil when it is not running) and it is what the banner reads, so the
+-- countdown has ONE source and the on-screen number can never disagree with the objective line.
+local FUSE_SECONDS = 10
+local fuseLeft   = nil
+local armLeft    = nil    -- seconds left on the LIVE final crystal in your hands (nil = not armed)
+local startFuse            -- assigned after crackOpen, which it calls at zero
+-- THE LIGHTS DIE WITH THE FUSE: a gloom wash that deepens every second of the countdown, so the
+-- escape run happens into gathering dark. Ours alone to enable/disable -- no sky system fought.
+local gloom = Instance.new("ColorCorrectionEffect")
+gloom.Name = "CandyMineFuseGloom"; gloom.Enabled = false; gloom.Parent = Lighting
 local crystals   = {}     -- { part=, home=CFrame, taken=bool, placed=bool, aura=Folder, prompt= }
 local sockets    = {}     -- ring positions around the giant candy
 local candyPart           -- the giant candy's BasePart (or the model's biggest part)
@@ -312,22 +339,62 @@ do
 	local pad = Instance.new("UIPadding"); pad.PaddingLeft = UDim.new(0,14); pad.PaddingRight = UDim.new(0,14); pad.Parent = objLabel
 end
 
+--======================================================================
+-- THE COUNTDOWN
+--======================================================================
+-- Its OWN ScreenGui, deliberately, and not the objective banner: the objective banner hides itself
+-- past BANNER_RANGE, and the whole point of a fuse is that you are running AWAY from the candy
+-- while it burns. A countdown that vanishes the moment you get clear is a countdown that is not
+-- doing its job.
+local fuseGui = Instance.new("ScreenGui")
+fuseGui.Name = "CandyMineFuse"; fuseGui.ResetOnSpawn = false
+fuseGui.IgnoreGuiInset = true; fuseGui.DisplayOrder = 30; fuseGui.Enabled = false
+fuseGui.Parent = player:WaitForChild("PlayerGui")
+
+local fuseCap = Instance.new("TextLabel")
+fuseCap.AnchorPoint = Vector2.new(0.5, 0)
+fuseCap.Position = UDim2.new(0.5, 0, 0.16, 0); fuseCap.Size = UDim2.new(0, 560, 0, 34)
+fuseCap.BackgroundTransparency = 1; fuseCap.Font = Enum.Font.FredokaOne; fuseCap.TextSize = 30
+fuseCap.TextColor3 = DANGER; fuseCap.Text = "GET CLEAR!"; fuseCap.Parent = fuseGui
+do local t = Instance.new("UIStroke", fuseCap); t.Color = Color3.new(0, 0, 0); t.Thickness = 3
+   t.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual end
+
+local fuseNum = Instance.new("TextLabel")
+fuseNum.AnchorPoint = Vector2.new(0.5, 0)
+fuseNum.Position = UDim2.new(0.5, 0, 0.20, 0); fuseNum.Size = UDim2.new(0, 300, 0, 150)
+fuseNum.BackgroundTransparency = 1; fuseNum.Font = Enum.Font.FredokaOne; fuseNum.TextScaled = true
+fuseNum.TextColor3 = GOLD; fuseNum.Text = "10"; fuseNum.Parent = fuseGui
+do local t = Instance.new("UIStroke", fuseNum); t.Color = Color3.new(0, 0, 0); t.Thickness = 5
+   t.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual end
+
 -- PROGRESS IS IN THE TEXT AT EVERY STAGE. The banner should always answer "what now, and how far in am I".
 local function baseText()
 	if finished then return "\xF0\x9F\x92\xA5 The giant candy is cracked open -- nice blast!" end
-	if not accepted then return "\xF0\x9F\x92\xA5 Go talk to the Candy NPC!" end
+	if not accepted then
+		return "\xF0\x9F\x92\xA5 Talk to the Candy NPC to start -- follow the green arrows!"
+	end
 	-- Names the actual target: a GLOWING PAD, not "the giant candy". The pads are what you walk to.
+	if carrying and armLeft then
+		return ("\xE2\x9A\xA0 IT'S LIVE -- stand on a gold pad NOW!  %ds before it fizzles!"):format(armLeft)
+	end
 	if carrying then
-		return ("\xF0\x9F\x92\xA5 Stand on a glowing gold pad by the giant candy to set the charge!  %d/%d")
+		return ("\xF0\x9F\x92\xA5 Carry it to a glowing GOLD PAD by the giant candy and stand on it!  %d/%d")
 			:format(placedCount, CHARGES)
 	end
 	local found = 0
 	for _, c in ipairs(crystals) do if c.taken or c.placed then found += 1 end end
-	if placedCount >= CHARGES then return "\xF0\x9F\x92\xA5 All charges set -- BLOW IT!" end
-	if found >= #crystals and #crystals > 0 and placedCount < CHARGES then
-		return ("\xF0\x9F\x92\xA5 Place the charges around the giant candy:  %d/%d"):format(placedCount, CHARGES)
+	if fuseLeft then
+		return ("\xE2\x9A\xA0 ALL CHARGES ARMED -- BLOWING IN %d! GET CLEAR OF THE CANDY!"):format(fuseLeft)
 	end
-	return ("\xF0\x9F\x92\xA5 Find the unstable candy crystals in the cliffs:  %d/%d"):format(placedCount, CHARGES)
+	if placedCount >= CHARGES then
+		return "\xE2\x9A\xA0 All charges armed -- GET CLEAR!"
+	end
+	if found >= #crystals and #crystals > 0 and placedCount < CHARGES then
+		return ("\xF0\x9F\x92\xA5 Carry each crystal to a glowing GOLD PAD by the giant candy:  %d/%d")
+			:format(placedCount, CHARGES)
+	end
+	return ("\xF0\x9F\x92\xA5 Search the cliffs for glowing crystals -- press Take on each:  %d/%d")
+		:format(placedCount, CHARGES)
 end
 
 refreshBanner = function() objLabel.Text = baseText() end
@@ -451,6 +518,65 @@ end
 -- ============================================================================
 -- CARRY / PLACE
 -- ============================================================================
+-- THE LIVE ONE. Picking up the FINAL charge (three already seated) wakes it: red aura, the
+-- fuse HUD becomes its clock, and ARM_SECONDS to sprint it onto a pad. Run out of clock and
+-- it FIZZLES -- flies back to where it was found, relights pink, and the prompt re-arms.
+-- A retry, never a fail: the finale gets a sprint without ever getting a death.
+local function armCarry(c)
+	if armLeft then return end
+	task.spawn(function()
+		-- NOT addAura: its glow shell is anchored and does not follow a moving part (its own
+		-- comment says so) -- an armed aura would be left floating at the pickup spot while the
+		-- crystal rides overhead. A Highlight and a light PARENTED to the part follow it anywhere.
+		local live = Instance.new("Folder"); live.Name = "LiveGlow"; live.Parent = c.part
+		local hl = Instance.new("Highlight")
+		hl.FillColor = DANGER; hl.FillTransparency = 0.55
+		hl.OutlineColor = Color3.new(1, 1, 1); hl.OutlineTransparency = 0.1
+		hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		hl.Adornee = c.part; hl.Parent = live
+		TweenService:Create(hl, TweenInfo.new(0.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+			{ FillTransparency = 0.85 }):Play()
+		local lt = Instance.new("PointLight")
+		lt.Color = DANGER; lt.Brightness = 2.4; lt.Range = 18; lt.Shadows = false
+		lt.Parent = c.part; lt.Name = "LiveLight"
+		fuseGui.Enabled = true
+		if _G.NotifyCenter then pcall(function() _G.NotifyCenter.push({
+			text = "\xE2\x9A\xA0 The last one's LIVE! Sprint it to a gold pad!", color = DANGER }) end) end
+		for t = ARM_SECONDS, 1, -1 do
+			if c.placed or finished or carrying ~= c then break end
+			armLeft = t
+			fuseNum.Text = tostring(t)
+			fuseNum.TextColor3 = (t <= 5) and DANGER or GOLD
+			fuseCap.Text = "IT'S LIVE -- GET IT TO A GOLD PAD!"
+			fuseNum.Size = UDim2.new(0, 340, 0, 170)
+			tween(fuseNum, 0.22, { Size = UDim2.new(0, 300, 0, 150) })
+			refreshBanner()
+			task.wait(1)
+		end
+		armLeft = nil
+		live:Destroy()                                        -- the live glow ends with the sprint
+		local ll = c.part:FindFirstChild("LiveLight"); if ll then ll:Destroy() end
+		if c.placed or finished or carrying ~= c then refreshBanner(); return end   -- it made it (or /done took over)
+
+		-- FIZZLE: back it goes. carrying is cleared FIRST so the carry loop stops pinning the
+		-- part overhead and the fly-home tween owns it.
+		fuseGui.Enabled = false
+		carrying = nil
+		clearAura(c.part)
+		c.part.Anchored = true
+		tween(c.part, 0.7, { CFrame = c.home }, Enum.EasingStyle.Quad)
+		task.delay(0.75, function()
+			if c.placed or finished then return end
+			c.taken = false
+			addAura(c.part, PINK)
+			if c.prompt then c.prompt.Enabled = true end
+		end)
+		if _G.NotifyCenter then pcall(function() _G.NotifyCenter.push({
+			text = "\xF0\x9F\x92\xA8 It fizzled and flew home! Grab it and RUN this time!", color = DANGER }) end) end
+		refreshBanner()
+	end)
+end
+
 local function pickUp(c)
 	-- SAY WHY, don't just refuse. Grabbing a crystal before taking the job used to return silently, and an
 	-- inert prompt is indistinguishable from a broken one -- especially on this island, where the crystals
@@ -474,6 +600,8 @@ local function pickUp(c)
 	local s = hrp and select(1, nearestFreeSocket(hrp.Position)) or nextFreeSocket()
 	local aim = (s and s.pos) or (candyPart and candyPart.Position)
 	if _G.guideTrailTo and aim then pcall(function() _G.guideTrailTo(aim) end) end
+	-- three seated + this one in hand = the last charge. It wakes up.
+	if placedCount >= CHARGES - 1 then armCarry(c) end
 end
 
 -- `c` defaults to whatever is in your hands. It is an explicit parameter so /done can seat a crystal
@@ -491,6 +619,8 @@ local function placeCharge(s, c, animate)
 	c.placed = true
 	s.filled = true
 	placedCount += 1
+	-- a LIVE charge that made it: its sprint clock stops here (startFuse takes the HUD next)
+	if armLeft then armLeft = nil; fuseGui.Enabled = false end
 
 	c.part.Anchored = true
 	local seated = CFrame.new(s.pos + Vector3.new(0, 1.6, 0))
@@ -510,6 +640,12 @@ local function placeCharge(s, c, animate)
 	playSound(SOUND_PLACE, 0.7)
 	refreshBanner()
 	print(("[CandyMine] charge %d/%d placed"):format(placedCount, CHARGES))
+
+	-- ARMING IS THE TRIGGER. There is no detonator to walk back to and press -- the moment the last
+	-- charge is seated the shot is live and the clock starts. task.defer so the fuse begins on the
+	-- next step rather than inside the placement that caused it (/done seats all four in a row, and
+	-- starting mid-loop would run the countdown while charges were still flying to their sockets).
+	if placedCount >= CHARGES and startFuse then task.defer(startFuse) end
 end
 
 -- The carried crystal rides above the player -- no welds, no physics, so it cannot shove anyone.
@@ -884,10 +1020,17 @@ local function candyStorm(origin, onExit)
 		jump = hum and hum.JumpPower or 50,
 		auto = hrp and hrp.Anchored or false,
 	}
+	-- claim the sky for the finale (SkyByAltitude pins Brightness and OutdoorAmbient every frame)
+	do
+		local claims = _G.questSkyClaims; if not claims then claims = {}; _G.questSkyClaims = claims end
+		claims.candymine = true
+	end
+
 	local restored = false
 	local function restore()
 		if restored then return end
 		restored = true
+		if _G.questSkyClaims then _G.questSkyClaims.candymine = nil end
 		pcall(function()
 			Lighting.Ambient = snap.amb; Lighting.OutdoorAmbient = snap.out
 			Lighting.FogColor = snap.fogC; Lighting.FogEnd = snap.fogE; Lighting.FogStart = snap.fogS
@@ -1090,8 +1233,25 @@ local function crackOpen()
 		-- ---- FLASH ------------------------------------------------------------------------------------
 		-- BEFORE anything moves. The white frame is what the eye reads as the detonation; the geometry
 		-- underneath is then already mid-flight when vision comes back, which is why it feels instant.
+		gloom.Enabled = false                       -- the blast IS the light coming back
 		screenFlash(Color3.new(1, 1, 1), 0.05, 0.5)
 		shakeCamera(2.2, 1.5)
+
+		-- THE BLAST CAN TOSS YOU -- harmlessly, and only if you ignored ten seconds of a HUD reading
+		-- TOO CLOSE. Comedy, not damage: a big up-and-away fling with a tumble, nothing solid touches
+		-- you (the blast geometry stays CanCollide=false as documented below), and Roblox has no fall
+		-- damage. The countdown finally means something at point-blank.
+		do
+			local lhrp = hrpOf()
+			if lhrp and (lhrp.Position - origin).Magnitude <= LAUNCH_RANGE then
+				local fling = Vector3.new(lhrp.Position.X - origin.X, 0, lhrp.Position.Z - origin.Z)
+				local dir = (fling.Magnitude > 1) and fling.Unit or Vector3.new(0, 0, 1)
+				lhrp.AssemblyLinearVelocity = dir * 70 + Vector3.new(0, 95, 0)
+				lhrp.AssemblyAngularVelocity = Vector3.new(8, 12, 6)
+				if _G.NotifyCenter then pcall(function() _G.NotifyCenter.push({
+					text = "\xF0\x9F\x92\xA5 THAT'S why we said get clear!", color = GOLD }) end) end
+			end
+		end
 
 		local flashLight = Instance.new("PointLight")
 		flashLight.Color = GOLD; flashLight.Brightness = 14; flashLight.Range = 150; flashLight.Shadows = false
@@ -1335,15 +1495,25 @@ local function questPages()
 		return { "The candy's open!\nGo see what's inside. \xF0\x9F\x92\x9B" }
 	end
 	if placedCount >= CHARGES then
-		return { "All five charges are set.\nStand back and blow it!" }
+		return { ("%d charges armed!\nRUN! Blows in %d seconds!")
+			:format(CHARGES, FUSE_SECONDS) }
 	end
 	if accepted then
-		return { ("Keep going!\nCharges set: %d of %d."):format(placedCount, CHARGES) }
+		local lines = { ("Keep going!\nCharges set: %d of %d."):format(placedCount, CHARGES),
+			"Press Take on a crystal in the cliffs, then stand on a gold pad with it." }
+		if placedCount >= CHARGES - 1 then
+			lines[#lines + 1] = ("Careful now -- the LAST one wakes up LIVE.\nYou'll have %d seconds. RUN it in!")
+				:format(ARM_SECONDS)
+		end
+		return lines
 	end
+	-- CHARGES rather than a hard-coded "five", so the count on screen and the count the
+	-- foreman asks for can never drift apart
 	return {
 		"That giant candy won't crack.\nNothing we've tried works.",
-		"Five unstable crystals are in the cliffs.\nCarry each one back here.",
-		"Set them on the glowing pads.\nThen we blow it open!",
+		("%d crystals hide in the cliffs.\nPress Take."):format(CHARGES),
+		"Carry them to the glowing GOLD PADS.",
+		"The last one wakes ANGRY. Then RUN.",
 	}
 end
 
@@ -1365,7 +1535,7 @@ local function wireNPC(head)
 		end)
 	end
 	prompt.Triggered:Connect(function()
-		if index == 0 then pages = questPages() end
+		if index == 0 then pages = (_G.capBubble and _G.capBubble(questPages())) or questPages() end
 		index += 1
 		if not pages or index > #pages then close(); return end
 		-- page 2 is the handoff, same as every other island: you have to read a bit first
@@ -1380,8 +1550,10 @@ local function wireNPC(head)
 			end
 		end
 		local last = index >= #pages
-		showBubble(head, pages[index], true, last and "[E] close" or ("[E] more  (%d/%d)"):format(index, #pages))
-		prompt.ActionText = last and "Close" or "Continue"
+		-- no "[E] ..." badge in the bubble: the ProximityPrompt IS the E prompt, and the page
+		-- count rides its ActionText instead of a second floating HUD over the NPC's head
+		showBubble(head, pages[index], true, nil)
+		prompt.ActionText = last and "Close" or ("Continue  (%d/%d)"):format(index, #pages)
 		watch()
 	end)
 	prompt.PromptHidden:Connect(function() if index ~= 0 then close() end end)
@@ -1426,19 +1598,28 @@ task.spawn(function()
 	end
 	print(("[CandyMine] blast target '%s' found"):format(candyModel.Name))
 
-	-- the five crystals. They stream in, so keep scanning rather than taking one look.
-	scanCrystals()
-	task.spawn(function()
-		local tries = 0
-		while #crystals < CHARGES and tries < 40 do task.wait(1); scanCrystals(); tries += 1 end
-		if #crystals < CHARGES then
-			warn(("[CandyMine] only %d part(s) named '%s' found, expected %d -- the quest asks for what exists")
-				:format(#crystals, CRYSTAL_NAME, CHARGES))
-		end
-	end)
-
-	-- light them up + give each a pickup prompt
-	for _, c in ipairs(crystals) do
+	--======================================================================
+	-- ALL FOUR CHARGES EXIST, GLOW, AND CAN BE PICKED UP. ALWAYS.
+	--======================================================================
+	-- TWO BUGS LIVED HERE, and a good run hid both of them.
+	--
+	--   1. THE WIRING LOOP RAN ONCE, IMMEDIATELY. The comment right above it says the crystals
+	--      "stream in, so keep scanning rather than taking one look" -- and the rescan loop does
+	--      exactly that, appending late arrivals to `crystals`. But the loop that gives each one its
+	--      glow and its Take prompt had already run, over whatever the FIRST synchronous scan
+	--      happened to catch. Anything that streamed in afterwards was registered and then left
+	--      dark and promptless: a crystal you can see but cannot take, or cannot see at all. Whether
+	--      you got 4 or 1 was down to how fast island16 replicated.
+	--
+	--   2. TOO FEW CRYSTALS SOFT-LOCKED THE ISLAND. The old warning said "the quest asks for what
+	--      exists" -- it does not. CHARGES stays 4, buildSockets rings 4 sockets, and the BLOW IT
+	--      prompt gates on placedCount >= CHARGES. Three crystals and four sockets is a quest that
+	--      can never be finished, announced as a warning nobody sees in a shipped game.
+	--
+	-- So wiring is now per-crystal and idempotent, applied after EVERY scan, and any shortfall left
+	-- when the world stops producing them is BUILT. Four cubes, four sockets, every time.
+	local function wireCrystal(c)
+		if c.prompt then return end          -- already wired; re-scans must not stack prompts
 		c.aura = addAura(c.part, PINK)
 		local p = Instance.new("ProximityPrompt")
 		p.Name = "UnstablePrompt"
@@ -1450,27 +1631,112 @@ task.spawn(function()
 		p.Triggered:Connect(function() pickUp(c) end)
 		c.prompt = p
 	end
-	print(("[CandyMine] %d unstable crystal(s) wired and glowing"):format(#crystals))
+	local function wireAll()
+		for _, c in ipairs(crystals) do wireCrystal(c) end
+	end
+
+	-- A stand-in charge, for when the world did not supply enough. Sat on the ground inside the
+	-- socket ring so it reads as part of the set rather than a prop dropped from orbit.
+	local function buildCrystal(i)
+		local ang = (i - 1) / CHARGES * math.pi * 2 + 0.6
+		local at  = candyPart.Position + Vector3.new(math.cos(ang) * 26, 0, math.sin(ang) * 26)
+		local rp  = RaycastParams.new()
+		rp.FilterType = Enum.RaycastFilterType.Exclude
+		rp.FilterDescendantsInstances = { player.Character }
+		local hit = Workspace:Raycast(at + Vector3.new(0, 120, 0), Vector3.new(0, -400, 0), rp)
+		local y = hit and (hit.Position.Y + 2.2) or (candyPart.Position.Y + 2.2)
+
+		local part = Instance.new("Part")
+		part.Name = CRYSTAL_NAME .. "Built" .. i
+		part.Size = Vector3.new(4.2, 4.2, 4.2)
+		part.Color = PINK; part.Material = Enum.Material.Neon
+		part.Anchored = true; part.CanCollide = false
+		part.CFrame = CFrame.new(at.X, y, at.Z) * CFrame.Angles(math.rad(18), ang, math.rad(12))
+		part.Parent = island
+		return { part = part, home = part.CFrame, taken = false, placed = false, built = true }
+	end
+
+	scanCrystals()
+	wireAll()
+	task.spawn(function()
+		local tries = 0
+		while #crystals < CHARGES and tries < 40 do
+			task.wait(1); scanCrystals(); wireAll(); tries += 1
+		end
+		-- the world has had 40 seconds; make up whatever is still missing rather than shipping an
+		-- island that cannot be completed
+		local built = 0
+		while #crystals < CHARGES do
+			built += 1
+			local c = buildCrystal(#crystals + 1)
+			crystals[#crystals + 1] = c
+			wireCrystal(c)
+		end
+		if built > 0 then
+			warn(("[CandyMine] only %d part(s) named '%s' on island16 -- BUILT %d more so all %d "
+				.. "charges exist. Name %d parts '%s' in Studio to use your own."):format(
+				CHARGES - built, CRYSTAL_NAME, built, CHARGES, CHARGES, CRYSTAL_NAME))
+		end
+		print(("[CandyMine] %d/%d unstable crystal(s) wired and glowing (%d built)")
+			:format(#crystals, CHARGES, built))
+	end)
 
 	buildSockets()
 
-	-- BLOW IT: a prompt on the candy itself, live only once every charge is seated
-	local blast = Instance.new("ProximityPrompt")
-	blast.Name = "BlastPrompt"
-	blast.ActionText = "BLOW IT"; blast.ObjectText = "Giant Candy"
-	blast.HoldDuration = 0.6
-	blast.MaxActivationDistance = PLACE_RANGE
-	blast.RequiresLineOfSight = false
-	blast.Enabled = false
-	blast.Parent = candyPart
-	blast.Triggered:Connect(crackOpen)
-	task.spawn(function()
-		while not finished do
-			blast.Enabled = accepted and placedCount >= CHARGES
-			task.wait(0.4)
-		end
-		blast.Enabled = false
-	end)
+	-- NO "BLOW IT" PROMPT ANY MORE. It used to sit on the candy and go live once every charge was
+	-- seated, so the last thing the quest asked of you was to walk BACK to the thing you had just
+	-- rigged and hold a key on it. Arming is the trigger now: seat the fourth charge and the fuse
+	-- lights itself, which is both what a charge is for and the only version that gives the ten
+	-- seconds a reason to exist -- you spend them getting clear.
+	--
+	-- startFuse is assigned HERE, not defined above, because it calls crackOpen(). It is forward-
+	-- declared with the state at the top so placeCharge can reach it.
+	startFuse = function()
+		if finished or fuseLeft then return end          -- already burning, or already blown
+		if placedCount < CHARGES then return end
+		task.spawn(function()
+			fuseGui.Enabled = true
+			for t = FUSE_SECONDS, 1, -1 do
+				fuseLeft = t
+				fuseNum.Text = tostring(t)
+				fuseNum.TextColor3 = (t <= 3) and DANGER or GOLD
+				-- THE HUD READS YOUR ACTUAL DISTANCE. "GET CLEAR" with no ruler is a vibe; this is
+				-- an instruction you can finish following. Green when you have made it, red until.
+				local ehrp = hrpOf()
+				local isClear = ehrp and candyPart
+					and ((ehrp.Position - candyPart.Position).Magnitude >= LAUNCH_RANGE)
+				fuseCap.Text = isClear and "SAFE -- KEEP GOING!" or ((t <= 3) and "TOO CLOSE -- RUN!!" or "GET CLEAR!")
+				fuseCap.TextColor3 = isClear and GREEN or DANGER
+				-- ...and the island's light dies with the clock: each second is visibly darker, so
+				-- the escape run happens into gathering dark and the blast lands out of it.
+				gloom.Enabled = true
+				gloom.Brightness = -0.032 * (FUSE_SECONDS - t + 1)
+				gloom.Saturation = -0.05 * (FUSE_SECONDS - t + 1)
+				-- a beat of pop on each second, so the number reads as a tick and not a redraw
+				fuseNum.Size = UDim2.new(0, 340, 0, 170)
+				tween(fuseNum, 0.22, { Size = UDim2.new(0, 300, 0, 150) })
+				-- every armed socket blinks white on the same beat
+				for _, sk in ipairs(sockets) do
+					if sk.pad then
+						sk.pad.Color = Color3.new(1, 1, 1)
+						task.delay(0.18, function() if sk.pad then sk.pad.Color = DANGER end end)
+					end
+				end
+				playSound(SOUND_PLACE, (t <= 3) and 0.9 or 0.55)
+				refreshBanner()
+				task.wait(1)
+			end
+			fuseLeft = nil
+			fuseGui.Enabled = false
+			refreshBanner()
+			crackOpen()
+		end)
+	end
+
+	-- Seating the fourth charge normally starts it, but a charge can also be seated before this
+	-- block has run (streaming, or /done firing early). Catch that case rather than leaving an
+	-- armed shot that never goes off.
+	if placedCount >= CHARGES then task.defer(startFuse) end
 
 	-- The NPC is OPTIONAL and must never gate the world -- the same mistake that left island 9 empty for
 	-- 30 seconds. Everything above is already built; she is found in the background.
@@ -1495,4 +1761,10 @@ task.spawn(function()
 	refreshBanner()
 	print(("[CandyMine] ready -- %d crystal(s), %d socket(s), target '%s'")
 		:format(#crystals, #sockets, candyModel.Name))
+	-- RETAINER SIGNAL: the quest reached the end of its build with its world objects up. QuestRetainer
+	-- watches this flag; anything still false once its island has streamed in gets force-streamed and
+	-- re-run. It is set HERE, at the ready print, not at the top of the file -- every bail above this
+	-- point (no island16, no BaseParts, no 'giantcandy') returns without setting it, which is exactly
+	-- the state the retainer exists to notice. See QuestRetainer.client.luau.
+	_G.questBuilt_candymine = true
 end)

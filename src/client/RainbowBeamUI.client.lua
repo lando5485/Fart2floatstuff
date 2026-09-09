@@ -57,6 +57,7 @@ end
 -- Sync handler. The server sends a string action; "hit" => run the rewind.
 --======================================================================
 RainbowBeamSync.OnClientEvent:Connect(function(action)
+if action == "hit" and _G.hapticPulse then pcall(_G.hapticPulse, "alert") end
 	if action == "hit" then
 		-- Guard: if a rewind is already running, skip (the server also
 		-- debounces, so this is belt-and-braces).

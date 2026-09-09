@@ -328,7 +328,7 @@ local function build()
 	xStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
 	xStroke.Parent = close
 
-	local hint = text(panel, "Pick someone, pick an amount, send them Crate Tokens.", 16, CREAM)
+	local hint = text(panel, "Pick someone, pick an amount, send them Crate Tickets.", 16, CREAM)
 	hint.Size = UDim2.new(1, -40, 0, 22)
 	hint.Position = UDim2.new(0, 20, 0, 72)
 	hint.TextXAlignment = Enum.TextXAlignment.Left
@@ -421,7 +421,7 @@ local function build()
 	customBox.Parent = panel
 	corner(customBox, 10); stroke(customBox, BLUE, 2)
 
-	local rangeLbl = text(panel, ("%d-%d tokens"):format(MIN_GIFT, MAX_GIFT), 14, Color3.fromRGB(170, 205, 245))
+	local rangeLbl = text(panel, ("%d-%d tickets"):format(MIN_GIFT, MAX_GIFT), 14, Color3.fromRGB(170, 205, 245))
 	rangeLbl.Size = UDim2.fromOffset(180, 36)
 	rangeLbl.Position = UDim2.new(0, 296, 0, 406)
 	rangeLbl.TextXAlignment = Enum.TextXAlignment.Left
@@ -454,7 +454,7 @@ local function build()
 		-- number than the one on screen is the single most confusing thing a form can do.
 		guard = true; customBox.Text = tostring(clamped); guard = false
 		if clamped ~= math.floor(n) then
-			setStatus(("Gifts are %d-%d tokens, so that became %d."):format(MIN_GIFT, MAX_GIFT, clamped), GOLD)
+			setStatus(("Gifts are %d-%d tickets, so that became %d."):format(MIN_GIFT, MAX_GIFT, clamped), GOLD)
 			sfx("deny")
 		else
 			sfx("click")
@@ -487,13 +487,13 @@ local function build()
 		-- It used to read `tonumber(_G.crateTokenBalance) or 0`, which treats "I do not know yet" as "you
 		-- have nothing" -- and that global is only populated once SkinCrateClient receives its first
 		-- SkinStateEvent. Open the gift panel before that lands and every send was refused locally with
-		-- "You only have 0 tokens", so the request never reached the server at all. A nil balance now falls
+		-- "You only have 0 tickets", so the request never reached the server at all. A nil balance now falls
 		-- through and lets the server decide, which is the safe direction to be wrong in: the worst case is
 		-- one round trip that comes back "you don't have that many".
 		local bal = tonumber(_G.crateTokenBalance)
 		if bal and bal < chosenAmount then
 			sfx("deny")
-			setStatus(("You only have %d tokens."):format(bal), GOLD)
+			setStatus(("You only have %d tickets."):format(bal), GOLD)
 			return
 		end
 		sfx("confirm")
@@ -606,13 +606,15 @@ end)
 -- THE MOMENT THAT MATTERS. Getting a present is the reason this feature exists, so it lands as a hero banner
 -- with the sender's name on it -- not as a status line in a panel the recipient does not have open.
 GiftReceived.OnClientEvent:Connect(function(fromName, amount, wasOffline)
+-- Somebody gave you something. Unprompted good news deserves to be felt, not just seen.
+if _G.hapticPulse then pcall(_G.hapticPulse, "milestone") end
 	sfx("reward")
 	if _G.NotifyCenter and _G.NotifyCenter.push then
 		pcall(_G.NotifyCenter.push, {
 			text = wasOffline
-				and ("\xF0\x9F\x8E\x81  %s LEFT YOU %s TOKENS WHILE YOU WERE AWAY!"):format(
+				and ("\xF0\x9F\x8E\x81  %s LEFT YOU %s TICKETS WHILE YOU WERE AWAY!"):format(
 					string.upper(tostring(fromName)), tostring(amount))
-				or  ("\xF0\x9F\x8E\x81  %s GAVE YOU %s TOKENS!"):format(
+				or  ("\xF0\x9F\x8E\x81  %s GAVE YOU %s TICKETS!"):format(
 					string.upper(tostring(fromName)), tostring(amount)),
 			color = GOLD,
 			-- REWARD, not SOCIAL: somebody just handed this kid something, and it must not be silently

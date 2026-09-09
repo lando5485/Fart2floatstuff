@@ -87,9 +87,16 @@ local CROP_MAX       = 220      -- PLANTS per garden, so a stray naming sweep ca
 
 -- HARVEST. Once a garden is watered some of its crops ripen; you pick those and carry them to
 -- the Ancient Tree. It only wakes once it has produce from all three gardens.
-local RIPE_PER_GARDEN  = 8      -- how many crops ripen (a couple more than the quota, so you choose)
-local OFFER_PER_GARDEN = 5      -- how many each garden owes the tree
-local CARRY_MAX        = 3      -- armful size -- 5 per garden at 3 a trip means two trips
+-- ⚠ CUT FROM 5 OFFERINGS PER GARDEN AT AN ARMFUL OF 3. That pairing was chosen precisely so
+-- each garden took two trips (5 at 3 a trip), which made 15 identical one-tap picks and FIVE
+-- round trips of 80-160 studs the longest, flattest block in the quest -- and the pick
+-- minigame is deliberately a single beat that never escalates, so pick 15 played exactly like
+-- pick 1. Three per garden at an armful of 3 is ONE trip per garden: the harvest still reads
+-- as a harvest, the walk still happens once per garden, and the wrench/crank work above it --
+-- which is the good part -- is no longer buried under a fetch lap.
+local RIPE_PER_GARDEN  = 6      -- how many crops ripen (a couple more than the quota, so you choose)
+local OFFER_PER_GARDEN = 3      -- how many each garden owes the tree
+local CARRY_MAX        = 3      -- armful size -- 3 per garden at 3 a trip means ONE trip
 local TREE_NAME      = "ancienttree"     -- reserved for step 3
 
 -- FOUNTAIN ONLY. Nothing but the fountain is built while this is true -- no irrigation ring,
@@ -129,8 +136,14 @@ local FILL_SPEED     = 26       -- studs/sec the water travels underground from 
 -- The water leaves the gate and spreads out as a wavefront, stands a while, then drains away
 -- in the order it arrived. Deliberately unhurried: this is the payoff for the gate puzzle, so
 -- it is meant to be watched rather than got through.
-local FLOOD_TIME     = 11.0     -- the water spreading from the gate to the furthest corner
-local HOLD_TIME      = 4.5      -- how long it stands full
+-- ⚠ SHORTENED FROM 11.0 + 4.5. "Deliberately unhurried... meant to be watched rather than got
+-- through" is a fair call for ONE garden -- but there are three, so it was 46 seconds of
+-- non-interactive animation inside a single quest, three-quarters of a minute in which the
+-- player has no input at all. The wave, the pollen burst, the butterflies and the ripening all
+-- still play in the same order; they just do not linger. 6.5 + 2.5 x3 is ~27s of payoff, which
+-- still lets each garden be watched without becoming the thing you wait out.
+local FLOOD_TIME     = 6.5      -- the water spreading from the gate to the furthest corner
+local HOLD_TIME      = 2.5      -- how long it stands full
 local SOAK_TIME      = 7.0      -- draining away, bed settling back to its natural dirt
 local FLOOD_GRID     = 8        -- fallback grid, only for a plot with no "water" part of its own
 local PLANT_MAX      = 12       -- parts bigger than this are scenery, not planting
@@ -151,7 +164,7 @@ local SOUND_WATER    = "rbxassetid://110597779584354" -- LOOPING water burble fr
 local SOUND_RUSH     = ""       -- water surging down a channel
 local SOUND_CLUNK    = ""       -- a gate finally giving way
 local SOUND_BLOOM    = ""       -- the garden coming to life
-local WATER_VOLUME   = 1.8      -- full level, once the fountain is actually running (was 0.4 -> 1.2 -> +50%)
+local WATER_VOLUME   = 2.7      -- full level, once the fountain is actually running (0.4 -> 1.2 -> 1.8 -> +50%)
 -- IDLE LEVEL, before the valve is opened. "Play it when you're around it" is a PROXIMITY condition, not a
 -- quest one, so the burble is audible from the moment you walk up rather than only after you fix the park.
 -- It is quieter than WATER_VOLUME so the swell when the water finally comes on still lands as an event.
@@ -160,7 +173,7 @@ local WATER_VOLUME   = 1.8      -- full level, once the fountain is actually run
 -- BOTH levels were tripled together (0.4 -> 1.2, 0.16 -> 0.48) rather than just the loud one. The 0.4 : 0.16
 -- ratio is doing a job -- it is what makes the valve opening read as a SWELL instead of just "sound on" -- so
 -- raising only WATER_VOLUME would have made the idle burble comparatively inaudible and thrown that away.
-local WATER_IDLE_VOLUME = 0.72  -- was 0.16 -> 0.48 -> +50%. Raised WITH the line above, never alone: the
+local WATER_IDLE_VOLUME = 1.08  -- 0.16 -> 0.48 -> 0.72 -> +50%. Raised WITH the line above, never alone: the
                                 -- 0.4 : 0.16 ratio is what makes the valve read as a swell.
 local WATER_RANGE    = 120      -- studs you can hear the fountain from
 
@@ -178,7 +191,7 @@ local WATER_RANGE    = 120      -- studs you can hear the fountain from
 local Crank = {
 	ID       = "rbxassetid://9125626484",
 	CLIP_END = 0.9,   -- seconds into the clip where the crank sound ends
-	VOLUME   = 0.75,
+	VOLUME   = 1.13,  -- was 0.75; +50% with the fountain water, so the gate reads as loud as the flow
 	sound    = nil,
 	token    = 0,     -- guards the cut-off timer: a newer press must not be stopped by an older delay
 }
@@ -774,6 +787,57 @@ local function buildFountain()
 		s.RollOffMode = Enum.RollOffMode.InverseTapered; s.Parent = F.water
 		pcall(function() s:Play() end)
 		F.ambience = s
+	end
+
+	-- ===== THE FOUNTAIN IS SOLID STONE =====
+	-- Steps, basin wall, coping, column, bowls and spouts all collide now: you stand on the
+	-- steps and lean on the rim instead of wading through carved masonry. Water never does --
+	-- anything Neon (foam, glow, streams) or built hidden (the pools start at Transparency 1
+	-- until the valve turns) stays walk-through, which is exactly the water set.
+	for _, d in ipairs(folder:GetDescendants()) do
+		if d:IsA("BasePart") and d.Material ~= Enum.Material.Neon and d.Transparency < 0.5 then
+			d.CanCollide = true
+		end
+	end
+
+	-- ===== SEATED ON THE ISLAND, MEASURED =====
+	-- `center` comes from the fountain marker, and readMarker trusts the marker's TOP FACE as
+	-- the floor -- so a marker brick standing proud of the grass (or left hovering in Studio)
+	-- floated the whole fountain by exactly that clearance. The seat is measured, never
+	-- assumed: the built masonry's lowest face is found from every part's FULL world-Y extent
+	-- (its own orientation projected onto Y -- never the pivot, which sits mid-part), the real
+	-- ground is rayed under the basin with the fountain's own parts excluded, and the whole
+	-- folder is dropped so the bottom step rests flush. It runs LAST in the build, so a future
+	-- rescale or an extra course is covered automatically; water and foam are skipped when
+	-- MEASURING (hidden until the valve, never the lowest stone) but MOVE with everything else.
+	do
+		local bottom
+		for _, d in ipairs(folder:GetDescendants()) do
+			if d:IsA("BasePart") and d.Material ~= Enum.Material.Neon and d.Transparency < 0.5 then
+				local cf, sz = d.CFrame, d.Size
+				local halfY = 0.5 * (math.abs(cf.RightVector.Y) * sz.X
+					+ math.abs(cf.UpVector.Y) * sz.Y + math.abs(cf.LookVector.Y) * sz.Z)
+				local b = d.Position.Y - halfY
+				if not bottom or b < bottom then bottom = b end
+			end
+		end
+		-- own params, own excludes: the shared ground filter does not know this folder, and the
+		-- basin floor we just made collidable is directly under the ray -- the fountain must
+		-- never be its own ground
+		local rp = RaycastParams.new()
+		rp.FilterType = Enum.RaycastFilterType.Exclude
+		rp.FilterDescendantsInstances = { folder, player.Character }
+		local hit = Workspace:Raycast(Vector3.new(center.X, center.Y + 60, center.Z),
+			Vector3.new(0, -300, 0), rp)
+		local floorY = hit and hit.Position.Y or groundY
+		local dy = bottom and (floorY - bottom) or 0
+		if math.abs(dy) > 0.05 then
+			for _, d in ipairs(folder:GetDescendants()) do
+				if d:IsA("BasePart") then d.CFrame = d.CFrame + Vector3.new(0, dy, 0) end
+			end
+			print(("[Park] fountain re-seated %.2f stud(s) %s onto the ground (the marker's top face was not the floor)")
+				:format(math.abs(dy), dy < 0 and "down" or "up"))
+		end
 	end
 
 	F.folder = folder
@@ -1400,6 +1464,20 @@ local function buildGate(g, idx)
 	g.progress  = 0
 	g.seizeIdx  = 1
 	g.gateFolder = folder
+
+	-- ===== THE GATE IS SOLID =====
+	-- Everything structural -- footings, posts, jambs, lintel, sill, apron, weir, and the sluice
+	-- board itself (a CLOSED gate should stop you, and it lifts clear when opened) -- now
+	-- collides. Excluded on purpose: the water and foam (walk-through, like all water here), the
+	-- handwheel (a collidable spinning wheel shoves the player cranking it), and the invisible
+	-- prompt volume (a solid one would wall off the very wheel it exists to reach).
+	local noCollide = { [hit] = true, [g.chute] = true, [g.gatePool] = true,
+		[g.foamTop] = true, [g.foamBase] = true }
+	for _, d in ipairs(folder:GetDescendants()) do
+		if d:IsA("BasePart") and not noCollide[d] and not d:IsDescendantOf(wheel) then
+			d.CanCollide = true
+		end
+	end
 end
 
 
@@ -1557,7 +1635,11 @@ local function buildSoilBank(mcf, msz, alongX, len, wid, folder, patch)
 	end
 
 	local function soil(size, cf, rich, dry, sh, shape)
-		local p = mk({ Material = Enum.Material.SmoothPlastic, Color = shade(dry, sh), Size = size, CFrame = cf })
+		-- CanCollide = true: heaped earth is GROUND. Every bank, mound and clod this helper
+		-- builds used to be a hologram you waded through -- hard soil is the whole point of a
+		-- raised bank, and a player standing on one now actually stands on it.
+		local p = mk({ Material = Enum.Material.SmoothPlastic, Color = shade(dry, sh), Size = size,
+			CanCollide = true, CFrame = cf })
 		if shape then p.Shape = shape end
 		p.Parent = folder
 		if patch then
@@ -1671,8 +1753,11 @@ local function soilifyMarker(inst, patch, folder)
 		-- ever shows its top surface.
 		local H    = math.max(1.1, sz.Y)
 		local topY = sz.Y * 0.5                          -- the marker's top, in its own space
+		-- (!) SOLID. The Studio marker this replaces was a real block you could stand on; the
+		-- hide pass above switches its collision off, so without this the "soil" was a hologram
+		-- and you sank through the bed to the lawn underneath. The slab is the walking surface.
 		local slab = mk({ Material = Enum.Material.SmoothPlastic, Color = PAL.SOIL_DRY,
-		                  Size = Vector3.new(sz.X, H, sz.Z),
+		                  Size = Vector3.new(sz.X, H, sz.Z), CanCollide = true,
 		                  CFrame = cf * CFrame.new(0, topY - H * 0.5, 0), Parent = folder })
 		adopt(slab, PAL.SOIL, PAL.SOIL_DRY)
 		table.insert(made, slab)
@@ -1712,7 +1797,10 @@ local function soilifyMarker(inst, patch, folder)
 					local yaw = math.rad(YAW[(i + 2 * course) % 3 + 1])
 					local w  = (len / m) * 1.12
 					local p = mk({
+						-- solid like the slab: the bank is the bed's EDGE, and a hard top over
+						-- ghost sides is a bed you fall through the moment you step off centre
 						Material = Enum.Material.SmoothPlastic, Color = shade(PAL.SOIL_DRY, sh),
+						CanCollide = true,
 						Size = alongZ and Vector3.new(thick, h, w) or Vector3.new(w, h, thick),
 						CFrame = cf
 							* CFrame.new(alongZ and (sgnX * sz.X * outer) or t,
@@ -1734,6 +1822,7 @@ local function soilifyMarker(inst, patch, folder)
 			local w  = math.min(sz.X, sz.Z) * (0.22 + math.random() * 0.30)
 			local p = mk({ Material = Enum.Material.SmoothPlastic, Color = shade(PAL.SOIL_DRY, sh),
 			               Size = Vector3.new(w, sz.Y * 0.5 + 0.12, w * (0.6 + math.random() * 0.7)),
+			               CanCollide = true,   -- tilled earth is still earth: hard, like the slab under it
 			               CFrame = cf * CFrame.new((math.random() - 0.5) * sz.X * 1.06,
 			                        sz.Y * 0.5, (math.random() - 0.5) * sz.Z * 1.06)
 			                   * CFrame.Angles(0, math.random() * 6.28, 0), Parent = folder })
@@ -2994,14 +3083,26 @@ local gui = Instance.new("ScreenGui")
 gui.Name = "IrrigationCrank"; gui.ResetOnSpawn = false; gui.DisplayOrder = 60; gui.Enabled = false
 gui.Parent = PlayerGui
 
+-- ===== AUTHORED AT THE HOUSE SIZE (700x520 -- the Pet Hub's card) =====
+-- This was 640x234 and genuinely well packed AT THAT SIZE: dial left, text and buttons right,
+-- content ending at y216 of 234. Stretched to the Pet Hub card it became a well-packed strip
+-- across the top with 300px of empty panel under it, and 60px of empty to the right of every
+-- absolutely-placed child.
+--
+-- Rebuilt as ONE CENTRED COLUMN with the wheel as the hero, which is what this HUD is about:
+--      0..52    header band
+--     68..138   the instruction line, centred, 26px (was 20px, left-aligned beside the dial)
+--    150..350   the crank wheel -- 200x200 dead centre (was 128x128 tucked bottom-left)
+--    368..412   progress track, full width (was 448 wide, 26 tall)
+--    430..504   HOLD TO CRANK + LET GO, side by side on the bottom row
+-- 504 of 520 used. Nothing new to wire: every element here already existed.
 local console = Instance.new("Frame")
-console.AnchorPoint = Vector2.new(0.5, 1); console.Position = UDim2.new(0.5, 0, 1, -18)
-console.Size = UDim2.new(0, 640, 0, 234); console.BackgroundColor3 = PAL.PANEL; console.BorderSizePixel = 0
+console.AnchorPoint = Vector2.new(0.5, 0.5); console.Position = UDim2.new(0.5, 0, 0.5, 0)
+console.Size = UDim2.new(0, 700, 0, 520); console.BackgroundColor3 = PAL.PANEL; console.BorderSizePixel = 0
 console.Parent = gui
--- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
--- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
--- The panel keeps its own size and every child keeps its own pixel coordinates;
--- it is centred in the house shell and scaled to fit, so nothing inside moves.
+-- HOUSE PANEL: the Pet Hub's 700x520 card in the Pet Hub's spot, and the bottom buttons hide
+-- while it is up. One call does both -- see HousePanel.client.luau.
+console:SetAttribute("WantsHousePanel", true)   -- adopted by attribute, so load order cannot lose it
 pcall(_G.housePanel, console)   -- island13 irrigation console
 do
 	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 16); c.Parent = console
@@ -3009,23 +3110,23 @@ do
 end
 
 local header = Instance.new("Frame")
-header.Size = UDim2.new(1, 0, 0, 30); header.BackgroundColor3 = PAL.BRASS; header.BorderSizePixel = 0
+header.Size = UDim2.new(1, 0, 0, 52); header.BackgroundColor3 = PAL.BRASS; header.BorderSizePixel = 0
 header.Parent = console
-do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 16); c.Parent = header end
+do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 18); c.Parent = header end
 
 local hdrLbl = Instance.new("TextLabel")
-hdrLbl.BackgroundTransparency = 1; hdrLbl.Position = UDim2.new(0, 16, 0, 0); hdrLbl.Size = UDim2.new(1, -32, 1, 0)
-hdrLbl.Font = Enum.Font.FredokaOne; hdrLbl.TextSize = 15; hdrLbl.TextColor3 = Color3.fromRGB(46, 34, 12)
+hdrLbl.BackgroundTransparency = 1; hdrLbl.Position = UDim2.new(0, 20, 0, 0); hdrLbl.Size = UDim2.new(1, -40, 1, 0)
+hdrLbl.Font = Enum.Font.FredokaOne; hdrLbl.TextSize = 26; hdrLbl.TextColor3 = Color3.fromRGB(46, 34, 12)
 hdrLbl.TextXAlignment = Enum.TextXAlignment.Left; hdrLbl.Text = "IRRIGATION GATE"; hdrLbl.Parent = header
 
 -- --- the wheel dial, drawn as spokes we rotate
 local dial = Instance.new("Frame")
-dial.AnchorPoint = Vector2.new(0.5, 0.5); dial.Position = UDim2.new(0, 92, 0, 130)
-dial.Size = UDim2.new(0, 128, 0, 128); dial.BackgroundColor3 = PAL.PANEL_2; dial.BorderSizePixel = 0
+dial.AnchorPoint = Vector2.new(0.5, 0.5); dial.Position = UDim2.new(0, 350, 0, 250)
+dial.Size = UDim2.new(0, 200, 0, 200); dial.BackgroundColor3 = PAL.PANEL_2; dial.BorderSizePixel = 0
 dial.Parent = console
 do
 	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(1, 0); c.Parent = dial
-	local s = Instance.new("UIStroke"); s.Color = PAL.BRASS; s.Thickness = 5; s.Parent = dial
+	local s = Instance.new("UIStroke"); s.Color = PAL.BRASS; s.Thickness = 7; s.Parent = dial
 end
 local spokes = Instance.new("Frame")
 spokes.AnchorPoint = Vector2.new(0.5, 0.5); spokes.Position = UDim2.fromScale(0.5, 0.5)
@@ -3033,9 +3134,9 @@ spokes.Size = UDim2.fromScale(1, 1); spokes.BackgroundTransparency = 1; spokes.P
 for i = 1, 3 do
 	local sp = Instance.new("Frame")
 	sp.AnchorPoint = Vector2.new(0.5, 0.5); sp.Position = UDim2.fromScale(0.5, 0.5)
-	sp.Size = UDim2.new(0, 104, 0, 9); sp.BackgroundColor3 = PAL.BRASS; sp.BorderSizePixel = 0
+	sp.Size = UDim2.new(0, 164, 0, 14); sp.BackgroundColor3 = PAL.BRASS; sp.BorderSizePixel = 0
 	sp.Rotation = (i - 1) * 60; sp.Parent = spokes
-	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 4); c.Parent = sp
+	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 7); c.Parent = sp
 end
 
 local function mkText(parent, txt, x, y, w, h, col, size, align)
@@ -3046,21 +3147,22 @@ local function mkText(parent, txt, x, y, w, h, col, size, align)
 	return l
 end
 
-local hintLbl = mkText(console, "", 176, 44, 448, 52, Color3.fromRGB(255, 232, 172), 20)
+local hintLbl = mkText(console, "", 20, 68, 660, 70, Color3.fromRGB(255, 232, 172), 26)
 hintLbl.TextYAlignment = Enum.TextYAlignment.Center
+hintLbl.TextXAlignment = Enum.TextXAlignment.Center
 
 -- progress track
 local track = Instance.new("Frame")
-track.Position = UDim2.new(0, 176, 0, 104); track.Size = UDim2.new(0, 448, 0, 26)
+track.Position = UDim2.new(0, 20, 0, 368); track.Size = UDim2.new(0, 660, 0, 44)
 track.BackgroundColor3 = Color3.fromRGB(22, 19, 15); track.BorderSizePixel = 0; track.Parent = console
-do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 8); c.Parent = track end
+do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(1, 0); c.Parent = track end
 local fill = Instance.new("Frame")
 fill.Size = UDim2.new(0, 0, 1, 0); fill.BackgroundColor3 = PAL.WATER; fill.BorderSizePixel = 0; fill.Parent = track
-do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 8); c.Parent = fill end
+do local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(1, 0); c.Parent = fill end
 -- the seize marks, so you can see the jams coming
 for _, frac in ipairs(SEIZE_POINTS) do
 	local m = Instance.new("Frame")
-	m.Position = UDim2.new(frac, -2, 0, 0); m.Size = UDim2.new(0, 4, 1, 0)
+	m.Position = UDim2.new(frac, -3, 0, 0); m.Size = UDim2.new(0, 6, 1, 0)
 	m.BackgroundColor3 = PAL.RUST; m.BorderSizePixel = 0; m.ZIndex = 3; m.Parent = track
 end
 
@@ -3071,12 +3173,12 @@ local function mkButton(text, x, y, w, h, tint)
 	b.Font = Enum.Font.FredokaOne; b.Text = text; b.TextColor3 = PAL.CREAM; b.TextScaled = true
 	b.Parent = console
 	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 10); c.Parent = b
-	local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 24; sz.Parent = b
+	local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 34; sz.Parent = b
 	return b
 end
 
-local btnCrank = mkButton("HOLD TO CRANK", 176, 142, 300, 74, Color3.fromRGB(52, 96, 122))
-local btnExit  = mkButton("LET GO", 488, 142, 136, 74, Color3.fromRGB(96, 52, 46))
+local btnCrank = mkButton("HOLD TO CRANK", 20, 430, 430, 74, Color3.fromRGB(52, 96, 122))
+local btnExit  = mkButton("LET GO", 466, 430, 214, 74, Color3.fromRGB(96, 52, 46))
 
 -- --- crank state
 local holding, wasReleased = false, true
@@ -3268,29 +3370,30 @@ end
 refreshBanner = function()
 	local txt
 	if not questAccepted and npcHead then
-		objLabel.Text = "\xF0\x9F\x8C\xB3 The park is dying -- talk to the Candy Npc."
+		objLabel.Text = "\xF0\x9F\x8C\xB3 The park is dying! Talk to the Candy NPC -- follow the green arrows."
 		return
 	end
 	if FOUNTAIN_ONLY then
 		txt = (step >= 1) and "\xF0\x9F\x92\xA7 The fountain is flowing again!"
-			or "\xF0\x9F\x92\xA7 The fountain has dried up -- turn the valve to restore it!"
+			or "\xF0\x9F\x92\xA7 Press Restore the Fountain on the dried-up fountain!"
 	elseif step >= 3 then
-		txt = "\xF0\x9F\x8C\xB3 The Ancient Tree has awakened! The park is flourishing once again."
+		txt = "\xF0\x9F\x8C\xB3 The Ancient Tree is awake! The whole park is alive again."
 	elseif harvestActive() then
 		-- once anything is ripe, the harvest is what the player is actually doing
 		if #carried > 0 then
-			txt = ("\xF0\x9F\xA7\xBA Carrying %d/%d -- lay them at the Ancient Tree  (%s)")
+			txt = ("\xF0\x9F\xA7\xBA Carrying %d/%d crops -- hold Give Offering at the Ancient Tree  (%s)")
 				:format(#carried, CARRY_MAX, offeringsText())
 		else
-			txt = ("\xF0\x9F\x8C\xBE Pick ripe crops for the tree:  %s"):format(offeringsText())
+			txt = ("\xF0\x9F\x8C\xBE Hold Pick on the ripe crops in each garden:  %s"):format(offeringsText())
 		end
 	elseif step >= 1 then
-		txt = ("\xF0\x9F\x9A\xB0 Turn the irrigation gates:  %d/3 gardens restored"):format(gatesOpen)
+		txt = ("\xF0\x9F\x9A\xB0 Hold Take the Crank on each water gate, then crank it open:  %d/3")
+			:format(gatesOpen)
 	elseif #pipes > 0 and pipesFixed < PIPE_COUNT then
-		txt = ("\xF0\x9F\x94\xA7 Seal the burst water mains:  %d/%d")
+		txt = ("\xF0\x9F\x94\xA7 Press Repair on each burst water pipe in the lawn:  %d/%d")
 			:format(pipesFixed, PIPE_COUNT)
 	else
-		txt = "\xF0\x9F\x92\xA7 The mains hold -- turn the fountain valve!"
+		txt = "\xF0\x9F\x92\xA7 Pipes fixed! Now press Restore the Fountain on the fountain."
 	end
 	objLabel.Text = txt
 end
@@ -3406,31 +3509,32 @@ local function questPages()
 	end
 	if harvestActive() then
 		return {
-			"Now the tree. It has slept a long time.",
-			("Bring it %d crops from every garden -- lay them at the roots."):format(OFFER_PER_GARDEN),
-			("So far: %s."):format(offeringsText()),
+			"Now the tree, after its long sleep.",
+			("Hold Pick on %d ripe crops per garden."):format(OFFER_PER_GARDEN),
+			("Hold Give Offering at the roots. %s"):format(offeringsText()),
 		}
 	end
 	if step >= 1 then
 		return {
 			"The water's back! Listen to it.",
-			("Now the gates -- %d of 3 open."):format(gatesOpen),
-			"Crank each one and the water will find its garden.",
+			("Water gates open: %d of 3."):format(gatesOpen),
+			"Hold Take the Crank, then turn it.",
 		}
 	end
 	if questAccepted then
 		if #pipes > 0 and pipesFixed < PIPE_COUNT then
-			return { "The mains under the lawn have burst.",
-				("Seal all %d of them -- there is a wrench on every one."):format(PIPE_COUNT),
-				("%d sealed so far."):format(pipesFixed) }
+			return { "The water pipes under the lawn have burst.",
+				("Press Repair on all %d. Wrenches provided."):format(PIPE_COUNT),
+				("%d fixed so far."):format(pipesFixed) }
 		end
-		return { "Mains are holding.", "Now turn the valve and let it fill." }
+		return { "The pipes are holding!", "Now press Restore the Fountain to fill it." }
 	end
+	-- the counts come from the constants so this list can never promise the wrong number of jobs
 	return {
-		"You came. Nobody comes to the park any more.",
-		"The fountain ran dry, and everything downstream died with it.",
-		"Turn the valve, then open the three irrigation gates.",
-		"Then bring the Ancient Tree an offering from every garden. It will remember.",
+		"Nobody comes here since the fountain dried.",
+		("1) Press Repair on %d burst pipes."):format(PIPE_COUNT),
+		"2) Restore the Fountain, crank 3 gates.",
+		("3) Lay %d crops per garden."):format(OFFER_PER_GARDEN),
 	}
 end
 
@@ -3476,14 +3580,15 @@ local function wireNPC(head)
 
 	prompt.Triggered:Connect(function(plr)
 		if plr ~= player then return end
-		if index == 0 then pages = questPages() end
+		if index == 0 then pages = (_G.capBubble and _G.capBubble(questPages())) or questPages() end
 		index += 1
 		if not pages or index > #pages then closeDialogue(); return end
 		if index == 2 then acceptQuest() end        -- reading past page 1 accepts it
 		local last = index >= #pages
-		local footer = last and "[E] close" or ("[E] more  (%d/%d)"):format(index, #pages)
-		showBubble(head, pages[index], true, footer)
-		prompt.ActionText = last and "Close" or "Continue"
+		-- no "[E] ..." badge in the bubble: the ProximityPrompt IS the E prompt, and the page
+		-- count rides its ActionText instead of a second floating HUD over the NPC's head
+		showBubble(head, pages[index], true, nil)
+		prompt.ActionText = last and "Close" or ("Continue  (%d/%d)"):format(index, #pages)
 		startWatcher()
 	end)
 	prompt.PromptHidden:Connect(function() if index ~= 0 then closeDialogue() end end)
@@ -3504,21 +3609,41 @@ do
 	gui.IgnoreGuiInset = true; gui.Enabled = false; gui.Parent = PlayerGui
 	MG.gui = gui
 
-	-- input goes through a full-screen button, so a tap for the HUD is not also a tap on the world
+	-- input goes through a full-screen button, so a tap for the HUD is not also a tap on the world.
+	--
+	-- ⚠ ZIndex 50, ABOVE the card (2) and everything on it (3..7). It used to be 1, i.e. UNDER the
+	-- panel -- so a tap that landed ON the card never reached this catcher and simply did nothing.
+	-- The only taps that counted were the ones beside the card. That was survivable at 540x152; at
+	-- the Pet Hub's 700x520 the card IS most of the screen, and the dead zone with it. Nothing else
+	-- on this HUD is clickable (there is no close button), so a catcher on top costs nothing.
 	local catch = Instance.new("TextButton")
 	catch.Size = UDim2.fromScale(1, 1); catch.BackgroundTransparency = 1
-	catch.Text = ""; catch.AutoButtonColor = false; catch.ZIndex = 1; catch.Parent = gui
+	catch.Text = ""; catch.AutoButtonColor = false; catch.ZIndex = 50; catch.Parent = gui
 	MG.catch = catch
 
+	-- ===== AUTHORED AT THE HOUSE SIZE (700x520 -- the Pet Hub's card) =====
+	-- This was 540x152: a title row, a 44px gauge and a hint, all done by y132. Stretched to the
+	-- Pet Hub card that left ~75% of the panel empty -- the emptiest HUD in the realm.
+	--
+	-- Rebuilt to fill it, with NO new wiring: the readout that was a small right-aligned "0 / 4"
+	-- is now the centrepiece at 76px, and the gauge -- the thing you actually stare at -- goes from
+	-- 44 tall to 190. Both were already driven by MG.count / MG.track, so nothing new has to be
+	-- kept in step.
+	--     16..62    title
+	--     74..164   the 0 / N readout, 76px
+	--    172..202   hint line
+	--    214..404   the timing gauge, 660x190 (was 508x44)
+	--    424..504   TAP! prompt -- visual only; the full-screen catcher above takes the input
 	local panel = Instance.new("Frame")
-	panel.Size = UDim2.new(0, 540, 0, 152)
-	panel.Position = UDim2.new(0.5, -270, 0.74, 0)
+	panel.Size = UDim2.new(0, 700, 0, 520)
+	panel.Position = UDim2.new(0.5, 0, 0.5, 0); panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.BackgroundColor3 = PAL.PANEL; panel.BackgroundTransparency = 0.12
 	panel.BorderSizePixel = 0; panel.ZIndex = 2; panel.Parent = gui
-	-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+	-- HOUSE PANEL: the house 700x260 task card, centred in the free band, and the bottom
 	-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
 	-- The panel keeps its own size and every child keeps its own pixel coordinates;
 	-- it is centred in the house shell and scaled to fit, so nothing inside moves.
+	panel:SetAttribute("WantsHousePanel", true)   -- adopted by attribute, so load order cannot lose it
 	pcall(_G.housePanel, panel)   -- island13 wrench minigame
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 16)
 	MG.panel = panel
@@ -3529,26 +3654,26 @@ do
 	MG.stroke = stroke
 
 	local title = Instance.new("TextLabel")
-	title.Size = UDim2.new(1, -24, 0, 32); title.Position = UDim2.new(0, 12, 0, 10)
+	title.Size = UDim2.new(1, -40, 0, 46); title.Position = UDim2.new(0, 20, 0, 16)
 	title.BackgroundTransparency = 1; title.Font = Enum.Font.GothamBlack
-	title.TextSize = 22; title.TextColor3 = Color3.fromRGB(255, 246, 232)
+	title.TextSize = 36; title.TextColor3 = Color3.fromRGB(255, 246, 232)
 	title.TextXAlignment = Enum.TextXAlignment.Left; title.ZIndex = 3
 	title.Text = ""; title.Parent = panel
 	MG.title = title
 
 	local count = Instance.new("TextLabel")
-	count.Size = UDim2.new(0, 140, 0, 32); count.Position = UDim2.new(1, -152, 0, 10)
+	count.Size = UDim2.new(1, -40, 0, 90); count.Position = UDim2.new(0, 20, 0, 74)
 	count.BackgroundTransparency = 1; count.Font = Enum.Font.GothamBlack
-	count.TextSize = 22; count.TextColor3 = PAL.BRASS
-	count.TextXAlignment = Enum.TextXAlignment.Right; count.ZIndex = 3
+	count.TextSize = 76; count.TextColor3 = PAL.BRASS
+	count.TextXAlignment = Enum.TextXAlignment.Center; count.ZIndex = 3
 	count.Text = ""; count.Parent = panel
 	MG.count = count
 
 	local track = Instance.new("Frame")
-	track.Size = UDim2.new(1, -32, 0, 44); track.Position = UDim2.new(0, 16, 0, 52)
+	track.Size = UDim2.new(1, -40, 0, 190); track.Position = UDim2.new(0, 20, 0, 214)
 	track.BackgroundColor3 = Color3.fromRGB(20, 24, 26); track.BorderSizePixel = 0
 	track.ClipsDescendants = true; track.ZIndex = 3; track.Parent = panel
-	Instance.new("UICorner", track).CornerRadius = UDim.new(0, 10)
+	Instance.new("UICorner", track).CornerRadius = UDim.new(0, 16)
 
 	-- pressure ticks down the gauge, so the needle has something to read against
 	for i = 1, 9 do
@@ -3573,18 +3698,36 @@ do
 	MG.fill = fill
 
 	local needle = Instance.new("Frame")
-	needle.Size = UDim2.new(0, 6, 1, 0)
+	needle.Size = UDim2.new(0, 12, 1, 0)
 	needle.BackgroundColor3 = Color3.fromRGB(255, 250, 240); needle.BorderSizePixel = 0
 	needle.ZIndex = 7; needle.Parent = track
 	MG.needle = needle
 
 	local hint = Instance.new("TextLabel")
-	hint.Size = UDim2.new(1, -32, 0, 26); hint.Position = UDim2.new(0, 16, 0, 106)
+	hint.Size = UDim2.new(1, -40, 0, 30); hint.Position = UDim2.new(0, 20, 0, 172)
 	hint.BackgroundTransparency = 1; hint.Font = Enum.Font.GothamMedium
-	hint.TextSize = 16; hint.TextColor3 = Color3.fromRGB(206, 198, 186)
+	hint.TextSize = 20; hint.TextColor3 = Color3.fromRGB(206, 198, 186)
 	hint.TextXAlignment = Enum.TextXAlignment.Left; hint.ZIndex = 3
 	hint.Text = ""; hint.Parent = panel
 	MG.hint = hint
+
+	-- ===== TAP PROMPT =====
+	-- Deliberately NOT a TextButton. The full-screen catcher above owns every tap on this HUD, and a
+	-- real button here would swallow the ones that land on it -- the exact failure the ZIndex note at
+	-- the top describes, reintroduced in a smaller way. Active = false keeps it out of the input path.
+	local tapPrompt = Instance.new("Frame")
+	tapPrompt.Size = UDim2.new(1, -40, 0, 80); tapPrompt.Position = UDim2.new(0, 20, 0, 424)
+	tapPrompt.BackgroundColor3 = PAL.BRASS_D; tapPrompt.BorderSizePixel = 0
+	tapPrompt.Active = false; tapPrompt.ZIndex = 3; tapPrompt.Parent = panel
+	Instance.new("UICorner", tapPrompt).CornerRadius = UDim.new(0, 16)
+	do
+		local st = Instance.new("UIStroke", tapPrompt); st.Color = PAL.BRASS; st.Thickness = 3
+		local lbl = Instance.new("TextLabel")
+		lbl.Size = UDim2.fromScale(1, 1); lbl.BackgroundTransparency = 1
+		lbl.Font = Enum.Font.GothamBlack; lbl.TextSize = 44
+		lbl.TextColor3 = Color3.fromRGB(255, 246, 232); lbl.Text = "TAP!"
+		lbl.ZIndex = 4; lbl.Parent = tapPrompt
+	end
 end
 
 -- ONE WIDGET, TWO JOBS. A coupling is a long grind -- four taps, the band closing and the
@@ -3606,8 +3749,24 @@ playWrench = function(o)
 	MG.count.Text = ("0 / %d"):format(strokes)
 	MG.fill.Size = UDim2.new(0, 0, 0, 5)
 	MG.gui.Enabled = true
-	MG.panel.Position = UDim2.new(0.5, -270, 0.82, 0)
-	tween(MG.panel, 0.22, { Position = UDim2.new(0.5, -270, 0.74, 0) }, Enum.EasingStyle.Back)
+	-- ===== THE OPEN IS A SCALE POP, NOT A SLIDE =====
+	-- This used to write Position AFTER adoption and tween it: (0.5,-270, 0.82) -> (0.5,-270, 0.74).
+	-- Those numbers were measured against the SCREEN, back when this panel placed itself. Once
+	-- _G.housePanel adopted it, the panel lives inside a 700x260 shell and housePanel owns its
+	-- AnchorPoint/Position -- so the same UDim2 now resolves INSIDE THE CARD: x = 0.5*700 - 270 = 80,
+	-- y = 0.74*260 = 192. The card was landing low and left of centre in its own shell, half of it
+	-- outside the house frame, which is why this HUD sat somewhere different from the crank console.
+	--
+	-- Scaling gets the identical Back-eased pop without touching the geometry the house card owns.
+	-- housePanel sets this UIScale once at adopt and never writes it again, so it is ours to move --
+	-- the same fix the mill minigame on island 14 uses for its own post-adoption punch.
+	do
+		local us = MG.panel:FindFirstChildOfClass("UIScale")
+		if us then
+			us.Scale = 0.92
+			tween(us, 0.22, { Scale = 1 }, Enum.EasingStyle.Back)
+		end
+	end
 
 	local hit, pos, dir, speed = 0, 0, 1, o.speed or 0.78
 	local zc, zw = 0.5, o.zone or 0.19

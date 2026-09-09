@@ -202,7 +202,8 @@ local function runEvent()
 		local primary = RocketLogic.getPrimaryPart()
 		RocketEffects.startCountdownSmoke(primary) -- thickening smoke under rocket
 		rocketPhase("constructionStop") -- stop the CLIENT-side build loop exactly at countdown
-		RocketEffects.startCountdownSound()        -- start the SERVER-WIDE countdown sound for everyone
+		-- Parented to the rocket, NOT server-wide: only players on Bean Farm hear it (see RocketEffects).
+		RocketEffects.startCountdownSound(primary)
 		for n = CONFIG.COUNTDOWN, 1, -1 do
 			rocketPhase("countdown", n)     -- big "Launch in n..."
 			RocketEventSync:FireAllClients("shake", site)      -- client camera shake near site

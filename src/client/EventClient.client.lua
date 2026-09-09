@@ -237,7 +237,42 @@ local lightningFlash=mkFrame(stormSg,{Size=UDim2.new(1,0,1,0),BackgroundColor3=C
 
 -- ===== SOUNDS =====
 local thunderSound=Instance.new("Sound"); thunderSound.Name="ThunderSound"; thunderSound.SoundId="rbxassetid://1369158752"; thunderSound.Volume=0.8; thunderSound.Parent=workspace
+-- IS THERE ANY THUNDER AT ALL? This id currently fails to load with "Asset type does not match requested
+-- type", which is SILENT at the point of use -- the storm just has no sound and looks like the code is
+-- broken. Said out loud at boot instead, the same way the pig oink and the warning alarm are checked.
+task.spawn(function()
+	local ok = pcall(function() game:GetService("ContentProvider"):PreloadAsync({thunderSound}) end)
+	if ok and thunderSound.IsLoaded then
+		print(("[Storm] thunder %s loaded OK (length %.2fs)"):format(thunderSound.SoundId, thunderSound.TimeLength))
+	else
+		warn("[Storm] thunder "..thunderSound.SoundId.." did NOT load -- the storm will be SILENT. "
+			.."Replace the id at the top of EventClient.client.lua with a real Sound asset.")
+	end
+end)
 local screechSound=Instance.new("Sound"); screechSound.Name="ScreechSound"; screechSound.SoundId="rbxassetid://3240498563"; screechSound.Volume=1; screechSound.Parent=workspace
+
+-- ===== HAZARD-WARNING ALARM =====
+-- Parented to SoundService, not Workspace: this is a 2D alert the player should hear at the same
+-- volume wherever they are, not a sound coming from somewhere in the world. SettingsMenu routes every
+-- new SoundService descendant into the SFX SoundGroup automatically, so the "Sound Effects" toggle
+-- switches it off with everything else -- nothing extra to wire.
+local warnBeep=Instance.new("Sound"); warnBeep.Name="EventWarnBeep"
+warnBeep.SoundId="rbxassetid://6783209805"; warnBeep.Volume=0.7
+warnBeep.Parent=game:GetService("SoundService")
+-- Says outright whether the id is good. Several ids in this place fail with "Asset type does not match
+-- requested type", which is silent at the point of use -- a warning alarm that never plays would
+-- otherwise look like the warning system itself being broken.
+task.spawn(function()
+	local ok, st = pcall(function()
+		return game:GetService("ContentProvider"):PreloadAsync({warnBeep})
+	end)
+	if ok and warnBeep.IsLoaded then
+		print(("[EventWarn] alarm %s loaded OK (length %.2fs)"):format(warnBeep.SoundId, warnBeep.TimeLength))
+	else
+		warn("[EventWarn] alarm "..warnBeep.SoundId.." did NOT load -- the countdown will be silent. "
+			.."Check the asset is a Sound and is owned/approved. "..tostring(st))
+	end
+end)
 
 -- ===== BIRD SYSTEM =====
 local function createBird()
@@ -266,7 +301,7 @@ local function createBird()
 	_G.birdSpawnedThisFlight = true -- [BALANCE LOGGING] flag-only: a bird spawned during this flight (read by CoreClient FLIGHT DEBUG)
 	local entry={model=birdModel,body=body}
 	table.insert(_G.activeBirds,entry)
-	task.delay(15,function() pcall(function() if birdModel.Parent then birdModel:Destroy() end end) end)
+	task.delay(18,function() pcall(function() if birdModel.Parent then birdModel:Destroy() end end) end)  -- 4s warning + two dives + the turn between: 15 was not enough
 	task.spawn(function()
 		local flapUp=true
 		while birdModel.Parent do
@@ -276,39 +311,106 @@ local function createBird()
 			flapUp=not flapUp; task.wait(0.25)
 		end
 	end)
+	-- ===== FOUR SECONDS OF WARNING, THEN ONE COMMITTED DIVE =====
+	-- The bird used to home in on your exact position for its whole life at your speed plus 20, which is not a
+	-- hazard, it is a tax: there was no input that avoided it, so a hit was decided the moment the flight rolled
+	-- a bird. Now it announces itself and then MISSES if you move.
+	--
+	-- PHASE 1 -- WARN (BIRD_WARN_SECS): it holds off at BIRD_STANDOFF studs, matching your climb so it stays
+	-- level with you, and beeps once a second on the same alarm the big events use -- that sound already means
+	-- "something is about to happen to you" in this game, so it needs no teaching. It CANNOT hit you here.
+	-- PHASE 2 -- DIVE: it locks one direction, at where you were plus a little of where you were going, and
+	-- commits. It does not steer after that. Move and it goes past you; the pass is the dodge.
+	-- After a miss it climbs away and comes round for at most BIRD_DIVES attempts, so a bird is a few seconds
+	-- of pressure with an out, not a guaranteed 20% of your tank.
+	local BIRD_WARN_SECS = 4       -- warning before the first dive -- long enough to see it and move
+	local BIRD_STANDOFF  = 34      -- studs it hangs back at while warning
+	local BIRD_DIVES     = 2       -- committed passes before it gives up and leaves
+	local BIRD_HIT_R     = 6       -- how close the dive has to pass to count (unchanged)
 	task.spawn(function()
+		local dives = 0
 		while birdModel.Parent do
 			local c=player.Character; local hrpNow=c and c:FindFirstChild("HumanoidRootPart")
 			if not hrpNow then birdModel:Destroy(); break end
-			local diff=hrpNow.Position-body.Position
-			if diff.Magnitude<6 then
-				birdModel:Destroy()
-				_G.birdHitThisFlight = true -- [BALANCE LOGGING] flag-only: a bird hit the player this flight (read by CoreClient FLIGHT DEBUG)
-				-- BIRD HAZARD HIT = ONLY DRAIN 20% of the player's CURRENT gas. NO kill, NO knockdown, NO teleport/
-				-- respawn -- the player keeps flying with less gas. _G.applyBirdHalve (CoreClient) drains 20% of
-				-- gasMeter (and keeps currentPower in sync) and enforces the brief hit cooldown so multiple
-				-- birds can't drain you to nothing in one pass; it returns false when the hit is within that
-				-- cooldown window, so we skip the feedback for ignored hits.
-				local applied = _G.applyBirdHalve and _G.applyBirdHalve()
-				if applied then
-					pcall(function() screechSound:Play() end)
-					if _G.showFloatingText then _G.showFloatingText("\xF0\x9F\x90\xA6 BIRD ATTACK! Gas drained!",Color3.fromRGB(255,80,0)) end
-					pcall(function()
-						local eff=_G.effectFlashFrame
-						if eff then eff.BackgroundColor3=Color3.fromRGB(255,80,0); eff.BackgroundTransparency=0.6; TweenService:Create(eff,TweenInfo.new(0.2),{BackgroundTransparency=0.97}):Play() end
-					end)
-				end
-				break
-			elseif diff.Magnitude>150 then birdModel:Destroy(); break
-			else
-				-- Chase a BIT faster than the player's CURRENT speed so the bird can actually catch a
-				-- rising player. Flight ascent speed varies by gut (~40-280), so a flat speed (was 60)
-				-- couldn't catch bigger guts. +20 over the player's live speed = a fair-but-threatening
-				-- margin; floored at 70 so it's never sluggish closing the initial gap.
-				local pSpeed = hrpNow.AssemblyLinearVelocity.Magnitude
-				pcall(function() birdVel.Velocity=diff.Unit*math.max(70, pSpeed + 20) end)
+
+			-- ---------- PHASE 1: WARN ----------
+			pcall(function() screechSound:Play() end)
+			if _G.showFloatingText then
+				_G.showFloatingText("🐦 BIRD INCOMING -- MOVE!", Color3.fromRGB(255,170,40))
 			end
-			task.wait(0.05)
+			local warnEnd = os.clock() + BIRD_WARN_SECS
+			local nextBeep = 0
+			while birdModel.Parent and os.clock() < warnEnd do
+				c = player.Character; hrpNow = c and c:FindFirstChild("HumanoidRootPart")
+				if not hrpNow then break end
+				-- Sit off to one side at standoff range, matching the player's vertical speed so it keeps pace
+				-- with the climb instead of being left behind by a big gut.
+				local off = hrpNow.Position - body.Position
+				local want = off.Magnitude - BIRD_STANDOFF
+				local hold = (off.Magnitude > 0.1) and (off.Unit * math.clamp(want, -40, 40)) or Vector3.zero
+				pcall(function() birdVel.Velocity = hold + Vector3.new(0, hrpNow.AssemblyLinearVelocity.Y, 0) end)
+				if os.clock() >= nextBeep then
+					nextBeep = os.clock() + 1
+					pcall(function() warnBeep:Play() end)
+					if _G.hapticPulse then pcall(_G.hapticPulse, "tick") end
+				end
+				task.wait(0.05)
+			end
+			if not birdModel.Parent then break end
+
+			-- ---------- PHASE 2: THE DIVE ----------
+			c = player.Character; hrpNow = c and c:FindFirstChild("HumanoidRootPart")
+			if not hrpNow then birdModel:Destroy(); break end
+			-- Aim slightly ahead of you, so standing still is not a dodge either -- you have to actually move
+			-- off the line it picked.
+			local aim = hrpNow.Position + hrpNow.AssemblyLinearVelocity * 0.15
+			local dir = aim - body.Position
+			if dir.Magnitude < 0.1 then dir = Vector3.new(0,0,1) end
+			dir = dir.Unit
+			local speed = math.max(150, hrpNow.AssemblyLinearVelocity.Magnitude + 90)
+			pcall(function() birdVel.Velocity = dir * speed end)
+			pcall(function() screechSound:Play() end)
+
+			local hit = false
+			local passEnd = os.clock() + 2.2
+			while birdModel.Parent and os.clock() < passEnd do
+				c = player.Character; hrpNow = c and c:FindFirstChild("HumanoidRootPart")
+				if not hrpNow then break end
+				local diff = hrpNow.Position - body.Position
+				if diff.Magnitude < BIRD_HIT_R then
+					hit = true
+					_G.birdHitThisFlight = true -- [BALANCE LOGGING] read by CoreClient FLIGHT DEBUG
+					-- HIT = DRAIN 20% of CURRENT gas. No kill, no knockdown, no respawn. _G.applyBirdHalve
+					-- (CoreClient) does the drain and enforces the brief hit cooldown, returning false when the
+					-- hit lands inside it -- so an ignored hit is silent here too.
+					local applied = _G.applyBirdHalve and _G.applyBirdHalve()
+					if applied then
+						pcall(function() screechSound:Play() end)
+						if _G.hapticPulse then pcall(_G.hapticPulse, "alert") end
+						if _G.showFloatingText then _G.showFloatingText("🐦 BIRD ATTACK! Gas drained!",Color3.fromRGB(255,80,0)) end
+						pcall(function()
+							local eff=_G.effectFlashFrame
+							if eff then eff.BackgroundColor3=Color3.fromRGB(255,80,0); eff.BackgroundTransparency=0.6; TweenService:Create(eff,TweenInfo.new(0.2),{BackgroundTransparency=0.97}):Play() end
+						end)
+					end
+					break
+				end
+				if diff.Magnitude > 150 then break end
+				task.wait(0.05)
+			end
+
+			dives = dives + 1
+			if hit or dives >= BIRD_DIVES or not birdModel.Parent then
+				if birdModel.Parent then birdModel:Destroy() end
+				break
+			end
+			-- MISSED. Say so -- a dodge the player does not know they made teaches nothing -- then climb away
+			-- and come round for one more pass.
+			if _G.showFloatingText then
+				_G.showFloatingText("💨 DODGED IT!", Color3.fromRGB(120,255,140))
+			end
+			pcall(function() birdVel.Velocity = Vector3.new(0, 40, 0) end)
+			task.wait(0.8)
 		end
 		for i=#_G.activeBirds,1,-1 do if _G.activeBirds[i].model==birdModel then table.remove(_G.activeBirds,i); break end end
 	end)
@@ -363,14 +465,43 @@ end)
 -- of DISABLE_EVENTS.
 -- ACTIVE SPAWN RANGE: junk ONLY falls on ISLANDS 10 AND UP (island 10 through island 14) — the upper
 -- sky. Nowhere below island 10. Island 10 Y=11978, island 14 Y=24017 (hi has headroom above 14).
-local JUNK_ZONES = {
-	{lo = 11978, hi = 24500},  -- islands 10 -> 14 (and just above 14)
-}
+-- The zone is islands 10 -> 14, read from the live island table (the heights moved when the tower was
+-- re-spaced; a hard-coded band silently ended up below island 10).
+local function junkZone()
+	local pos = _G.ISLAND_POS
+	if pos and pos[10] and pos[14] then return pos[10].y, pos[14].y + 500 end
+	return 16614, 38700
+end
 local function inJunkZone(y)
-	for _, z in ipairs(JUNK_ZONES) do
-		if y >= z.lo and y <= z.hi then return true end
+	local lo, hi = junkZone()
+	return y >= lo and y <= hi
+end
+
+-- ENTERING THE ZONE: one banner the moment a flight first crosses into it, so the player knows why the
+-- sky just filled with debris. Re-arms when they leave the zone (land below it), so every climb into the
+-- junk gets the warning once and only once.
+local junkWarned = false
+local function junkZoneWatch()
+	local c = player.Character; local h = c and c:FindFirstChild("HumanoidRootPart")
+	if not h then return end
+	local inside = inJunkZone(h.Position.Y)
+	if inside and not junkWarned and _G.isFlying then
+		junkWarned = true
+		local NC = _G.NotifyCenter
+		if NC then
+			NC.push({
+				top      = "\xF0\x9F\x9B\xB0 SPACE JUNK ZONE",
+				text     = "DODGE THE FALLING DEBRIS!",   -- the top line already says where you are
+				color    = Color3.fromRGB(255,140,0),
+				priority = NC.PRIORITY.EVENT,
+				duration = 5,
+			})
+		elseif _G.showFloatingText then
+			_G.showFloatingText("\xF0\x9F\x9B\xB0 SPACE JUNK ZONE -- a hit halves your fart power!", Color3.fromRGB(255,140,0))
+		end
+	elseif not inside then
+		junkWarned = false
 	end
-	return false
 end
 local JUNK_SPAWN_INTERVAL = 0.7   -- seconds between spawns (FASTER than before -> denser upper-sky debris)
 local JUNK_LIFETIME       = 6     -- seconds before auto-despawn (>= 220/55 fall time so it reaches the player from the higher spawn)
@@ -556,8 +687,11 @@ local function createJunk()
 				-- the player back to the island they launched from (never higher; closest-below
 				-- fallback), using the same _G.beamLaunchSnapshot the beams use. (Replaces the old
 				-- "instant fall, keep current power" _G.applyJunkHit behavior for junk only.)
-				if _G.applyBeamHit then _G.applyBeamHit() end
-				if _G.showFloatingText then _G.showFloatingText("\xF0\x9F\x9B\xB0 JUNK HIT! Knocked back!", Color3.fromRGB(255,140,0)) end
+				-- A JUNK HIT HALVES YOUR FART POWER (it used to rewind the whole flight via the beam rule, and
+				-- before that drop you outright). You keep climbing on what is left -- the fall comes when that
+				-- runs out -- and the landing that follows empties the tank to the 5-power buffer.
+				if _G.applyJunkHit then _G.applyJunkHit(JUNK_PUSH_DOWN) end
+				if _G.showFloatingText then _G.showFloatingText("\xF0\x9F\x9B\xB0 JUNK HIT! Fart power HALVED!", Color3.fromRGB(255,140,0)) end
 				break
 			elseif body.Position.Y < h.Position.Y - 30 then
 				break -- fell past the player
@@ -571,6 +705,7 @@ end
 task.spawn(function()
 	while true do
 		task.wait(JUNK_SPAWN_INTERVAL)
+		junkZoneWatch()
 		if _G.isFlying then
 			local c=player.Character; local h=c and c:FindFirstChild("HumanoidRootPart")
 			-- test flag spawns anywhere (incl. island 1); otherwise ONLY inside the two junk zones (7-8, 12-13)
@@ -1190,10 +1325,30 @@ local pillToken = 0
 -- Reveal the (top-centered) countdown pill, but ONLY after the banner has cleared the screen AND only if the event
 -- is still running by then. `pillToken` cancels a pending reveal the moment a newer event/pill cycle begins, and
 -- short events that finish before the banner clears simply never pop a pill (stillActive() is false by then).
+-- ===== THE COUNTDOWN IS A FULL-SIZE BANNER =====
+-- It went to a small chip for a while, on the reasoning that a full-width card is a lot of screen for one
+-- number. In practice the opposite is true DURING an event: a storm is the single most important thing
+-- happening, and a chip clipped to the end of the objective banner reads as a decoration on someone
+-- else's UI rather than as the thing the player is supposed to be reacting to. So the countdown is a
+-- normal banner again -- the same 500x65 card at the same corner radius as every other top-centre card,
+-- opening in the quest lane, and while it is up it is MEANT to be the only thing in that lane.
+--
+-- WHAT STANDS DOWN FOR IT (this is the "only thing shown" rule):
+--   * The quest tracker, via `_G.eventPillHold("count", true)` -- the flag that gate already honours.
+--   * The event chip, via `_G.eventCountBannerActive` -- EventChip refuses to draw while that is set,
+--     so the seconds are never on screen twice.
+-- WHAT IT STANDS DOWN FOR (the "unless something more important" half):
+--   * NotifyCenter's hero lane. An island unlock outranks a storm timer, so the banner waits for the
+--     lane on the way in AND yields it again if something claims it mid-event, coming back when clear.
+--     `stillActive()` means an event that ends while it is yielding never pops back up.
 local function showCountPillAfterBanner(stillActive)
 	pillToken = pillToken + 1
 	local myToken = pillToken
-	countPill.Visible = false; _G.eventPillHold("count", false) -- hidden while the announcement is on screen
+	countPill.Visible = false
+	-- OWNERSHIP FOR THE WHOLE EVENT, not just while visible: a momentary yield to the hero lane must not
+	-- let the chip slip in behind the banner and leave two countdowns on screen when it comes back.
+	_G.eventCountBannerActive = true
+	if _G.EventPillHide then _G.EventPillHide() end
 	task.spawn(function()
 		local waited = 0
 		while waited < BANNER_WAIT_CAP do
@@ -1202,14 +1357,125 @@ local function showCountPillAfterBanner(stillActive)
 			task.wait(0.1); waited = waited + 0.1
 		end
 		task.wait(BANNER_GONE_AFTER)
-		if myToken == pillToken and (not stillActive or stillActive()) then
-			-- re-read the lane on the way in, not just at build time: PetQuestUI may not have existed when
-			-- this pill was created, and the quest lane can be retuned while the game is running
-			countPill.Position = UDim2.new(0.5, 0, 0, questLaneY())
-			countPill.Visible = true
-			_G.eventPillHold("count", true) -- the quest tracker stands down until this clears
+		-- THE LANE WATCH. One loop for the life of the event rather than a single reveal: it shows the
+		-- banner whenever the hero lane is free and hides it the moment something more important takes
+		-- the lane, so the two never draw through each other at any point in a 60-second storm.
+		while myToken == pillToken and (not stillActive or stillActive()) do
+			local NC = _G.NotifyCenter
+			if NC and NC.isBusy() then
+				if countPill.Visible then
+					countPill.Visible = false
+					_G.eventPillHold("count", false)
+				end
+			elseif not countPill.Visible then
+				-- re-read the lane on the way in, not just at build time: PetQuestUI may not have existed
+				-- when this pill was created, and the quest lane can be retuned while the game is running
+				countPill.Position = UDim2.new(0.5, 0, 0, questLaneY())
+				countPill.Visible = true
+				_G.eventPillHold("count", true) -- the quest tracker stands down until this clears
+			end
+			task.wait(0.25)
+		end
+		if myToken == pillToken then
+			countPill.Visible = false
+			_G.eventPillHold("count", false)
+			_G.eventCountBannerActive = false
 		end
 	end)
+end
+
+-- ===== THE 20-SECOND HAZARD WARNING =====
+-- The server fires EventWarnEvent 20s before a THUNDERSTORM, WINDSTORM or HIGH GRAVITY -- the three
+-- events that work against the player rather than for them (see EVENT_WARNED in PlayerStats). It is a
+-- SEPARATE remote from ServerEventNotify because everything listening on that one treats a broadcast
+-- as "this is happening now", which is the opposite of a warning.
+--
+-- It reuses countPill -- the same card, the same lane, the same rules -- rather than building a second
+-- banner: the warning turns into the countdown without anything moving on screen, and a warning cannot
+-- collide with the storm banner it is warning about because they are the same object.
+--
+-- The colour is the ONE difference: amber, not the event's own colour, so "20s until this" never reads
+-- as "this is running". `pillToken` retires the warning the instant the real event claims the pill.
+-- How many times the alarm sounds over the countdown, spread evenly across whatever length the
+-- server sends. Six over 20s is a beat every 3.3s: often enough to read as urgent, sparse enough
+-- that it is not a siren the player wants muted.
+local WARN_BEEPS = 6
+local function showEventWarning(dispName, seconds)
+	pillToken = pillToken + 1
+	local myToken = pillToken
+	local left = math.max(1, math.floor(tonumber(seconds) or 20))
+	-- SCRUBBED TO ASCII. dispName arrives from the server WITH its emoji ("â THUNDERSTORM"),
+	-- and FredokaOne has no glyph for one -- Roblox substitutes a fallback box that reads as a stray
+	-- letter in front of the word. Same reason the countdown lines below carry no emoji either.
+	local word = tostring(dispName or "STORM"):upper():gsub("[^%a%d%s]", "")
+	word = word:gsub("^%s+", ""):gsub("%s+$", "")
+	if word == "" then word = "STORM" end
+	countPill.BackgroundColor3 = Color3.fromRGB(235, 150, 30)
+	countPill.Position = UDim2.new(0.5, 0, 0, questLaneY())
+	_G.eventCountBannerActive = true
+	if _G.EventPillHide then _G.EventPillHide() end
+	-- SIX BEATS ACROSS THE WHOLE COUNTDOWN, on their own timer rather than folded into the 1s text
+	-- tick below -- 20/6 is 3.33s and a per-second loop cannot place a beat on a third of a second.
+	-- The first one fires immediately, so the alarm and the banner arrive together; `pillToken` stops
+	-- it the moment anything newer claims the pill, so a cancelled warning goes quiet at once.
+	task.spawn(function()
+		local gap = left / WARN_BEEPS
+		for i = 1, WARN_BEEPS do
+			if myToken ~= pillToken then return end
+			-- Rewound every time: a Sound asked to Play while already playing carries on from where it
+			-- was instead of restarting, which turns six beats into one long smear.
+			pcall(function() warnBeep.TimePosition = 0; warnBeep:Play() end)
+			if i < WARN_BEEPS then task.wait(gap) end
+		end
+	end)
+	task.spawn(function()
+		while myToken == pillToken and left > 0 do
+			local NC = _G.NotifyCenter
+			if NC and NC.isBusy() then
+				-- an island unlock outranks a weather warning, same as the countdown does
+				if countPill.Visible then countPill.Visible = false; _G.eventPillHold("count", false) end
+			else
+				countLabel.Text = word .. " IN " .. left .. "s"
+				if not countPill.Visible then
+					countPill.Position = UDim2.new(0.5, 0, 0, questLaneY())
+					countPill.Visible = true
+					_G.eventPillHold("count", true)
+				end
+			end
+			task.wait(1)
+			left = left - 1
+		end
+		-- Cleared only if nothing newer took the pill. The storm's own broadcast lands a beat after this
+		-- ends and bumps pillToken, so the warning hands straight over to the countdown with no gap.
+		if myToken == pillToken then
+			countPill.Visible = false
+			_G.eventPillHold("count", false)
+			_G.eventCountBannerActive = false
+		end
+	end)
+end
+
+do
+	local warnRemote = _G.EventWarnEvent
+		or game:GetService("ReplicatedStorage"):FindFirstChild("EventWarnEvent")
+	if warnRemote then
+		warnRemote.OnClientEvent:Connect(function(dispName, seconds)
+			showEventWarning(dispName, seconds)
+		end)
+	else
+		-- WaitForChild in a spawn, never at top level: this file is long and a 30s yield here would
+		-- stop every storm/wind handler below from existing at all.
+		task.spawn(function()
+			local r = game:GetService("ReplicatedStorage"):WaitForChild("EventWarnEvent", 30)
+			if not r then
+				warn("[EventWarn] no EventWarnEvent remote -- hazard warnings will not show")
+				return
+			end
+			r.OnClientEvent:Connect(function(dispName, seconds)
+				showEventWarning(dispName, seconds)
+			end)
+		end)
+	end
 end
 
 local activeEventSgs={}
@@ -1554,7 +1820,7 @@ local function endEvent()
 	-- Clear any full-screen flash/lightning overlays INSTANTLY so no screen tint lingers past the event.
 	lightningFlash.BackgroundTransparency=1
 	flashFrame.BackgroundTransparency=1
-	countPill.Visible=false; _G.eventPillHold("count", false)
+	countPill.Visible=false; _G.eventPillHold("count", false); _G.eventCountBannerActive=false
 	for _,sg2 in ipairs(activeEventSgs) do pcall(function() sg2:Destroy() end) end; activeEventSgs={}
 	cleanupWeather()
 end
@@ -1650,6 +1916,7 @@ local function spawnLightningStrike()
 		game:GetService("Debris"):AddItem(bolt,0.15)
 	end
 	local flash=Instance.new("Frame"); flash.Size=UDim2.new(1,0,1,0); flash.Position=UDim2.new(0,0,0,0)
+	flash.BorderSizePixel=0 -- the legacy border DEFAULTS TO 1px and draws whenever the fill shows: a full-screen flash without this rings the screen with hairlines for its whole fade
 	flash.BackgroundColor3=Color3.fromRGB(255,255,255); flash.BackgroundTransparency=0.2
 	flash.ZIndex=15; flash.Parent=stormSg
 	TweenService:Create(flash,TweenInfo.new(0.15),{BackgroundTransparency=1}):Play()
@@ -1729,6 +1996,10 @@ end
 -- ===== THUNDERSTORM =====
 local function startThunderstorm(dur)
 	_G.thunderstormActive=true
+	-- THE CHIP BESIDE THE OBJECTIVE BANNER. Hooked here and not at the "[Storm] skybox blacked out" print:
+	-- that line lives inside startStormSky() one call deeper, fires on the same tick, and does NOT have the
+	-- duration -- and a countdown chip with no duration is the one thing this must not be.
+	if _G.EventPillShow then _G.EventPillShow("\xE2\x9B\x88", "STORM", dur) end
 	setIslandsInvisible(true)
 	if not thunderstormSound.IsPlaying then thunderstormSound:Play() end -- once; don't replay on re-trigger
 	stormBlur.Enabled=false -- NO screen blur: the storm look is real 3D fog + cloud particles (HUD stays bright)
@@ -1751,7 +2022,24 @@ local function startThunderstorm(dur)
 			if lightTimer<=0 then
 				lightTimer=math.random(40,100)*0.1
 				triggerLightning() -- 3D lighting SPIKE lights up the cloud (no 2D frame -> GUI stays bright)
-				task.delay(math.random(15,70)*0.01,function() pcall(function() thunderSound:Play() end) end)
+				-- ===== THUNDER LAGS THE FLASH, BY HOW FAR AWAY THE STRIKE WAS =====
+				-- The delay used to be 0.15-0.70s, which is close enough to simultaneous that the storm read
+				-- as a camera flash rather than as weather. Light arrives instantly and sound does not, and
+				-- that gap is the ONLY thing that gives a sky any depth.
+				--
+				-- One roll picks how far off this strike is, and that single number drives all three cues so
+				-- they cannot disagree: a near strike is a fast, loud, sharp CRACK; a distant one is a long
+				-- wait for a quiet, low RUMBLE. Volume and pitch moving together is what makes the far ones
+				-- sound far rather than merely quiet.
+				local far = math.random()                    -- 0 = overhead, 1 = miles away
+				task.delay(0.25 + far * 6.5, function()
+					pcall(function()
+						thunderSound.Volume = 0.9 - far * 0.6
+						thunderSound.PlaybackSpeed = 1.06 - far * 0.46
+						thunderSound.TimePosition = 0        -- rewound, or a boom still playing just continues
+						thunderSound:Play()
+					end)
+				end)
 			end
 			if strikeTimer<=0 then
 				strikeTimer=math.random(200,400)*0.01
@@ -1779,23 +2067,26 @@ local function startThunderstorm(dur)
 				setIslandsInvisible(true)
 			end
 			local rem=math.max(0,math.ceil(endT-tick()))
-			countLabel.Text="\xe2\x9b\x88 THUNDERSTORM: "..rem.."s"
+			countLabel.Text="THUNDERSTORM: "..rem.."s"   -- NO EMOJI: FredokaOne has no glyph for it and draws a fallback box
+			if _G.eventPillSeconds then _G.eventPillSeconds(rem) end
 			if rem<=0 then break end
 		end
 		_G.thunderstormActive=false; glowPulseActive=false
+		if _G.EventPillHide then _G.EventPillHide() end
 		setIslandsInvisible(false)   -- islands come back, each to the transparency it actually had
 		_G.thunderWindVec=Vector3.new(0,0,0) -- wind off (CoreClient reads zero -> normal flight)
 		thunderstormSound:Stop() -- stop the storm sound when the event ends, even mid-playback
 		stormBlur.Enabled=false
 		stopStormSky()           -- restore Lighting/fog/particles to normal
 		lightningFlash.BackgroundTransparency=1
-		countPill.Visible=false; _G.eventPillHold("count", false); hideGlow()
+		countPill.Visible=false; _G.eventPillHold("count", false); _G.eventCountBannerActive=false; hideGlow()
 	end)
 end
 
 -- ===== WINDSTORM =====
 local function startWindstorm()
 	_G.windstormActive=true
+	if _G.EventPillShow then _G.EventPillShow("\xF0\x9F\x92\xA8", "WIND") end
 	windstormSound:Play() -- looping ambient; same instance, so a re-trigger restarts (never stacks)
 	local rx=math.random(1,2)==1 and math.random(-10,-3) or math.random(3,10)
 	local rz=math.random(1,2)==1 and math.random(-10,-3) or math.random(3,10)
@@ -1821,12 +2112,14 @@ local function startWindstorm()
 				pcall(function() spawnWindStreak(_G.windstormDir,60,Color3.new(1,1,1)) end)
 			end
 			local rem=math.max(0,math.ceil(endT-tick()))
-			countLabel.Text="\xF0\x9F\x8C\xAA WINDSTORM: "..rem.."s"
+			countLabel.Text="WINDSTORM: "..rem.."s"   -- NO EMOJI: same reason as the thunderstorm line above
+			if _G.eventPillSeconds then _G.eventPillSeconds(rem) end
 			if rem<=0 then break end
 		end
 		_G.windstormActive=false; glowPulseActive=false
+		if _G.EventPillHide then _G.EventPillHide() end
 		windstormSound:Stop() -- stop the loop cleanly when the windstorm ends
-		countPill.Visible=false; _G.eventPillHold("count", false); hideGlow()
+		countPill.Visible=false; _G.eventPillHold("count", false); _G.eventCountBannerActive=false; hideGlow()
 	end)
 end
 
@@ -1918,6 +2211,7 @@ if ServerEventNotify then
 				while _G.serverEventActive do
 					local rem=math.max(0,endT-os.time())
 					countLabel.Text=tostring(dispName)..": "..rem.."s"
+					if _G.eventPillSeconds then _G.eventPillSeconds(rem) end
 					if rem<=0 then break end
 					task.wait(1)
 				end
@@ -1940,77 +2234,237 @@ task.spawn(function()
 	-- teleport is server-driven. NUKE_BOOM_VOLUME is the single adjustable volume.
 	local NUKE_BOOM_SOUND_ID = "rbxassetid://89988274755984"
 	local NUKE_BOOM_VOLUME = 1
+	-- TWO VOICES FROM ONE SAMPLE. There is a single boom asset in the place, and one copy of it at 1.0 is a
+	-- pop. Playing a second copy at 0.45 speed under it turns the same recording into a deep rumble that
+	-- outlasts the crack -- which is what a blast actually sounds like, and it costs no new asset.
 	local function playBoomSound()
-		local boom = Instance.new("Sound")
-		boom.Name = "BirdNukeBoom"
-		boom.SoundId = NUKE_BOOM_SOUND_ID
-		boom.Volume = NUKE_BOOM_VOLUME
-		boom.Parent = SoundService
-		boom:Play()
-		boom.Ended:Connect(function() boom:Destroy() end)
-		Debris:AddItem(boom, 30) -- safety cleanup if it never finishes/loads
+		for _, v in ipairs({ { 1.0, NUKE_BOOM_VOLUME }, { 0.45, NUKE_BOOM_VOLUME * 0.9 } }) do
+			local boom = Instance.new("Sound")
+			boom.Name = "BirdNukeBoom"
+			boom.SoundId = NUKE_BOOM_SOUND_ID
+			boom.PlaybackSpeed = v[1]
+			boom.Volume = v[2]
+			boom.Parent = SoundService
+			boom:Play()
+			boom.Ended:Connect(function() boom:Destroy() end)
+			Debris:AddItem(boom, 30) -- safety cleanup if it never finishes/loads
+		end
 	end
-	-- Short camera shake that decays over `duration`. Applied in RenderStepped (after the default
-	-- camera update) and self-disconnects, so it leaves no permanent camera offset.
+	-- ===== THE BUYER HAS TO SEE WHAT THEY BOUGHT =====
+	-- This is a Robux product whose entire effect happens to OTHER PEOPLE, on THEIR screens, on their way
+	-- back to their home island. The buyer paid for it and got a flash, a small camera wobble and a line of
+	-- floating text -- no idea whether it hit anybody, no idea how many, and nothing in the world around
+	-- them moved. That is the worst possible shape for a purchase: you pay, something happens somewhere
+	-- else, and you take our word for it.
+	--
+	-- So the blast is now much harder for everyone AND the buyer gets three things nobody else does:
+	--   * A WORLD detonation at their feet -- expanding shock rings and a flock erupting outward from where
+	--     they are standing. Screen-space flashes are something that happens TO your screen; a ring tearing
+	--     across the island is something you DID.
+	--   * A SCORE. "9 PLAYERS SENT HOME", slammed on screen and counted up. The number is the product.
+	--   * The longest tail: their shake and their glow outlast everyone else's.
+	local NUKE_SHAKE_TIME, NUKE_SHAKE_MAG = 2.2, 14   -- was 1.4 / 5
+	local NUKE_FOV_PUNCH = 26                          -- degrees, snapped on and eased back
+
+	-- Camera shake that decays over `duration`. Applied in RenderStepped (after the default camera update)
+	-- and self-disconnects, so it leaves no permanent camera offset. Now shakes on THREE axes and ROLLS --
+	-- a pure X/Y jitter reads as a rumble, and rolling the horizon is what makes it read as a detonation.
+	local shakeConn
 	local function screenShake(duration, magnitude)
 		if not workspace.CurrentCamera then return end
+		if shakeConn then shakeConn:Disconnect(); shakeConn = nil end -- a second nuke restarts, never stacks
 		local t0 = tick(); local conn
 		conn = RunService.RenderStepped:Connect(function()
 			local cam = workspace.CurrentCamera
 			local e = tick() - t0
-			if e >= duration or not cam then conn:Disconnect(); return end
-			local m = magnitude * (1 - e/duration)
-			cam.CFrame = cam.CFrame * CFrame.new((math.random()-0.5)*2*m, (math.random()-0.5)*2*m, 0)
+			if e >= duration or not cam then conn:Disconnect(); if shakeConn == conn then shakeConn = nil end; return end
+			-- ^2 falloff: violent for the first half-second, then it settles fast instead of dragging.
+			local k = (1 - e / duration); k = k * k
+			local m = magnitude * k
+			cam.CFrame = cam.CFrame
+				* CFrame.new((math.random() - 0.5) * 2 * m, (math.random() - 0.5) * 2 * m, (math.random() - 0.5) * m)
+				* CFrame.Angles(0, 0, math.rad((math.random() - 0.5) * 6 * k))
+		end)
+		shakeConn = conn
+	end
+
+	-- FOV PUNCH. Snap wide, ease back. The cheapest "something just went off" in the box -- the whole world
+	-- lurches away from you for a fifth of a second. Captured and restored rather than assumed to be 70, and
+	-- if the wormhole sequence is driving FOV at the same time it simply wins (it writes every frame).
+	local function fovPunch()
+		local cam = workspace.CurrentCamera; if not cam then return end
+		local base = cam.FieldOfView
+		cam.FieldOfView = base + NUKE_FOV_PUNCH
+		TweenService:Create(cam, TweenInfo.new(1.0, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+			{ FieldOfView = base }):Play()
+	end
+
+	-- A screen-space blast RING: a circle outline that tears outward from the middle of the screen and
+	-- fades. Three of them, staggered, so the wave has depth instead of being one hoop.
+	local function shockRing(delaySec, thickness, colour)
+		task.delay(delaySec, function()
+			pcall(function()
+				local ring = mkFrame(stormSg, {
+					AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+					Size = UDim2.new(0, 40, 0, 40), BackgroundTransparency = 1, ZIndex = 19,
+				})
+				Instance.new("UICorner", ring).CornerRadius = UDim.new(1, 0)
+				local st = Instance.new("UIStroke"); st.Color = colour; st.Thickness = thickness
+				st.Transparency = 0.05; st.Parent = ring
+				TweenService:Create(ring, TweenInfo.new(0.75, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+					{ Size = UDim2.new(2.4, 0, 2.4, 0) }):Play()
+				TweenService:Create(st, TweenInfo.new(0.75), { Transparency = 1, Thickness = 1 }):Play()
+				Debris:AddItem(ring, 0.9)
+			end)
 		end)
 	end
-	-- Server-wide nuke explosion, shown to EVERYONE (incl. the buyer). DRAMATIC ON PURPOSE -- a nuke
-	-- that reads like a polite camera bump isn't worth Robux. Three layers, all screen-space and all
-	-- self-cleaning: (1) a hard WHITE detonation pop that cuts to a long orange wash -- two stages read
-	-- as a real blast where one flat flash never does; (2) a much longer, harder camera shake that
-	-- decays over 1.4s; (3) a panicked FLOCK of bird emojis scrambling across the whole screen -- the
-	-- "every bird in the world just took off at once" beat that sells it as a BIRD nuke.
+
+	-- Server-wide nuke explosion, shown to EVERYONE (incl. the buyer). DRAMATIC ON PURPOSE -- a nuke that
+	-- reads like a polite camera bump isn't worth Robux. Layers, all screen-space and all self-cleaning:
+	-- a hard WHITE cut, a long orange wash, three blast rings, a 2.2s decaying shake with roll, an FOV
+	-- punch, and a panicked FLOCK of birds scrambling across the whole screen.
 	local function nukeExplosion()
 		playBoomSound()
-		local white=mkFrame(stormSg,{
-			Size=UDim2.new(1,0,1,0),Position=UDim2.new(0,0,0,0),
-			BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=0.08,ZIndex=19
+		fovPunch()
+		local white = mkFrame(stormSg, {
+			Size = UDim2.new(1,0,1,0), Position = UDim2.new(0,0,0,0), BorderSizePixel = 0,
+			BackgroundColor3 = Color3.new(1,1,1), BackgroundTransparency = 0, ZIndex = 19,
 		})
-		TweenService:Create(white,TweenInfo.new(0.18),{BackgroundTransparency=1}):Play()
-		Debris:AddItem(white,0.3)
-		local nukeFlash=mkFrame(stormSg,{
-			Size=UDim2.new(1,0,1,0),Position=UDim2.new(0,0,0,0),
-			BackgroundColor3=Color3.fromRGB(255,80,0),BackgroundTransparency=0.35,ZIndex=18
+		TweenService:Create(white, TweenInfo.new(0.28), { BackgroundTransparency = 1 }):Play()
+		Debris:AddItem(white, 0.4)
+		local nukeFlash = mkFrame(stormSg, {
+			Size = UDim2.new(1,0,1,0), Position = UDim2.new(0,0,0,0), BorderSizePixel = 0,
+			BackgroundColor3 = Color3.fromRGB(255,80,0), BackgroundTransparency = 0.18, ZIndex = 18,
 		})
-		TweenService:Create(nukeFlash,TweenInfo.new(1.1),{BackgroundTransparency=1}):Play()
-		Debris:AddItem(nukeFlash,1.2)
-		screenShake(1.4, 5)
-		for _=1,16 do
-			task.delay(math.random()*0.7,function()
+		TweenService:Create(nukeFlash, TweenInfo.new(1.6), { BackgroundTransparency = 1 }):Play()
+		Debris:AddItem(nukeFlash, 1.7)
+		shockRing(0.00, 26, Color3.fromRGB(255,255,255))
+		shockRing(0.10, 18, Color3.fromRGB(255,170,40))
+		shockRing(0.22, 10, Color3.fromRGB(255,80,0))
+		screenShake(NUKE_SHAKE_TIME, NUKE_SHAKE_MAG)
+		-- 16 -> 44 birds, bigger and faster, and they now arrive in the first third of a second rather than
+		-- trickling across nearly a second. A swarm is a wall of birds at once; a trickle is pigeons.
+		for _ = 1, 44 do
+			task.delay(math.random() * 0.35, function()
 				pcall(function()
-					local ltr = (math.random(1,2)==1) -- half fly left-to-right, half the other way
-					local b=Instance.new("TextLabel")
-					b.BackgroundTransparency=1; b.Font=Enum.Font.GothamBold; b.TextSize=28+math.random(0,26)
-					b.Text="\xF0\x9F\x90\xA6"; b.TextColor3=Color3.new(1,1,1); b.ZIndex=20
-					b.Rotation=math.random(-25,25)
-					b.Size=UDim2.new(0,54,0,54)
-					b.Position=UDim2.new(ltr and -0.12 or 1.12, 0, math.random()*0.85, 0)
-					b.Parent=stormSg
-					TweenService:Create(b,TweenInfo.new(0.9+math.random()*0.8,Enum.EasingStyle.Linear),
-						{Position=UDim2.new(ltr and 1.12 or -0.12, 0, math.random()*0.85, 0)}):Play()
-					Debris:AddItem(b,1.9)
+					local ltr = (math.random(1,2) == 1) -- half fly left-to-right, half the other way
+					local b = Instance.new("TextLabel")
+					b.BackgroundTransparency = 1; b.Font = Enum.Font.GothamBold; b.TextSize = 34 + math.random(0,40)
+					b.Text = "\xF0\x9F\x90\xA6"; b.TextColor3 = Color3.new(1,1,1); b.ZIndex = 20
+					b.Rotation = math.random(-40, 40)
+					b.Size = UDim2.new(0, 62, 0, 62)
+					b.Position = UDim2.new(ltr and -0.15 or 1.15, 0, math.random() * 0.9, 0)
+					b.Parent = stormSg
+					TweenService:Create(b, TweenInfo.new(0.45 + math.random() * 0.5, Enum.EasingStyle.Linear),
+						{ Position = UDim2.new(ltr and 1.15 or -0.15, 0, math.random() * 0.9, 0),
+						  Rotation = math.random(-70, 70) }):Play()
+					Debris:AddItem(b, 1.4)
 				end)
 			end)
 		end
 	end
-	BirdNukeEvent2.OnClientEvent:Connect(function(buyerName)
+
+	-- ===== BUYER ONLY: THE DETONATION IN THE WORLD =====
+	-- Three neon shock rings expanding across the ground from where the buyer is standing, plus a flock of
+	-- birds erupting up and outward from them. Purely cosmetic and client-side: anchored, no collision, no
+	-- queries, Debris-cleaned. Nothing here touches physics, the meter, or anybody else's character.
+	local function nukeWorldBlast()
+		local char = player.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if not hrp then return end
+		local origin = hrp.Position
+		for i = 1, 3 do
+			task.delay((i - 1) * 0.12, function()
+				pcall(function()
+					local ring = Instance.new("Part")
+					ring.Name = "NukeShock"; ring.Shape = Enum.PartType.Cylinder
+					ring.Size = Vector3.new(1, 6, 6)
+					ring.CFrame = CFrame.new(origin - Vector3.new(0, 2, 0)) * CFrame.Angles(0, 0, math.rad(90))
+					ring.Color = (i == 1) and Color3.fromRGB(255,255,255)
+						or ((i == 2) and Color3.fromRGB(255,170,40) or Color3.fromRGB(255,70,0))
+					ring.Material = Enum.Material.Neon
+					ring.Anchored = true; ring.CanCollide = false; ring.CanQuery = false; ring.CanTouch = false
+					ring.CastShadow = false; ring.Transparency = 0.15
+					ring.Parent = workspace
+					TweenService:Create(ring, TweenInfo.new(1.1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+						{ Size = Vector3.new(1, 260, 260), Transparency = 1 }):Play()
+					Debris:AddItem(ring, 1.3)
+				end)
+			end)
+		end
+		-- the flock going up: 26 birds thrown outward and up from the buyer, tumbling as they go
+		for _ = 1, 26 do
+			pcall(function()
+				local b = Instance.new("Part")
+				b.Size = Vector3.new(2.2, 0.9, 1.2)
+				b.Color = Color3.fromRGB(235, 235, 245); b.Material = Enum.Material.SmoothPlastic
+				b.CanCollide = false; b.CanQuery = false; b.CanTouch = false; b.CastShadow = false
+				b.Anchored = true
+				b.CFrame = CFrame.new(origin + Vector3.new(0, 2, 0))
+				b.Parent = workspace
+				local ang = math.random() * math.pi * 2
+				local dist = 60 + math.random() * 90
+				local target = origin + Vector3.new(math.cos(ang) * dist, 30 + math.random() * 70, math.sin(ang) * dist)
+				TweenService:Create(b, TweenInfo.new(1.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+					{ CFrame = CFrame.new(target) * CFrame.Angles(math.random() * 6, math.random() * 6, math.random() * 6),
+					  Transparency = 1 }):Play()
+				Debris:AddItem(b, 1.6)
+			end)
+		end
+	end
+
+	-- ===== BUYER ONLY: THE SCORE =====
+	-- The number IS the product. It slams on at 3x size, snaps down to 1x, and counts up from zero so the
+	-- eye follows it to the total. Sits high-centre, well clear of the fart button and the hero banner.
+	local function nukeScoreboard(victims)
+		victims = math.max(0, math.floor(tonumber(victims) or 0))
+		local sg = Instance.new("ScreenGui")
+		sg.Name = "BirdNukeScore"; sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true; sg.DisplayOrder = 98
+		sg.Parent = PlayerGui
+		local lbl = Instance.new("TextLabel")
+		lbl.AnchorPoint = Vector2.new(0.5, 0.5); lbl.Position = UDim2.new(0.5, 0, 0.34, 0)
+		lbl.Size = UDim2.new(0.8, 0, 0, 96); lbl.BackgroundTransparency = 1
+		lbl.Font = Enum.Font.FredokaOne; lbl.TextScaled = true
+		lbl.TextColor3 = Color3.fromRGB(255, 215, 0); lbl.Text = "0 SENT HOME"
+		lbl.Parent = sg
+		local st = Instance.new("UIStroke"); st.Color = Color3.fromRGB(90, 20, 0); st.Thickness = 5; st.Parent = lbl
+		local sc = Instance.new("UIScale"); sc.Scale = 3; sc.Parent = lbl
+		TweenService:Create(sc, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+		task.spawn(function()
+			-- Count up over ~0.6s however big the number is, so it never crawls on a full server.
+			local step = math.max(1, math.floor(victims / 12))
+			local n = 0
+			while n < victims do
+				n = math.min(victims, n + step)
+				lbl.Text = n .. (n == 1 and " PLAYER SENT HOME!" or " PLAYERS SENT HOME!")
+				task.wait(0.05)
+			end
+			if victims == 0 then lbl.Text = "NOBODY ELSE HERE... YET" end
+			task.wait(2.2)
+			pcall(function()
+				TweenService:Create(lbl, TweenInfo.new(0.4), { TextTransparency = 1 }):Play()
+				TweenService:Create(st, TweenInfo.new(0.4), { Transparency = 1 }):Play()
+			end)
+			task.wait(0.5)
+			pcall(function() sg:Destroy() end)
+		end)
+	end
+
+	-- victimCount comes from the server (everyone in the server except the buyer) -- see triggerBirdNuke
+	-- in PlayerStats. An older server that sends only a name still works: the score simply reads 0.
+	BirdNukeEvent2.OnClientEvent:Connect(function(buyerName, victimCount)
 		pcall(function()
 			showEventBanner("\xF0\x9F\x90\xA6\xF0\x9F\x92\xA5 BIRD NUKE",buyerName.." launched a BIRD NUKE!",Color3.fromRGB(255,80,0))
 			local isBuyer=(buyerName==player.Name)
 			-- Everyone (incl. the buyer) sees the explosion immediately: boom sound + flash + shake.
 			nukeExplosion()
 			if isBuyer then
-				-- Buyer is spared the swarm and is NOT teleported; they just enjoy the payoff.
-				if _G.showFloatingText then _G.showFloatingText("\xF0\x9F\x90\xA6\xF0\x9F\x92\xA5 BIRD NUKE launched! Everyone else got sent home!",Color3.fromRGB(255,215,0)) end
+				-- Buyer is spared the swarm and is NOT teleported. THE PAYOFF IS THEIRS: the world detonates at
+				-- their feet, a second harder shake rides in on top of the shared one, and the number of people
+				-- they just sent home is slammed across the screen. All of it is cosmetic and client-side.
+				nukeWorldBlast()
+				nukeScoreboard(victimCount)
+				task.delay(0.35, function() screenShake(1.6, 9) end) -- the aftershock, theirs alone
 				startGlowPulse(Color3.fromRGB(255,215,0))
 				task.delay(5,function()
 					if not _G.thunderstormActive and not _G.windstormActive and not _G.serverEventActive then hideGlow() end

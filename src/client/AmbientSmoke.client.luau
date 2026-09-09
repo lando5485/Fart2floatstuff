@@ -85,10 +85,10 @@ local PLUMES = {
 		-- Only its VISIBILITY is touched. Collision is deliberately left exactly as you set it: this brick may well
 		-- be part of a roof or a chimney stack, and silently turning off CanCollide could drop a player through the
 		-- building. If you want it non-solid, that is a decision for Studio, not for a smoke script.
-		-- NOTE: this one is now left VISIBLE (hideHost = false). It is real scenery -- a chimney stack you can see --
-		-- so hiding it would delete the thing the smoke is supposed to be coming out of. Its twin, SmokeBrick1
-		-- below, IS a pure marker and stays hidden.
-		hideHost = false,
+		-- HIDDEN. This was left visible for a while on the theory that it was a chimney stack you could see --
+		-- it is not, it is a placement brick, and a grey box on a Bean Farm roof is the one part of this the
+		-- player actually notices. Both named bricks are markers and both are hidden now.
+		hideHost = true,
 		find = "SmokeBrick", label = "chimney smoke (Bean Farm)",
 		-- ===== LIGHTENED: A CHIMNEY, NOT A HAZE OVER THE WHOLE ISLAND =====
 		-- A previous pass pushed this to nearly-opaque near-black soot (rate 16, trans 0.12, size up to 11,
@@ -438,15 +438,19 @@ end)
 -- for ANY part or model with "smoke" in its name and give each one the standard chimney plume.
 --
 -- Scoped to the Island_1 model only, so a "smoke" prop on some other island doesn't suddenly become a chimney.
--- Hosts are real scenery, so they stay visible; the claimed-set in attach() stops double plumes on the two
--- bricks the named specs already handled.
+-- The claimed-set in attach() stops double plumes on the two bricks the named specs already handled.
+--
+-- HOSTS ARE HIDDEN. Anything named "smoke" on Bean Farm is a placement brick by definition -- that is what the
+-- name is FOR -- so every one the sweep finds is made invisible, exactly like the two named bricks. Visibility
+-- only: collision is never touched, because a marker may well be part of a roof and silently un-soliding it
+-- would drop a player through the building.
 -- ============================================================================================================
 task.spawn(function()
 	-- Lightened to match the two named chimney specs at the top of the file (see the note on the first one).
 	-- THIS copy mattered most for the dark haze: the sweep attaches it to EVERY part named "smoke" on Bean
 	-- Farm, so the heavy old values were multiplied by however many such parts exist in the place.
 	local CHIMNEY = {
-		hideHost = false,
+		hideHost = true,   -- see the note above: every "smoke"-named part on Bean Farm is a marker
 		rate = 8, speed = { 1.2, 2.6 }, lifetime = { 2.5, 4.5 }, spread = 14,
 		accel = Vector3.new(1.6, 2.2, 0.6),
 		size = { 1.4, 6 },

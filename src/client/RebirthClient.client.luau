@@ -21,6 +21,12 @@ screen.Name = "RebirthGui"; screen.ResetOnSpawn = false; screen.DisplayOrder = 5
 local S = { rebirths = 0, coinMult = 1, speedMult = 1, luckMult = 1, nextCoin = 1.25, nextSpeed = 1.03, nextLuck = 1.15,
 	reqs = { islands = false, space = false, dino = false, candy = false }, reqIsland = 14, canRebirth = false, petMilestones = {} }
 
+-- THE CAMERA'S RESTING FIELD OF VIEW, read ONCE at load and never again. The rebirth flourish punches the FOV
+-- and tweens it back to this; anything that instead re-reads the live value inherits whatever the last punch
+-- left behind and drifts a little further out every time (see playRebirthAnim). 70 is Roblox's default and the
+-- fallback for the frame or two before CurrentCamera exists.
+local REST_FOV = (workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView) or 70
+
 --------------------------------------------------------------------------------
 -- style helpers
 --------------------------------------------------------------------------------
@@ -315,6 +321,8 @@ doBtn.Activated:Connect(function()
 end)
 cNo.Activated:Connect(function() confirm.Visible = false end)
 cYes.Activated:Connect(function() confirm.Visible = false; pcall(function() remote:FireServer("rebirth") end) end)
+-- The whole run collapses and restarts. 3s: winds down to silence -- the held breath -- then everything.
+if _G.hapticPulse then pcall(_G.hapticPulse, "rebirth") end
 
 task.spawn(function()
 	for _ = 1, 100 do
@@ -436,7 +444,27 @@ local function playRebirthAnim(n)
 	end)
 
 	-- ===== FOV PUNCH + STROBE FLASH =====
-	do local cam = workspace.CurrentCamera; if cam then local base = cam.FieldOfView; cam.FieldOfView = base + 18; TweenService:Create(cam, TweenInfo.new(0.65, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { FieldOfView = base }):Play() end end
+	-- IT TWEENS BACK TO A FIXED RESTING FOV, NOT TO WHATEVER THE CAMERA HAPPENS TO BE ON.
+	-- The old line read `base = cam.FieldOfView`, added 18, and tweened back to that same `base`. Read live,
+	-- `base` is only "normal" if nothing else has already punched it -- and TWO copies of this script are
+	-- running (BootCheck lists RebirthClient twice), so the second one read the first one's 88, went to 106,
+	-- and settled back at 88. The camera came out of every rebirth permanently zoomed out and never recovered,
+	-- because each rebirth handed the next one a worse "normal". REST_FOV is captured once at load, before
+	-- anything can have touched it, so every punch returns to the same real number no matter how many copies
+	-- fire. The delayed hard set is the backstop: rebirth respawns the character mid-tween, and an interrupted
+	-- tween would otherwise strand the camera wherever it got to.
+	do
+		local cam = workspace.CurrentCamera
+		if cam then
+			cam.FieldOfView = REST_FOV + 18
+			TweenService:Create(cam, TweenInfo.new(0.65, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+				{ FieldOfView = REST_FOV }):Play()
+			task.delay(1.0, function()
+				local c = workspace.CurrentCamera
+				if c and math.abs(c.FieldOfView - REST_FOV) > 0.1 then c.FieldOfView = REST_FOV end
+			end)
+		end
+	end
 	task.spawn(function()
 		for _, c in ipairs({ Color3.fromRGB(255, 255, 255), COL_GOLD, Color3.fromRGB(200, 150, 255) }) do
 			fxFlash.BackgroundColor3 = c; fxFlash.BackgroundTransparency = 0.1
@@ -555,9 +583,11 @@ remote.OnClientEvent:Connect(function(kind, a, b)
 		if _G.serverEventActive or _G.thunderstormActive or _G.windstormActive then return end
 		local NC = _G.NotifyCenter
 		if NC then
-			NC.push({ top = "\xF0\x9F\x94\x84 REBIRTH", text = name .. " just rebirthed!" .. (n > 0 and ("  #" .. n) or ""), color = Color3.fromRGB(170, 90, 240), priority = NC.PRIORITY.PURCHASE, duration = 3.5 })
-		elseif _G.showHudBanner then
-			_G.showHudBanner(name .. " just rebirthed!", Color3.fromRGB(170, 90, 240), 3)
+			-- Somebody ELSE's rebirth: demoted to the small top-left pills by the banner budget
+			-- (kind = "other_rebirth"). It used to sit at PURCHASE (90) -- above an event, one step below the
+			-- player's own island arrival -- for another player's news. YOUR rebirth is untouched: it still plays
+			-- the full-screen celebration a few lines above.
+			NC.push({ kind = "other_rebirth", top = "\xF0\x9F\x94\x84 REBIRTH", text = name .. " just rebirthed!" .. (n > 0 and ("  #" .. n) or ""), color = Color3.fromRGB(170, 90, 240), priority = NC.PRIORITY.PURCHASE, duration = 3.5 })
 		end
 	end
 end)

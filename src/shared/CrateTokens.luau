@@ -19,7 +19,7 @@
 
 local CrateTokens = {}
 
-CrateTokens.CURRENCY_NAME = "Crate Tokens"
+CrateTokens.CURRENCY_NAME = "Crate Tickets"
 CrateTokens.LEADERSTAT    = "CrateTokens" -- the IntValue name in leaderstats (PlayerStats creates it)
 CrateTokens.ICON          = "\xF0\x9F\x8E\x9F"  -- 🎟
 

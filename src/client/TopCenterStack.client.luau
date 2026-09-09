@@ -49,19 +49,60 @@ local ORDER = {
 
 local tracked = {}  -- [guiName] = { frame = <the banner>, box = <its container> }
 
+-- ===== WHY BANNERS WERE STILL LANDING ON TOP OF EACH OTHER =====
+-- Two separate holes, both of which end with a banner drawn at its OWN absolute Y instead of in the stack --
+-- which is exactly what "two banners on top of each other" looks like.
+--
+-- (1) TWO COPIES OF THIS SCRIPT. The boot log lists TopCenterStack among the duplicated LocalScripts (a stale
+--     copy baked into the place file runs alongside the Rojo one), and it prints "ready" twice. Both copies
+--     adopt, both build a StackBox, and the loser ends up driving an EMPTY box while the banner it thinks it
+--     owns lives in the other copy's box. GEN below means the newest copy wins and the older one goes quiet
+--     rather than fighting it -- the same retirement other duplicated scripts in this place do.
+--
+-- (2) REBUILT BANNERS. tracked[] held the FIRST frame it ever saw. When an owner rebuilds its banner --
+--     NotifyCenter evicts stale banner guis at boot and re-creates its hero lane, ObjectiveHUD hands the lane
+--     back and forth -- the new frame is parented straight to the ScreenGui, loose, positioned by its own
+--     author at the top of the screen, while this script keeps carefully stacking the dead one. adopt() now
+--     re-checks every pass and takes over whatever frame is currently loose.
+--
+-- Both fixes are about POSITION only: no banner is hidden, delayed or dropped, so nothing an owner script
+-- queued ever goes unseen -- they just cannot occupy the same pixels any more.
+local GEN = (_G.__topCenterStackGen or 0) + 1
+_G.__topCenterStackGen = GEN
+local function current() return _G.__topCenterStackGen == GEN end
+
 -- Wrap a banner in a container we own. The container is full-screen and transparent, so the banner's own
 -- (0.5, 0) anchor still centres it horizontally and its own slide tween still runs inside it.
 local function adopt(guiName)
-	if tracked[guiName] then return end
+	if not current() then return end
 	local sg = PlayerGui:FindFirstChild(guiName)
 	if not (sg and sg:IsA("ScreenGui")) then return end
 
-	-- the banner is the ScreenGui's Frame child (skip anything we already made)
+	-- A LOOSE Frame directly under the ScreenGui is by definition one this script is not positioning, so it
+	-- is drawing itself wherever its author put it. That is true on the first pass (nothing adopted yet) and
+	-- equally true later, when an owner script has rebuilt its banner -- so this check runs every pass, not
+	-- just once, and re-adopting is how a rebuilt banner rejoins the stack instead of sitting over it.
 	local frame
 	for _, c in ipairs(sg:GetChildren()) do
 		if c:IsA("Frame") and c.Name ~= "StackBox" then frame = c; break end
 	end
-	if not frame then return end
+
+	local t = tracked[guiName]
+	if not frame then
+		-- Nothing loose. If what we already hold is still in our box it is fine; if it is not, it was
+		-- destroyed or moved and the lane should stop reserving height for it.
+		if t and (t.frame.Parent ~= t.box or t.box.Parent == nil) then
+			if t.box.Parent then t.box:Destroy() end
+			tracked[guiName] = nil
+		end
+		return
+	end
+	if t then
+		-- A newer banner has appeared while we hold an older one: hand the lane over and take the old box
+		-- with it, so a dead frame can never keep pushing the stack down.
+		if t.box.Parent then t.box:Destroy() end
+		tracked[guiName] = nil
+	end
 
 	local box = Instance.new("Frame")
 	box.Name = "StackBox"
@@ -77,10 +118,15 @@ local function adopt(guiName)
 end
 
 -- Banners are built by several scripts at different times, so keep looking rather than assuming they exist at boot.
+-- Runs for the life of the session, not 20 seconds. Banners are rebuilt at any time (an event starting, a
+-- quest handing the hero lane back), and a rebuild that happens at minute 5 needs re-adopting exactly as much
+-- as one at boot -- the old 40-pass window is why late rebuilds ended up drawing themselves.
 task.spawn(function()
-	for _ = 1, 40 do
+	local n = 0
+	while current() do
 		for _, name in ipairs(ORDER) do adopt(name) end
-		task.wait(0.5)
+		n = n + 1
+		task.wait(n < 40 and 0.5 or 2)   -- eager while everything is still booting, then a quiet heartbeat
 	end
 end)
 PlayerGui.ChildAdded:Connect(function(sg)
@@ -92,6 +138,7 @@ PlayerGui.ChildAdded:Connect(function(sg)
 end)
 
 RunService.Heartbeat:Connect(function()
+	if not current() then return end   -- an older duplicate of this script: stay out of the newer one's way
 	local y = TOP_MARGIN
 	for _, name in ipairs(ORDER) do
 		local t = tracked[name]
@@ -110,5 +157,7 @@ RunService.Heartbeat:Connect(function()
 	end
 end)
 
+print("[TopCenterStack] build 2 ACTIVE (gen " .. GEN .. ") -- re-adopts rebuilt banners, and only the "
+	.. "newest copy of this script drives the stack")
 print("[TopCenterStack] ready -- top-centre banners stack instead of overlapping ("
 	.. #ORDER .. " lanes, priority: " .. table.concat(ORDER, " > ") .. ")")

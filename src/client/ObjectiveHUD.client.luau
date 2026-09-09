@@ -2,7 +2,7 @@
 -- ObjectiveHUD.client.luau   (StarterPlayerScripts)
 --======================================================================
 -- NEW-PLAYER ONBOARDING: one always-visible objective instruction that teaches
--- the core loop by DOING it -- buy food -> tap fart -> grab a ring -> reach island 2.
+-- the core loop by DOING it -- buy food -> tap fart -> pop a bubble -> reach island 2.
 -- Before this, the only explanation of the loop lived behind the Farmer's optional
 -- ProximityPrompt (FarmerTutorial), which a player could walk straight past.
 --
@@ -12,7 +12,7 @@
 -- stroke pulse. All of it is deleted. Not hidden, not left as an empty frame -- deleted, and the sweep below
 -- destroys any copy of it baked into the place so nothing survives from an older build either.
 --
--- The words, the subtitle and the live progress fill are now PINNED to NotifyCenter's hero lane -- the exact
+-- The words and the subtitle are now PINNED to NotifyCenter's hero lane -- the exact
 -- lane arrival banners, event titles and reward nudges use. Three things fall out of that, and all three
 -- were the reason to move:
 --   1. NO MORE TWO-CARDS-AT-ONCE. The directions and a hero banner were separate ScreenGuis, so a player
@@ -38,10 +38,18 @@
 -- and needs no persistence. It retires itself for good the moment Island >= 2: reaching Broccoli Bluff IS
 -- the graduation, so anyone past island 1 never sees it again.
 --
--- THE RING STEP IS LOAD-BEARING, not flavour. A fresh player has 25 coins -> 5 Beans -> 40 power -> a ~600-
--- stud flight that pays back ~27 coins. Island 2 is at Y=790. So the opening loop is almost exactly
--- BREAK-EVEN and cannot reach island 2 on height coins alone -- rings (+18 and up) are the only escape, and
--- nothing else in the game mentions they exist. The FULL-TANK coin goal below makes the target legible.
+-- THE BUBBLE STEP IS LOAD-BEARING, not flavour. A fresh player has 25 coins -> 5 Beans -> 40 power -> a
+-- ~600-stud flight that pays back ~27 coins. Island 2 is at Y=790. So the opening loop is almost exactly
+-- BREAK-EVEN and cannot reach island 2 on height coins alone -- the bubbles are the only escape, and
+-- nothing else in the game mentions they exist. Both kinds are named because both matter and they are the
+-- same object to look at: the GOLD ones pay a coin bonus (+18 and up) that grows with a streak multiplier,
+-- the GREEN ones refill the gas meter so the climb lasts longer. The FULL-TANK coin goal below makes the
+-- target legible.
+
+-- WHY IT SAYS "BUBBLES" AND NOT "RINGS". The coin pickup stopped being a ring a long time ago -- WorldClient
+-- spawnRing builds a 24-stud neon BALL. The code still calls it a ring everywhere (activeRings, ringStreak,
+-- ringMultiplier) and that is fine, but the player was being told to fly through a shape that is not on
+-- screen. The words follow what they can see; the internals keep their names.
 --======================================================================
 
 local Players = game:GetService("Players")
@@ -96,9 +104,9 @@ print(("[Objective] standalone tutorial GUI REMOVED (no card, no progress-bar fr
 	"PRIORITY ORDER ACTIVE: garden watering directions > tutorial/achievement (exclusive) > everything else.")
 	:format(sweptAtBoot))
 
--- Beans = the island-1 food. Mirrors CoreClient's `foods[1]` and PlayerStats' server table
--- (the food list is already duplicated client/server in this codebase -- keep all three in step).
-local BEAN_PRICE, BEAN_POWER = 5, 8
+-- BEAN_PRICE / BEAN_POWER are GONE from this file. They existed to work out what a full tank of Beans cost
+-- so the directions could show a savings goal; the directions do not show one any more (see refresh), so
+-- there is nothing here to keep in step with CoreClient's `foods[1]` and PlayerStats' server table.
 
 local GOAL_ISLAND      = 2
 local GOAL_ISLAND_NAME = "Broccoli Bluff"
@@ -110,7 +118,6 @@ local GOAL_ISLAND_NAME = "Broccoli Bluff"
 -- stand -- so matching them makes the pair read as one instruction.
 local CTA_GREEN   = Color3.fromRGB( 48, 162,  56)
 local BAR_TRACK   = Color3.fromRGB( 24,  92,  32) -- a recessed well in the banner's OWN green, not navy
-local BAR_FILL    = Color3.fromRGB(255, 200,   0)
 local BAR_DONE    = Color3.fromRGB( 80, 220, 100) -- they can afford a full tank
 local WIN_LIME    = Color3.fromRGB(126, 217,  87) -- the house lime, for the graduation moment
 
@@ -128,7 +135,7 @@ if not (coinsVal and islandVal and powerVal and stomachVal) then return end
 -- Already past island 1 -> this player has graduated; never pin anything at all.
 if islandVal.Value >= GOAL_ISLAND then return end
 
-local grabbedARing = false -- sticky across flights: once they've learned rings, stop nagging about them
+local poppedABubble = false -- sticky across flights: once they've popped one, stop nagging about bubbles
 local retired      = false
 local sawFullTank  = false -- once-ever latch for the FULL TANK milestone
 local liveStep     = nil   -- the step key currently pinned, so a CHANGE can be detected
@@ -188,7 +195,7 @@ task.spawn(function()
 end)
 
 -- ===== the step machine: pure derivation from live state =====
--- Returns a STEP KEY plus title, subtitle, and (coins, cost) when a progress fill should show. The key is
+-- Returns a STEP KEY plus a title and a subtitle -- nothing else; no step carries a coin goal. The key is
 -- what makes "the step completed" a thing this file can detect: when it changes, the previous instruction
 -- has been satisfied, and that is the moment the pin yields so everything queued behind it can play.
 local function describeStep()
@@ -196,15 +203,16 @@ local function describeStep()
 	local power  = powerVal.Value
 
 	if flying then
-		if (_G.ringsCollectedFlight or 0) > 0 then grabbedARing = true end
-		if not grabbedARing then
-			return "ring",
-			       "\xF0\x9F\x92\x8D FLY THROUGH A RING!",
-			       "Rings pay BONUS coins \xE2\x80\x94 steer into them on the way up"
+		-- EITHER bubble counts. The green gas ones and the gold coin ones are both just "a bubble" to a new
+		-- player, so popping either is proof the lesson landed. Counting only the gold ones left someone who
+		-- had been diving through green bubbles the whole climb still being told to go and find one.
+		if (_G.ringsCollectedFlight or 0) > 0 or (_G.gasBubblesPoppedFlight or 0) > 0 then poppedABubble = true end
+		if not poppedABubble then
+			return "bubble",
+			       "\xF0\x9F\x92\xA8 POP THE BUBBLES!"  -- the wind puff, the same glyph the in-world GAS! labels wear
 		end
 		return "climb",
-		       "\xF0\x9F\x9A\x80 CLIMB TO " .. string.upper(GOAL_ISLAND_NAME) .. "!",
-		       "Land on it to unlock it forever"
+		       "\xF0\x9F\x9A\x80 CLIMB TO " .. string.upper(GOAL_ISLAND_NAME) .. "!"
 	end
 
 	-- ===== WALK THE PLAYER DOWN THE SAME ROUTE THE ARROWS DRAW =====
@@ -219,38 +227,27 @@ local function describeStep()
 	-- and it falls through to its own advice below, which is correct with nothing on the ground to follow.
 	local guideStep = _G.gardenGuideStep
 	if guideStep == "gardener" then
-		-- No progress fill on this leg: nothing here costs money, and a bar under "go and say hello" reads
-		-- as though the player is being asked to save up first.
+		-- Nothing here costs money, and there is nothing to buy at the other end of these arrows either.
 		return "gardener",
-		       "\xF0\x9F\x8C\xBB FOLLOW THE ARROWS TO THE GARDENER",
-		       "The green arrows on the ground show you the way \xE2\x80\x94 go and say hello"
+		       "\xF0\x9F\x8C\xBB  GO SEE THE GARDENER"
 	end
 	if guideStep == "stand" and power <= 0 then
 		-- Same destination as the fallback step below, but phrased so it agrees with the arrows that just
-		-- re-routed. The progress fill comes back here, because now the question IS "can I afford a tank?".
-		local need  = math.max(0, stomachVal.Value - power)
-		local beans = math.ceil(need / BEAN_POWER)
+		-- re-routed. No coin goal and no progress fill: the instruction is "walk over there and buy beans",
+		-- and a savings bar under it turns a short errand into something that looks like a grind target.
 		return "stand",
-		       "\xF0\x9F\x9B\x92 FOLLOW THE ARROWS TO THE FOOD STAND",
-		       "Buy BEANS to fill your gas meter \xE2\x80\x94 " .. BEAN_PRICE .. " coins each",
-		       coinsVal.Value, beans * BEAN_PRICE
+		       "\xF0\x9F\x9B\x92  GO BUY SOME BEANS"
 	end
 
 	if power > 0 then
-		local pct = math.floor((power / math.max(1, stomachVal.Value)) * 100 + 0.5)
 		return "fart",
-		       "\xF0\x9F\x92\xA8 TAP THE GREEN FART BUTTON!",
-		       "Your gas meter is " .. pct .. "% full \xE2\x80\x94 one tap and you're flying"
+		       "\xF0\x9F\x92\xA8  TAP THE FART BUTTON!"
 	end
 
-	-- Grounded and empty -> buy. Show exactly what a FULL tank costs, so the grind has a visible target.
-	local need  = math.max(0, stomachVal.Value - power)
-	local beans = math.ceil(need / BEAN_POWER)
-	local cost  = beans * BEAN_PRICE
+	-- Grounded and empty -> buy. Same words as the arrow leg above, so walking the route and then arriving
+	-- at the end of it never reads as two different instructions.
 	return "buy",
-	       "\xF0\x9F\x9B\x92 BUY BEANS AT THE FOOD STAND",
-	       "Beans fill your GAS METER \xE2\x80\x94 " .. BEAN_PRICE .. " coins each",
-	       coinsVal.Value, cost
+	       "\xF0\x9F\x9B\x92  GO BUY SOME BEANS"
 end
 
 --======================================================================
@@ -287,21 +284,16 @@ local function refresh()
 	local nc = NC()
 	if not nc then return end
 
-	local key, title, sub, coins, cost = describeStep()
+	local key, title, sub = describeStep()
 
-	local progress, fillColour
-	if cost and cost > 0 then
-		progress = math.clamp(coins / cost, 0, 1)
-		if coins >= cost then
-			-- Once they can afford a full tank, say so plainly -- that's the moment they can actually
-			-- reach island 2.
-			sub = "You can afford a FULL TANK! Hit BUY MAX \xE2\x9C\x85"
-			fillColour = BAR_DONE
-		else
-			sub = sub .. "  \xE2\x80\xA2  " .. coins .. " / " .. cost .. " for a FULL tank"
-			fillColour = BAR_FILL
-		end
-	end
+	-- ===== NO SAVINGS BAR ON THE DIRECTIONS =====
+	-- These steps used to carry a coin goal: a "24 / 65 for a FULL tank" tail on the subtitle and a fill
+	-- under the banner. It answered a question nobody had yet. A player being walked to the food stand for
+	-- the first time needs one sentence -- go there, buy beans -- and a running total next to it reads as
+	-- "you cannot go yet, save up first", which is the opposite of true (25 starting coins buy five Beans
+	-- and a flight). The shop shows prices; the meter shows fuel; this line just says what to do next.
+	-- The one place a fill still earns its keep is the FIRST FULL TANK banner above, where it is full and
+	-- it is the news.
 
 	-- ===== THE STEP COMPLETED -> LET EVERYONE ELSE THROUGH =====
 	-- A changed key means the player DID the thing the last instruction asked for. That is the one moment
@@ -320,9 +312,6 @@ local function refresh()
 		text  = title,
 		sub   = sub,
 		color = CTA_GREEN,
-		progress = progress,          -- nil on the steps with no coin goal -> the fill is simply not drawn
-		progressColor = fillColour,
-		progressTrack = BAR_TRACK,
 	})
 end
 

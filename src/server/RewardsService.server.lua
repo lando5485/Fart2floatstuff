@@ -22,8 +22,12 @@ local CODES = {
 	["RELEASE"] = 500,
 	["FART100"] = 1000,
 }
-local GROUP_ID  = 758781978                                                   -- MLR Studios
-local GROUP_URL = "https://www.roblox.com/communities/758781978/MLR-Studios"  -- shown in-game so non-members can join
+-- Group id + url now come from the SHARED module, which also owns the LIVE membership lookup. Both used to
+-- be hand-copied here, in SocialRewards and in GroupBannerClient, and the "must rejoin to claim" bug had to
+-- be fixed in each of them independently. Same move as Gamepasses.luau above.
+local GroupMembership = require(RS:WaitForChild("Shared"):WaitForChild("GroupMembership"))
+local GROUP_ID  = GroupMembership.GROUP_ID   -- MLR Studios
+local GROUP_URL = GroupMembership.GROUP_URL  -- shown in-game so non-members can join
 local FRIEND_BOOST = 0.25  -- +25% coins when at least one Roblox friend is in the server
 local GROUP_PERK   = 0.10  -- +10% coins for group members (stacks with the friend boost)
 -- VIP's share lives in the shared Gamepasses module with the rest of the pass tuning, so the pass's value is
@@ -41,6 +45,7 @@ end
 local RedeemCode     = getOrCreate(RS, "RemoteFunction", "RedeemCode")  -- client invoke -> {ok, msg, amount}
 local CoinBoostState = getOrCreate(RS, "RemoteEvent", "CoinBoostState") -- server -> client: {friend, group, mult}
 local GroupInfo      = getOrCreate(RS, "RemoteEvent", "GroupInfo")      -- server -> client: {isMember, groupId, url}
+local CheckGroupNow  = getOrCreate(RS, "RemoteFunction", "CheckGroupNow") -- client invoke -> {isMember, status}; re-reads membership WITHOUT a rejoin
 -- NOTE: the recurring reminder banners (friend / daily / group) are scheduled CLIENT-side by RewardsClient
 -- through one shared no-overlap queue + "safe to show?" gate. The server only supplies the boost/group state above.
 
@@ -83,7 +88,7 @@ end
 -- ============ 2) + 3) FRIEND BOOST + GROUP PERK (stackable multiplier) ======
 _G.coinBonusMult = _G.coinBonusMult or {} -- [player] = multiplier (1 = none); read by PlayerStats CoinEvent
 local friendActive = {} -- [player] = bool (a friend shares the server)
-local groupMember  = {} -- [player] = bool (in the MLR group; cached for the session by Roblox)
+local groupMember  = {} -- [player] = bool (in the MLR group; refreshed live -- see recheckGroup)
 
 local function pushState(p)
 	if not p.Parent then return end
@@ -115,15 +120,37 @@ local function refreshFriends()
 	end
 end
 
+-- LIVE group re-read. Returns true the moment the player is confirmed to be in the group, and flips the
+-- perk on for them there and then. GroupMembership rate-limits the underlying web call, so this is safe to
+-- call from a client poll; a "cooldown"/"failed" answer is NEVER allowed to turn an existing member back
+-- into a non-member (see the module header).
+local function recheckGroup(p)
+	if groupMember[p] then return true end
+	local isMember, status = GroupMembership.isMember(p)
+	if isMember then
+		groupMember[p] = true
+		print(("[Rewards] %s is an MLR group member -> +%d%% coin perk (%s)"):format(p.Name, GROUP_PERK * 100, status))
+		pushState(p)
+		return true
+	end
+	return false, status
+end
+
+-- The client calls this after it sends the player to the group page (and then a few times while the panel is
+-- open). The CLIENT IS NEVER TRUSTED with the answer -- it only asks; the lookup and the grant happen here.
+CheckGroupNow.OnServerInvoke = function(player)
+	if not player or not player.Parent then return { isMember = false, status = "failed" } end
+	local ok, status = recheckGroup(player)
+	return { isMember = ok == true, status = (ok == true) and "member" or (status or "not-a-member") }
+end
+
 local function onPlayerAdded(p)
 	_G.coinBonusMult[p] = 1
 	task.spawn(loadRedeemed, p)
-	-- GROUP: IsInGroup caches per session, so a player who joins the group mid-session must rejoin to claim
-	-- (the client shows that note). Checked once here on join.
+	-- GROUP: checked here on join, and again on demand from CheckGroupNow whenever the player presses
+	-- JOIN GROUP in-game -- so joining the group mid-session applies the perk immediately. No rejoin.
 	task.spawn(function()
-		local ok, inGroup = pcall(function() return p:IsInGroup(GROUP_ID) end)
-		groupMember[p] = ok and inGroup or false
-		if groupMember[p] then print(("[Rewards] %s is an MLR group member -> +%d%% coin perk"):format(p.Name, GROUP_PERK * 100)) end
+		recheckGroup(p)
 		pushState(p)
 	end)
 	-- VIP can be bought mid-session. PlayerStats sets HasVIP the moment the purchase completes, so watch the
@@ -144,6 +171,7 @@ for _, p in ipairs(Players:GetPlayers()) do task.spawn(onPlayerAdded, p) end -- 
 Players.PlayerRemoving:Connect(function(p)
 	saveRedeemed(p)
 	friendActive[p] = nil; groupMember[p] = nil; redeemed[p] = nil
+	GroupMembership.forget(p)
 	if _G.coinBonusMult then _G.coinBonusMult[p] = nil end
 	task.defer(refreshFriends) -- someone leaving may remove the last friend for others
 end)

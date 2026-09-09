@@ -41,6 +41,15 @@ local NEVER_TOUCH = {
 	SidebarGui = true, ReturnIslandGui = true, MoreMenuGui = true,
 	BottomStackGui = true, GasMeterGui = true, FartButtonGui = true, StomachGui = true,
 	CoinGui = true, RightPanelGui = true, SettingsGui = true,
+	-- The quest tracker's arrow. isRailShaped() judges by SHAPE, not purpose: a 64x78 chip on the left edge
+	-- is 14px from square against a 15.6px tolerance, so the sweep classified a live HUD element as a stray
+	-- rail launcher and hid it ("[RailGuard] hid ...QuestTrackerHud.QuestArrow"). It is a real HUD, so it is
+	-- named here rather than being reshaped to dodge a heuristic.
+	QuestTrackerHud = true,
+	-- The event chip beside the objective banner. Same reasoning: it is a ~62x65 frame, well inside the
+	-- 20% squareness tolerance. Its high X offset means the left-edge test already rejects it today, but
+	-- that is one retune of MAX_LEFT_OFFSET away from not being true, and the failure is silent.
+	EventChipGui = true,
 }
 local STRAY_GUIS = { PetHubButton = true }
 local MIN_SIDE, MAX_SIDE, MAX_LEFT_OFFSET = 55, 115, 150
@@ -91,26 +100,28 @@ local ENTRIES = {
 	  tint = Color3.fromRGB(90, 200, 255), emoji = "\xF0\x9F\x94\x84", gui = "RebirthGui",
 	  action = function() if _G.toggleRebirth then _G.toggleRebirth() end end },
 
-	-- ONE "Rewards" row. Daily and Free were two rows for the same idea -- things you claim
-	-- for free -- and a player had to already know which menu held which. RewardsHub is the
-	-- single door; DAILY and FREE are sections inside it. ONE badge carries the COUNT of
-	-- whatever is waiting, instead of two dots the player has to decode.
-	{ key = "rewards", label = "Rewards", desc = "Daily login rewards and free playtime rewards.",
-	  tint = Color3.fromRGB(255, 175, 45), emoji = "\xF0\x9F\x8E\x81", badge = true, gui = "RewardsHubGui",
+	-- ONE "Rewards" row, and it opens the three-tab REWARDS hub: DAILY (login streak), TIMED
+	-- (session playtime) and COMMUNITY (like / favourite / group). ONE badge carries the COUNT of
+	-- whatever is waiting across all three, instead of dots the player has to decode.
+	--
+	-- THE DAILY TASKS FALLBACK IS GONE. This used to drop through to _G.toggleDailyTasks when the hub
+	-- was missing, which quietly made one card open two different panels depending on load order -- and
+	-- Daily Tasks is the CHORE CHECKLIST, a different feature from the rewards you claim for free. It
+	-- keeps its own door; it is not this one.
+	--
+	-- `gui` is DailyStreakGui, not RewardsHubGui: that is the ScreenGui the hub actually shows, and this
+	-- key is what the verify pass below watches to decide whether the card worked.
+	{ key = "rewards", label = "Rewards", desc = "Daily, timed and community rewards.",
+	  tint = Color3.fromRGB(255, 175, 45), emoji = "\xF0\x9F\x8E\x81", badge = true, gui = "DailyStreakGui",
 	  action = function()
-		-- OPEN, not toggle. A card in this menu always means "show me this" -- if the hub's
-		-- Enabled flag were left true by anything else, a toggle would close it and the card
-		-- would read as dead.
-		if _G.openRewardsHub then
+		-- OPEN, not toggle. A card in this menu always means "show me this" -- if the hub's Enabled flag
+		-- were left true by anything else, a toggle would close it and the card would read as dead.
+		if _G.openDailyStreak then
+			_G.openDailyStreak()
+		elseif _G.openRewardsHub then
 			_G.openRewardsHub()
 		elseif _G.toggleRewardsHub then
 			_G.toggleRewardsHub()
-		elseif _G.dailyTasksAvailable and _G.dailyTasksAvailable() then
-			if _G.toggleDailyTasks then _G.toggleDailyTasks() end
-		else
-			local ev = RSx:FindFirstChild("OpenMeteorCrate")
-			if not ev then ev = Instance.new("BindableEvent"); ev.Name = "OpenMeteorCrate"; ev.Parent = RSx end
-			ev:Fire()
 		end
 	  end },
 
@@ -132,7 +143,7 @@ local ENTRIES = {
 	-- GIFT is a fourth card, which is also what finally makes this grid a real 2x2 instead of three cards and
 	-- a hole. It lives here rather than on the rail because the rail is locked to four buttons -- and because
 	-- gifting is a "sometimes" action in exactly the way Wormhole is, not a thing you reach for every flight.
-	{ key = "gift", label = "Send a Gift", desc = "Give another player some of your Crate Tokens.",
+	{ key = "gift", label = "Send a Gift", desc = "Give another player some of your Crate Tickets.",
 	  tint = Color3.fromRGB(80, 200, 120), emoji = "🤝", gui = "GiftGui",
 	  action = function()
 		-- OPEN, not toggle -- same reasoning as the Rewards card above: a card in this menu always means
@@ -146,7 +157,7 @@ local ENTRIES = {
 
 	-- SKIN CRATES is NOT here: crates are the CRATES page of the pet hub (the PETS rail button),
 	-- one combined interface -- pets and crates go hand in hand. The token pill under the coin
-	-- counter is the on-screen "you have tokens" signal.
+	-- counter is the on-screen "you have tickets" signal.
 	-- PETS is NOT here either: it is on the rail, always visible.
 	-- SEASONAL PETS moved to the treasure box beside the Global Garden (SeasonalPetsChest).
 	-- SEASON PASS was removed from this menu entirely.
@@ -919,9 +930,16 @@ end
 
 task.spawn(function()
 	while true do
+		-- The hub owns its own "is anything claimable" answer across all three tabs, so this counts ONE
+		-- thing rather than re-deriving it. Daily Tasks is deliberately absent: it is a different feature
+		-- behind a different door, and counting it here put a badge on Rewards for something Rewards
+		-- cannot open.
+		-- The crate USED to be counted here as well, back when the Rewards page had a DAILY card that fired
+		-- it. That card is gone -- REWARDS is the three-tab hub and nothing else -- so counting the crate
+		-- would light this badge for something this card cannot open, which is the exact mistake the note
+		-- above warns about for Daily Tasks.
 		local rewards = 0
-		if (_G.crateIsClaimable  and _G.crateIsClaimable())  == true then rewards += 1 end
-		if (_G.dailyTasksPending and _G.dailyTasksPending()) == true then rewards += 1 end
+		if (_G.rewardsPending and _G.rewardsPending()) == true then rewards += 1 end
 		setBadge("rewards", rewards)
 		task.wait(1)
 	end

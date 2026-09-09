@@ -1,5 +1,9 @@
 -- ============================================================================================
--- ISLAND QUEST NPCs (server)  --  one talking quest-giver per island, 1..14.
+-- ISLAND QUEST NPCs (server)  --  the five quest givers, plus any NPC hand-placed in Studio.
+--
+-- NOT one per island any more. Islands 2, 5, 8, 10 and 13 have the real quest givers and are always built;
+-- every other island gets an NPC only if there is a "Quest" model or marker placed there by hand. The nine
+-- flavour rigs this used to generate beside each stand are gone -- see setupIslandNPC.
 --
 -- This is the Dino Realm's NPC speech + quest-accept system ported to the food realm, built to
 -- NPC_SPEECH_AND_QUEST_ACCEPT.md. The whole thing in one line:
@@ -27,6 +31,17 @@
 local Players    = game:GetService("Players")
 local Workspace  = game:GetService("Workspace")
 local ServerStorage = game:GetService("ServerStorage")
+
+-- EIGHT WORDS A SLIDE. Every page these NPCs show goes through BubbleWords, which splits anything longer
+-- at a natural pause instead of letting TextScaled shrink a sentence into an unreadable smear. The require
+-- is defensive: an old place file or a Rojo sync that has not run must cost you long dialogue, not silence.
+local capWords = function(pages) return pages end
+do
+	local ok, mod = pcall(function()
+		return require(game:GetService("ReplicatedStorage"):WaitForChild("Shared", 10):WaitForChild("BubbleWords", 10))
+	end)
+	if ok and type(mod) == "table" and mod.cap then capWords = mod.cap end
+end
 
 -- ===== constants (NPC_SPEECH_AND_QUEST_ACCEPT.md 2c) =====
 local SPEECH_LIFETIME         = 9   -- auto-hide for non-paged one-liners
@@ -79,7 +94,8 @@ end
 -- SIZED FOR PHONES: BillboardGui pixels are LOGICAL pixels, and a phone viewport is only ~667x375 of
 -- them -- the old 320x150 bubble covered half the width and 40% of the height of a phone screen, and
 -- at prompt range its top edge often left the screen entirely (players rotated the camera to read).
--- 250x105 still fits every dialogue line (they are single sentences, TextScaled, 3 lines max) and the
+-- 250x105 fits every dialogue line comfortably now that capWords holds a page to eight words (before
+-- that a long sentence was TextScaled down to a smear at exactly the range you read it from) and the
 -- lower StudsOffset keeps the whole bubble in frame when standing at the prompt. The name tag at +3 is
 -- hidden for exactly as long as the NPC is talking, so the bubble sitting lower cannot collide with it.
 local function showSpeech(adornee, text, persist, footer)
@@ -207,7 +223,8 @@ local function wireDialogue(prompt, adornee, getPages, onTalk)
 
 	prompt.Triggered:Connect(function(player)
 		if index == 0 then
-			pages = getPages()  -- fetched FRESH on page 1 -> any live counters in the copy are current
+			pages = capWords(getPages(player))  -- fetched FRESH on page 1, PER PLAYER -> live counters and the
+			                                    -- quest-done check below both reflect whoever is standing here
 		end
 		index += 1
 		if not pages or index > #pages then
@@ -409,79 +426,98 @@ end
 local ISLAND_NPCS = {
 	{ island = 1,  name = "Bean Buddy Bill", title = "The Bean Farmer", pages = {
 		"Welcome to Bean Farm! Everything starts here.",
-		"Buy beans at the stand, then HOLD the fart button to fly.",
-		"Higher you go, more coins you make. Off you go!",
+		"Buy beans, then HOLD the fart button.",
+		"Higher you fly, the more coins you make.",
 	}},
-	{ island = 2,  quest = true,  name = "Sprout",          title = "The Grower", pages = {
+	{ island = 2,  quest = true,  name = "Sprout",          title = "The Grower",
+		pet = "BroccoliPet", done = {
+			"All three, pulled clean. Thank you!",
+			"That Broccoli Bunny is yours now.",
+			"Come back any time. The patch regrows.",
+		}, pages = {
 		"Broccoli Bluff! Careful where you step.",
-		"Three broccoli are planted around here. Pull them all up for me.",
-		"They're rooted deep -- hold on and ease off before the stalk slips!",
-		"Bring me all three and a Broccoli Bunny will hatch for you.",
+		"Pull up all three broccoli for me.",
+		"Do it and a Broccoli Bunny hatches.",
 	}},
 	{ island = 3,  name = "Cabbage Kate",    title = "The Picker", pages = {
-		"Cabbage Cliffs -- windy up here, isn't it?",
-		"Cabbage is heavier fuel than broccoli. Stock up and climb.",
-		"If you're running out of gas mid-flight, buy a bigger gut first.",
+		"Cabbage Cliffs. Windy up here, isn't it?",
+		"Cabbage is heavier fuel than broccoli.",
+		"Running dry mid-flight? Buy a bigger gut.",
 	}},
 	{ island = 4,  name = "Turnip Ted",      title = "The Root Keeper", pages = {
 		"Turnip Tranquil. Quietest island on the stack.",
-		"Turnips burn long and slow -- perfect for the next big climb.",
-		"Don't skip the gut upgrades. Food's no good with nowhere to put it.",
+		"Turnips burn long and slow.",
+		"Don't skip gut upgrades. Food needs room.",
 	}},
-	{ island = 5,  quest = true,  name = "Coco",            title = "The Beachcomber", pages = {
+	{ island = 5,  quest = true,  name = "Coco",            title = "The Beachcomber",
+		pet = "CoconutCrab", done = {
+			"Every last coconut cracked. Thank you!",
+			"The Coconut Crab is yours. Handsome fellow.",
+			"The cave is yours to wander now.",
+		}, pages = {
 		"Coconut Cove! Mind the crabs.",
-		"Seven coconuts are scattered about. Crack every one of them.",
-		"Crack all seven and you've earned the Cave Key.",
-		"The key opens the chest in the cave -- there's a Coconut Crab inside.",
+		"Crack all seven coconuts for me.",
+		"You'll earn the Cave Key. Crab inside.",
 	}},
 	{ island = 6,  name = "Baker Bram",      title = "The Baker", pages = {
 		"Bread Board! Smell that?",
-		"Bread is the densest fuel yet. One loaf goes a long way.",
-		"Keep climbing -- the good stuff is still above us.",
+		"Bread is the densest fuel yet.",
+		"Keep climbing. Better food waits above.",
 	}},
 	{ island = 7,  name = "Nonna",           title = "The Cook", pages = {
 		"Pasta Peak! Sit, eat, you're too skinny.",
-		"Pasta will carry you higher than anything below us.",
-		"And watch out for the meatball shooter. It has a mind of its own.",
+		"Pasta carries you higher than anything below.",
+		"And watch out for the meatball shooter.",
 	}},
-	{ island = 8,  quest = true,  name = "Reel",            title = "The Projectionist", pages = {
-		"Popcorn Pinnacle -- and my film is in pieces!",
-		"Six film reels are scattered across the island. Find every one.",
-		"Each is jammed tight -- work the pins loose to free it.",
-		"Load them into the projector and see what the movie hatches...",
+	{ island = 8,  quest = true,  name = "Reel",            title = "The Projectionist",
+		pet = "PopcornSheep", done = {
+			"Six reels, all six. Thank you kindly!",
+			"The film played and a sheep walked out.",
+			"Popcorn is on the house. Enjoy!",
+		}, pages = {
+		"Popcorn Pinnacle. My film's in pieces!",
+		"Find all six scattered film reels.",
+		"Load the projector and see what hatches.",
 	}},
 	{ island = 9,  name = "Milkman Moe",     title = "The Dairyman", pages = {
 		"Milk Marsh. Watch your footing, it's soggy.",
-		"Milk is proper rocket fuel. Fill up before you climb.",
-		"If the milk cap blows, stand back and enjoy the show.",
+		"Milk is proper rocket fuel. Fill up.",
+		"If the milk cap blows, stand back.",
 	}},
-	{ island = 10, quest = true,  name = "Butters",         title = "The Angler", pages = {
-		"Butter Swamp! Best fishing on the whole stack.",
-		"Grab a rod from the barrel and fish the butter lake.",
-		"Hook something and it'll fight you -- keep the fish in the slider.",
-		"Land the right catch and a Butter Duck is yours.",
+	{ island = 10, quest = true,  name = "Butters",         title = "The Angler",
+		pet = "ButterDuck", done = {
+			"You landed it! Thank you, angler.",
+			"That Butter Duck took a shine to you.",
+			"Lake is always here for another cast.",
+		}, pages = {
+		"Butter Swamp! Best fishing on the stack.",
+		"Grab a rod and fish the butter lake.",
+		"Land the right catch for a duck.",
 	}},
 	{ island = 11, name = "Scoop",           title = "The Scooper", pages = {
 		"Ice Cream Isle! Careful, it's slippery.",
-		"Ice cream is the coldest, strongest fuel down this far.",
-		"Three islands to go. You're nearly at the top!",
+		"Coldest, strongest fuel this far down.",
+		"Three islands left. Nearly at the top!",
 	}},
 	{ island = 12, name = "Patty",           title = "The Grillmaster", pages = {
-		"Burger Bluff! Grill's always on.",
-		"Burgers are heavy fuel -- you'll need the gut to match.",
-		"And don't stand on the condiment geysers. Trust me.",
+		"Burger Bluff! The grill's always on.",
+		"Burgers are heavy. You'll need the gut.",
+		"And don't stand on the condiment geysers.",
 	}},
-	{ island = 13, quest = true,  name = "Dusty",           title = "The Digger", pages = {
-		"Burrito Barrens. Nothing out here but dirt and secrets.",
-		"Grab a shovel from the barrel and dig the mounds along the trail.",
-		"Most are junk. One of them isn't -- follow the tracks.",
-		"Dig up the buried egg and a Burrito Armadillo comes home with you.",
+	{ island = 13, quest = true,  name = "Dusty",           title = "The Digger",
+		pet = "BurritoArmadillo", done = {
+			"You dug it up! Thank you!",
+			"The Burrito Armadillo is yours. Rolls when startled.",
+			"Shovel is back on the stand. Dig anytime.",
+		}, pages = {
+		"Burrito Barrens. Nothing but dirt and secrets.",
+		"Grab a shovel and dig the mounds.",
+		"One hides an egg. Follow the tracks.",
 	}},
 	{ island = 14, name = "Pepper",          title = "The Pizzaiolo", pages = {
-		"Pizza Palms -- the top of the world!",
-		"Pizza is the strongest fuel there is. Nothing above us but sky.",
-		"...well. Almost nothing. See that rift up there?",
-		"Fly into it if you're brave. It goes somewhere else entirely.",
+		"Pizza Palms. The top of the world!",
+		"Strongest fuel there is. Only sky above.",
+		"Well... see that rift? Fly in, brave one.",
 	}},
 }
 
@@ -523,27 +559,89 @@ local SHIRT = { -- stand-in shirt colours, roughly themed per island
 	Color3.fromRGB(200,150,90),  Color3.fromRGB(220,90,70),
 }
 
+-- WHERE A QUEST GIVER GOES WHEN NOBODY PLACED ONE. This is now a LAST RESORT FOR THE FIVE QUEST ISLANDS
+-- ONLY (2, 5, 8, 10, 13). Islands with no hand-placed "Quest" model and no quest are left empty on purpose
+-- -- see setupIslandNPC. Generating a stranger per island filled the map with people who had nothing to say.
+--
+-- Beside the STAND, not on it. The stand is the one spot on every island the player is guaranteed to arrive
+-- at, so an NPC 12 studs off it is met immediately -- but standing ON the landing pad would put a rig in the
+-- way of the thing you land on. The angle is derived from the island number so they don't all end up in the
+-- same corner of every island.
+--
+-- This is NOT the old "build a stand-in whenever the lookup misses" behaviour that produced duplicate NPCs.
+-- That bug was upstream: a hand-built model with no Humanoid was being treated as a marker, so the real NPC
+-- was ghosted and a second one built on top. A Model is now always adopted as the NPC (see below), so this
+-- path can only ever run when the island genuinely has nothing.
+local function fallbackSpot(island, n)
+	local anchor
+	for _, d in ipairs(island:GetDescendants()) do
+		if d:IsA("BasePart") and d.Name:lower():find("stand", 1, true) then anchor = d break end
+	end
+	if not anchor then
+		for _, d in ipairs(island:GetDescendants()) do
+			if d:IsA("SpawnLocation") then anchor = d break end
+		end
+	end
+	if anchor then
+		local a = n * 0.9 -- ~51 degrees of rotation per island: a different side each time
+		return anchor.Position + Vector3.new(math.cos(a) * 12, anchor.Size.Y * 0.5 + 3, math.sin(a) * 12)
+	end
+	-- no stand either (shouldn't happen -- PlayerStats tags one per island): centre of the island, grounded
+	local cf, size = island:GetBoundingBox()
+	return cf.Position + Vector3.new(0, size.Y * 0.5, 0)
+end
+
+-- [island number] = the rig we ended up with. Re-running setup for an island that already has a live NPC is
+-- a no-op, which is what makes the retry sweep at the bottom safe -- without it a second pass would bolt a
+-- second ProximityPrompt onto every adopted rig.
+local placed = {}
+
+-- [island number] = we have already reported that this island is deliberately empty. The retry sweep re-runs
+-- setup for every island without a rig, and the flavour islands never get one -- so without this they would
+-- reprint the same line on every sweep and on every join. The CHECK still re-runs (a hand-placed rig can
+-- stream in late, which is the entire reason the sweep exists); only the logging is latched.
+local reportedEmpty = {}
+
 local function setupIslandNPC(spec, template)
 	local n = spec.island
+	if placed[n] and placed[n].Parent then return end -- already standing there; never wire a second prompt onto it
 	local island = findIsland(n)
 	if not island then
 		warn(("[IslandNPC] island %d model NOT FOUND in Workspace -- skipping %s"):format(n, spec.name))
 		return
 	end
 
-	-- WHERE. NO MARKER = NO NPC.
-	--
-	-- This used to fall back to the island's stand and build a stand-in there. That is what produced
-	-- the "random copy" standing next to a hand-placed NPC whenever the name lookup missed, and it
-	-- also dropped nameless NPCs on the nine islands that were never meant to have one. Building a
-	-- character nobody asked for is always the wrong call: warn, and leave the island alone.
+	-- WHERE. A hand-placed "Quest" model wins. An island with nothing hand-placed gets NOBODY -- unless it
+	-- is one of the five quest islands, which cannot be allowed to lose their giver (see below).
 	local marker, how = findMarker(island, n)
 	local pos = markerPos(marker)
+	local hadMarker = pos ~= nil
 	if not pos then
-		warn(("[IslandNPC] island %d: no 'Quest' NPC found -- skipping %s. Place a model named 'Quest' on the island to give it one."):format(n, spec.name))
-		return
+		-- ===== NOBODY IS INVENTED ON AN ISLAND NOBODY WAS PLACED ON =====
+		-- This used to build a rig beside the stand on every island that had no hand-placed "Quest" model --
+		-- nine of the fourteen. The result was nine strangers with no quest and nothing to do standing around
+		-- the map, which read as clutter rather than as population: an NPC the player walks up to, talks to,
+		-- and gets a line of flavour from is a promise the game does not keep.
+		--
+		-- So the flavour ones are gone and the world is back to being hand-placed. What stays: anything you
+		-- put in Studio (a "Quest" model or marker on an island is you SAYING you want someone there), and
+		-- the five real quest givers -- islands 2, 5, 8, 10 and 13 -- which keep the fallback because their
+		-- quest is granted by talking to them, and a missing rig would make that quest unreachable.
+		if not spec.quest then
+			if not reportedEmpty[n] then
+				reportedEmpty[n] = true
+				print(("[IslandNPC] island %d: no hand-placed 'Quest' model -- leaving it empty (%s was flavour-only)")
+					:format(n, spec.name))
+			end
+			return
+		end
+		pos = fallbackSpot(island, n)
+		how = "QUEST ISLAND with no 'Quest' model -- built beside the stand so the quest stays reachable"
+		if not pos then
+			warn(("[IslandNPC] island %d: nothing to anchor to -- skipping %s"):format(n, spec.name))
+			return
+		end
 	end
-	local hadMarker = true
 	if how and how:find("NAME HAS NO/WRONG NUMBER") then
 		warn(("[IslandNPC] island %d marker '%s' has no/wrong island number in its name -- using it anyway"):format(n, marker.Name))
 	end
@@ -606,25 +704,48 @@ local function setupIslandNPC(spec, template)
 	-- chevron trail at it -- both by attribute rather than by name, so renaming an NPC in Studio
 	-- can never quietly unhook it from either.
 	model:SetAttribute("QuestNpc", true)
-	-- The floating tag reads "Quest" on EVERY island, matching the prompt's ObjectText -- one
-	-- consistent word for "this is the person with the quest". The per-island character name
-	-- (Sprout, Coco, Dusty...) still drives the dialogue voice and the server logs.
-	makeNameLabel(adornee, "Quest")
+	-- THE FLOATING TAG IS THE CHARACTER'S NAME. It read "Quest" on every island, which made sense when
+	-- only the five quest givers existed -- one consistent word for "this is the person with the quest".
+	-- Islands can also carry a hand-placed NPC with no quest at all, so a billboard reading "Quest"
+	-- over Bean Buddy Bill is simply a lie, and it threw away the names the dialogue is written in.
+	--
+	-- The five real quest givers still announce themselves: their name is followed by "-  QUEST" on the same
+	-- line, so the word that means "there is a task here" appears exactly where there IS one. One line, not
+	-- two: the billboard is 44px with TextScaled, and a second line halves the height of both.
+	makeNameLabel(adornee, spec.quest and (spec.name .. "  -  QUEST") or spec.name)
 
 	-- THE PROMPT GOES ON THE HumanoidRootPart, not the head: it's the rig's true centre, so the
 	-- 10-stud radius is measured from where the NPC actually stands rather than from a head that
 	-- may be offset or missing entirely on a hand-built model.
 	local promptHost = model:FindFirstChild("HumanoidRootPart")
 	if not (promptHost and promptHost:IsA("BasePart")) then promptHost = adornee end
-	local prompt = addPrompt(promptHost, "Talk", "Quest")
+	-- ...and the E prompt matches: "Quest" on a quest island, the character's name everywhere else.
+	local prompt = addPrompt(promptHost, "Talk", spec.quest and "Quest" or spec.name)
 
 	-- THE ACCEPT ATTRIBUTE, derived from the island number -- no registry to keep in sync.
 	local acceptAttr = ("Island%dQuestAccepted"):format(n)
-	wireDialogue(prompt, adornee, function() return spec.pages end, function(plr)
+
+	-- WHAT THEY SAY AFTER YOU FINISH. A quest giver who is still asking you to go and find three broccoli,
+	-- half an hour after you handed him three broccoli, stops being a character and becomes a sign. So once
+	-- the quest is done the ask is REPLACED by a thank-you -- the NPC remembers, and talking to them again
+	-- is a small reward instead of a stale instruction.
+	--
+	-- The signal is _G.playerEverCompletedQuests[plr][petId], which PetSystem sets on completion and
+	-- PlayerStats persists -- so the thanks survive a rejoin, exactly like the pet does. Read fresh on every
+	-- page 1, so it flips the moment they finish without anyone re-wiring the prompt.
+	wireDialogue(prompt, adornee, function(plr)
+		if spec.pet and spec.done and plr then
+			local ever = _G.playerEverCompletedQuests and _G.playerEverCompletedQuests[plr]
+			if ever and ever[spec.pet] then return spec.done end
+		end
+		return spec.pages
+	end, function(plr)
 		if plr:GetAttribute(acceptAttr) then return end
 		plr:SetAttribute(acceptAttr, true)
 		print(("[IslandNPC] %s talked to %s on island %d -> %s = true"):format(plr.Name, spec.name, n, acceptAttr))
 	end)
+
+	placed[n] = model -- so the retry sweep below knows this island is done and never double-wires it
 
 	print(("[IslandNPC] island %d%s: %s (%s) at (%.0f, %.0f, %.0f) [%s; %s] -> %s")
 		:format(n, spec.quest and " [QUEST ISLAND]" or "", spec.name, spec.title,
@@ -672,5 +793,46 @@ task.spawn(function()
 		local ok, err = pcall(setupIslandNPC, spec, template)
 		if not ok then warn(("[IslandNPC] island %d (%s) FAILED: %s"):format(spec.island, spec.name, tostring(err))) end
 	end
-	print(("[IslandNPC] ready -- %d island NPCs; talking to one sets Island<N>QuestAccepted on the player"):format(#ISLAND_NPCS))
+	print(("[IslandNPC] ready -- %d specs; only hand-placed NPCs and the 5 quest givers are ever built (flavour rigs are no longer generated). Talking sets Island<N>QuestAccepted, and the quest givers switch to a thank-you once their quest is done"):format(#ISLAND_NPCS))
+
+	-- ===== THE RETRY SWEEP: "sometimes they aren't there when I spawn in" =====
+	-- Placement happens ONCE, right after StandsReady, and it depends on the island's parts actually being
+	-- in the Workspace at that moment. With StreamingEnabled that is not guaranteed: a marker Part can
+	-- arrive late, an island can still be assembling, and PlayerStats re-pivots all fourteen islands while
+	-- this is running. Any island that loses that race used to stay empty for the whole server's life.
+	--
+	-- So we sweep again. setupIslandNPC no-ops for every island that already has a live rig (that is what
+	-- `placed` is for), so a sweep only ever fills genuine holes -- it cannot double up prompts or stack a
+	-- second rig on an island that is already fine. Three passes over the first two minutes covers the slow
+	-- boot, and a sweep on every join covers a player arriving into a server that lost the race earlier.
+	local function sweep(why)
+		local before = 0
+		for _, spec in ipairs(ISLAND_NPCS) do
+			if placed[spec.island] and placed[spec.island].Parent then before += 1 end
+		end
+		local missing = 0
+		for _, spec in ipairs(ISLAND_NPCS) do
+			if not (placed[spec.island] and placed[spec.island].Parent) then
+				missing += 1
+				pcall(setupIslandNPC, spec, template)
+			end
+		end
+		-- `missing` counts every island without a rig, and the flavour islands are SUPPOSED to be in that
+		-- list forever -- so report what the sweep actually achieved (islands that gained an NPC), not the
+		-- standing count, which would read as nine permanent failures on every pass.
+		local filled = 0
+		for _, spec in ipairs(ISLAND_NPCS) do
+			if placed[spec.island] and placed[spec.island].Parent then filled += 1 end
+		end
+		if missing > 0 and filled > before then
+			print(("[IslandNPC] %s sweep: filled %d island(s) that had no NPC"):format(why, filled - before))
+		end
+	end
+
+	for _, delay in ipairs({ 20, 60, 120 }) do
+		task.delay(delay, function() sweep(("t+%ds"):format(delay)) end)
+	end
+	Players.PlayerAdded:Connect(function(plr)
+		task.delay(8, function() if plr.Parent then sweep("join:" .. plr.Name) end end)
+	end)
 end)

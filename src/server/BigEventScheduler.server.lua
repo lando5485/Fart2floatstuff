@@ -78,6 +78,10 @@ task.spawn(function()
 			print("[BigEventScheduler] no big events registered yet -- retrying next cycle")
 		end
 
+		-- WHEN THE NEXT ONE IS ROUGHLY DUE, published for anything that wants to SHOW it (the blimp's WHAT'S
+		-- ON page). Approximate on purpose: the loop also waits out any event still running before it picks
+		-- again, so this is "not before then" rather than a promise. Anything reading it should say "~".
+		pcall(function() workspace:SetAttribute("NextBigEventAt", os.time() + SCHEDULE_INTERVAL) end)
 		task.wait(SCHEDULE_INTERVAL)
 	end
 end)

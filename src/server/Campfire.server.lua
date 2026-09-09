@@ -799,6 +799,46 @@ local function eatStick(player)
 	local msg, coins, tint = roastResult(r)
 	creditCoins(player, coins)
 	flashOverhead(player, msg .. " +" .. coins, tint)
+
+	-- ===== EASTER EGG: THE OTHER END -- get it PERFECT and there is a title for that too =====
+	-- Burnt Offering rewards ignoring the game. This rewards the opposite: watching the marshmallow and
+	-- pulling it off at the right moment. Together they cover both ways of caring about the roast, and the
+	-- only way to earn neither is to eat it half-toasted without paying attention.
+	--
+	-- NARROWER THAN THE GOLDEN BAND ON PURPOSE. roastResult calls 42..72 golden, which is a 30-point window
+	-- and about four seconds over the fire -- you land in it by accident. The title wants the MIDDLE of it,
+	-- so it takes actually looking at the colour rather than counting. Widen PERFECT_LO/HI if it proves too
+	-- fussy; they are the only two numbers involved.
+	local PERFECT_LO, PERFECT_HI = 54, 64
+	if r >= PERFECT_LO and r <= PERFECT_HI and not player:GetAttribute("GoldenTouch") then
+		player:SetAttribute("GoldenTouch", true)
+		-- NOT granted as a permanent title -- see the campfire-title loop further down. The attribute above
+		-- is the whole record of having earned it; wearing it is handled by standing near a fire.
+		task.delay(2.2, function()
+			if player.Parent then
+				flashOverhead(player, "ð TITLE UNLOCKED: Golden Touch", Color3.fromRGB(255, 214, 110))
+			end
+		end)
+		print(("[Campfire] %s roasted a marshmallow to %d -- dead centre. Golden Touch unlocked"):format(player.Name, r))
+	end
+
+	-- ===== EASTER EGG: eat one BURNT TO A CRISP and you get a title for it =====
+	-- Burning a marshmallow is the worst outcome the roast has -- it pays the same 1 coin as raw and the
+	-- message tells you off for it. So it is the one result nobody reaches on purpose, which makes it a
+	-- perfect thing to reward: you only find this by ignoring the game telling you to stop.
+	--
+	-- ONCE PER PLAYER, checked on the attribute rather than a table, so it survives a respawn and cannot be
+	-- farmed by standing at the fire. Titles never touch flight, gas or coins -- it is pure brag.
+	if r >= 92 and not player:GetAttribute("BurntOffering") then
+		player:SetAttribute("BurntOffering", true)
+		-- Recorded, not worn. The campfire-title loop below puts it over your head while you are at a fire.
+		task.delay(2.2, function()   -- after the roast result has had its moment
+			if player.Parent then
+				flashOverhead(player, "ð TITLE UNLOCKED: Burnt Offering", Color3.fromRGB(255, 170, 60))
+			end
+		end)
+		print("[Campfire] " .. player.Name .. " burnt a marshmallow to a crisp -- Burnt Offering unlocked")
+	end
 	setMarsh(tool, false) -- marshmallow gone, stick stays -- go get another from the bucket
 end
 
@@ -972,6 +1012,66 @@ local function restingAtAny(player)
 	return nearestFlameDist(hrp.Position) <= REST_RADIUS
 end
 
+
+-- ============================================================================================================
+-- CAMPFIRE TITLES ARE WORN AT THE CAMPFIRE, AND NOWHERE ELSE
+-- ============================================================================================================
+-- Burnt Offering and Golden Touch are earned by roasting, so they are shown while you are roasting. Carrying
+-- a marshmallow title around Pizza Palms would say nothing to anyone up there; standing at the fire wearing
+-- it says everything, because everyone else at that fire is doing the exact thing it is about. It is also
+-- what keeps them out of the way of the pet-collection titles, which ARE meant to be worn everywhere.
+--
+-- BOTH AT ONCE if you have both. They are opposite ends of the same skill -- the person who has burnt one to
+-- charcoal AND hit the dead centre has done the whole roast, and that pair is worth more than either half.
+--
+-- SAVE AND RESTORE, never overwrite. Whatever title a player was already wearing is stashed on arrival and
+-- put back on the way out. The restore is guarded on the title still BEING ours: if something else changed it
+-- while the player stood at the fire (a pet milestone landing, say) that new title is the current truth and
+-- stamping the old one back over it would silently undo another system's work.
+local cfSavedTitle = {}   -- [player] = the title they wore before reaching a fire (false = wore none)
+
+local function campfireTitleFor(player)
+	local burnt  = player:GetAttribute("BurntOffering")
+	local golden = player:GetAttribute("GoldenTouch")
+	-- Golden first: it is the harder of the two, and the eye reads the front of the string.
+	if golden and burnt then return "Golden Touch / Burnt Offering" end
+	if golden then return "Golden Touch" end
+	if burnt  then return "Burnt Offering" end
+	return nil
+end
+
+task.spawn(function()
+	while true do
+		for _, player in ipairs(Players:GetPlayers()) do
+			local mine = campfireTitleFor(player)
+			local char = player.Character
+			local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+			-- DISTANCE ONLY -- not restingAtAny(). That one also demands you be still and the fires lit, and
+			-- neither should hide a title: you want it visible while you are walking round the fire choosing
+			-- a seat, and still visible after a storm has doused the flames.
+			local near = mine and hrp and nearestFlameDist(hrp.Position) <= REST_RADIUS
+
+			if near and cfSavedTitle[player] == nil then
+				cfSavedTitle[player] = player:GetAttribute("Title") or false
+				player:SetAttribute("Title", mine)
+			elseif near then
+				-- Re-assert every pass, cheaply: earning the second title while stood at the fire has to
+				-- upgrade the label there and then, not on the next visit.
+				if player:GetAttribute("Title") ~= mine then player:SetAttribute("Title", mine) end
+			elseif cfSavedTitle[player] ~= nil then
+				local saved = cfSavedTitle[player]
+				cfSavedTitle[player] = nil
+				if player:GetAttribute("Title") == mine or mine == nil then
+					player:SetAttribute("Title", saved or nil)
+				end
+			end
+		end
+		task.wait(0.5)   -- a title appearing within half a second of arriving is instant enough
+	end
+end)
+
+Players.PlayerRemoving:Connect(function(player) cfSavedTitle[player] = nil end)
+
 -- ONE payout loop for the whole set of campfires -- you earn at whichever one you're sitting by.
 local function runPayout()
 	while true do
@@ -1076,6 +1176,771 @@ local function pruneDuplicateFires()
 end
 
 --------------------------------------------------------------------------------
+-- NIGHT ON BEAN FARM, AND THE STORIES THE ANIMALS TELL BY THE FIRE
+--------------------------------------------------------------------------------
+-- Every NIGHT_PERIOD seconds Bean Farm has a night: a SUNSET_SECS sunset that eases the sky down, DARK_SECS
+-- of full dark, then a SUNRISE_SECS sunrise back to day. It runs on the WALL CLOCK (os.time), not server
+-- uptime, so every server in the game has night at the same moment and a friend joining from another server
+-- sees what you see. This file only PUBLISHES it -- as Workspace attributes:
+--   NightFactor   0..1   how dark it is right now (0 day, 1 full night; ramps through sunset and sunrise)
+--   BeanFarmNight bool   true from the first second of sunset to the last second of sunrise
+--   NightSecondsLeft / NextNightIn   for anything that wants to show a countdown
+-- SkyByAltitude (client) reads NightFactor and pulls the low sky to night; above island 2 the altitude curve
+-- owns the darkness exactly as before. The pig and the cow read BeanFarmNight + StoryFirePos and walk to
+-- the fire (their own scripts; nothing here moves them).
+--
+-- THE STORIES. When both animals are at the story fire and somebody is sitting by it, they tell each other
+-- one of EIGHT long stories through the speech bubbles they already have, a line every LINE_SECONDS. They
+-- run FORTY lines -- about two minutes each, three in a night -- because a six-line story is a joke, not a
+-- story (see the note on STORIES below). One counts as HEARD for every player within REST_RADIUS of the fire
+-- when its last line lands. Hear all eight and you wear "Fireside". Heard stories are saved per player (own store, honours
+-- the fresh-player test flag), so they drip out over several nights instead of one long sit -- that is the
+-- reason to come back after dark. The story picked is the one the fewest people present have heard, so a newcomer at
+-- a busy fire still gets a new one.
+local NIGHT_PERIOD = 25 * 60   -- one night every 25 minutes
+local SUNSET_SECS  = 60        -- the sky eases down over a minute...
+local DARK_SECS    = 390       -- ...stays fully dark for six and a half...
+local SUNRISE_SECS = 60        -- ...and eases back up over a minute (8.5 min of "night" in all)
+local NIGHT_TOTAL  = SUNSET_SECS + DARK_SECS + SUNRISE_SECS
+local STORY_RANGE  = 18        -- both animals must be within this of the flame before a story starts
+-- ===== HOW FAST THEY TALK =====
+-- Retuned twice on 2026-09-06: 6s read as two animals waiting for each other, and 4s still did. 4s was a hard
+-- floor only because the animals' speech bubble held every line for a fixed SEVEN seconds -- speakers alternate,
+-- so an animal speaks again every 2 x LINE_SECONDS, and any faster meant the previous hide fired over the new
+-- line and blanked it mid-sentence. So the hold is now OURS: `say` takes an optional duration and the stories
+-- pass BUBBLE_HOLD. Ambient one-liners still get 7s by default.
+--
+-- KEEP BUBBLE_HOLD BELOW 2 x LINE_SECONDS. That is the whole constraint; 0.5s of margin is enough.
+local LINE_SECONDS = 2.5       -- a line lands this long after the last -- a back-and-forth, not a recital
+local BUBBLE_HOLD  = 4.5       -- < 2 x LINE_SECONDS (5.0), so a bubble always clears before its owner speaks again
+local STORY_GAP    = 14        -- breath between stories. Longer now the stories are 40 lines: three of them
+                               -- fill a 6-7 minute night with a real pause between, instead of five short ones
+                               -- running into each other
+local PUNCH_PAUSE  = 1.1       -- extra beat before the LAST line of a story. Every story ends on the other
+                               -- animal's reaction, and a punchline delivered on the metronome is not a
+                               -- punchline -- the pause is what makes it land
+
+-- ===== /night: SHIFT THE CLOCK, DO NOT BYPASS IT =====
+-- The test command works by moving the cycle's PHASE, not by setting a "forced" flag that the rest of the
+-- file then has to check everywhere. `nightOffset` is added to the wall clock, so /night is "pretend it is
+-- 25 minutes later" -- every reader (the sky, the animals, the stories, the countdown) sees one consistent
+-- time, the sunset and sunrise still run in full, and night ends on its own the way it always would. A
+-- forced flag would have skipped the ramps and left the sky snapping between day and dark.
+--
+-- SERVER-WIDE and not per-player, because the animals, the fire and the sky are one shared world -- there is
+-- no coherent way for it to be night for one person at the same fire. Allow-list gated like every other test
+-- command here.
+--
+-- ===== THE CYCLE IS ANCHORED TO SERVER START, NOT TO THE WALL CLOCK =====
+-- It used to be `os.time() % NIGHT_PERIOD`, which meant the phase depended on what time of day the server
+-- happened to boot -- and NIGHT_TOTAL/NIGHT_PERIOD of the time (about one boot in three) that landed inside
+-- the night window, so a player pressed PLAY and Bean Farm was already dark. Joining into a pitch-black farm
+-- is the worst possible first frame of this game: the first thing anyone should see is the bright farm.
+--
+-- So the clock counts from BOOT and starts at NIGHT_TOTAL, which is the first daylight second. Every server
+-- therefore opens in DAY and the first sunset is a full daylight stretch away (NIGHT_PERIOD - NIGHT_TOTAL,
+-- about 16 minutes), then it is every NIGHT_PERIOD after that, forever. A player who joins a server that has
+-- been up a while still arrives mid-night if it is night -- that is correct, it is a shared world; what is
+-- fixed is that night can no longer be waiting for the very first player.
+local BOOT = os.time()
+local nightOffset = 0
+local function rawPhase() return (os.time() - BOOT) + NIGHT_TOTAL end
+local function clock() return rawPhase() + nightOffset end
+
+-- 0..1 darkness for the current wall-clock second, with the ramps.
+local function nightFactor()
+	local t = clock() % NIGHT_PERIOD
+	if t < SUNSET_SECS then return t / SUNSET_SECS end
+	if t < SUNSET_SECS + DARK_SECS then return 1 end
+	if t < NIGHT_TOTAL then return 1 - (t - SUNSET_SECS - DARK_SECS) / SUNRISE_SECS end
+	return 0
+end
+local function isNight() return (clock() % NIGHT_PERIOD) < NIGHT_TOTAL end
+local function nightEndsIn() return math.max(0, NIGHT_TOTAL - (clock() % NIGHT_PERIOD)) end
+local function nextNightIn() return NIGHT_PERIOD - (clock() % NIGHT_PERIOD) end
+
+-- Jump the phase to a named moment. Each one lands a couple of seconds INTO its phase rather than exactly on
+-- the boundary, so a one-second poll cannot miss it and report the phase before.
+local NIGHT_MARKS = {
+	night   = 1,                                  -- sunset starts now (the full ramp down, then dark)
+	dark    = SUNSET_SECS + 1,                    -- straight to full dark, skipping the sunset
+	sunrise = SUNSET_SECS + DARK_SECS + 1,        -- straight to the ramp back up
+	day     = NIGHT_TOTAL + 1,                    -- daylight, next sunset a full period away
+}
+local function setNightPhase(target)
+	local at = NIGHT_MARKS[target]
+	if not at then return false end
+	-- offset such that clock() % PERIOD == at -- measured off the BOOT-anchored phase, not the wall clock
+	nightOffset = (at - (rawPhase() % NIGHT_PERIOD)) % NIGHT_PERIOD
+	return true
+end
+
+local storyFlame = nil
+local function pickStoryFire()
+	if #FLAMES == 0 then return end
+	local sd = _G.islandStandData and _G.islandStandData[1]
+	local ref = sd and Vector3.new(sd.x, sd.y, sd.z)
+	if not ref then
+		local island = findIsland()
+		local spawn = island and island:FindFirstChildWhichIsA("SpawnLocation", true)
+		ref = spawn and spawn.Position
+	end
+	local best, bestD = FLAMES[1], math.huge
+	if ref then
+		for _, f in ipairs(FLAMES) do
+			local d = (f.Position - ref).Magnitude
+			if d < bestD then best, bestD = f, d end
+		end
+	end
+	storyFlame = best
+	Workspace:SetAttribute("StoryFirePos", best.Position)
+	print(("[Fireside] story fire is the one at %s (%s) -- the pig and the cow gather here at night")
+		:format(tostring(best.Position), ref and ("%.0f studs from island 1's stand"):format(bestD) or "stand not found: first fire"))
+end
+
+local function runNight()
+	local was = nil
+	while true do
+		local on = isNight()
+		if on ~= was then
+			was = on
+			Workspace:SetAttribute("BeanFarmNight", on)
+			if on then
+				print(("[Fireside] SUNSET on Bean Farm -- %d min of night ahead; the animals head for the fire"):format(math.floor(NIGHT_TOTAL / 60)))
+			else
+				print(("[Fireside] daylight on Bean Farm -- next sunset in %d min"):format(math.floor(nextNightIn() / 60)))
+			end
+		end
+		Workspace:SetAttribute("NightFactor", nightFactor())
+		Workspace:SetAttribute("NightSecondsLeft", on and nightEndsIn() or 0)
+		Workspace:SetAttribute("NextNightIn", nextNightIn())
+		task.wait(1)
+	end
+end
+
+-- ===== EIGHT STORIES: THE HISTORY OF FART TO FLOAT =====
+-- ===== THEY ARE LONG. THAT IS THE WHOLE POINT. =====
+-- This started as forty stories of six lines and was rewritten three times before the real problem showed:
+-- six lines of forty characters is under 300 characters, and 300 characters is a joke, not a story. A story
+-- needs somebody to happen to, a thing that goes wrong, a middle where it gets worse, and a turn at the end
+-- you did not see coming. That does not fit in six lines and no amount of better wording makes it fit.
+--
+-- So: EIGHT stories of FORTY LINES. About two minutes each at LINE_SECONDS, which with STORY_GAP is three in
+-- a 6-7 minute night -- the pacing the fire was asked for. A player who sits down hears one whole thing.
+--
+-- THEY SHARE A WORLD. Bell eats the harvest nobody would buy and the hill lets go of him; his fourteen
+-- resting places are the islands. The blimp's book has his line crossed out with one word after it. The girl
+-- from Milk Marsh goes through the hole above Pizza Palms and comes home to the same buckets. The stranger
+-- with seven stomachs sells the iron one to a man he knows will never come down, then leaves the money in
+-- the garden box. Told in any order they still add up, which is what makes it a history and not trivia.
+--
+-- ONE POOL PER ANIMAL, and the TELLER owns its pool. The cow tells the deep history -- it has stood in this
+-- field longer than anyone who climbs -- and the pig tells the recent, ground-level, gossipy half: Sal and
+-- the unlabelled can, the churn nobody switched off, the fifth gnome, the board round the back of the plaza.
+-- Tellers alternate, so neither holds the fire two stories running.
+--
+-- THE LISTENER ALWAYS CLOSES. The teller speaks on the odd lines, so the last line is the other animal
+-- realising something -- that is where a story pays off. Line counts MUST be even or the teller closes its
+-- own story, and the asserts in tools' generator are there for exactly that.
+--
+-- KEEP IT TRUE TO THE GAME. Fourteen islands, beans first and pizza last, seven guts, coins per stud, the
+-- blimp, the OG board, the black hole, Milk Marsh, the Butter Swamp, the buried gnome and his waiting
+-- brother, Sal's rocket gas, the secret MOST FARTS board. Invent freely INSIDE that -- never against it.
+--
+-- SPEAKERS ALTERNATE INSIDE A STORY TOO, and that is a hard rule, not a style: the bubble holds BUBBLE_HOLD
+-- seconds and an animal speaks again every 2 x LINE_SECONDS, so two lines in a row would blank the first.
+-- Keep every line under ~45 characters -- that is what fits the bubble in two rows.
+local STORIES = {
+	cow = {
+		{ id = "cow_bell", lines = {
+			{ "cow", "Sit down. This one is long." },
+			{ "pig", "I am sitting. I am always sitting." },
+			{ "cow", "I am going to tell you about Bell." },
+			{ "pig", "You have never told me about Bell." },
+			{ "cow", "You never asked at the right time of day." },
+			{ "pig", "It is night. I am not going anywhere." },
+			{ "cow", "Then. Bell had this field before us." },
+			{ "pig", "Before the farm?" },
+			{ "cow", "Before the tower. There was no tower." },
+			{ "pig", "What was up there instead?" },
+			{ "cow", "A hill. This hill. And a lot of sky." },
+			{ "pig", "Nothing you could stand on?" },
+			{ "cow", "Birds. Weather. Nothing that held still." },
+			{ "pig", "And Bell farmed the hill." },
+			{ "cow", "Beans. He was not good at it." },
+			{ "pig", "How bad can a bean be?" },
+			{ "cow", "Small. Grey. They rattled in the sack." },
+			{ "pig", "Did anybody buy them?" },
+			{ "cow", "One man once, and he came back angry." },
+			{ "pig", "So what does he do with a whole harvest?" },
+			{ "cow", "He sat down out here and began eating." },
+			{ "pig", "Out of stubbornness?" },
+			{ "cow", "Out of hunger. Nobody had paid him." },
+			{ "pig", "How long did that take?" },
+			{ "cow", "All evening. He finished after dark." },
+			{ "pig", "And then?" },
+			{ "cow", "And then the hill let go of him." },
+			{ "pig", "The hill let GO?" },
+			{ "cow", "He went up. Slowly, at first." },
+			{ "pig", "Was he shouting?" },
+			{ "cow", "Laughing. That is what they wrote down." },
+			{ "pig", "Who is they?" },
+			{ "cow", "Whoever was watching. There were four." },
+			{ "pig", "Did he ever land?" },
+			{ "cow", "Fourteen times. Each one is still there." },
+			{ "pig", "The ISLANDS?" },
+			{ "cow", "Each is where he stopped for breath." },
+			{ "pig", "The whole tower is one man resting?" },
+			{ "cow", "And everyone since is following him up." },
+			{ "pig", "...I will never look at beans the same." } } },
+		{ id = "cow_stranger", lines = {
+			{ "cow", "A stranger came DOWN the road once." },
+			{ "pig", "Down? Nobody ever comes down." },
+			{ "cow", "He did. On foot. In the rain." },
+			{ "pig", "Down from where?" },
+			{ "cow", "He would not say. His boots were burnt." },
+			{ "pig", "Burnt how?" },
+			{ "cow", "Through. Both soles. He walked anyway." },
+			{ "pig", "What did he want with us?" },
+			{ "cow", "A fence to lay things out on. Ours." },
+			{ "pig", "Lay WHAT out?" },
+			{ "cow", "Seven stomachs. In a sack. By size." },
+			{ "pig", "...Say that again." },
+			{ "cow", "Tiny at one end. Iron at the other." },
+			{ "pig", "Whose stomachs were they?" },
+			{ "cow", "He never said that either." },
+			{ "pig", "Did anybody actually buy one?" },
+			{ "cow", "A queue formed before he had finished." },
+			{ "pig", "For how much?" },
+			{ "cow", "Coins. And one promise on top." },
+			{ "pig", "What promise?" },
+			{ "cow", "That the buyer would come back down." },
+			{ "pig", "That is a strange thing to charge." },
+			{ "cow", "He said it twice to every one of them." },
+			{ "pig", "And did they come back?" },
+			{ "cow", "Six did. Small through to double." },
+			{ "pig", "And the seventh?" },
+			{ "cow", "The iron one. He is still up there." },
+			{ "pig", "Still climbing? After all this time?" },
+			{ "cow", "There is nothing left for him to buy." },
+			{ "pig", "Then what is he climbing FOR?" },
+			{ "cow", "That is what the stranger asked him." },
+			{ "pig", "He asked the buyer that? Out loud?" },
+			{ "cow", "Before he sold it. The man laughed." },
+			{ "pig", "And the stranger sold it to him anyway." },
+			{ "cow", "He said the iron one finds its own man." },
+			{ "pig", "That is a horrible thing to say." },
+			{ "cow", "He left the money in the garden box." },
+			{ "pig", "...All of it?" },
+			{ "cow", "Every coin. Then he walked back up." },
+			{ "pig", "...Then I do not know what he was." } } },
+		{ id = "cow_ledger", lines = {
+			{ "cow", "That blimp is not decoration." },
+			{ "pig", "It has never landed in my lifetime." },
+			{ "cow", "It lands. Never where you are looking." },
+			{ "pig", "What is it up there for?" },
+			{ "cow", "There is a book on it." },
+			{ "pig", "A book." },
+			{ "cow", "One line for everyone who ever climbed." },
+			{ "pig", "Saying what?" },
+			{ "cow", "A name. And how high they got." },
+			{ "pig", "Who agreed to be written down?" },
+			{ "cow", "The first one did. He asked for it." },
+			{ "pig", "Bell ASKED?" },
+			{ "cow", "He wanted one person to see him do it." },
+			{ "pig", "That is not vanity. That is lonely." },
+			{ "cow", "The keeper has kept it ever since." },
+			{ "pig", "There is a keeper?" },
+			{ "cow", "Somebody. The lamp moves at night." },
+			{ "pig", "Have you ever seen this book?" },
+			{ "cow", "Once. Part of it came down in a storm." },
+			{ "pig", "It FELL?" },
+			{ "cow", "One page. It landed in the beans." },
+			{ "pig", "What was written on it?" },
+			{ "cow", "Names. Hundreds. Very small writing." },
+			{ "pig", "Anybody you knew?" },
+			{ "cow", "All of them. Everyone who passed here." },
+			{ "pig", "Even the ones who never came back?" },
+			{ "cow", "Especially those. Those have a mark." },
+			{ "pig", "What sort of mark?" },
+			{ "cow", "A small circle. Nothing written after." },
+			{ "pig", "...And the first line? Bell's line?" },
+			{ "cow", "Crossed out. One straight line through." },
+			{ "pig", "Crossed out by WHO?" },
+			{ "cow", "The keeper. It is the same neat hand." },
+			{ "pig", "Why erase the first man of all of them?" },
+			{ "cow", "There is one word written after it." },
+			{ "pig", "What word?" },
+			{ "cow", "Returned." },
+			{ "pig", "...He came back down?" },
+			{ "cow", "The book only counts the ones still up." },
+			{ "pig", "...Then Bell is somewhere on the ground." } } },
+		{ id = "cow_girl", lines = {
+			{ "cow", "There is a hole above the top island." },
+			{ "pig", "Above Pizza Palms? Above everything?" },
+			{ "cow", "A dark one. It turns very slowly." },
+			{ "pig", "How would you see it in the dark?" },
+			{ "cow", "It is darker than dark. You can tell." },
+			{ "pig", "Who found it?" },
+			{ "cow", "A girl who grew up on Milk Marsh." },
+			{ "pig", "What was she doing that high?" },
+			{ "cow", "Working. She carried buckets for a living." },
+			{ "pig", "Up and down the whole tower?" },
+			{ "cow", "Every day. She knew the gaps by heart." },
+			{ "pig", "Then she was not up there by accident." },
+			{ "cow", "No. She saved a year to go higher." },
+			{ "pig", "To reach the hole on purpose." },
+			{ "cow", "She told nobody. She told her mother." },
+			{ "pig", "That is telling somebody." },
+			{ "cow", "Her mother told me. That is how I know." },
+			{ "pig", "What happened when she went in?" },
+			{ "cow", "Nothing loud. She simply was not there." },
+			{ "pig", "For how long?" },
+			{ "cow", "One winter. She came back in spring." },
+			{ "pig", "She CAME BACK?" },
+			{ "cow", "Thinner. Taller. Very quiet." },
+			{ "pig", "What is through it?" },
+			{ "cow", "Stars. And more islands, she said." },
+			{ "pig", "More islands? Another tower?" },
+			{ "cow", "Several. Made of things we do not have." },
+			{ "pig", "Then why is she not up there now?" },
+			{ "cow", "I asked her that. She thought about it." },
+			{ "pig", "And?" },
+			{ "cow", "She said one sentence and went home." },
+			{ "pig", "What was the sentence?" },
+			{ "cow", "There is nobody up there to shout at." },
+			{ "pig", "...That is all she said?" },
+			{ "cow", "She meant it kindly. She was not sad." },
+			{ "pig", "What does she do now?" },
+			{ "cow", "Milk. The same buckets. The same route." },
+			{ "pig", "After seeing all of that?" },
+			{ "cow", "She says the climb was the good part." },
+			{ "pig", "...I think I understand her." } } },
+	},
+	pig = {
+		{ id = "pig_sal", lines = {
+			{ "pig", "You know Sal lives in a cave." },
+			{ "cow", "Everybody knows Sal lives in a cave." },
+			{ "pig", "Do you know why?" },
+			{ "cow", "Because he sells what he should not." },
+			{ "pig", "That is what he WANTS you to think." },
+			{ "cow", "Then tell me the real reason." },
+			{ "pig", "Sal used to have a stand at the top." },
+			{ "cow", "The top? Pizza Palms?" },
+			{ "pig", "Best pitch on the whole tower." },
+			{ "cow", "What was he selling up there?" },
+			{ "pig", "Slices. Honestly. To tired people." },
+			{ "cow", "That is not the Sal I have heard of." },
+			{ "pig", "It was. Until the can." },
+			{ "cow", "What can?" },
+			{ "pig", "A can he found. Unlabelled. Heavy." },
+			{ "cow", "Found where?" },
+			{ "pig", "In the crates that arrive at night." },
+			{ "cow", "Nobody ever sees those arrive." },
+			{ "pig", "Sal did. Once. He will not say more." },
+			{ "cow", "What was in it?" },
+			{ "pig", "Rocket gas. Only nobody knew that yet." },
+			{ "cow", "So he sold it." },
+			{ "pig", "He sold it to a climber in a hurry." },
+			{ "cow", "What did he tell him it was?" },
+			{ "pig", "That it would save him an hour." },
+			{ "cow", "And did it?" },
+			{ "pig", "It saved him four. Then it kept saving." },
+			{ "cow", "Meaning what, exactly?" },
+			{ "pig", "He did not stop. He is still going up." },
+			{ "cow", "...Still?" },
+			{ "pig", "On a clear night he is a moving dot." },
+			{ "cow", "Did Sal know it would do that?" },
+			{ "pig", "No. That is the whole problem." },
+			{ "cow", "Then it was an accident." },
+			{ "pig", "Sal does not believe in accidents." },
+			{ "cow", "So he hid." },
+			{ "pig", "He packed the stand and came down." },
+			{ "cow", "All the way down. To a hole in a rock." },
+			{ "pig", "And every night he watches the sky." },
+			{ "cow", "...In case his customer comes back." } } },
+		{ id = "pig_churn", lines = {
+			{ "pig", "The butter swamp is one man's lunch." },
+			{ "cow", "A swamp is not a lunch break." },
+			{ "pig", "This one is. Island ten. Years ago." },
+			{ "cow", "Go on, then." },
+			{ "pig", "There was a cook up there. One cook." },
+			{ "cow", "Cooking for who?" },
+			{ "pig", "Anybody passing. It is a long climb." },
+			{ "cow", "Fair enough." },
+			{ "pig", "He had a churn. A big one. Iron." },
+			{ "cow", "For butter." },
+			{ "pig", "For butter. He turned it on at noon." },
+			{ "cow", "And went to eat." },
+			{ "pig", "He went to eat. He was gone an hour." },
+			{ "cow", "And then?" },
+			{ "pig", "He came back and it was still going." },
+			{ "cow", "So he left it going." },
+			{ "pig", "He was pleased with it. He went home." },
+			{ "cow", "For the night." },
+			{ "pig", "For the night. Then for the week." },
+			{ "cow", "...And then?" },
+			{ "pig", "Then he retired. He forgot to mention it." },
+			{ "cow", "He forgot to mention retiring?" },
+			{ "pig", "People do. He was old and he was tired." },
+			{ "cow", "So nobody switched the churn off." },
+			{ "pig", "Nobody knew whose churn it was." },
+			{ "cow", "How long has it been running?" },
+			{ "pig", "They stopped counting the years." },
+			{ "cow", "Can nobody reach it now?" },
+			{ "pig", "Three have tried. It is deep under." },
+			{ "cow", "Under the butter it made." },
+			{ "pig", "Under all of it. You can hear it, though." },
+			{ "cow", "You can HEAR it?" },
+			{ "pig", "Stand still on island ten. It thumps." },
+			{ "cow", "...That is not a nice thought." },
+			{ "pig", "It is the oldest working thing up there." },
+			{ "cow", "Older than the boards?" },
+			{ "pig", "Older than all of it but the tower." },
+			{ "cow", "...And it is making butter for nobody." } } },
+		{ id = "pig_gnome", lines = {
+			{ "pig", "Count the gnomes in the garden." },
+			{ "cow", "Four. I count four every morning." },
+			{ "pig", "There were five when I arrived." },
+			{ "cow", "You have never mentioned a fifth." },
+			{ "pig", "I am mentioning him now." },
+			{ "cow", "Was he different from the others?" },
+			{ "pig", "Smaller. Red hat. Always at the front." },
+			{ "cow", "The front of what?" },
+			{ "pig", "Whatever they were doing. He led." },
+			{ "cow", "Gnomes do things?" },
+			{ "pig", "They measure. That is their work." },
+			{ "cow", "Measure what, exactly?" },
+			{ "pig", "Every gap in the tower. To the stud." },
+			{ "cow", "...The gaps between the islands." },
+			{ "pig", "Somebody had to. He did the first four." },
+			{ "cow", "So what happened to him?" },
+			{ "pig", "Rain. A whole night of it." },
+			{ "cow", "The flower bed?" },
+			{ "pig", "The bed came down. He was standing in it." },
+			{ "cow", "And he went under with it?" },
+			{ "pig", "Hat first. Nobody heard a thing." },
+			{ "cow", "The others were right there." },
+			{ "pig", "Facing the other way. They always are." },
+			{ "cow", "How long before anybody noticed?" },
+			{ "pig", "A season. A whole season." },
+			{ "cow", "Nobody counts the gnomes?" },
+			{ "pig", "You do. You counted four this morning." },
+			{ "cow", "...I did." },
+			{ "pig", "They knew by autumn. Three said nothing." },
+			{ "cow", "Why would they say nothing?" },
+			{ "pig", "Shame. Or they could not dig him out." },
+			{ "cow", "And the fourth one?" },
+			{ "pig", "The fourth went and stood by the tree." },
+			{ "cow", "The tree with the door in it." },
+			{ "pig", "Their door. Their house is under it." },
+			{ "cow", "He is waiting for his brother." },
+			{ "pig", "Every night since. He does not knock." },
+			{ "cow", "Why does he not knock?" },
+			{ "pig", "Then he would have to go in alone." },
+			{ "cow", "...Somebody has to dig that gnome out." } } },
+		{ id = "pig_board", lines = {
+			{ "pig", "The plaza has four boards of names." },
+			{ "cow", "Fastest. Oldest. Longest. Most reborn." },
+			{ "pig", "Have you been round the back of them?" },
+			{ "cow", "Why would I go round the back?" },
+			{ "pig", "Because there is a fifth one there." },
+			{ "cow", "There is not." },
+			{ "pig", "Turned to face the wall. Same stone." },
+			{ "cow", "What does a fifth board count?" },
+			{ "pig", "Farts. Every one anybody ever did." },
+			{ "cow", "...Who builds that?" },
+			{ "pig", "The same people who built the others." },
+			{ "cow", "On purpose? At the same time?" },
+			{ "pig", "The stone is cut the same. I checked." },
+			{ "cow", "Then somebody thought it mattered." },
+			{ "pig", "Somebody thought it mattered MOST." },
+			{ "cow", "Is there a name on it?" },
+			{ "pig", "One name at the top. For years." },
+			{ "cow", "The same one all that time?" },
+			{ "pig", "The same one. By a very long way." },
+			{ "cow", "How long a way?" },
+			{ "pig", "Double the next. It is not close." },
+			{ "cow", "Does that person know it is back there?" },
+			{ "pig", "They visit. I have watched them visit." },
+			{ "cow", "What do they do when they get there?" },
+			{ "pig", "Nothing. They stand and they read it." },
+			{ "cow", "For how long?" },
+			{ "pig", "Longer than anyone reads the front ones." },
+			{ "cow", "...That is a little sad." },
+			{ "pig", "I do not think it is sad at all." },
+			{ "cow", "No?" },
+			{ "pig", "Everyone reads the fastest board once." },
+			{ "cow", "And?" },
+			{ "pig", "Nobody goes back to it. That one they do." },
+			{ "cow", "...Because it is theirs alone." },
+			{ "pig", "Because it is the only one they wanted." },
+			{ "cow", "...Fine. I will go round the back." } } },
+	},
+}
+
+local STORY_TOTAL = #STORIES.cow + #STORIES.pig
+
+-- ===== WHO HAS HEARD WHAT =====
+local heard = {}   -- [player] = { [storyId] = true }
+local storyStore
+pcall(function() storyStore = game:GetService("DataStoreService"):GetDataStore("FiresideStories_v1") end)
+
+local function heardCount(player)
+	local n = 0
+	for _ in pairs(heard[player] or {}) do n = n + 1 end
+	return n
+end
+
+local function loadHeard(player)
+	heard[player] = heard[player] or {}
+	task.wait(2) -- PlayerStats publishes _G.FRESH_PLAYER_TESTING at boot; give it a beat before trusting it
+	if _G.FRESH_PLAYER_TESTING or not storyStore then
+		player:SetAttribute("FiresideHeard", heardCount(player))
+		return
+	end
+	local ok, data = pcall(function() return storyStore:GetAsync(tostring(player.UserId)) end)
+	if ok and type(data) == "table" then
+		for _, id in ipairs(data) do heard[player][id] = true end
+	end
+	player:SetAttribute("FiresideHeard", heardCount(player))
+end
+
+local function saveHeard(player)
+	if _G.FRESH_PLAYER_TESTING or not storyStore then return end
+	local list = {}
+	for id in pairs(heard[player] or {}) do list[#list + 1] = id end
+	pcall(function() storyStore:SetAsync(tostring(player.UserId), list) end)
+end
+
+local function markHeard(player, id)
+	heard[player] = heard[player] or {}
+	if heard[player][id] then return end
+	heard[player][id] = true
+	local n = heardCount(player)
+	player:SetAttribute("FiresideHeard", n)
+	saveHeard(player)
+	if n >= STORY_TOTAL then
+		if _G.grantTitle then pcall(_G.grantTitle, player, "Fireside") end
+		flashOverhead(player, "\xF0\x9F\x94\xA5 FIRESIDE -- you have heard them all", Color3.fromRGB(255, 200, 90))
+		print(("[Fireside] %s has heard every story -- 'Fireside' title granted"):format(player.Name))
+	else
+		flashOverhead(player, ("\xF0\x9F\x93\x96 New story heard (%d/%d)"):format(n, STORY_TOTAL), Color3.fromRGB(255, 226, 150))
+	end
+end
+
+Players.PlayerAdded:Connect(function(p) task.spawn(loadHeard, p) end)
+Players.PlayerRemoving:Connect(function(p) heard[p] = nil end)
+for _, p in ipairs(Players:GetPlayers()) do task.spawn(loadHeard, p) end
+
+local function playersNear(pos, range)
+	local out = {}
+	for _, player in ipairs(Players:GetPlayers()) do
+		local char = player.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if hrp and (hrp.Position - pos).Magnitude <= range then out[#out + 1] = player end
+	end
+	return out
+end
+
+-- The story the fewest listeners have heard; ties broken at random so a fire full of veterans still varies.
+-- The story the fewest listeners have heard, drawn from THIS teller's pool; ties broken at random so a fire
+-- full of veterans still varies.
+local function pickStory(audience, teller)
+	local best, bestScore = {}, math.huge
+	for _, story in ipairs(STORIES[teller]) do
+		local score = 0
+		for _, p in ipairs(audience) do
+			if heard[p] and heard[p][story.id] then score = score + 1 end
+		end
+		if score < bestScore then best, bestScore = { story }, score
+		elseif score == bestScore then best[#best + 1] = story end
+	end
+	return best[math.random(1, #best)]
+end
+
+local function animalAtFire(a)
+	return a and a.body and a.body.Parent and storyFlame
+		and (a.body.Position - storyFlame.Position).Magnitude <= STORY_RANGE
+end
+
+-- Said by whichever animal reached the fire first while it waits for the other. Same bubble, same length
+-- rule as a story line (under ~45 characters, two rows).
+local SOLO_LINES = {
+	"Any minute now. He is on his way.",
+	"I could have been asleep for this.",
+	"The fire is perfect and nobody is here.",
+	"I am not starting without him.",
+	"He walks like the night is long.",
+	"One of us is always early.",
+	"Marshmallows do not roast themselves.",
+	"I have a good one saved up tonight.",
+	"Sit down, the pair of us have stories.",
+	"He gets lost between here and there.",
+}
+local SOLO_GAP = 11        -- seconds between solo lines -- sparser than a story, so it reads as waiting
+local soloAt   = 0         -- next allowed solo line (os.clock)
+local lastTeller = "pig"   -- so the cow opens the night
+local function runStories()
+	while true do
+		task.wait(1)
+		if isNight() and firesLit and storyFlame and storyFlame.Parent then
+			local ga = _G.gardenAnimals or {}
+			local pig, cow = ga.pig, ga.cow
+			-- NOBODY HAS TO BE THERE. The stories used to wait for a listener, which meant you always walked
+			-- up to two silent animals and then waited for the next one to start. They talk to each other all
+			-- night now, and whoever is standing at the fire when a story ENDS is credited with it -- so a
+			-- story you only caught the last line of does not count, and one you sat through does.
+			local audience = playersNear(storyFlame.Position, REST_RADIUS)
+			if animalAtFire(pig) and animalAtFire(cow) then
+				-- ALTERNATE THE TELLER. Whoever did not tell the last one tells this one, so the fire never
+				-- becomes one animal monologuing while the other says "mm" six times.
+				lastTeller = (lastTeller == "cow") and "pig" or "cow"
+				local story = pickStory(audience, lastTeller)
+				local cast = { cow = cow, pig = pig }
+				print(("[Fireside] %s tells '%s' to %d listener(s)"):format(lastTeller, story.id, #audience))
+				local finished = true
+				for i, line in ipairs(story.lines) do
+					-- Both of them have to still be here: one wandering off ends the story, because half an
+					-- exchange is worse than none.
+					local speaker = cast[line[1]]
+					if not (isNight() and animalAtFire(pig) and animalAtFire(cow) and animalAtFire(speaker)) then
+						finished = false; break
+					end
+					pcall(speaker.say, line[2], BUBBLE_HOLD)
+					-- Hold a beat before the closing reaction -- see PUNCH_PAUSE.
+					task.wait(LINE_SECONDS + ((i == #story.lines - 1) and PUNCH_PAUSE or 0))
+				end
+				if finished then
+					for _, p in ipairs(playersNear(storyFlame.Position, REST_RADIUS)) do markHeard(p, story.id) end
+				end
+				task.wait(STORY_GAP)
+
+			-- ===== WHOEVER GETS THERE FIRST TALKS ANYWAY =====
+			-- The pig only has to cross its own field; the cow walks ~250 studs from the far side of the
+			-- island, so for the first minute of every night there is a pig sitting at a fire saying nothing
+			-- at all -- and its ambient chatter is switched off for the night, so it is properly silent. That
+			-- reads as broken, and it is the exact minute a player who came for the banner arrives.
+			--
+			-- So the one who is there fills the wait: a solo line every SOLO_GAP seconds, about the other one
+			-- being late. They are deliberately about waiting, so they set up the stories instead of competing
+			-- with them, and the moment both animals are at the fire this branch stops firing on its own.
+			elseif animalAtFire(pig) or animalAtFire(cow) then
+				if os.clock() >= soloAt then
+					soloAt = os.clock() + SOLO_GAP
+					local here = animalAtFire(pig) and pig or cow
+					pcall(here.say, SOLO_LINES[math.random(1, #SOLO_LINES)], BUBBLE_HOLD)
+				end
+			end
+		end
+	end
+end
+
+--------------------------------------------------------------------------------
+-- /night  -- TEST COMMAND, REMOVE BEFORE LAUNCH
+--------------------------------------------------------------------------------
+--   /night          -> sunset starts now (watch the full ramp down)
+--   /night dark     -> skip the sunset, full dark immediately
+--   /night sunrise  -> skip to the ramp back up
+--   /night day      -> back to daylight; next sunset a full 25 minutes away
+--   /night status   -> print where the cycle currently is, and change nothing
+-- Registered on BOTH paths for the same reason the garden commands are: Player.Chatted does not fire under
+-- TextChatService, which is what this place uses, so a Chatted-only command silently does nothing.
+local function handleNightChat(plr, msg)
+	local lower = string.lower(msg)
+	if string.sub(lower, 1, 6) ~= "/night" then return end
+	if not (_G.isAllowedTestUser and _G.isAllowedTestUser(plr)) then
+		print(("[Fireside] /night from %s -- refused (not on the test allow-list)"):format(plr.Name))
+		return
+	end
+	local arg = string.match(lower, "^/night%s+(%a+)$")
+
+	local function report(prefix)
+		local f = nightFactor()
+		local phase = (not isNight()) and "DAY"
+			or (f >= 1 and "FULL DARK")
+			or ((clock() % NIGHT_PERIOD) < SUNSET_SECS and "SUNSET" or "SUNRISE")
+		print(("%s %s (darkness %.2f) -- %s")
+			:format(prefix, phase, f,
+				isNight() and ("day returns in %ds"):format(nightEndsIn())
+				          or ("next sunset in %ds"):format(nextNightIn())))
+	end
+
+	if arg == nil or arg == "" then arg = "night" end   -- a bare /night means "sunset, now"
+	if arg == "status" then report("[Fireside] /night status --"); return end
+	if not setNightPhase(arg) then
+		print(("[Fireside] /night: don't know %q. Use /night, /night dark, /night sunrise, /night day, /night status."):format(arg))
+		return
+	end
+	report(("[Fireside] /night %s by %s ->"):format(arg, plr.Name))
+end
+
+local function hookNightChat(plr) plr.Chatted:Connect(function(msg) handleNightChat(plr, msg) end) end
+for _, p in ipairs(Players:GetPlayers()) do hookNightChat(p) end
+Players.PlayerAdded:Connect(hookNightChat)
+
+do
+	local ok, err = pcall(function()
+		local TextChatService = game:GetService("TextChatService")
+		-- A stale baked-in copy of this script would otherwise register a SECOND command on the same alias,
+		-- and one /night would shift the phase twice.
+		for _, existing in ipairs(TextChatService:GetChildren()) do
+			if existing:IsA("TextChatCommand") and existing.PrimaryAlias == "/night" then return end
+		end
+		local c = Instance.new("TextChatCommand")
+		c.Name = "NightCycleCommand"; c.PrimaryAlias = "/night"
+		c.Parent = TextChatService
+		c.Triggered:Connect(function(source, text)
+			local plr = source and Players:GetPlayerByUserId(source.UserId)
+			if plr then handleNightChat(plr, text) end
+		end)
+	end)
+	if ok then print("[Fireside] /night registered (/night, /night dark, /night sunrise, /night day, /night status) -- TEST, REMOVE BEFORE LAUNCH")
+	else warn("[Fireside] /night registration failed: " .. tostring(err)) end
+end
+
+--------------------------------------------------------------------------------
+-- /nightbanner  -- fire the fireside reminder right now (TEST)
+--------------------------------------------------------------------------------
+-- The reminder banner itself is CLIENT-side (Campfire.client.luau) and runs on a timer, because everything it
+-- needs -- how long until sunset, whether it is night, where the story fire is -- is already published as
+-- Workspace attributes. So this command does not send the banner; it pokes a counter the clients watch, which
+-- is the whole server side of it. No remote, and every player in the server sees the same poke.
+local bannerPokes = 0
+local function handleBannerChat(plr, msg)
+	if string.lower(msg):match("^/nightbanner%s*$") == nil then return end
+	if not (_G.isAllowedTestUser and _G.isAllowedTestUser(plr)) then
+		print(("[Fireside] /nightbanner from %s -- refused (not on the test allow-list)"):format(plr.Name))
+		return
+	end
+	bannerPokes += 1
+	Workspace:SetAttribute("NightBannerPing", bannerPokes)
+	print(("[Fireside] /nightbanner by %s -> poked every client (poke #%d)"):format(plr.Name, bannerPokes))
+end
+
+local function hookBannerChat(plr) plr.Chatted:Connect(function(msg) handleBannerChat(plr, msg) end) end
+for _, p in ipairs(Players:GetPlayers()) do hookBannerChat(p) end
+Players.PlayerAdded:Connect(hookBannerChat)
+
+do
+	local ok, err = pcall(function()
+		local TextChatService = game:GetService("TextChatService")
+		for _, existing in ipairs(TextChatService:GetChildren()) do
+			if existing:IsA("TextChatCommand") and existing.PrimaryAlias == "/nightbanner" then return end
+		end
+		local c = Instance.new("TextChatCommand")
+		c.Name = "NightBannerCommand"; c.PrimaryAlias = "/nightbanner"
+		c.Parent = TextChatService
+		c.Triggered:Connect(function(source, text)
+			local plr = source and Players:GetPlayerByUserId(source.UserId)
+			if plr then handleBannerChat(plr, text) end
+		end)
+	end)
+	if ok then print("[Fireside] /nightbanner registered -- shows the fireside reminder now (TEST)")
+	else warn("[Fireside] /nightbanner registration failed: " .. tostring(err)) end
+end
+
+--------------------------------------------------------------------------------
 -- init
 --------------------------------------------------------------------------------
 task.spawn(function()
@@ -1100,5 +1965,8 @@ task.spawn(function()
 	setFiresLit(Workspace:GetAttribute("ActiveServerEvent") ~= "THUNDERSTORM") -- correct state if we spawned mid-storm
 	task.spawn(runWeather)
 	task.spawn(runRoasting)
+	pickStoryFire()          -- the fire nearest island 1's food stand; published as StoryFirePos
+	task.spawn(runNight)     -- the 25-minute day/night clock, published as NightFactor / BeanFarmNight
+	task.spawn(runStories)   -- the pig and the cow, once they are both at the fire after dark
 	runPayout()
 end)

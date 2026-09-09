@@ -216,19 +216,25 @@ do local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 22; sz.Pare
 
 local function baseText()
 	if done      then return "\xF0\x9F\x8D\xAC Every order filled -- the factory is buzzing!" end
-	if not accepted then return "\xF0\x9F\x92\xAC Go talk to the Candy NPC!" end
-	if producing then return "\xF0\x9F\x8F\xAD Making taffy at the factory..." end
-	if readyFlavor then return "\xF0\x9F\x8D\xAC Take your candy from the basket!" end
-	if carrying and stations[carrying] then return ("\xF0\x9F\x93\xA6 Deliver %s to Station %d"):format(stations[carrying].flavor.name, carrying) end
+	if not accepted then
+		return "\xF0\x9F\x92\xAC Talk to the Candy NPC to start -- follow the green arrows!"
+	end
+	if producing then return "\xF0\x9F\x8F\xAD Making your taffy -- wait for it to drop into the basket..." end
+	if readyFlavor then return "\xF0\x9F\x8D\xAC Candy's ready! Press Take Candy on the basket." end
+	if carrying and stations[carrying] then
+		return ("\xF0\x9F\x93\xA6 Carry the %s over the bridges to Station %d, then hold Deliver")
+			:format(stations[carrying].flavor.name, carrying)
+	end
 	if deliveredCount >= requiredStations then return "\xF0\x9F\x8D\xAC All taffy delivered!" end
 	if USE_ORCHARD then
 		local want = nextNeeded and nextNeeded()
 		if want then
-			return ("\xF0\x9F\x8C\xB3 Pick %s from the orchard:  %d/%d"):format(
+			return ("\xF0\x9F\x8C\xB3 Find the %s tree and press Shake the tree:  %d/%d orders filled"):format(
 				want.flavor.name, deliveredCount, requiredStations)
 		end
 	end
-	return ("\xF0\x9F\x8F\xAD Make taffy at the factory:  %d/%d"):format(deliveredCount, requiredStations)
+	return ("\xF0\x9F\x8F\xAD Hold Make Taffy at the Candy Factory:  %d/%d orders filled")
+		:format(deliveredCount, requiredStations)
 end
 local flashTok = 0
 local function refreshBanner() objLabel.Text = baseText() end
@@ -332,7 +338,7 @@ local function winBanner()
 	local msg = "\xF0\x9F\x8D\xAC Candy delivery complete!"
 	if _G.NotifyCenter and _G.NotifyCenter.push then
 		pcall(function() _G.NotifyCenter.push({
-			top      = "â¨ QUEST COMPLETE",
+			top      = "\xE2\x9C\xA8 QUEST COMPLETE",
 			text     = msg,
 			color    = STROKE,
 			priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT or nil,
@@ -607,16 +613,35 @@ local function buildFactory(prod)
 		tw:Play(); tw.Completed:Wait()
 	end
 
+	-- ===== THE TWO COLUMNS OF THE 700x260 HOUSE CARD =====
+	-- Content spans x 0..680 inside the card. Widgets get the left 400, the button gets the
+	-- right 260. Named because five different steps place against them.
+	local WIDGET_CX = 200      -- centre of the left (widget) column
+	local BTN_CX    = 550      -- centre of the right (button) column
+
 	-- ---- FACTORY HUD ----
 	local hud = Instance.new("ScreenGui"); hud.Name = "CandyFactoryHUD"; hud.ResetOnSpawn = false; hud.DisplayOrder = 18; hud.Enabled = false; hud.Parent = PlayerGui
-	local shadow = Instance.new("Frame"); shadow.AnchorPoint = Vector2.new(0.5,0.5); shadow.Position = UDim2.new(0.5,0,0.5,6); shadow.Size = UDim2.new(0,484,0,416); shadow.BackgroundColor3 = Color3.fromRGB(70,25,52); shadow.BackgroundTransparency = 0.5; shadow.Parent = hud
+	local shadow = Instance.new("Frame"); shadow.AnchorPoint = Vector2.new(0.5,0.5); shadow.Position = UDim2.new(0.5,0,0.5,6); shadow.Size = UDim2.new(0,716,0,276); shadow.BackgroundColor3 = Color3.fromRGB(70,25,52); shadow.BackgroundTransparency = 0.5; shadow.Parent = hud
 	Instance.new("UICorner", shadow).CornerRadius = UDim.new(0,28)
-	local panel = Instance.new("Frame"); panel.AnchorPoint = Vector2.new(0.5,0.5); panel.Position = UDim2.new(0.5,0,0.5,0); panel.Size = UDim2.new(0,468,0,400)
+	-- AUTHORED AT THE HOUSE SIZE (700x260), not 468x400.
+	--
+	-- The old note here said housePanel "keeps its own size ... scaled to fit, so nothing inside
+	-- moves". That has not been true since HousePanel switched from scale-to-fit to an outright
+	-- RESIZE, and this card is the worst case of it: the `content` frame below sat at y128 and was
+	-- 236 tall, so its bottom edge landed at 364 on a card that is 260 tall. The WRAP step's
+	-- button (y150 + 84) finished at 234 inside content -- 358 down the panel -- so the button you
+	-- had to press to finish the step was rendered off the bottom of the card entirely.
+	--
+	-- Authored at 700x260 so adoption is a no-op and this file says what actually renders. The
+	-- house card is WIDE and SHORT, so the step area is now TWO COLUMNS instead of a tall stack:
+	--     LEFT  x 0..400   -- the step widget (bar / needle track / ring)
+	--     RIGHT x 420..680 -- the button you press
+	-- Both are centred vertically in the content band, so a widget and its button always line up.
+	local panel = Instance.new("Frame"); panel.AnchorPoint = Vector2.new(0.5,0.5); panel.Position = UDim2.new(0.5,0,0.5,0); panel.Size = UDim2.new(0,700,0,260)
 	panel.BackgroundColor3 = FILL; panel.Parent = hud
-	-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+	-- HOUSE PANEL: the house 700x260 task card, centred in the free band, and the bottom
 	-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
-	-- The panel keeps its own size and every child keeps its own pixel coordinates;
-	-- it is centred in the house shell and scaled to fit, so nothing inside moves.
+	panel:SetAttribute("WantsHousePanel", true)   -- adopted by attribute, so load order cannot lose it
 	pcall(_G.housePanel, panel)   -- island5 delivery card
 	Instance.new("UICorner", panel).CornerRadius = UDim.new(0,24)
 	do local s = Instance.new("UIStroke"); s.Color = STROKE; s.Thickness = 3; s.Parent = panel end
@@ -629,26 +654,36 @@ local function buildFactory(prod)
 	Instance.new("UITextSizeConstraint", titleLbl).MaxTextSize = 28
 	-- 4 step pills that fill in as you progress
 	local stepDots = {}
-	local dotRow = Instance.new("Frame"); dotRow.AnchorPoint = Vector2.new(0.5,0); dotRow.Position = UDim2.new(0.5,0,0,62); dotRow.Size = UDim2.new(0,320,0,12); dotRow.BackgroundTransparency = 1; dotRow.Parent = panel
+	-- widened for the 700 card so the four pills span it properly instead of huddling mid-card
+	local dotRow = Instance.new("Frame"); dotRow.AnchorPoint = Vector2.new(0.5,0); dotRow.Position = UDim2.new(0.5,0,0,62); dotRow.Size = UDim2.new(0,460,0,12); dotRow.BackgroundTransparency = 1; dotRow.Parent = panel
 	for i = 1, 4 do
-		local dot = Instance.new("Frame"); dot.AnchorPoint = Vector2.new(0.5,0.5); dot.Position = UDim2.new((i-0.5)/4,0,0.5,0); dot.Size = UDim2.new(0,66,0,10); dot.BackgroundColor3 = Color3.fromRGB(236,216,229); dot.Parent = dotRow
+		local dot = Instance.new("Frame"); dot.AnchorPoint = Vector2.new(0.5,0.5); dot.Position = UDim2.new((i-0.5)/4,0,0.5,0); dot.Size = UDim2.new(0,98,0,10); dot.BackgroundColor3 = Color3.fromRGB(236,216,229); dot.Parent = dotRow
 		Instance.new("UICorner", dot).CornerRadius = UDim.new(1,0); stepDots[i] = dot
 	end
 	local function setStepDots(cur) for i, dot in ipairs(stepDots) do dot.BackgroundColor3 = (i <= cur) and GREEN or Color3.fromRGB(236,216,229) end end
-	local stepLbl = Instance.new("TextLabel"); stepLbl.BackgroundTransparency = 1; stepLbl.Position = UDim2.new(0,0,0,80); stepLbl.Size = UDim2.new(1,0,0,18); stepLbl.Font = Enum.Font.FredokaOne; stepLbl.TextColor3 = HINTC; stepLbl.TextScaled = true; stepLbl.Parent = panel
+	local stepLbl = Instance.new("TextLabel"); stepLbl.BackgroundTransparency = 1; stepLbl.Position = UDim2.new(0,0,0,78); stepLbl.Size = UDim2.new(1,0,0,18); stepLbl.Font = Enum.Font.FredokaOne; stepLbl.TextColor3 = HINTC; stepLbl.TextScaled = true; stepLbl.Parent = panel
 	Instance.new("UITextSizeConstraint", stepLbl).MaxTextSize = 15
-	local instrLbl = Instance.new("TextLabel"); instrLbl.BackgroundTransparency = 1; instrLbl.Position = UDim2.new(0,12,0,100); instrLbl.Size = UDim2.new(1,-24,0,26); instrLbl.Font = Enum.Font.FredokaOne; instrLbl.TextColor3 = TEXTC; instrLbl.TextScaled = true; instrLbl.TextWrapped = true; instrLbl.Parent = panel
+	local instrLbl = Instance.new("TextLabel"); instrLbl.BackgroundTransparency = 1; instrLbl.Position = UDim2.new(0,12,0,98); instrLbl.Size = UDim2.new(1,-24,0,24); instrLbl.Font = Enum.Font.FredokaOne; instrLbl.TextColor3 = TEXTC; instrLbl.TextScaled = true; instrLbl.TextWrapped = true; instrLbl.Parent = panel
 	Instance.new("UITextSizeConstraint", instrLbl).MaxTextSize = 18
-	local content = Instance.new("Frame"); content.AnchorPoint = Vector2.new(0.5,0); content.Position = UDim2.new(0.5,0,0,128); content.Size = UDim2.new(0,424,0,236); content.BackgroundTransparency = 1; content.Parent = panel
-	local msgLbl = Instance.new("TextLabel"); msgLbl.BackgroundTransparency = 1; msgLbl.Position = UDim2.new(0,0,1,-28); msgLbl.Size = UDim2.new(1,0,0,24); msgLbl.Font = Enum.Font.FredokaOne; msgLbl.TextColor3 = STROKE; msgLbl.TextScaled = true; msgLbl.Text = ""; msgLbl.Parent = panel
+	-- THE CONTENT BAND: y 124..252, the full width of the card less a 10px margin. Every step
+	-- builds its widget into the LEFT half and its button into the RIGHT half (see WIDGET_CX /
+	-- BTN_CX), both vertically centred, so nothing is placed by a hand-counted y offset any more.
+	local content = Instance.new("Frame"); content.AnchorPoint = Vector2.new(0.5,0); content.Position = UDim2.new(0.5,0,0,124); content.Size = UDim2.new(0,680,0,128); content.BackgroundTransparency = 1; content.Parent = panel
+	-- msgLbl is a ~1s flash ("MIXER done!"), so it rides ON TOP of the band's bottom edge rather
+	-- than claiming a row of its own -- the widgets are centred, so the strip it covers is empty.
+	local msgLbl = Instance.new("TextLabel"); msgLbl.BackgroundTransparency = 1; msgLbl.Position = UDim2.new(0,0,1,-26); msgLbl.Size = UDim2.new(1,0,0,24); msgLbl.Font = Enum.Font.FredokaOne; msgLbl.TextColor3 = STROKE; msgLbl.TextScaled = true; msgLbl.Text = ""; msgLbl.ZIndex = 20; msgLbl.Parent = panel
 	Instance.new("UITextSizeConstraint", msgLbl).MaxTextSize = 20
 
 	local function clearContent() for _, c in ipairs(content:GetChildren()) do c:Destroy() end end
 	local msgTok = 0
 	local function flashHud(text, secs) msgTok += 1; local t = msgTok; msgLbl.Text = text; task.delay(secs or 1.2, function() if t == msgTok then msgLbl.Text = "" end end) end
 
+	-- `y` is accepted and IGNORED. Callers still pass the old hand-counted offsets (52 / 66 / 150);
+	-- those were measured against a 236-tall content frame and are what pushed the WRAP button off
+	-- the card. The button now always sits centred in the RIGHT column, so every step gets the same
+	-- target in the same place -- which is also easier to hit than a button that moved per step.
 	local function bigButton(text, y)
-		local b = Instance.new("TextButton"); b.AnchorPoint = Vector2.new(0.5,0); b.Position = UDim2.new(0.5,0,0,y); b.Size = UDim2.new(0,240,0,84)
+		local b = Instance.new("TextButton"); b.AnchorPoint = Vector2.new(0.5,0.5); b.Position = UDim2.new(0,BTN_CX,0.5,0); b.Size = UDim2.new(0,250,0,96)
 		b.BackgroundColor3 = PINK; b.Text = text; b.TextColor3 = Color3.new(1,1,1); b.Font = Enum.Font.FredokaOne; b.TextScaled = true; b.AutoButtonColor = true; b.Parent = content
 		Instance.new("UICorner", b).CornerRadius = UDim.new(0,16)
 		Instance.new("UITextSizeConstraint", b).MaxTextSize = 30
@@ -659,7 +694,7 @@ local function buildFactory(prod)
 	-- STEP 1: MIX -- mash the button to fill the bar (it slowly drains)
 	local function stepMix()
 		instrLbl.Text = "Mash the button to mix the taffy!"
-		local track = Instance.new("Frame"); track.AnchorPoint = Vector2.new(0.5,0); track.Position = UDim2.new(0.5,0,0,8); track.Size = UDim2.new(0,340,0,22); track.BackgroundColor3 = Color3.fromRGB(240,220,232); track.Parent = content
+		local track = Instance.new("Frame"); track.AnchorPoint = Vector2.new(0.5,0.5); track.Position = UDim2.new(0,WIDGET_CX,0.5,0); track.Size = UDim2.new(0,340,0,22); track.BackgroundColor3 = Color3.fromRGB(240,220,232); track.Parent = content
 		Instance.new("UICorner", track).CornerRadius = UDim.new(1,0)
 		do local s = Instance.new("UIStroke"); s.Color = STROKE; s.Thickness = 2; s.Transparency = 0.4; s.Parent = track end
 		local fill = Instance.new("Frame"); fill.Size = UDim2.new(0,0,1,0); fill.BackgroundColor3 = PINK; fill.Parent = track; Instance.new("UICorner", fill).CornerRadius = UDim.new(1,0)
@@ -678,7 +713,7 @@ local function buildFactory(prod)
 	-- STEP 2: COOK -- stop the sweeping needle inside the green zone
 	local function stepCook()
 		instrLbl.Text = "Press STOP when the arrow hits the green zone!"
-		local track = Instance.new("Frame"); track.AnchorPoint = Vector2.new(0.5,0); track.Position = UDim2.new(0.5,0,0,18); track.Size = UDim2.new(0,360,0,30); track.BackgroundColor3 = Color3.fromRGB(240,220,232); track.Parent = content
+		local track = Instance.new("Frame"); track.AnchorPoint = Vector2.new(0.5,0.5); track.Position = UDim2.new(0,WIDGET_CX,0.5,0); track.Size = UDim2.new(0,360,0,30); track.BackgroundColor3 = Color3.fromRGB(240,220,232); track.Parent = content
 		Instance.new("UICorner", track).CornerRadius = UDim.new(0,8)
 		do local s = Instance.new("UIStroke"); s.Color = STROKE; s.Thickness = 2; s.Parent = track end
 		local c = math.random(35, 65) / 100; local half = 0.10; local lo = math.max(0, c - half); local hi = math.min(1, c + half)
@@ -702,10 +737,10 @@ local function buildFactory(prod)
 	-- STEP 3: WRAP -- press WRAP when the shrinking ring lines up with the target
 	local function stepWrap()
 		instrLbl.Text = "Press WRAP when the ring matches the target!"
-		local target = Instance.new("Frame"); target.AnchorPoint = Vector2.new(0.5,0.5); target.Position = UDim2.new(0.5,0,0,78); target.Size = UDim2.fromOffset(120,120); target.BackgroundTransparency = 1; target.Parent = content
+		local target = Instance.new("Frame"); target.AnchorPoint = Vector2.new(0.5,0.5); target.Position = UDim2.new(0,WIDGET_CX,0.5,0); target.Size = UDim2.fromOffset(120,120); target.BackgroundTransparency = 1; target.Parent = content
 		Instance.new("UICorner", target).CornerRadius = UDim.new(1,0)
 		do local s = Instance.new("UIStroke"); s.Color = GREEN; s.Thickness = 4; s.Parent = target end
-		local ring = Instance.new("Frame"); ring.AnchorPoint = Vector2.new(0.5,0.5); ring.Position = UDim2.new(0.5,0,0,78); ring.BackgroundTransparency = 1; ring.Parent = content
+		local ring = Instance.new("Frame"); ring.AnchorPoint = Vector2.new(0.5,0.5); ring.Position = UDim2.new(0,WIDGET_CX,0.5,0); ring.BackgroundTransparency = 1; ring.Parent = content
 		Instance.new("UICorner", ring).CornerRadius = UDim.new(1,0)
 		do local s = Instance.new("UIStroke"); s.Color = PINK; s.Thickness = 5; s.Parent = ring end
 		local btn = bigButton("WRAP! \xF0\x9F\x8E\x80", 150)
@@ -729,8 +764,10 @@ local function buildFactory(prod)
 		Instance.new("UICorner", track).CornerRadius = UDim.new(1,0)
 		do local s = Instance.new("UIStroke"); s.Color = STROKE; s.Thickness = 2; s.Transparency = 0.4; s.Parent = track end
 		local fill = Instance.new("Frame"); fill.Size = UDim2.new(0,0,1,0); fill.BackgroundColor3 = PINK; fill.Parent = track; Instance.new("UICorner", fill).CornerRadius = UDim.new(1,0)
+		-- the two roll buttons share the right column, still left/right so the labels stay honest
 		local function sideBtn(txt, xoff)
-			local b = Instance.new("TextButton"); b.AnchorPoint = Vector2.new(0.5,0); b.Position = UDim2.new(0.5,xoff,0,52); b.Size = UDim2.new(0,178,0,96)
+			local b = Instance.new("TextButton"); b.AnchorPoint = Vector2.new(0.5,0.5)
+			b.Position = UDim2.new(0, (xoff < 0) and (BTN_CX - 66) or (BTN_CX + 66), 0.5, 0); b.Size = UDim2.new(0,128,0,96)
 			b.BackgroundColor3 = PINK; b.Text = txt; b.TextColor3 = Color3.new(1,1,1); b.Font = Enum.Font.FredokaOne; b.TextScaled = true; b.AutoButtonColor = true; b.Parent = content
 			Instance.new("UICorner", b).CornerRadius = UDim.new(0,16); Instance.new("UITextSizeConstraint", b).MaxTextSize = 28
 			do local s = Instance.new("UIStroke"); s.Color = STROKE; s.Thickness = 2; s.Parent = b end
@@ -922,29 +959,35 @@ _G.__takeCandy = takeCandy
 local function questPages()
 	if done then return { "Every order filled -- you're a master candymaker! \xF0\x9F\x8D\xAC" } end
 	if accepted then
-		if readyFlavor then return { "Your candy is ready -- grab it from the basket!" } end
-		if carrying and stations[carrying] then return { ("You're carrying %s -- take it to the island that wants it!"):format(stations[carrying].flavor.name) } end
+		if readyFlavor then return { "Candy's ready! Press Take Candy on the basket." } end
+		if carrying and stations[carrying] then
+			return { ("You're carrying %s."):format(stations[carrying].flavor.name),
+				"Find the station whose sign matches, hold Deliver." }
+		end
 		if USE_ORCHARD then
 			local want = nextNeeded and nextNeeded()
 			return {
 				("You've filled %d of %d orders."):format(deliveredCount, requiredStations),
-				want and ("Next up: shake a %s tree."):format(want.flavor.name) or "Keep going!",
+				want and ("Find the %s tree, press Shake the tree."):format(want.flavor.name)
+					or "Keep going!",
 			}
 		end
-		return { ("You've filled %d of %d orders."):format(deliveredCount, requiredStations), "Make the next taffy at the factory!" }
+		return { ("You've filled %d of %d orders."):format(deliveredCount, requiredStations),
+			"Hold Make Taffy at the factory." }
 	end
 	if USE_ORCHARD then
 		return {
-			("The orchard's ripe and we've got %d orders to fill!"):format(requiredStations),
-			"Taffy grows on the trees round here -- each tree grows one flavour.",
-			"Shake the right tree, catch the taffy, then carry it over the bridges.",
-			"Check each island's sign to see which taffy it's waiting for!",
+			("The orchard's ripe -- %d orders!"):format(requiredStations),
+			"Each tree grows ONE flavour; signs name them.",
+			"1) Press Shake the tree, take the taffy.",
+			"2) Carry it to the matching station."
 		}
 	end
 	return {
-		("Our candy factory has %d orders to fill!"):format(requiredStations),
-		"Make each taffy at the factory, then carry it to the island that wants that flavour.",
-		"Check each island's sign to see which taffy it's waiting for!",
+		("Our candy factory has %d orders!"):format(requiredStations),
+		"1) Hold Make Taffy, take from basket.",
+		"2) Carry it to the matching station.",
+		"Each station's sign names its flavour."
 	}
 end
 local function wireNPC(head)
@@ -965,7 +1008,7 @@ local function wireNPC(head)
 		end)
 	end
 	prompt.Triggered:Connect(function()
-		if index == 0 then pages = questPages() end
+		if index == 0 then pages = (_G.capBubble and _G.capBubble(questPages())) or questPages() end
 		index += 1
 		if not pages or index > #pages then close(); return end
 		if index == 2 and not accepted then

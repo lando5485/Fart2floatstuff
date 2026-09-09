@@ -92,8 +92,19 @@ end
 local TARGETS = {
 	[1]  = { "gumballmachine", "candynpc" },
 	[3]  = { "giantcookie", "cookiewitholespart" },   -- the one that already has its own cinematic
-	[4]  = { "bell", "snow" },
-	[5]  = { "guyser", "candynpc" },
+	-- ISLAND 4 IS THE CAMPFIRE. It used to lead with "bell" and fall back to "snow", and BOTH are
+	-- wrong on this place: there is no part named 'bell' in the world (SummitBellQuest says so every
+	-- boot -- "no part named 'bell' found -- quest inactive"), and 'snow' is the 354 x 370 emitter
+	-- volume, which is now deliberately invisible and pass-through. Aiming a payoff shot at an
+	-- invisible slab hanging over the peak is a camera move to nothing. The campfire is what the
+	-- quest actually builds and what beating the cold looks like. findNamed searches the island
+	-- before the wider Workspace, so this does not grab island 14's campfire.
+	[4]  = { "campfire", "bell", "snow" },
+	-- ISLAND 5 leads with the loom now: "guyser" is one of the OPTIONAL marker names the storm quest
+	-- accepts for placing its reeds, so it may not exist at all, and the NPC fallback is a shot of a
+	-- person standing still. ReedLoom is built by the quest itself, so it is always there by the
+	-- time anything can complete -- and it is where the basket was woven.
+	[5]  = { "reedloom", "guyser", "candynpc" },
 	[8]  = { "crystal1", "crystal", "pickaxe" },
 	[9]  = { "nuclearwaste", "beanliftcrane" },       -- the containment chamber sealing is the payoff
 	-- ISLAND 11 IS THE MINE FRONT, HEAD-ON. The subject is what the blast BUILT -- the timber portal,

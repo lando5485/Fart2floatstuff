@@ -371,8 +371,14 @@ local function build(parent)
 	-- ---- COIN PILL (right, 70%) ------------------------------------------------------
 	-- Its own rounded capsule, INNER_GAP away from the token pill. The dark frame showing
 	-- through that gap is the divider -- so the divider is curved, like everything else.
-	local coinPill = Instance.new("Frame")
+	-- A TextButton, not a Frame: tapping the coin counter opens the coin shop, exactly the way tapping the
+	-- token pill opens the crate panel. The two pills sit in one capsule and look like a matched pair, so
+	-- one of them being tappable and the other being dead scenery is the kind of inconsistency players read
+	-- as a broken button rather than as a design.
+	local coinPill = Instance.new("TextButton")
 	coinPill.Name = "CoinPill"
+	coinPill.AutoButtonColor = false
+	coinPill.Text = ""
 	coinPill.AnchorPoint = Vector2.new(1, 0.5)
 	coinPill.Position = UDim2.new(1, -PAD, 0.5, 0)
 	coinPill.Size = UDim2.fromOffset(START_W, INNER_H)
@@ -435,15 +441,26 @@ local function build(parent)
 
 	coinValue = autoNumber(coinPill, 28, COIN_X)
 
-	-- BUY COINS -- CoreClient's own "+" already knows how to open the coin shop, so it is
-	-- adopted into this slot rather than reimplemented. The slot sits exactly where the
-	-- token pill's "+" sits, and carries a matching green chip underneath in case the
-	-- adopted button never arrives -- so the two pills always look like a matched pair.
-	plusSlot = plusButton(coinPill, function()
+	-- WHERE THE COIN PILL GOES. The slot sits exactly where the token pill's "+" sits and carries a
+	-- matching green chip underneath, so the two pills always look like a matched pair; one opener drives
+	-- both the pill and its "+", so they can never drift apart.
+	--
+	-- It USED to land on ShopClient's coin shop -- six Robux coin packs on their own page. That page is
+	-- gone, and with it _G.openCoinShop, so this falls through to the Premium shop's front page on its
+	-- own. The `or` is kept rather than simplified: it is the whole reason removing a page over there
+	-- needed no edit over here, and it is what a future coin page would slot back into.
+	local function openCoinShop()
 		local open = _G.openCoinShop or _G.togglePremiumShop
 		if type(open) == "function" then pcall(open) end
-	end)
+	end
+	plusSlot = plusButton(coinPill, openCoinShop)
 	plusSlot.Name = "PlusSlot"
+	-- The "+" sits ON the pill and is drawn above it, so it consumes its own presses -- tapping the plus
+	-- fires this once, not twice.
+	coinPill.MouseButton1Click:Connect(function()
+		if _G.playUIClick then pcall(_G.playUIClick) end
+		openCoinShop()
+	end)
 
 	capRef, tokenPillRef, coinPillRef = cap, tokenPill, coinPill
 	fit()
@@ -658,5 +675,102 @@ task.spawn(function()
 	end
 end)
 
+--======================================================================
+-- HIDE THE STATS PANEL  (close X on the panel, floating star to bring it back)
+--======================================================================
+-- The STATS panel is 230x500 of the right-hand side of the screen and it is pure readout -- island, max
+-- height, progress to the Space Realm -- so on a phone, mid-flight, it is mostly something in the way of
+-- the thing you are actually looking at, which is the island above you. This gives it an X.
+--
+-- IT LIVES HERE AND NOT IN CoreClient. CoreClient builds the panel, and CoreClient is at 199 of the 200
+-- locals Luau allows in a function -- a single further top-level local there stops the whole script from
+-- running, HUD and flight loop included (see the register note in CLAUDE.md). TokenHud already reads this
+-- exact panel to right-align the currency capsule, so the knowledge of where it is was here anyway.
+--
+-- THE REOPEN BUTTON IS A SIBLING IN THE SAME ScreenGui, not a new one: it inherits RightPanelGui's inset
+-- and scaling, so it lands exactly where the panel's own top-right corner was on every device, and there is
+-- no second gui for MenuBackdropGuard or the top-screen audit to reason about.
+--
+-- BOTH ARE REBUILT IF THEY GO MISSING. The panel is rebuilt on some HUD passes, and a button parented to a
+-- destroyed frame goes with it; the loop below simply notices they are gone and makes them again.
+do
+	local statsHidden = false
+
+	-- red = the close button, blue = everything else. A red circle with a white X is what every player
+	-- already reads as "shut this", and it is the one control here that removes something from the screen.
+	local function styleBtn(b, size, txt, txtSize, red)
+		b.Size = UDim2.fromOffset(size, size)
+		b.BackgroundColor3 = red and Color3.fromRGB(214, 48, 49) or Color3.fromRGB(30, 90, 200)
+		b.Text = txt
+		b.Font = Enum.Font.GothamBold
+		b.TextSize = txtSize
+		b.TextColor3 = Color3.fromRGB(255, 255, 255)
+		b.AutoButtonColor = true
+		b.ZIndex = 9
+		Instance.new("UICorner", b).CornerRadius = UDim.new(1, 0)
+		local st = Instance.new("UIStroke", b)
+		st.Color = Color3.fromRGB(255, 255, 255); st.Thickness = 2
+		return b
+	end
+
+	task.spawn(function()
+		while true do
+			task.wait(0.4)
+			local rpg = PlayerGui:FindFirstChild("RightPanelGui")
+			local rp  = rpg and rpg:FindFirstChild("RightPanel")
+			if rp and rp:IsA("GuiObject") then
+				-- ---- the X, top-right corner INSIDE the panel ----
+				if not rp:FindFirstChild("StatsCloseBtn") then
+					local x = Instance.new("TextButton")
+					x.Name = "StatsCloseBtn"
+					-- Anchored to the panel's own corner and inset by the stroke, so it sits ON the corner
+					-- rather than over the STATS title.
+					x.AnchorPoint = Vector2.new(1, 0)
+					x.Position = UDim2.new(1, -6, 0, 6)
+					-- a plain ASCII X: U+2715 renders as a missing-glyph box in some Roblox fonts
+					styleBtn(x, 26, "X", 17, true)
+					x.Parent = rp
+					x.MouseButton1Click:Connect(function()
+						statsHidden = true
+						rp.Visible = false
+						if _G.hapticPulse then pcall(_G.hapticPulse, "tick") end
+					end)
+				end
+
+				-- ---- the floating reopen button, only while the panel is hidden ----
+				local open = rpg:FindFirstChild("StatsOpenBtn")
+				if not open then
+					open = Instance.new("TextButton")
+					open.Name = "StatsOpenBtn"
+					-- The panel's own top-right corner, so it appears where the panel was.
+					open.AnchorPoint = Vector2.new(1, 0)
+					open.Position = UDim2.new(1, -5, 0, 85)
+					styleBtn(open, 46, "⭐", 22)
+					open.Visible = false
+					open.Parent = rpg
+					open.MouseButton1Click:Connect(function()
+						statsHidden = false
+						local panel = rpg:FindFirstChild("RightPanel")
+						if panel then panel.Visible = true end
+						if _G.hapticPulse then pcall(_G.hapticPulse, "tick") end
+					end)
+				end
+
+				-- The panel is driven by other passes too (HUD rebuilds, responsive layout), so the hidden
+				-- state is re-asserted rather than set once -- otherwise a rebuild quietly brings it back.
+				if statsHidden then
+					if rp.Visible then rp.Visible = false end
+					if not open.Visible then open.Visible = true end
+				elseif open.Visible then
+					open.Visible = false
+				end
+			end
+		end
+	end)
+
+	print("[TokenHud] stats panel close button ready -- X hides the STATS panel, the star brings it back")
+end
+
 print("[TokenHud] ready -- one currency capsule [ticket | coins] beside the gear, "
-	.. "right-aligned to the STATS panel (tap the token pill = Skin Crates)")
+	.. "right-aligned to the STATS panel (tap the ticket pill = Skin Crates, tap the coin pill = Premium "
+	.. "shop -- the separate coin-pack page was removed)")

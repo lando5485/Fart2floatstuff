@@ -28,9 +28,14 @@
 -- ===== WHY Enabled = false AND NOT Visible = false =====
 -- Every one of those quests DRIVES its banner frame's `Visible` from its own repeating proximity loop
 -- (`objFrame.Visible = vis`). Writing Visible from here would be a tug-of-war with eleven loops and would need
--- a per-frame enforcer to win. None of them ever touches the ScreenGui's `Enabled`, so that property is a free
--- lever: the owner's loop keeps updating Visible underneath, exactly as before, and this script reads it to
--- know what the quest currently wants to say. No enforcer, no per-frame work, no state of our own to desync.
+-- a per-frame enforcer to win. None of the CURRENT quest scripts touches the ScreenGui's `Enabled`, so that
+-- property is the right lever: the owner's loop keeps updating Visible underneath, exactly as before, and this
+-- script reads it to know what the quest currently wants to say.
+--
+-- (!) "Nothing touches Enabled" stopped being fully true the day the baked-in stale copies were counted: the
+-- old ObjectiveBannerYield -- this file's predecessor, still baked into the place -- RE-ENABLES these guis
+-- whenever the hero lane looks idle. So Enabled is now watched and enforced per gui (see silence()), which is
+-- one connection per banner, not per-frame work.
 --
 -- ===== HOW IT USES THE RANKING SYSTEM =====
 -- The objective is pushed at PRIORITY.REWARD (40) -- the "nudge, not news" rung. That is the whole point:
@@ -58,20 +63,94 @@ local Players = game:GetService("Players")
 local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
 
-local POLL      = 1.0   -- seconds between checks
+-- Was 1.0. The step-aside below has to happen FAST: a second of the objective sitting next to an
+-- event banner is exactly the "two banners" this is here to prevent, and a second is long enough
+-- to read. Cheap to poll -- it is four FindFirstChild calls and a pin() repaint that NotifyCenter
+-- does in place.
+local POLL      = 0.35  -- seconds between checks
 local SHOW_FOR  = 3.5   -- how long each push holds; longer than POLL so the card never gaps
 
 local function isObjectiveBanner(inst)
 	return inst:IsA("ScreenGui") and inst.Name:sub(-9) == "Objective"
 end
 
+-- ===== THE OTHER FOUR TOP-CENTRE LANES =====
+-- THIS IS THE "TWO BANNERS ON SCREEN" FIX, and the hole it plugs is a real blind spot.
+--
+-- The pin/step-aside dance below asks NotifyCenter's laneTop() whether anything more important is
+-- up. That question only covers NotifyCenter's OWN lane -- its queue and the card it is showing.
+-- But the hero banner is one of FIVE separate ScreenGuis parked at the top centre, and
+-- TopCenterStack.client.luau deliberately STACKS them rather than letting them overlap:
+--
+--     NotifyHero > ServerEventGui > EventBannerGui > ArrivalGui > AnnounceGui
+--
+-- Those other four are built by CoreClient and EventClient. They never go through NotifyCenter, so
+-- laneTop() cannot see them and always answered 0 -- the objective happily held its pin while a
+-- SERVER EVENT or island-arrival banner played, and TopCenterStack dutifully stacked the two.
+-- Result: a permanent objective pin plus any second banner = two banners, on every island, which is
+-- why this never looked like a bug in any one quest.
+--
+-- So the objective now steps aside for those four as well. Nothing is lost: a released pin re-pins
+-- on the next tick, so the objective comes straight back the moment the other banner finishes.
+local OTHER_TOP_LANES = { "ServerEventGui", "EventBannerGui", "ArrivalGui", "AnnounceGui" }
+
+-- The banner frame inside one of those ScreenGuis. TopCenterStack reparents each banner into a
+-- full-screen "StackBox" container it owns, so the frame is EITHER a direct child (not adopted yet)
+-- OR one level down inside that box. Checking only direct children would silently stop working the
+-- moment TopCenterStack adopted the lane -- which is the normal case.
+local function laneBanner(sg)
+	for _, c in ipairs(sg:GetChildren()) do
+		if c:IsA("Frame") then
+			if c.Name == "StackBox" then
+				for _, d in ipairs(c:GetChildren()) do
+					if d:IsA("Frame") then return d end
+				end
+			else
+				return c
+			end
+		end
+	end
+	return nil
+end
+
+-- Is one of the other four top-centre banners on screen right now? Matches TopCenterStack's own
+-- test (frame.Visible), plus the ScreenGui's Enabled, so a lane disabled wholesale does not count.
+local function otherTopBannerUp()
+	for _, name in ipairs(OTHER_TOP_LANES) do
+		local sg = PlayerGui:FindFirstChild(name)
+		if sg and sg:IsA("ScreenGui") and sg.Enabled then
+			local f = laneBanner(sg)
+			if f and f.Visible then
+				return true, name
+			end
+		end
+	end
+	return false, nil
+end
+
 -- Hide one for good. Recorded so the ChildAdded handler does not re-do work, and so a banner that was already
 -- disabled for its own reasons is left exactly as it was.
+--
+-- ⚠ "FOR GOOD" NOW MEANS ENFORCED, NOT SET ONCE. Setting Enabled = false a single time assumed
+-- nothing else ever writes that property -- and something does: this place's baked-in stale
+-- scripts include this file's own predecessor (ObjectiveBannerYield), whose entire job was
+-- toggling these ScreenGuis back ON whenever the hero lane looked idle. Result: the quest's own
+-- wide banner (the park's 560px green-outlined frame, most visibly) rendered straight through
+-- behind the realm banner -- two stacked top-centre banners, the exact thing this file exists to
+-- end. A property watcher wins that war permanently: any re-enable, from any script, is undone
+-- in the same frame. (Re-entrancy is safe -- our own write fires the signal with Enabled already
+-- false, which is a no-op.) The frame's Visible is still never touched: the owning quest keeps
+-- driving it, and currentObjectiveText() keeps reading it, exactly as designed.
 local silenced = {}
 local function silence(g)
 	if silenced[g] then return end
 	silenced[g] = true
 	pcall(function() g.Enabled = false end)
+	pcall(function()
+		g:GetPropertyChangedSignal("Enabled"):Connect(function()
+			if g.Enabled then g.Enabled = false end
+		end)
+	end)
 end
 
 for _, g in ipairs(PlayerGui:GetChildren()) do
@@ -90,6 +169,10 @@ PlayerGui.ChildRemoved:Connect(function(inst) silenced[inst] = nil end)
 local function currentObjectiveText()
 	for _, g in ipairs(PlayerGui:GetChildren()) do
 		if isObjectiveBanner(g) then
+			-- belt-and-braces on top of the Enabled watcher in silence(): this loop already
+			-- visits every objective gui each poll, so re-asserting here costs nothing and
+			-- covers a watcher that failed to connect
+			if g.Enabled then pcall(function() g.Enabled = false end) end
 			for _, frame in ipairs(g:GetChildren()) do
 				if frame:IsA("GuiObject") and frame.Visible then
 					for _, d in ipairs(frame:GetDescendants()) do
@@ -164,7 +247,12 @@ task.spawn(function()
 				waiting = (ok and type(v) == "number") and v or 0
 			end
 
-			if waiting > MINE then
+			-- ...AND STEP ASIDE FOR THE OTHER FOUR TOP-CENTRE LANES TOO (see otherTopBannerUp).
+			-- laneTop() is blind to them, so without this the objective sits beside an event or
+			-- arrival banner and TopCenterStack stacks the two.
+			local otherUp = otherTopBannerUp()
+
+			if waiting > MINE or otherUp then
 				-- Something more important is on screen or stuck behind us. Step aside and let it finish.
 				if pinnedByUs then
 					pcall(function() N.unpin(PIN_ID) end)
@@ -189,4 +277,6 @@ task.spawn(function()
 end)
 
 print("[ObjectiveBridge] ready -- the 11 quest objective banners are hidden for good; their text now rides the "
-	.. "realm banner at PRIORITY.REWARD, so island arrivals, purchases and events outrank it.")
+	.. "realm banner at PRIORITY.REWARD, so island arrivals, purchases and events outrank it. It also steps "
+	.. "aside for the other four top-centre lanes (" .. table.concat(OTHER_TOP_LANES, ", ") .. "), which "
+	.. "NotifyCenter's laneTop() cannot see -- that is what used to leave two banners stacked on screen.")

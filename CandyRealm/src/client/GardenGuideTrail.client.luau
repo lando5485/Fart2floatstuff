@@ -1,8 +1,15 @@
 --======================================================================
 -- GardenGuideTrail.client.luau   (StarterPlayerScripts)
 --======================================================================
--- A SLEEK GREEN CHEVRON TRAIL (the EXACT look from GreenChevronTrail): a flat,
--- striped "runway" of chevron arrows on the ground that leads the player —
+-- THE SPACE REALM'S GUIDE ARROW, driving this realm's guidance. The ground trail of up to
+-- 26 green chevrons is gone; what points the way now is the single teal neon arrow that
+-- floats at chest height in front of you, ported in Shared/GuideArrow.luau from the Space
+-- Realm's Mercury/Venus arrow.
+--
+-- ⚠ ONLY THE RENDERING CHANGED. Every _G entry point is untouched -- guideTrailTo,
+-- guideTrailClear, guideTrailNpc, startGardenGuide -- because nine quest scripts and
+-- NpcGuideArrow call into them, and the whole priority scheme below (egg beats NPC beats
+-- tutorial) is the part worth keeping. It leads the player —
 --   1) first to the GARDENER (the global Community Garden NPC), then
 --   2) once they arrive, re-routes to the Island 1 FOOD STAND.
 -- The trail switches off once they reach the stand.
@@ -16,13 +23,10 @@ local Workspace  = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local player     = Players.LocalPlayer
 
--- ===== look / motion tuning (EXACT from GreenChevronTrail) =====
-local BRIGHT     = Color3.fromRGB(90, 200, 110) -- friendly green
-local EDGE       = Color3.fromRGB(40, 120, 60)  -- darker green outline
-local SPACING    = 6    -- studs between chevrons (minimum; long routes stretch this)
-local MAX_ARROWS = 26   -- most chevrons drawn at once
-local STOP_DIST  = 7    -- stop the trail this many studs short of the target ("arrived")
-local prefix     = "GardenGuide"
+local Shared     = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
+local GuideArrow = require(Shared:WaitForChild("GuideArrow"))
+
+local STOP_DIST  = 7    -- treat the player as ARRIVED this many studs from the target
 
 -- ============================================================================
 -- TARGET FINDERS (gardener, then island-1 food stand) — return a world position.
@@ -81,37 +85,29 @@ end
 -- SLEEK GREEN CHEVRON TRAIL — flat striped runway of chevron arrows (EXACT build).
 -- ============================================================================
 local rayParams = RaycastParams.new(); rayParams.FilterType = Enum.RaycastFilterType.Exclude
-local function part(model, name, sx, sy, sz, color, refl, cf)
-	local p = Instance.new("Part"); p.Name = name; p.Size = Vector3.new(sx, sy, sz); p.Color = color
-	p.Material = Enum.Material.SmoothPlastic; p.Reflectance = refl or 0
-	p.Anchored = true; p.CanCollide = false; p.CanQuery = false; p.CanTouch = false; p.CastShadow = false
-	p.TopSurface = Enum.SurfaceType.Smooth; p.BottomSurface = Enum.SurfaceType.Smooth
-	p.LeftSurface = Enum.SurfaceType.Smooth; p.RightSurface = Enum.SurfaceType.Smooth
-	p.FrontSurface = Enum.SurfaceType.Smooth; p.BackSurface = Enum.SurfaceType.Smooth
-	p.CFrame = cf; p.Parent = model; return p
+
+-- ---- THE ARROW -----------------------------------------------------------------------
+-- One arrow, owned here. `activeTarget` is written by the resolver at the bottom of this
+-- file and read by the arrow every frame, so the priority logic stays in one place and the
+-- module stays a dumb renderer.
+--
+-- reachDistance = 0 DISABLES the module's own proximity removal on purpose: this script
+-- already has STOP_DIST, and arriving has side effects here (advancing the tutorial stage)
+-- that the module knows nothing about. Two things deciding "arrived" would race.
+local activeTarget = nil
+local arrowHandle  = nil
+
+local function showArrow()
+	if arrowHandle then return end
+	arrowHandle = GuideArrow.start({
+		tag = "CandyGuide", targetName = "your objective", reachDistance = 0,
+		getPosition = function() return activeTarget end,
+	})
 end
--- one chevron ">" pointing -Z (forward), lying flat (thin in Y): darker edge base + glossy bright top
-local function buildChevron()
-	local m = Instance.new("Model"); m.Name = prefix .. "Chevron"
-	local root = part(m, "Root", 0.2, 0.2, 0.2, BRIGHT, 0, CFrame.new()); root.Transparency = 1; m.PrimaryPart = root
-	local L, W, T, ANG = 2.6, 0.72, 0.22, math.rad(42)
-	local front = CFrame.new(0, 0, -0.9) -- the chevron POINT
-	part(m, "EdgeR", W + 0.20, T * 0.65, L + 0.20, EDGE, 0, front * CFrame.Angles(0,  ANG, 0) * CFrame.new(0, -0.03, L / 2))
-	part(m, "EdgeL", W + 0.20, T * 0.65, L + 0.20, EDGE, 0, front * CFrame.Angles(0, -ANG, 0) * CFrame.new(0, -0.03, L / 2))
-	part(m, "ArmR",  W, T, L, BRIGHT, 0.14,                front * CFrame.Angles(0,  ANG, 0) * CFrame.new(0,  0.04, L / 2))
-	part(m, "ArmL",  W, T, L, BRIGHT, 0.14,                front * CFrame.Angles(0, -ANG, 0) * CFrame.new(0,  0.04, L / 2))
-	m.Parent = Workspace
-	return m
+
+local function hideArrow()
+	if arrowHandle then GuideArrow.stop(arrowHandle); arrowHandle = nil end
 end
-local pool = {}
-local function getNode(i) if not pool[i] then pool[i] = buildChevron() end; return pool[i] end
-local function setShown(nd, on)
-	for _, p in ipairs(nd:GetDescendants()) do
-		if p:IsA("BasePart") and p.Name ~= "Root" then p.Transparency = on and 0 or 1 end
-	end
-end
-local function hideFrom(n) for i = n, #pool do if pool[i] then setShown(pool[i], false) end end end
-local function destroyAll() for _, nd in ipairs(pool) do pcall(function() nd:Destroy() end) end; pool = {} end
 
 -- ============================================================================
 -- STATE
@@ -161,9 +157,17 @@ end
 
 local conn
 conn = RunService.RenderStepped:Connect(function()
+	-- ⚠ NOT DURING THE INTRO. The cinematic hides every ScreenGui in the game (setAllGuis) --
+	-- but this arrow is WORKSPACE PARTS, not GUI, so that sweep cannot touch it: a neon arrow
+	-- would hang in front of the camera through the whole descent. The old ground chevrons were
+	-- gated by accident (nothing set a target until the intro called _G.startGardenGuide); the
+	-- arrow needs the guard stated outright. _G.introPlaying is the realm's existing flag for
+	-- this -- ArrivalCinematic and GutGrowCinematic both already stand down on it.
+	if _G.introPlaying then hideArrow(); return end
+
 	local char = player.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
-	if not hrp then hideFrom(1); return end
+	if not hrp then hideArrow(); return end
 
 	-- THE FIRST FART ENDS THE TUTORIAL, PERMANENTLY.
 	--
@@ -177,7 +181,7 @@ conn = RunService.RenderStepped:Connect(function()
 	if _G.isFlying and not flownOnce then
 		flownOnce = true
 		stage = 3 -- tutorial over: gardener + food-stand arrows are done for good
-		hideFrom(1)
+		hideArrow()
 		print("[GardenGuideTrail] player fart-flew -> Bean Farm tutorial arrows removed for good"
 			.. " (egg trails still work)")
 	end
@@ -192,7 +196,7 @@ conn = RunService.RenderStepped:Connect(function()
 	-- draws regardless of what the flag currently says.
 	if _G.isFlying then
 		local hit = Workspace:Raycast(hrp.Position, Vector3.new(0, -14, 0), rayParams)
-		if not hit then hideFrom(1); return end
+		if not hit then hideArrow(); return end
 	end
 
 	-- A hatchable egg (override) beats the tutorial route. With neither, the trail idles.
@@ -204,13 +208,13 @@ conn = RunService.RenderStepped:Connect(function()
 	elseif started and stage < 3 and not flownOnce then
 		tpos = (stage == 1) and gardenerPos() or standPos()
 	end
-	if not tpos then hideFrom(1); return end -- nothing to point at, or the target is not in the world yet
+	if not tpos then hideArrow(); return end -- nothing to point at, or the target is not in the world yet
 
 	local d = tpos - hrp.Position
 	local flat = Vector3.new(d.X, 0, d.Z)
 	local dist = flat.Magnitude
 	if dist <= STOP_DIST then
-		hideFrom(1)
+		hideArrow()
 		-- Arriving at an EGG or an ISLAND NPC must not advance the tutorial stage -- the routes are unrelated,
 		-- and letting either tick the tutorial forward would silently skip the food stand for anyone who hatched
 		-- a pet, or met a quest giver, first. Both owners stop calling in once they are done, so the trail clears
@@ -228,36 +232,13 @@ conn = RunService.RenderStepped:Connect(function()
 	-- from a broken script. So the NPC route gets a cap that matches the distances it actually
 	-- deals with, and the tutorial keeps its tight one.
 	local CAP = npcTarget and 900 or 400
-	if dist > CAP then hideFrom(1); return end
-	local dir = flat.Unit
+	if dist > CAP then hideArrow(); return end
 
-	-- exclude the player + every chevron so the ground ray doesn't hit them
-	local excl = { char }; for _, nd in ipairs(pool) do excl[#excl + 1] = nd end
-	rayParams.FilterDescendantsInstances = excl
-	-- SPREAD THEM OVER THE WHOLE ROUTE. At a fixed 6 studs apart, 26 chevrons cover 156 studs --
-	-- across an island that is a stub of a trail pointing off into nothing, with no sense of how
-	-- much further there is to go. Stretching the gap to fit means the line always runs from
-	-- your feet to the target, and how far apart they sit tells you how far is left.
-	local maxAlong = dist - STOP_DIST
-	local step = math.max(SPACING, maxAlong / MAX_ARROWS)
-	local placed = 0
-	for i = 1, MAX_ARROWS do
-		local along = i * step
-		if along > maxAlong then break end
-		placed += 1
-		local px = hrp.Position.X + dir.X * along
-		local pz = hrp.Position.Z + dir.Z * along
-		local hit = Workspace:Raycast(Vector3.new(px, hrp.Position.Y + 14, pz), Vector3.new(0, -240, 0), rayParams)
-		local gy = (hit and hit.Position.Y) or (hrp.Position.Y - 2.5)
-		local nd = getNode(placed)
-		-- FLAT on the ground (Y up), pointing toward the target (-Z = dir)
-		local p0 = Vector3.new(px, gy + 0.12, pz)
-		pcall(function() nd:PivotTo(CFrame.lookAt(p0, p0 + dir)) end)
-		-- gentle pulse that FLOWS toward the target
-		pcall(function() nd:ScaleTo(1 + 0.10 * math.sin(os.clock() * 5 - i * 0.8)) end)
-		setShown(nd, true)
-	end
-	hideFrom(placed + 1)
+	-- point the arrow and make sure it is up. The arrow itself handles the hover, the bob and
+	-- the aiming; all this loop owns is WHICH position it is aiming at.
+	activeTarget = tpos
+	showArrow()
 end)
 
-print("[GardenGuideTrail] loaded -- tutorial route after the intro, plus _G.guideTrailTo(pos) for eggs")
+print("[GardenGuideTrail] loaded -- SPACE REALM guide arrow (Shared/GuideArrow, teal neon, "
+	.. "chest height) replaces the ground chevrons; _G.guideTrailTo / guideTrailNpc unchanged")

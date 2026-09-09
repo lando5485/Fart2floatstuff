@@ -50,27 +50,49 @@ local function isUnlocked(island)
 	return unlockedIslands[n] == true
 end
 
--- THE FLOOR: you cannot buy food from an island BELOW the one you are standing on. The early foods are
--- the best coins-per-power in the game, so without this the optimal play on island 13 is still to buy
--- BEANS -- every island's own food is a trap and the price ladder is decorative.
+-- ===== THERE IS NO FLOOR ANY MORE =====
+-- An isTooLow() used to sit here refusing any food from an island BELOW the one you are standing on, to stop
+-- island 13 being played on beans. It also stopped your coins turning into food: stood on island 4 with 150
+-- coins, Turnips (94) were the only legal buy -- one of them, and the other 56 coins bought nothing. On
+-- island 1 every coin becomes food, and that is how it should read on every island.
 --
--- CurrentIsland is an attribute the server sets from its physical landing detection on every check, so
--- it follows the player back DOWN the stack too, not just up. Absent (still loading, or mid-flight) ->
--- no floor, matching the server, which also lets an unknown position through rather than refusing a
--- purchase because a raycast missed.
-local function isTooLow(island)
-	local n = tonumber(island)
-	if not n then return false end
-	local here = tonumber(player:GetAttribute("CurrentIsland"))
-	if not here then return false end
-	return n < here
-end
+-- Removed on both halves at once (PlayerStats.BuyFoodEvent lost the matching "food_below_island" check): a
+-- cell that looks buyable while the server refuses it is worse than either gate alone. The beans-at-altitude
+-- problem it was covering for is a PRICE TABLE problem -- see CLAUDE.md's "food prices are not monotonic".
 
--- The one question every buy path should ask. Two separate gates (ceiling: not reached yet; floor:
--- below your feet) but a single answer, so a new gate cannot be added to one call site and missed at
--- the other three.
+-- The one question every buy path should ask. One gate now (the ceiling: have you reached this food's
+-- island) but still asked through here, so a future gate is added in one place and cannot be missed at
+-- the other three call sites.
+
+-- ============================================================================================================
+-- THE 2x FART POWER PASS CHANGES THE SHOP MATH, AND THIS PANEL USED TO IGNORE IT
+-- ============================================================================================================
+-- With the pass the server does TWO things at once (PlayerStats' BuyFoodEvent handler):
+--     powerGain    = floor(food.power  * POWER_PASS_MULT)   -- every food is worth double
+--     effectiveMax = floor(StomachMax  * POWER_PASS_MULT)   -- and the tank is twice as deep
+-- The StomachMax leaderstat still holds the RAW number, so a 2x player legitimately walks around with
+-- CurrentPower well ABOVE it -- 800 power in a 520 gut is normal, and the server will happily sell more.
+--
+-- This panel read the raw StomachMax and treated it as the ceiling. So the moment CurrentPower passed it,
+-- every stand said "Stomach Full", BUY went grey and BUY MAX refused outright -- with money in hand and
+-- hundreds of power of real room left. That is the "I have coins but it says my stomach is full" bug, and it
+-- looked random because whether you were over the raw max depended on what you had last eaten.
+--
+-- Mirroring the server's two lines here is the entire fix. Both attributes are set server-side and replicate,
+-- so this is a read of authoritative state, not a client-side guess -- and the server still re-checks every
+-- single purchase, so being wrong here can only ever mis-LABEL a button, never mis-sell food.
+local POWER_PASS_MULT = 2.0 -- MUST match PlayerStats.server.lua
+local function has2x()
+	if player:GetAttribute("HasTwoXForever") then return true end
+	local exp = player:GetAttribute("TwoXHourExpiry")
+	return type(exp) == "number" and exp > os.time()
+end
+-- the real ceiling, and what one unit of a food actually costs against it
+local function tankMax(stomMax) return has2x() and math.floor(stomMax * POWER_PASS_MULT) or stomMax end
+local function foodGain(power) return has2x() and math.floor(power * POWER_PASS_MULT) or power end
+
 local function canBuy(island)
-	return isUnlocked(island) and not isTooLow(island)
+	return isUnlocked(island)
 end
 
 local function mkCorner(p,r) local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,r); c.Parent=p; return c end
@@ -145,9 +167,9 @@ local foodPower=mkLabel(foodLeftPanel,{Text="+3 power",Font=Enum.Font.GothamBold
 local foodBuyBtn=mkButton(foodLeftPanel,{Size=UDim2.new(0.44,0,0,50),Position=UDim2.new(0.04,0,1,-58),BackgroundColor3=Color3.fromRGB(50,200,50),Text="BUY FOOD",Font=Enum.Font.GothamBold,TextSize=17,TextColor3=Color3.new(1,1,1)}); mkCorner(foodBuyBtn,12)
 local foodBuyMaxBtn=mkButton(foodLeftPanel,{Size=UDim2.new(0.44,0,0,50),Position=UDim2.new(0.52,0,1,-58),BackgroundColor3=Color3.fromRGB(255,140,0),Text="BUY MAX",Font=Enum.Font.GothamBold,TextSize=15,TextColor3=Color3.new(1,1,1)}); mkCorner(foodBuyMaxBtn,12)
 -- WHY YOU CAN'T BUY THIS, said in words, directly above the buy buttons.
--- Greying a button out tells you it is dead; it does not tell you WHY, and "TOO LOW" on its own reads as a
--- stat complaint ("this food is weak") rather than a place rule ("this stand does not sell it"). This banner
--- names the rule. Anchored to the BOTTOM of the panel (1,-96) rather than measured down from the stats,
+-- Greying a button out tells you it is dead; it does not tell you WHY. One refusal is left for it to explain
+-- (you have not reached this food's island yet) now that the island floor is gone, and it says which island
+-- to climb to. Anchored to the BOTTOM of the panel (1,-96) rather than measured down from the stats,
 -- because the panel is a fraction of screen height -- on a short screen a top-anchored banner would land on
 -- top of the buy buttons instead of above them.
 local NOT_HERE = Color3.fromRGB(226, 74, 48)   -- the same hot orange-red the stand refusal banner uses
@@ -181,7 +203,7 @@ for _,f in ipairs(_G.foods) do
 	iconImg.BackgroundTransparency=1; iconImg.ScaleType=Enum.ScaleType.Fit
 	iconImg.Image=foodImages[f.name] or ""; iconImg.Visible=(foodImages[f.name]~=nil); iconImg.Parent=emojiFrame
 	if foodImages[f.name] then emojiLabel.Visible=false end
-	mkLabel(cell,{Name="NameLabel",Text=f.name,Font=Enum.Font.GothamBold,TextSize=13,TextColor3=Color3.fromRGB(30,30,30),Size=UDim2.new(1,-62,0,30),Position=UDim2.new(0,60,0,5),TextXAlignment=Enum.TextXAlignment.Left})
+	mkLabel(cell,{Name="NameLabel",Text=f.name,Font=Enum.Font.GothamBold,TextSize=13,TextColor3=Color3.fromRGB(255,255,255),Size=UDim2.new(1,-62,0,30),Position=UDim2.new(0,60,0,5),TextXAlignment=Enum.TextXAlignment.Left})
 	-- Coin IMAGE for the cell's price row (replaces the 💰 emoji prefix). Toggled with the
 	-- price text in updateFoodShop (hidden for locked cells, shown for unlocked/priced cells).
 	local priceIcon=Instance.new("ImageLabel"); priceIcon.Name="PriceIcon"
@@ -216,7 +238,10 @@ mkCorner(premClose,8)
 -- spaced, centered + aligned, comfortably sized, and the list scrolls so nothing is ever cut off. =====
 local premScroll=Instance.new("ScrollingFrame")
 premScroll.Name="PremiumScroll"; premScroll.BackgroundTransparency=1; premScroll.BorderSizePixel=0
-premScroll.Position=UDim2.new(0,3,0,162); premScroll.Size=UDim2.new(1,-8,1,-238) -- inset a few px so the scrollbar doesn't touch the card edge
+-- y 86, not 162: the 60px currency banner that used to sit at y 74 is gone, so the gamepass list starts
+-- straight under the header instead of below a hole where a banner used to be. The height grows by the
+-- same 76px it gave up (-238 -> -162), which is what keeps the bottom edge where it was.
+premScroll.Position=UDim2.new(0,3,0,86); premScroll.Size=UDim2.new(1,-8,1,-162) -- inset a few px so the scrollbar doesn't touch the card edge
 premScroll.ScrollBarThickness=5; premScroll.ScrollBarImageColor3=Color3.fromRGB(255,224,90) -- thin, bright-gold rounded thumb
 premScroll.TopImage="rbxasset://textures/ui/Scroll/scroll-top.png"; premScroll.MidImage="rbxasset://textures/ui/Scroll/scroll-middle.png"; premScroll.BottomImage="rbxasset://textures/ui/Scroll/scroll-bottom.png" -- rounded ends
 premScroll.CanvasSize=UDim2.new(0,0,0,0); premScroll.ScrollingDirection=Enum.ScrollingDirection.Y
@@ -422,12 +447,9 @@ local function updateFoodShop(islandNum)
 	-- the BUY buttons read "LOCKED" so the player sees what they'd get without being able to buy it.
 	local f=featuredFood; if not f then return end
 	local fLocked = not canBuy(f.island)
-	-- TWO REASONS a food can't be bought, and they are NOT the same problem:
-	--   TOO LOW  -> you own this island, you just flew past it. The food is real and you have bought it
-	--               before; the only thing stopping you is where you are standing. Fixable by going down.
-	--   LOCKED   -> you have never reached that island. Nothing to do but keep climbing.
-	-- They used to render identically (grey buttons reading "LOCKED"), which is why too-low read as a bug.
-	local fTooLow = fLocked and isUnlocked(f.island)
+	-- ONE reason a food can't be bought now: you have never reached its island. There used to be a second --
+	-- "too low", standing above the island that sells it -- with its own red NOT SOLD HERE state. The floor is
+	-- gone, so that state went with it: every food you have unlocked is on sale at every stand.
 	foodLockedFrame.Visible=false  -- locked is now shown inline (greyed stats + LOCKED buttons), not the full cover
 	foodEmoji.Visible=true; foodName.Visible=true; foodPriceRow.Visible=true; foodPower.Visible=true
 	foodBuyBtn.Visible=true; foodBuyMaxBtn.Visible=true
@@ -438,8 +460,7 @@ local function updateFoodShop(islandNum)
 	foodEmojiImg.Image = fImg or ""; foodEmojiImg.Visible = (fImg ~= nil); foodEmojiImg.ImageTransparency = fLocked and 0.5 or 0
 	foodEmoji.Visible = (fImg == nil)
 	foodEmoji.Text=foodEmojis[f.name] or "?"; foodEmoji.TextTransparency = fLocked and 0.5 or 0
-	foodName.Text = fTooLow and (f.name.."  \xE2\xAC\x87\xEF\xB8\x8F TOO LOW")
-		or (fLocked and (f.name.."  \xF0\x9F\x94\x92 LOCKED") or f.name)
+	foodName.Text = (fLocked and (f.name.."  \xF0\x9F\x94\x92 LOCKED") or f.name)
 	foodName.TextColor3 = fLocked and Color3.fromRGB(150,150,150) or Color3.fromRGB(255,255,255) -- WHITE name (was black)
 	foodPrice.Text=f.price.." coins"  -- coin shown by the CoinIcon ImageLabel in the row, not text
 	foodPrice.TextColor3 = fLocked and Color3.fromRGB(150,150,150) or Color3.fromRGB(200,140,0)
@@ -454,18 +475,14 @@ local function updateFoodShop(islandNum)
 	-- (Gas + Owned stat rows removed from the featured display. coins/curPower/stomMax above are still
 	-- read because the BUY/BUY MAX state below uses them.)
 	-- How many of this food actually fit in the remaining stomach space, and can be afforded.
-	local fittable    = math.floor((stomMax - curPower) / f.power)
+	-- tankMax/foodGain, not the raw numbers: with the 2x pass the tank is twice as deep and each food is
+	-- worth twice as much, and reading the raw StomachMax here is what used to say "Stomach Full" to a 2x
+	-- player with room to spare (see the note beside tankMax).
+	local tank        = tankMax(stomMax)
+	local fittable    = math.floor((tank - curPower) / foodGain(f.power))
 	local affordable  = math.floor(coins / f.price)
 	local fitAndAfford = math.min(fittable, affordable)
-	if fTooLow then
-		-- TOO LOW: RED buttons, not grey. Grey is what "Not Enough Coins" and "Stomach Full" already use, so a
-		-- grey button here said "come back when you have more", which is the opposite of true -- no amount of
-		-- coins or stomach room will ever buy this food while you are standing on a higher island.
-		foodBuyBtn.BackgroundColor3=NOT_HERE; foodBuyBtn.Text="NOT SOLD HERE"; foodBuyBtn.TextSize=14
-		foodBuyMaxBtn.BackgroundColor3=NOT_HERE; foodBuyMaxBtn.Text="NOT SOLD HERE"; foodBuyMaxBtn.TextSize=14
-		foodWhyBanner.Visible=true; foodWhyBanner.BackgroundColor3=NOT_HERE
-		foodWhyLabel.Text=("\xE2\xAC\x87\xEF\xB8\x8F This stand only sells Island %d food. %s is Island %d \xE2\x80\x94 fly back down to buy it."):format(islandNum, f.name, f.island)
-	elseif fLocked then
+	if fLocked then
 		-- NEVER REACHED: stats shown (greyed) above, but buying is disabled. Grey is right here -- this one
 		-- really is "come back later", and the banner says how.
 		foodBuyBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyBtn.Text="LOCKED"; foodBuyBtn.TextSize=16
@@ -480,7 +497,7 @@ local function updateFoodShop(islandNum)
 			foodBuyBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyBtn.Text="Not Enough Coins"; foodBuyBtn.TextSize=14
 		elseif fittable < 1 then
 			-- can't fit one: TRULY full (no room at all) vs HAS room but this food is too big
-			foodBuyBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyBtn.Text=((stomMax-curPower)<=0) and "Stomach Full" or "Not Enough Room"; foodBuyBtn.TextSize=14
+			foodBuyBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyBtn.Text=((tank-curPower)<=0) and "Stomach Full" or "Not Enough Room"; foodBuyBtn.TextSize=14
 		else
 			foodBuyBtn.BackgroundColor3=Color3.fromRGB(50,200,50); foodBuyBtn.Text="BUY FOOD"; foodBuyBtn.TextSize=17
 		end
@@ -488,7 +505,7 @@ local function updateFoodShop(islandNum)
 		if fitAndAfford >= 1 then
 			foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(255,140,0); foodBuyMaxBtn.Text="MAX x"..fitAndAfford; foodBuyMaxBtn.TextSize=14
 		elseif fittable < 1 then
-			foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyMaxBtn.Text=((stomMax-curPower)<=0) and "FULL" or "NO ROOM"; foodBuyMaxBtn.TextSize=15
+			foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyMaxBtn.Text=((tank-curPower)<=0) and "FULL" or "NO ROOM"; foodBuyMaxBtn.TextSize=15
 		else
 			foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyMaxBtn.Text="BUY MAX"; foodBuyMaxBtn.TextSize=15
 		end
@@ -504,30 +521,22 @@ local function updateFoodShop(islandNum)
 			local icon=ef and ef:FindFirstChild("FoodEmoji")
 			local iconImg=ef and ef:FindFirstChild("FoodIconImg")
 			if not canBuy(fd.island) then
-				-- TWO different refusals, shown differently on purpose:
-				--   NOT REACHED (ceiling) -> a mystery: 🔒, no name, no price. Nothing spoiled.
-				--   TOO LOW (floor)       -> you have BOUGHT this before, so hiding it would just read as
-				--                            a bug. Name stays, price is replaced by "TOO LOW" and a ⬇,
-				--                            which says the food is real and the reason is where you stand.
-				local tooLow = isUnlocked(fd.island) -- reached it, so the refusal must be the floor
-				-- The two refusals now look different at a glance, which they did not before: a too-low cell is
-				-- WARM grey with a red edge, a never-reached one stays COOL grey. Same information, but you can
-				-- tell which half of the grid is "behind you" and which is "ahead of you" without reading a word.
-				cell.BackgroundColor3 = tooLow and Color3.fromRGB(222,201,196) or Color3.fromRGB(208,213,221)
-				if st then st.Color = tooLow and Color3.fromRGB(198,84,60) or Color3.fromRGB(140,140,140) end
+				-- ONE refusal left: NOT REACHED -- a mystery, no name, no price, nothing spoiled.
+				-- (The other one, TOO LOW, went with the island floor: no food you have unlocked is
+				--  refused at a stand any more, so a cell is either buyable or not yet climbed to.)
+				cell.BackgroundColor3 = Color3.fromRGB(208,213,221)
+				if st then st.Color = Color3.fromRGB(140,140,140) end
 				if iconImg then iconImg.Visible=false end -- locked -> show the emoji, hide any image icon
-				if icon then icon.Visible=true; icon.Text = tooLow and "\xE2\xAC\x87\xEF\xB8\x8F" or "\xF0\x9F\x94\x92" end
+				if icon then icon.Visible=true; icon.Text = "\xF0\x9F\x94\x92" end
 				if ef then ef.Position=UDim2.new(0.5,0,0.5,0); ef.AnchorPoint=Vector2.new(0.5,0.5) end -- center the icon in the box
-				-- STRIKETHROUGH on the name. It is the one mark everybody already reads as "this is off the
-				-- menu", it needs no legend, and it survives being glanced at from across the grid in a way a
-				-- grey label does not. RichText is turned on only for this state and off again below.
+				-- Name and price blanked: an unreached food is a locked box, not a listing.
 				if nm then
-					nm.RichText = tooLow
-					nm.Text = tooLow and ("<s>"..fd.name.."</s>") or ""
+					nm.RichText = false
+					nm.Text = ""
 					nm.TextColor3 = Color3.fromRGB(96,72,68)
 				end
 				if pl then
-					pl.Text = tooLow and "TOO LOW" or ""
+					pl.Text = ""
 					pl.Font = Enum.Font.GothamBold
 					pl.TextColor3 = Color3.fromRGB(186,52,32)
 				end
@@ -542,7 +551,7 @@ local function updateFoodShop(islandNum)
 				if icon then icon.Visible=(cImg==nil); icon.Text=foodEmojis[fd.name] or "\xF0\x9F\x8D\xBD\xEF\xB8\x8F" end
 				-- Undo every part of the locked look. Cells are REUSED, so anything the branch above changes has
 				-- to be changed back here or a food that unlocks keeps its strikethrough forever.
-				if nm then nm.RichText=false; nm.Text=fd.name; nm.TextColor3=Color3.fromRGB(30,30,30) end
+				if nm then nm.RichText=false; nm.Text=fd.name; nm.TextColor3=Color3.fromRGB(255,255,255) end
 				if (stomMax - curPower) >= fd.power and coins2>=fd.price then  -- buyable: fits at least one of this food AND affordable
 					cell.BackgroundColor3=Color3.fromRGB(50,200,50); if st then st.Color=Color3.fromRGB(30,150,30) end
 				else
@@ -986,163 +995,22 @@ task.defer(function()
 	end
 end)
 
--- ===== CURRENCY BANNER + SEPARATE CURRENCY (BEANS) SHOP =====
--- A featured banner under the header opens a scale-in Currency Shop overlay (6 bean packs). It does NOT buy
--- anything on the main page. Purchase buttons prompt the pack's product id -- SET THE productId values below
--- to your Robux developer-products (and add a server ProcessReceipt to grant the beans) to make them live.
-task.defer(function()
-	local TS = game:GetService("TweenService")
-	local function corner(i,r) local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,r); c.Parent=i; return c end
-	local function stroke(i,col,th,tr) local s=Instance.new("UIStroke"); s.Color=col; s.Thickness=th or 2; s.Transparency=tr or 0; s.Parent=i; return s end
-	local function vgrad(i,a,b,rot) local g=Instance.new("UIGradient"); g.Color=ColorSequence.new(a,b); g.Rotation=rot or 90; g.Parent=i; return g end
-	local function pad(i,n) local p=Instance.new("UIPadding",i); for _,s in ipairs({"PaddingTop","PaddingBottom","PaddingLeft","PaddingRight"}) do p[s]=UDim.new(0,n) end end
-	local function maxsize(i,n) local c=Instance.new("UITextSizeConstraint",i); c.MaxTextSize=n end
-	local GOLD=Color3.fromRGB(255,206,92); local GREEN=Color3.fromRGB(86,205,120)
-	local function juice(i) local g=Instance.new("UIGradient"); g.Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(170,170,170)); g.Rotation=90; g.Parent=i end
-
-	----------------------------------------------------------------
-	-- Currency Shop overlay (built hidden; opened by the banner)
-	----------------------------------------------------------------
-	local BEAN_PACKS = {
-		{ name="Small Coin Pack",    beans="1,000",   bonus=nil,    price="49 R$",   productId=3699050724, col=Color3.fromRGB(64,120,245) },
-		{ name="Medium Coin Pack",   beans="5,500",   bonus="+10%", price="99 R$",   productId=3699055852, col=Color3.fromRGB(72,200,120), tag="\xF0\x9F\x94\xA5 MOST POPULAR" },
-		{ name="Large Coin Pack",    beans="12,000",  bonus="+20%", price="199 R$",  productId=3699059563, col=Color3.fromRGB(150,96,240) },
-		{ name="Giant Coin Pack",    beans="30,000",  bonus="+30%", price="399 R$",  productId=3699065394, col=Color3.fromRGB(64,200,224) },
-		{ name="Mega Coin Pack",     beans="70,000",  bonus="+40%", price="799 R$",  productId=3699081248, col=Color3.fromRGB(240,96,180) },
-		{ name="Ultimate Coin Pack", beans="180,000", bonus="+50%", price="1499 R$", productId=3699076690, col=Color3.fromRGB(248,150,56), tag="\xE2\xAD\x90 BEST VALUE" },
-	}
-
-	local overlay=Instance.new("Frame"); overlay.Name="CurrencyOverlay"; overlay.AnchorPoint=Vector2.new(0.5,0.5); overlay.Position=UDim2.fromScale(0.5,0.5); overlay.Size=UDim2.fromScale(1,1)
-	overlay.BackgroundColor3=Color3.new(0,0,0); overlay.BackgroundTransparency=1; overlay.Visible=false; overlay.ZIndex=50; overlay.Parent=premPanel; corner(overlay,20)
-
-	-- the coin shop FILLS the whole card so it fully replaces the main shop (never two windows stacked).
-	-- premCard's black outline frames it, so no separate border here.
-	local win=Instance.new("Frame"); win.AnchorPoint=Vector2.new(0.5,0.5); win.Position=UDim2.fromScale(0.5,0.5); win.Size=UDim2.new(1,0,1,0)
-	win.BackgroundColor3=Color3.fromRGB(25,90,185); win.ZIndex=51; win.Parent=overlay; corner(win,26); vgrad(win,Color3.fromRGB(42,122,214),Color3.fromRGB(25,90,185),90)
-	local winScale=Instance.new("UIScale"); winScale.Parent=win
-
-	local wTitle=Instance.new("TextLabel"); wTitle.BackgroundTransparency=1; wTitle.Position=UDim2.fromOffset(20,6); wTitle.Size=UDim2.new(1,-80,0,32); wTitle.Font=Enum.Font.FredokaOne; wTitle.TextScaled=true; wTitle.TextColor3=GOLD; wTitle.TextXAlignment=Enum.TextXAlignment.Left; wTitle.Text="\xF0\x9F\x92\xB0 COIN SHOP"; wTitle.ZIndex=52; wTitle.Parent=win; stroke(wTitle,Color3.fromRGB(30,16,60),1.5); maxsize(wTitle,30)
-	local wSub=Instance.new("TextLabel"); wSub.BackgroundTransparency=1; wSub.Position=UDim2.fromOffset(20,40); wSub.Size=UDim2.new(1,-80,0,16); wSub.Font=Enum.Font.Gotham; wSub.TextScaled=true; wSub.TextColor3=Color3.new(1,1,1); wSub.TextXAlignment=Enum.TextXAlignment.Left; wSub.Text="Get more Coins instantly!"; wSub.ZIndex=52; wSub.Parent=win; maxsize(wSub,15)
-	-- (removed the header coin mascot -- header is just the title + red X now, per the cleaner spec)
-	-- (removed the green Back button -- the red X is the only close control now, cleaner header)
-	local xBtn=Instance.new("TextButton"); xBtn.AnchorPoint=Vector2.new(1,0); xBtn.Position=UDim2.new(1,-10,0,10); xBtn.Size=UDim2.fromOffset(44,40); xBtn.BackgroundColor3=Color3.fromRGB(232,96,90); xBtn.Font=Enum.Font.FredokaOne; xBtn.TextScaled=true; xBtn.TextColor3=Color3.new(1,1,1); xBtn.Text="X"; xBtn.ZIndex=52; xBtn.Parent=win; corner(xBtn,10); stroke(xBtn,Color3.fromRGB(150,40,32),2.5); juice(xBtn); pad(xBtn,8)
-
-	local grid=Instance.new("ScrollingFrame"); grid.BackgroundTransparency=1; grid.BorderSizePixel=0; grid.Position=UDim2.fromOffset(24,64); grid.Size=UDim2.new(1,-48,1,-142); grid.ScrollBarThickness=5; grid.ScrollBarImageColor3=GOLD; grid.CanvasSize=UDim2.new(); grid.AutomaticCanvasSize=Enum.AutomaticSize.Y; grid.ScrollingDirection=Enum.ScrollingDirection.Y; grid.ZIndex=52; grid.Parent=win
-	local gl=Instance.new("UIGridLayout"); gl.CellSize=UDim2.fromOffset(202,214); gl.CellPadding=UDim2.fromOffset(34,30); gl.HorizontalAlignment=Enum.HorizontalAlignment.Center; gl.SortOrder=Enum.SortOrder.LayoutOrder; gl.Parent=grid
-	do local p=Instance.new("UIPadding",grid); p.PaddingTop=UDim.new(0,6); p.PaddingBottom=UDim.new(0,10) end
-
-	local wFooter=Instance.new("Frame"); wFooter.AnchorPoint=Vector2.new(0.5,1); wFooter.Position=UDim2.new(0.5,0,1,-8); wFooter.Size=UDim2.new(1,-28,0,54); wFooter.BackgroundColor3=Color3.fromRGB(120,104,240); wFooter.ZIndex=52; wFooter.Parent=win; corner(wFooter,12); vgrad(wFooter,Color3.fromRGB(150,120,248),Color3.fromRGB(108,88,224),90); stroke(wFooter,GOLD,1.5)
-	local wfT=Instance.new("TextLabel"); wfT.BackgroundTransparency=1; wfT.Position=UDim2.fromOffset(18,7); wfT.Size=UDim2.new(1,-86,1,-14); wfT.Font=Enum.Font.GothamBold; wfT.TextScaled=true; wfT.TextColor3=Color3.new(1,1,1); wfT.TextXAlignment=Enum.TextXAlignment.Left; wfT.TextWrapped=true; wfT.Text="\xE2\xAD\x90 Need even more Coins? Grab a Coin Pack for instant progress!"; wfT.ZIndex=53; wfT.Parent=wFooter; maxsize(wfT,14)
-	local wfBean=makeCoin(wFooter,48,53); wfBean.AnchorPoint=Vector2.new(1,0.5); wfBean.Position=UDim2.new(1,-14,0.5,0) -- coin mascot, held still
-
-	for i,pk in ipairs(BEAN_PACKS) do
-		local card=Instance.new("Frame"); card.BackgroundColor3=pk.col; card.LayoutOrder=i; card.ZIndex=52; card.BackgroundColor3=pk.col:Lerp(Color3.fromRGB(150,150,158),0.16); card.Parent=grid; corner(card,18); vgrad(card,pk.col:Lerp(Color3.new(1,1,1),0.22),pk.col:Lerp(Color3.new(0,0,0),0.26),90); stroke(card,pk.col:Lerp(Color3.new(1,1,1),0.30),2.5,0.05)
-		local cs=Instance.new("UIScale"); cs.Parent=card
-		-- unique coin pile per bundle -- more/bigger coins = more value at a glance, with a gentle bob + sparkles
-		local art=Instance.new("Frame"); art.BackgroundTransparency=1; art.AnchorPoint=Vector2.new(0.5,0); art.Position=UDim2.new(0.5,0,0,6); art.Size=UDim2.new(1,-24,0,58); art.ZIndex=53; art.Parent=card
-		local bob=Instance.new("Frame"); bob.BackgroundTransparency=1; bob.Size=UDim2.fromScale(1,1); bob.ZIndex=53; bob.Parent=art
-		local pile=COIN_PILES[i] or COIN_PILES[1]
-		for n,cd in ipairs(pile) do
-			local co=makeCoin(bob, cd[3], 53+n); co.AnchorPoint=Vector2.new(0.5,0.5); co.Position=UDim2.fromScale(cd[1],cd[2]); co.Rotation=cd[4] or 0
-		end
-		TS:Create(bob,TweenInfo.new(1.7,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut,-1,true),{Position=UDim2.new(0,0,0,-3)}):Play() -- gentle 3px bob
-		if i>=4 then -- tiny twinkling sparkles around the larger piles
-			local nS=(i>=6 and 5) or (i>=5 and 4) or 3
-			local spots={{0.12,0.24},{0.88,0.28},{0.16,0.74},{0.84,0.7},{0.5,0.1}}
-			for s=1,nS do
-				local sp=Instance.new("TextLabel"); sp.BackgroundTransparency=1; sp.Font=Enum.Font.GothamBold; sp.Text="\xE2\x9C\xA6"; sp.TextColor3=Color3.fromRGB(255,244,190); sp.TextSize=(s%2==0 and 13 or 9); sp.Size=UDim2.fromOffset(16,16); sp.AnchorPoint=Vector2.new(0.5,0.5); sp.Position=UDim2.fromScale(spots[s][1],spots[s][2]); sp.ZIndex=90; sp.Parent=art
-				TS:Create(sp,TweenInfo.new(0.7+s*0.2,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut,-1,true),{TextTransparency=0.85}):Play()
-			end
-		end
-		local nm=Instance.new("TextLabel"); nm.BackgroundTransparency=1; nm.Position=UDim2.fromOffset(4,66); nm.Size=UDim2.new(1,-8,0,22); nm.Font=Enum.Font.FredokaOne; nm.TextScaled=true; nm.TextColor3=Color3.new(1,1,1); nm.Text=pk.name; nm.ZIndex=53; nm.Parent=card; stroke(nm,Color3.new(0,0,0),1.5); maxsize(nm,16)
-		local amt=Instance.new("TextLabel"); amt.BackgroundTransparency=1; amt.Position=UDim2.fromOffset(4,88); amt.Size=UDim2.new(1,-8,0,20); amt.Font=Enum.Font.GothamBold; amt.TextScaled=true; amt.TextColor3=GOLD; amt.Text="\xF0\x9F\x92\xB0 "..pk.beans.." Coins"; amt.ZIndex=53; amt.Parent=card; stroke(amt,Color3.new(0,0,0),1.5); maxsize(amt,15)
-		if pk.bonus then
-			local bb=Instance.new("TextLabel"); bb.AnchorPoint=Vector2.new(0.5,0); bb.Position=UDim2.new(0.5,0,0,112); bb.Size=UDim2.fromOffset(106,17); bb.BackgroundColor3=GREEN; bb.Font=Enum.Font.FredokaOne; bb.TextScaled=true; bb.TextColor3=Color3.new(1,1,1); bb.Text="\xF0\x9F\x8E\x81 BONUS "..pk.bonus; bb.ZIndex=53; bb.Parent=card; corner(bb,9); stroke(bb,Color3.fromRGB(28,84,44),1.5); maxsize(bb,11)
-		end
-		local price=Instance.new("TextLabel"); price.AnchorPoint=Vector2.new(0.5,0); price.Position=UDim2.new(0.5,0,0,135); price.Size=UDim2.fromOffset(128,24); price.BackgroundColor3=GOLD; price.Font=Enum.Font.FredokaOne; price.TextScaled=true; price.TextColor3=Color3.fromRGB(92,58,8); price.Text="\xF0\x9F\x92\xB0 "..pk.price; price.ZIndex=53; price.Parent=card; corner(price,13); stroke(price,Color3.fromRGB(180,122,20),2); vgrad(price,Color3.fromRGB(255,238,176),Color3.fromRGB(240,190,60),90); maxsize(price,16)
-		local buy=Instance.new("TextButton"); buy.AnchorPoint=Vector2.new(0.5,1); buy.Position=UDim2.new(0.5,0,1,-8); buy.Size=UDim2.new(1,-24,0,36); buy.BackgroundColor3=GREEN; buy.Font=Enum.Font.FredokaOne; buy.TextScaled=true; buy.TextColor3=Color3.new(1,1,1); buy.Text="\xF0\x9F\x9B\x92 Purchase"; buy.ZIndex=53; buy.Parent=card; corner(buy,18); stroke(buy,Color3.fromRGB(46,120,68),1.5); vgrad(buy,Color3.fromRGB(142,226,160),Color3.fromRGB(86,184,112),90); pad(buy,6); maxsize(buy,16)
-		local buyS=Instance.new("UIScale"); buyS.Parent=buy
-		buy.MouseEnter:Connect(function() TS:Create(buyS,TweenInfo.new(0.1),{Scale=1.05}):Play() end)
-		buy.MouseLeave:Connect(function() TS:Create(buyS,TweenInfo.new(0.1),{Scale=1}):Play() end)
-		buy.MouseButton1Click:Connect(function()
-			buyS.Scale=0.9; TS:Create(buyS,TweenInfo.new(0.2,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1}):Play() -- click bounce
-			if pk.productId and pk.productId ~= 0 then pcall(function() MPS:PromptProductPurchase(player, pk.productId) end)
-			elseif _G.showHudBanner then _G.showHudBanner("Coin packs need Robux product ids set up first!", Color3.fromRGB(255,150,90), 3) end
-		end)
-		if pk.tag then -- gold ribbon for BEST VALUE, orange for MOST POPULAR, gently pulsing
-			local isBest=pk.tag:find("BEST")~=nil
-			local ribCol=isBest and GOLD or Color3.fromRGB(248,150,56)
-			local rib=Instance.new("TextLabel"); rib.AnchorPoint=Vector2.new(0.5,0); rib.Position=UDim2.new(0.5,0,0,-2); rib.Size=UDim2.fromOffset(144,17); rib.BackgroundColor3=ribCol; rib.Font=Enum.Font.FredokaOne; rib.TextScaled=true; rib.TextXAlignment=Enum.TextXAlignment.Center; rib.TextColor3=isBest and Color3.fromRGB(92,58,8) or Color3.new(1,1,1); rib.Text=pk.tag; rib.ZIndex=55; rib.Parent=card; rib.ClipsDescendants=true; corner(rib,10); stroke(rib,GOLD,1.5); maxsize(rib,12)
-			local rsh=Instance.new("Frame"); rsh.BackgroundColor3=Color3.new(1,1,1); rsh.BackgroundTransparency=0.7; rsh.BorderSizePixel=0; rsh.Size=UDim2.new(0.25,0,1,0); rsh.Position=UDim2.new(-0.3,0,0,0); rsh.ZIndex=56; rsh.Parent=rib
-			local rshg=Instance.new("UIGradient",rsh); rshg.Rotation=16; rshg.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(0.5,0.3),NumberSequenceKeypoint.new(1,1)})
-			task.spawn(function() while rsh.Parent do rsh.Position=UDim2.new(-0.3,0,0,0); TS:Create(rsh,TweenInfo.new(1.1,Enum.EasingStyle.Sine),{Position=UDim2.new(1.05,0,0,0)}):Play(); task.wait(3.2) end end)
-		end
-		card.MouseEnter:Connect(function() TS:Create(cs,TweenInfo.new(0.12,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1.06}):Play() end)
-		card.MouseLeave:Connect(function() TS:Create(cs,TweenInfo.new(0.12),{Scale=1}):Play() end)
-	end
-
-	-- Coin shop REPLACES the main shop: hide all main-shop content, scale the coin shop in. Reverse on close.
-	-- (Never two windows stacked / nothing of the main shop visible behind it.)
-	local hiddenEls = {}
-	local function openCurrency()
-		table.clear(hiddenEls)
-		for _, ch in ipairs(premCard:GetChildren()) do
-			if ch:IsA("GuiObject") and ch.Visible then ch.Visible = false; table.insert(hiddenEls, ch) end
-		end
-		overlay.Visible = true; winScale.Scale = 0.9
-		TS:Create(winScale, TweenInfo.new(0.24, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
-	end
-	local function closeCurrency()
-		local t = TS:Create(winScale, TweenInfo.new(0.16), {Scale = 0.9}); t:Play()
-		t.Completed:Connect(function()
-			overlay.Visible = false
-			for _, ch in ipairs(hiddenEls) do if ch and ch.Parent then ch.Visible = true end end
-			table.clear(hiddenEls)
-		end)
-	end
-	-- safety: if the whole shop is closed while the coin shop is open, reset so it reopens on the main page
-	PremiumShopGui:GetPropertyChangedSignal("Enabled"):Connect(function()
-		if not PremiumShopGui.Enabled and overlay.Visible then
-			overlay.Visible = false
-			for _, ch in ipairs(hiddenEls) do if ch and ch.Parent then ch.Visible = true end end
-			table.clear(hiddenEls)
-		end
-	end)
-	xBtn.MouseButton1Click:Connect(closeCurrency)
-
-	----------------------------------------------------------------
-	-- the featured BANNER (below the header, above the gamepasses)
-	----------------------------------------------------------------
-	local banner=Instance.new("TextButton"); banner.Name="CurrencyBanner"; banner.AutoButtonColor=false; banner.Text=""; banner.ClipsDescendants=true
-	banner.AnchorPoint=Vector2.new(0.5,0); banner.Position=UDim2.new(0.5,0,0,74); banner.Size=UDim2.new(1,-16,0,60); banner.BackgroundColor3=Color3.fromRGB(88,104,224); banner.ZIndex=6; banner.Parent=premCard; corner(banner,16); vgrad(banner,Color3.fromRGB(104,132,248),Color3.fromRGB(128,80,224),25); stroke(banner,GOLD,2.5)
-	-- (removed the purple glow behind the banner -- cleaner, no outer glow)
-	local bScale=Instance.new("UIScale"); bScale.Parent=banner
-	-- bean pile (food-stand bean IMAGE so it always shows) + a floating gold coin
-	local beanBack=makeCoin(banner,28,6); beanBack.Position=UDim2.fromOffset(12,28)
-		local beanBack2=makeCoin(banner,24,6); beanBack2.Position=UDim2.fromOffset(46,32)
-	local coin=makeCoin(banner,22,7); coin.Position=UDim2.fromOffset(4,6)
-		local coin2=makeCoin(banner,16,7); coin2.Position=UDim2.fromOffset(58,10)
-	local coinS=nil -- coin stays still (no idle pulse)
-	local beanMain=makeCoin(banner,58,8); beanMain.Position=UDim2.fromOffset(24,3)
-	local blS=nil -- bean stays still (no idle pulse)
-	local bTitle=Instance.new("TextLabel"); bTitle.BackgroundTransparency=1; bTitle.Position=UDim2.fromOffset(94,4); bTitle.Size=UDim2.new(1,-266,0,24); bTitle.Font=Enum.Font.FredokaOne; bTitle.TextScaled=true; bTitle.TextColor3=GOLD; bTitle.TextXAlignment=Enum.TextXAlignment.Left; bTitle.Text="\xF0\x9F\x92\xB0 BUY COINS"; bTitle.ZIndex=7; bTitle.Parent=banner; stroke(bTitle,Color3.fromRGB(30,16,60),1.5); maxsize(bTitle,24)
-	local bSub=Instance.new("TextLabel"); bSub.BackgroundTransparency=1; bSub.Position=UDim2.fromOffset(94,31); bSub.Size=UDim2.new(1,-266,0,13); bSub.Font=Enum.Font.Gotham; bSub.TextScaled=true; bSub.TextColor3=Color3.new(1,1,1); bSub.TextXAlignment=Enum.TextXAlignment.Left; bSub.Text="Get more Coins instantly!"; bSub.ZIndex=7; bSub.Parent=banner; maxsize(bSub,13)
-		local bBadge=Instance.new("TextLabel"); bBadge.BackgroundColor3=GOLD; bBadge.Position=UDim2.fromOffset(94,45); bBadge.Size=UDim2.fromOffset(186,13); bBadge.Font=Enum.Font.FredokaOne; bBadge.TextScaled=true; bBadge.TextColor3=Color3.fromRGB(92,58,8); bBadge.Text="\xE2\xAD\x90 Best Way to Progress!"; bBadge.ZIndex=7; bBadge.Parent=banner; corner(bBadge,8); stroke(bBadge,Color3.fromRGB(180,122,20),1.5); maxsize(bBadge,12)
-	local openBtn=Instance.new("TextButton"); openBtn.AnchorPoint=Vector2.new(1,0.5); openBtn.Position=UDim2.new(1,-12,0.5,0); openBtn.Size=UDim2.fromOffset(172,48); openBtn.BackgroundColor3=GREEN; openBtn.Font=Enum.Font.FredokaOne; openBtn.TextScaled=true; openBtn.TextColor3=Color3.new(1,1,1); openBtn.Text="OPEN SHOP \xE2\x9E\x9C"; openBtn.ZIndex=7; openBtn.Parent=banner; corner(openBtn,12); stroke(openBtn,Color3.fromRGB(28,84,44),2.5); juice(openBtn); pad(openBtn,6); maxsize(openBtn,18)
-	do -- shimmer sweep
-		local shine=Instance.new("Frame"); shine.BackgroundColor3=Color3.new(1,1,1); shine.BackgroundTransparency=0.86; shine.BorderSizePixel=0; shine.Size=UDim2.new(0.18,0,1,0); shine.Position=UDim2.new(-0.25,0,0,0); shine.ZIndex=6; shine.Parent=banner
-		local sgr=Instance.new("UIGradient",shine); sgr.Rotation=18; sgr.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(0.5,0.25),NumberSequenceKeypoint.new(1,1)})
-		task.spawn(function() while shine.Parent do shine.Position=UDim2.new(-0.25,0,0,0); TS:Create(shine,TweenInfo.new(1.3,Enum.EasingStyle.Sine),{Position=UDim2.new(1.1,0,0,0)}):Play(); task.wait(3.4) end end)
-	end
-	local function hoverIn() TS:Create(bScale,TweenInfo.new(0.12,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1.03}):Play() end
-	local function hoverOut() TS:Create(bScale,TweenInfo.new(0.12),{Scale=1}):Play() end
-	banner.MouseEnter:Connect(hoverIn); banner.MouseLeave:Connect(hoverOut); openBtn.MouseEnter:Connect(hoverIn); openBtn.MouseLeave:Connect(hoverOut)
-	local function popOpen()
-		bScale.Scale=0.94; TS:Create(bScale,TweenInfo.new(0.16,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1}):Play()
-		openCurrency()
-	end
-	banner.MouseButton1Click:Connect(popOpen); openBtn.MouseButton1Click:Connect(popOpen)
-end)
+-- ===== THE COIN SHOP IS GONE =====
+-- A featured banner under the header used to open a full-card overlay selling six Robux coin packs
+-- (1,000 up to 180,000 coins), and TokenHud's coin pill and its "+" opened it directly through
+-- _G.openCoinShop. All of it is removed: the banner, the overlay, the six packs and the global.
+--
+-- What that changes elsewhere, and why nothing breaks:
+--   * TokenHud reads `_G.openCoinShop or _G.togglePremiumShop`. With the first gone it falls through to
+--     the second on its own -- the coin pill and its "+" now open the PREMIUM shop, which is a real page
+--     that still exists. No dead button, no edit needed over there.
+--   * ClickOutside lists CurrencyOverlay among the peelable overlays. A name that no longer exists costs
+--     nothing there (it is a lookup, not an assertion), so that list is left alone.
+--   * The product ids went with the packs. If they are ever wanted back, they are in git history along
+--     with the layout -- but the server never had a ProcessReceipt branch granting these coins, so as
+--     shipped the packs took Robux and gave nothing. That is the other half of why they are gone.
+--
+-- The gamepass list below now starts where the banner used to (see premScroll's Position/Size).
 
 -- ===== FOOD SHOP STYLE & LAYOUT =====
 ;(function()
@@ -1301,9 +1169,50 @@ end)
 	fclS.Color = Color3.fromRGB(0,0,0); fclS.Thickness = 2; fclS.Parent = foodCloseBtn
 end)()
 
--- (The embedded "GAS METER" fart-power bar that used to sit in the food shop's bottom strip has been
--- REMOVED from the stand menu. The underlying CurrentPower / StomachMax values are untouched -- they
--- still drive flight and the HUD gas meter; only this duplicate bar display in the shop is gone.)
+-- ===== IN-SHOP GAS METER =====
+-- The shop panel covers the HUD (DisplayOrder 100), so while you are choosing food you cannot see the
+-- bottom-centre gas meter -- exactly when you most need to know how much room is left in the tank. This
+-- is a READ-ONLY mirror of it, pinned to the panel's bottom strip beside the BUY buttons. It owns no
+-- state: it re-derives fill + text from CurrentPower / StomachMax every frame the panel is open, the
+-- same numbers CoreClient's updateMeter() uses, so it can never disagree with the HUD bar.
+;(function()
+	local RunService = game:GetService("RunService")
+
+	-- Bottom strip: BUY (x 10..140) + BUY MAX (x 148..278) are already there, so the meter takes the rest.
+	local gasTrack = mkFrame(foodPanel,{Name="ShopGasMeter",Size=UDim2.new(1,-298,0,48),Position=UDim2.new(0,288,1,-58),BackgroundColor3=Color3.fromRGB(20,20,60)})
+	mkCorner(gasTrack,12); mkStroke(gasTrack,Color3.fromRGB(255,255,255),2)
+	gasTrack.ClipsDescendants = true  -- the fill has its own 12px corner; clip so it can't poke out of the track
+	local gasFill = mkFrame(gasTrack,{Name="Fill",Size=UDim2.new(1,0,1,0),BackgroundColor3=Color3.fromRGB(60,210,90),ZIndex=2})
+	mkCorner(gasFill,12)
+	local gasGrad = Instance.new("UIGradient")
+	gasGrad.Color = ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromRGB(130,240,120)),ColorSequenceKeypoint.new(1,Color3.fromRGB(45,190,70))})
+	gasGrad.Rotation = 90; gasGrad.Parent = gasFill
+	local gasText = mkLabel(gasTrack,{Name="GasText",Size=UDim2.new(1,-12,1,0),Position=UDim2.new(0,6,0,0),Text="GAS 0/0",Font=Enum.Font.FredokaOne,TextSize=20,TextColor3=Color3.fromRGB(255,255,255),ZIndex=3,TextXAlignment=Enum.TextXAlignment.Center})
+	gasText.TextScaled = true
+	mkStroke(gasText,Color3.fromRGB(0,0,0),2)
+	local gtMax = Instance.new("UITextSizeConstraint"); gtMax.MaxTextSize = 22; gtMax.Parent = gasText
+
+	local function refreshGas()
+		-- Prefer CoreClient's live value (_G.cosmeticGas is written by updateMeter every time the real
+		-- tank changes); fall back to the leaderstat if this script loaded first.
+		local cur, max = 0, 0
+		pcall(function() if _G.leaderstats then
+			local cp=_G.leaderstats:FindFirstChild("CurrentPower"); if cp then cur=cp.Value end
+			local sm=_G.leaderstats:FindFirstChild("StomachMax"); if sm then max=sm.Value end
+		end end)
+		if type(_G.cosmeticGas)=="number" then cur = _G.cosmeticGas end
+		-- Clamped to the RAW StomachMax, byte for byte what CoreClient's updateMeter() does: with the 2x
+		-- pass the real tank is deeper, and that extra fuel shows as flying higher, not as a bigger bar.
+		local fill = (max > 0) and math.clamp(cur / max, 0, 1) or 0
+		gasFill.Size = UDim2.new(fill,0,1,0)
+		gasFill.Visible = fill > 0.001
+		gasText.Text = ("GAS %d/%d"):format(math.floor(math.min(cur, max)), max)
+	end
+	refreshGas()
+	RunService.RenderStepped:Connect(function()
+		if FoodShopGui.Enabled then refreshGas() end  -- no work at all while the stand is closed
+	end)
+end)()
 
 -- ===== MAIN-MENU MUTUAL EXCLUSIVITY: shared manager (one instance across client scripts, via _G). Guarded
 -- factory so whichever client script loads first creates it. Lets opening one main menu close the others. =====
@@ -1423,17 +1332,21 @@ end)
 
 foodBuyBtn.MouseButton1Click:Connect(function()
 	local f=featuredFood; if not f then return end          -- buy the CURRENTLY FEATURED food
-	if not canBuy(f.island) then return end                  -- locked, or below the island you're on
+	if not canBuy(f.island) then return end                  -- not reached this food's island yet
 	-- (no playEatSound() here -- the crunch is driven by CurrentPower rising, so a refused buy stays silent)
 	local coins=0
 	pcall(function() if _G.leaderstats then local c=_G.leaderstats:FindFirstChild("Coins"); if c then coins=c.Value end end end)
 	if coins<f.price then
 		foodBuyBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyBtn.Text="Not Enough Coins"; foodBuyBtn.TextSize=14
+		-- A refused buy used to be silent in the hand, which is why players press it again. `fail` is two
+		-- flat low buzzes -- deliberately dull, so it never reads as a reward.
+		if _G.hapticPulse then pcall(_G.hapticPulse, "fail") end
 		task.delay(1,function() foodBuyBtn.BackgroundColor3=Color3.fromRGB(50,200,50); foodBuyBtn.Text="BUY FOOD"; foodBuyBtn.TextSize=17 end)
 		return
 	end
 	pcall(function() _G.BuyFoodEvent:FireServer(f.name) end)
 	print("FIRED BUYFOOD:", f.name)
+	if _G.hapticPulse then pcall(_G.hapticPulse, "purchase") end
 	local fl=Instance.new("TextLabel"); fl.Text="+"..f.power.." power!"; fl.Font=Enum.Font.GothamBold; fl.TextSize=20; fl.TextColor3=Color3.fromRGB(0,200,50); fl.BackgroundTransparency=1; fl.Size=UDim2.new(0,200,0,40); fl.Position=UDim2.new(0.3,0,0.6,0); fl.ZIndex=10; fl.Parent=FoodShopGui
 	TweenService:Create(fl,TweenInfo.new(1.5,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Position=UDim2.new(0.3,0,0.4,0),TextTransparency=1}):Play()
 	task.delay(1.5,function() fl:Destroy() end)
@@ -1443,32 +1356,59 @@ foodBuyMaxBtn.MouseButton1Click:Connect(function()
 	-- (no playEatSound() here either -- BUY MAX often buys NOTHING, because the stomach is full or the coins
 	-- don't stretch to a single item. It used to crunch anyway, before it had even worked out the quantity.)
 	local feat=featuredFood; if not feat then return end     -- BUY MAX targets the FEATURED food
-	if not canBuy(feat.island) then return end               -- locked, or below the island you're on
+	if not canBuy(feat.island) then return end               -- not reached this food's island yet
 	local coins, curPower, stomMax = 0, 0, 46
 	pcall(function() if _G.leaderstats then
 		local c=_G.leaderstats:FindFirstChild("Coins"); if c then coins=c.Value end
 		local cp=_G.leaderstats:FindFirstChild("CurrentPower"); if cp then curPower=cp.Value end
 		local sm=_G.leaderstats:FindFirstChild("StomachMax"); if sm then stomMax=sm.Value end
 	end end)
-	-- Fill as full as possible using current + lower UNLOCKED foods, biggest power first, capped
-	-- by BOTH remaining stomach space AND money on hand. _G.foods is ordered by power ascending
-	-- (island N == index N), so iterating nearIslandNumber -> 1 is largest -> smallest. We never
-	-- spend more coins than we have and never exceed stomachMax (qty floored by remaining space).
-	local remaining = stomMax - curPower
+	-- FILL THE TANK AS FULL AS THE COINS ALLOW, MIXING FOODS. The old version bought as many of the featured
+	-- food as fit and only then tried smaller ones into the leftover room -- and the leftover room is where it
+	-- failed: six Cabbage in a 270 tank is 240, a seventh does not fit, and a Beans (32) does not fit in the
+	-- 30 that is left, so BUY MAX stopped at 240 -- short of the ~263 a stretch crossing needs. Five Cabbage
+	-- + two Beans is 264 and DOES fit. So this is a small knapsack over every unlocked food: the most power
+	-- that fits in the room AND the wallet, and among equal-power fills the cheapest. Tanks are small
+	-- (<= 2600) so the table is cheap.
+	-- tankMax, not the raw StomachMax: the 2x pass doubles the tank AND doubles what each food is worth, so
+	-- both sides of this sum have to use the same numbers the server does or the quantity comes out wrong.
+	local remaining = tankMax(stomMax) - curPower
 	local coinsLeft = coins
 	local totalPower = 0
-	for i = feat.island, 1, -1 do  -- fill from the FEATURED food downward (its max), biggest power first
-		local f = _G.foods[i]
-		if f and canBuy(f.island) then -- floor included: BUY MAX must not top up with beans on island 13
-			local qty = math.min(math.floor(remaining / f.power), math.floor(coinsLeft / f.price))
-			if qty > 0 then
-				for _=1,qty do pcall(function() _G.BuyFoodEvent:FireServer(f.name) end) end
-				remaining = remaining - qty * f.power
-				coinsLeft = coinsLeft - qty * f.price
-				totalPower = totalPower + qty * f.power
+	local room = math.floor(remaining)
+	if room > 0 then
+		local menu = {}
+		for i = feat.island, 1, -1 do
+			local f = _G.foods[i]
+			if f and canBuy(f.island) then table.insert(menu, f) end
+		end
+		local INF = math.huge
+		local cost, from = table.create(room + 1, INF), table.create(room + 1, 0)
+		cost[1] = 0 -- index p+1 holds power p
+		for pwr = 1, room do
+			for _, f in ipairs(menu) do
+				local g = foodGain(f.power)
+				if g <= pwr and cost[pwr - g + 1] + f.price < cost[pwr + 1] then
+					cost[pwr + 1] = cost[pwr - g + 1] + f.price
+					from[pwr + 1] = f
+				end
 			end
 		end
-		if remaining < _G.foods[1].power or coinsLeft < _G.foods[1].price then break end
+		local best = 0
+		for pwr = room, 1, -1 do
+			if cost[pwr + 1] <= coins then best = pwr; break end
+		end
+		-- walk the choice back into purchases
+		local pwr = best
+		while pwr > 0 do
+			local f = from[pwr + 1]
+			pcall(function() _G.BuyFoodEvent:FireServer(f.name) end)
+			local g = foodGain(f.power)
+			remaining = remaining - g
+			coinsLeft = coinsLeft - f.price
+			totalPower = totalPower + g
+			pwr = pwr - g
+		end
 	end
 	if totalPower <= 0 then
 		-- coins checked FIRST; then TRULY full (no room) vs HAS room but the cheapest food still won't fit
@@ -1477,10 +1417,15 @@ foodBuyMaxBtn.MouseButton1Click:Connect(function()
 		elseif remaining <= 0 then reason = "Stomach Full"
 		else reason = "Not Enough Room" end
 		foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(150,150,150); foodBuyMaxBtn.Text=reason; foodBuyMaxBtn.TextSize=13
+		-- Same for BUY MAX, which refuses for three different reasons and was silent for all of them.
+		if _G.hapticPulse then pcall(_G.hapticPulse, "fail") end
 		task.delay(1,function() foodBuyMaxBtn.BackgroundColor3=Color3.fromRGB(255,140,0); foodBuyMaxBtn.Text="BUY MAX"; foodBuyMaxBtn.TextSize=15 end)
 		return
 	end
 	print("BUY MAX: +"..totalPower.." power (coins left "..coinsLeft..", space left "..remaining..")")
+	-- ONE pulse for the whole basket. BUY MAX fires BuyFoodEvent in a loop above; a pulse per item
+	-- would be a solid buzz for the length of the purchase.
+	if _G.hapticPulse then pcall(_G.hapticPulse, "purchase") end
 	local fl=Instance.new("TextLabel"); fl.Text="MAX! +"..totalPower.." power!"; fl.Font=Enum.Font.GothamBold; fl.TextSize=18; fl.TextColor3=Color3.fromRGB(255,140,0); fl.BackgroundTransparency=1; fl.Size=UDim2.new(0,260,0,50); fl.Position=UDim2.new(0.3,0,0.6,0); fl.ZIndex=10; fl.Parent=FoodShopGui
 	TweenService:Create(fl,TweenInfo.new(1.5,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Position=UDim2.new(0.3,0,0.4,0),TextTransparency=1}):Play()
 	task.delay(1.5,function() fl:Destroy() end)
@@ -1618,6 +1563,7 @@ task.spawn(function()
 					shopOpen = true
 					standHudHide(true) -- shop open: the gas meter + BUY FOOD bar goes away
 					print("SHOP OPEN ISLAND", foundIsland)
+					if _G.hapticPulse then pcall(_G.hapticPulse, "tock") end
 				end
 			else
 				if lastAwayTime == 0 then lastAwayTime = tick() end

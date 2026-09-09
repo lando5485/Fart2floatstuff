@@ -21,7 +21,7 @@ local RunService = game:GetService("RunService")
 local player     = Players.LocalPlayer
 local PlayerGui  = player:WaitForChild("PlayerGui")
 
-local COLD_ISLANDS = { island4 = true }   -- add more here as more of them get snow
+local COLD_ISLANDS = { island4 = true, island3 = true }   -- Frostbell Peak + Cookie Crumble
 local FLAKES       = 44
 local BREATH_GAP   = 2.4                  -- seconds between puffs, roughly
 local RESCAN       = 1.5
@@ -49,8 +49,16 @@ local function onCold(pos)
 			if b then
 				local dx = math.abs(pos.X - b.c.X) - b.h.X
 				local dz = math.abs(pos.Z - b.c.Z) - b.h.Z
+				-- ⚠ Y IS NOT OPTIONAL HERE. This used to test X and Z only, which is fine in a world
+				-- laid out on a plane and completely wrong in this one: the islands are a vertical
+				-- TOWER, so they sit almost on top of each other in plan view. Frostbell Peak is at
+				-- (300, 51220, -260) and Gumtree Park at (180, 6420, -120) -- 140 studs apart in X/Z,
+				-- well inside a ~200-stud half-box plus 30 of slack, and 44,800 studs apart in the one
+				-- axis that was never looked at. So the breath and the screen snow fired on islands
+				-- most of the way down the tower. Height is the axis that separates islands here.
+				local dy = math.abs(pos.Y - b.c.Y) - b.h.Y
 				-- a little slack, so standing on the very edge still counts as being on it
-				if dx < 30 and dz < 30 then return true end
+				if dx < 30 and dz < 30 and dy < 30 then return true end
 			end
 		end
 	end

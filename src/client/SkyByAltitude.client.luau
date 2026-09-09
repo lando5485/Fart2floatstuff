@@ -108,6 +108,7 @@ local KEYS = {
 }
 
 local SMOOTH = 2.2 -- how fast the sky chases the target. Too high and it strobes on a fast climb.
+local NIGHT_BELOW_Y = 700 -- Bean Farm night applies below island 2 (Y 780); the altitude curve owns the rest
 
 -- ===== NIGHT AT THE TOP =====
 -- Atmosphere DENSITY is what washes stars out -- haze scatters light across the whole sky and drowns them. So
@@ -374,6 +375,19 @@ RunService.RenderStepped:Connect(function(dt)
 	if not hrp then return end
 
 	local target = sample(hrp.Position.Y)
+
+	-- BEAN FARM NIGHT. Campfire.server publishes NightFactor (0 day .. 1 full night, ramping through a
+	-- one-minute sunset and sunrise, every 25 minutes on the wall clock). Below island 2 the sky follows
+	-- it: `space` is what drives ClockTime toward midnight, so the sun genuinely sets on the way down and
+	-- rises on the way back. Higher up the altitude curve already owns the darkness and is left alone.
+	local nf = workspace:GetAttribute("NightFactor")
+	if type(nf) == "number" and nf > 0 and hrp.Position.Y < NIGHT_BELOW_Y then
+		target = {
+			density = target.density, offset = target.offset, haze = target.haze, glare = target.glare,
+			color = target.color, decay = target.decay:Lerp(KEYS[#KEYS].decay, nf),
+			space = math.max(target.space, nf),
+		}
+	end
 
 	if not cur then
 		-- First frame, or straight out of an event: adopt the target wholesale rather than easing from stale

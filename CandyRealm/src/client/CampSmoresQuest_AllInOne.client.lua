@@ -1,24 +1,36 @@
 --======================================================================
 -- CampSmoresQuest_AllInOne.client.lua  (LocalScript, per-player)
 --======================================================================
--- "CAMP S'MORES" -- ISLAND 14. Build the campsite in stages; every step shows.
+-- "CAMP S'MORES" -- ISLAND 14. Build the campsite AT NIGHT; every step shows.
 --
---   1  CHOP      4 PineTrees. Each one topples and hands you a Pine Log.
+--   *  NIGHT     Accepting the quest brings night down on the camp. The campfire area
+--                and the mill's lanterns are the safe light; the pines are out in the
+--                dark, and THE WATCHER (island 4's, shared on purpose -- the two camping
+--                islands are siblings) creeps out of the treeline while you linger there.
+--   1  CUT       3 PineTrees -- one per roasting stick, no padding trees. You are handed a
+--                CHAINSAW: it cuts on a timer just by being held to the trunk, but TAPPING
+--                revs it and bites deeper -- a lively cutter drops a pine in ~3s, ignoring
+--                the throttle still works in 7.
 --   2  MILL      Carry the logs to the block named "mill". A cutting station is built
 --                there; the logs run through the saw, the blade spins, chips fly, and
 --                they come out as giant roasting sticks -- which then fly to the
 --                campfire and plant themselves one at a time.
---   3  GATHER    6 MallowMushrooms. Only the CAP comes away; the stem stays and regrows.
---   4  DELIVER   Take them to the Candy Npc. Each pair loads one roasting stick.
---   *  IGNITE    Fire, smoke, embers, ambience -- and the marshmallows slowly toast.
+--   3  DELIVER   Back to the Candy Npc: the mallows go on, one stick each.
+--   *  IGNITE    Fire, smoke, embers, ambience, DAWN -- and the marshmallows toast.
+--
+-- (The old GATHER step -- 6 mushroom caps at 15 held seconds each -- is gone for good:
+--  it was a whole extra fetch lap. The MallowMushroom models stay as scenery.)
 --
 -- WHAT THE WORLD PROVIDES (names ignore case/spaces/underscores):
---   PineTree        x4+  your tree models. They topple where they stand.
+--   PineTree        x3+  your tree models. They topple where they stand.
 --   mill            x1   a plain block. The cutting station is BUILT on it; it's hidden.
 --   campfire        x1   the woodpile that lights at the end.
---   MallowMushroom  x6+  your mushrooms. The cap is taken, the stem is left behind.
 --   Marshmallowbig  x3   the giant marshmallows. HIDDEN until each stick is loaded.
 --   Candy Npc       x1   quest giver, on island14.
+--   chainsaw        x1   OPTIONAL. Yours if you place one (a model still called 'axe' is
+--                        accepted); otherwise one is built. Name its parts Grip / Bar /
+--                        Tooth / Body / Exhaust and it gets the moving chain, the engine
+--                        note and the exhaust smoke for free.
 --
 -- Everything is client-side and per-player, like the island's other quests.
 --======================================================================
@@ -51,38 +63,84 @@ local ISLAND_PREFIX = "island14"
 local TREE_NAME     = "pinetree"
 local MILL_NAME     = "mill"
 local FIRE_NAME     = "campfire"
-local SHROOM_NAME   = "mallowmushroom"
-local AXE_NAME      = "axe"
+-- ⚠ THE TOOL IS A CHAINSAW NOW, not an axe. The world lookup still accepts a model called
+-- 'axe' (SAW_LEGACY) so an island that already has one hand-placed keeps working -- but a model
+-- named 'chainsaw' wins, and with neither one present the fallback built further down is a saw.
+local SAW_NAME      = "chainsaw"
+local SAW_LEGACY    = "axe"
 local MARSH_NAME    = "marshmallowbig"
+-- ⚠ RESTORED. Your plants are named this, and they have been standing unpickable since the
+-- gather step's wiring was deleted -- the models were never the problem, the missing wireShroom
+-- was. Recovered from the pre-deletion revision (66d465c) rather than guessed at.
+local SHROOM_NAME   = "mallowmushroom"
 local STICK_NAME    = "stickthatgoesup"   -- your 3 roasting sticks by the fire
 local STAND_NAME    = "stand"             -- the operator's deck at the mill
 local NPC_NAMES     = { "candynpc", "questnpc" }
 local NPC_MAX_DIST  = 700
 
-local LOGS_NEEDED   = 3      -- logs to mill -- one per roasting stick
-local SHROOMS_NEEDED = 6     -- mushroom caps to gather
-local CARRY_MAX     = 8      -- backpack capacity -- must clear SHROOMS_NEEDED
+-- HOW MANY TREES YOU FELL, AND HOW MANY LOGS YOU MILL -- they are the same number, because one
+-- tree gives one log and one log is one cut at the mill.
+--
+-- SEVEN TREES, SEVEN LOGS, SEVEN CUTS AT THE MILL.
+--
+-- ⚠ THE WORLD ONLY HAS 3 PARTS NAMED 'stickthatgoesup', so cuts 4..7 raise no stick by the
+-- fire -- raiseStick() no-ops on a missing index by design, and the boot log prints a warning
+-- naming the shortfall. Nothing breaks (the delivery step counts #sticks, not this), but the
+-- last four cuts have no visible payoff until more stick parts exist. Add four more named
+-- 'stickthatgoesup' near the campfire and they are picked up automatically.
+--
+-- This was briefly cut to 3 to kill the padding, but that was aimed at the OLD chop: seven
+-- zero-input trees at 7 seconds each was 49 seconds of standing still. Chopping is interactive
+-- now -- tapping on the swing bites CHOP_BONUS off the timer, so a lively chopper drops a pine
+-- in about 3 seconds and seven of them is a job rather than a wait.
+local LOGS_NEEDED   = 7      -- trees to fell / logs to mill
+local SHROOMS_NEEDED = 6     -- mallow credit granted when milling finishes (see the mill step --
+                             -- the old gather lap is deleted; this just feeds the delivery math)
+local CARRY_MAX     = 8      -- backpack capacity
 -- ONE DIAL FOR THE HAT. Sizes AND offsets are both multiplied by it, so it never ends up a
 -- bigger dome sitting at the old height with its brim through your eyebrows.
 local HAT_SCALE     = 0.95
-local MILL_STROKES  = 8      -- saw strokes to get through ONE log (~12s played well)
--- Seconds of holding to free one mushroom cap. This IS the floor and needs no ceiling
--- clamp: playPull only accepts a hold, and v climbs at dt/secs, so a continuous hold takes
--- exactly this long and letting go only makes it longer. Nothing to mash.
--- (Was 4.2 -- raised to the realm's 15s pickup floor. 6 caps = 90s on this island, on top
--- of the saw and the axe; drop it back toward 10 if that plays long.)
-local SHROOM_PULL   = 15     -- seconds of holding to free one mushroom cap
+local MILL_STROKES  = 12     -- taps to shove ONE log through the blade (~4s of honest mashing;
+                             -- was 8 timing-game strokes at ~12s -- a mash cadence needs more
+                             -- beats per log or the cut is over before it registers as a cut)
+-- (SHROOM_PULL and REGROW_TIME are gone with the gather step: 6 caps x 15 held seconds was
+--  90 seconds of holding E on top of the cutting and the milling, for a step the mill skips.)
 local FIRE_DROP     = 10     -- studs to sink the fire below the top of the campfire model
 local FLAME_SCALE   = 4.0    -- flame HEIGHT (not the coals or the glow)
 local FLAME_WIDTH   = 0.62   -- flame SPREAD, on top of the scale -- narrower without shrinking
-local REGROW_TIME   = 22     -- seconds before a picked mushroom caps over again
-local SWINGS_PER_TREE = 6    -- axe hits to fell one pine
--- how the axe sits in your hand. Tweak these if it reads wrong for your model:
-local AXE_PITCH     = -110   -- degrees the shaft tips at rest (70 flipped 180 at the grip)
-local AXE_ROLL      = -10    -- degrees the blade rolls
-local AXE_GRIP      = 0.44   -- how far down the shaft the hand sits (0.5 = the very end)
-local AXE_FLIP      = false  -- true if it grabs the head instead of the handle
-local CHOP_REACH    = 15     -- studs the swing reaches
+-- (SWINGS_PER_TREE is gone: felling is on a seven-second timer now, not a hit count. See the
+--  auto-chop block -- swings are the animation played over the timer, never the thing measured.)
+-- how the chainsaw sits in your hand. Tweak these if it reads wrong for your model:
+-- ⚠ -12, NOT THE AXE'S -70. These are degrees about the HAND's own X, and the hand's -Y runs
+-- down the arm while its -Z runs forward -- so pitch is the dial that swings the tool from
+-- "hanging down the leg" (-90) to "pointing straight out in front" (0). An axe hangs: -70 put
+-- the head down and ahead of the thigh, which is how you carry one between swings. A CHAINSAW
+-- IS NEVER CARRIED THAT WAY -- the bar is held out in front of you, level, or it is buried in
+-- your own shin. -12 is level with a few degrees of droop on the nose.
+local SAW_PITCH     = -12    -- degrees the bar tips at rest (0 = dead level, out in front)
+local SAW_ROLL      = -8     -- degrees the saw rolls, so it is not perfectly square
+local SAW_GRIP      = 0.44   -- fallback only: how far along a hand-placed model the fist sits
+local SAW_FLIP      = false  -- fallback only: true if it grabs the wrong end
+local CHOP_REACH    = 15     -- studs the bar reaches
+-- IDLE VS CUTTING. A chainsaw is never still: even at rest it shakes in your hands, and that
+-- buzz is most of what says "running engine" rather than "prop shaped like a saw".
+--
+-- ⚠ ONE TABLE, NOT FOUR LOCALS. This file is already near the top of tools/registers.py's
+-- list, and a Luau function -- a script's main chunk included -- silently never runs once it
+-- needs a 201st live local. Four related tuning numbers cost one register this way and four
+-- as separate constants.
+--
+-- ⚠ cutChain IS CAPPED BY THE FRAME RATE, NOT BY TASTE. Every third tooth is a bright
+-- cutter, so the pattern the eye tracks repeats about every stud; move the chain more than
+-- half of that per frame and it reverses on screen (the wagon-wheel effect) instead of
+-- running. 22 studs/sec is ~0.37 studs a frame at 60fps -- clearly moving, unambiguously
+-- forwards. A real saw runs an order of magnitude faster and would just strobe.
+local SAW_FEEL = {
+	idleBuzz  = 0.5,   -- degrees of shake at idle
+	cutBuzz   = 2.6,   -- degrees of shake while the bar is in the wood
+	idleChain = 6,     -- studs/sec the chain crawls at idle
+	cutChain  = 22,    -- studs/sec while cutting
+}
 
 local COIN_REWARD   = 1500
 
@@ -263,22 +321,39 @@ local marshParts  = {}
 local refreshBanner
 local showBubble
 local milling     = false
-local axeTemplate, axeHeld, axeHold, axeSwingUntil
+local sawTemplate, sawHeld, sawHold, sawCutUntil
+-- The live saw's moving parts: { bar =, teeth = {}, snd =, smoke =, L =, H =, phase = }.
+-- nil whenever nothing is held, or when the world handed us a model that has no chain.
+local sawChain
 
--- ---- THE AXE -------------------------------------------------------------
--- Your 'axe' model is copied ONCE at startup and the original is hidden, so there is never a
--- spare axe lying around and taking it back is just destroying the copy.
+-- ---- THE CHAINSAW --------------------------------------------------------
+-- Your 'chainsaw' model is copied ONCE at startup and the original is hidden, so there is never
+-- a spare saw lying around and taking it back is just destroying the copy. A model still named
+-- 'axe' is accepted too -- see SAW_LEGACY -- and if the island has neither, one is built.
 --
 -- IT IS WELDED TO THE HAND, not anchored and re-positioned every frame. Anchoring it and
 -- driving its CFrame each frame fights the character's own animation -- the arm swings, the
--- axe does not, and it reads as floating near the hand rather than held in it. A weld makes
--- the hand carry it, and the swing is then just an animation of the weld's C0.
+-- saw does not, and it reads as floating near the hand rather than held in it. A weld makes
+-- the hand carry it, and the cut is then just an animation of the weld's C0.
 --
--- HELD BY THE HANDLE: a model's pivot is its centre, so welding that to the hand puts the fist
--- halfway up the shaft. The grip is derived from the model instead -- the longest axis is the
--- shaft, and the HEAD is whichever end holds most of the volume, so the handle butt is the far
--- end from that.
+-- (!) THE CHAIN IS THE ONE THING THAT IS *NOT* WELDED. Its teeth are driven round the bar every
+-- frame from the bar's own live CFrame (see the RenderStepped block below), because a chainsaw
+-- whose chain does not move is a painted prop -- and that motion is most of what makes this a
+-- chainsaw rather than an axe with a new name.
 local function gripFor(model)
+	-- (!) A NAMED GRIP WINS, AND THAT IS WHY IT IS THE FIRST THING THIS FUNCTION DOES.
+	-- The heuristic below puts the fist at the end FURTHEST FROM THE MASS -- exactly right for
+	-- an axe, whose mass is the head and whose far end is the butt of the handle, and exactly
+	-- backwards for a chainsaw, whose mass IS the handle end: it would hand you the saw by the
+	-- tip of the bar. The saw built further down carries a part called 'Grip' whose own -Z runs
+	-- out along the bar, so it is taken verbatim and no guessing happens at all.
+	if not model:IsA("BasePart") then
+		local g = model:FindFirstChild("Grip", true) or model:FindFirstChild("Handle", true)
+		if g and g:IsA("BasePart") then
+			print("[Smores] saw grip: taken from the model's own '" .. g.Name .. "' part")
+			return g.CFrame
+		end
+	end
 	local bcf, bsz = frameOf(model)
 	local axes = { { Vector3.new(1, 0, 0), bsz.X }, { Vector3.new(0, 1, 0), bsz.Y },
 	               { Vector3.new(0, 0, 1), bsz.Z } }
@@ -295,11 +370,12 @@ local function gripFor(model)
 		end
 	end
 	local headSide = ((tot > 0 and sum / tot or 0) >= 0) and 1 or -1
-	if AXE_FLIP then headSide = -headSide end
-	local gripPos = (bcf * CFrame.new(ax * (-headSide * len * AXE_GRIP))).Position
+	if SAW_FLIP then headSide = -headSide end
+	local gripPos = (bcf * CFrame.new(ax * (-headSide * len * SAW_GRIP))).Position
 	local headDir = (bcf - bcf.Position) * (ax * headSide)
 	if headDir.Magnitude < 0.01 then headDir = Vector3.new(0, 1, 0) end
-	print(("[Smores] axe grip: shaft %.1f studs, head toward %s"):format(len, tostring(headDir)))
+	print(("[Smores] saw grip: derived -- longest axis %.1f studs, business end toward %s")
+		:format(len, tostring(headDir)))
 	-- -Z of this frame runs up the shaft toward the head
 	return CFrame.lookAt(gripPos, gripPos + headDir)
 end
@@ -316,23 +392,30 @@ local function biggestPart(inst)
 	return best
 end
 
--- (!) THE AXE EXISTS ON YOUR SCREEN ONLY -- this is a LocalScript and the copy is made here, so
--- to everyone else on the island you are miming a chop bare-handed. _G.CarrySay tells CarryView
--- to put a simple axe in your hand on their screens; see CarryView.client.luau. Called through
--- _G so this file needs no extra local, and pcall'd so a missing CarryView is silent, not fatal.
-local function takeAxe()
-	if axeHeld then axeHeld:Destroy(); axeHeld = nil; axeHold = nil; print("[Smores] axe taken back") end
+-- (!) THE SAW EXISTS ON YOUR SCREEN ONLY -- this is a LocalScript and the copy is made here, so
+-- to everyone else on the island you are miming a cut bare-handed. _G.CarrySay tells CarryView
+-- to put a simple chainsaw in your hand on their screens; see CarryView.client.luau. Called
+-- through _G so this file needs no extra local, and pcall'd so a missing CarryView is silent,
+-- not fatal.
+local function takeSaw()
+	if sawHeld then
+		sawHeld:Destroy(); sawHeld = nil; sawHold = nil
+		print("[Smores] chainsaw taken back")
+	end
+	-- (!) CLEARED WITH THE MODEL. The chain loop below reads sawChain.bar every frame; leaving a
+	-- table full of destroyed parts behind is one branch away from writing CFrames to nothing.
+	sawChain = nil
 	pcall(_G.CarrySay, nil)
 end
 
-local function giveAxe()
-	if axeHeld or not axeTemplate then return end
+local function giveSaw()
+	if sawHeld or not sawTemplate then return end
 	local char = player.Character
 	local hand = char and (char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm"))
 	if not hand then return end                       -- retried by the watcher below
 
-	local c = axeTemplate:Clone()
-	c.Name = "AxeHeld"
+	local c = sawTemplate:Clone()
+	c.Name = "ChainsawHeld"
 	local root = biggestPart(c)
 	if not root then c:Destroy(); return end
 	if c:IsA("Model") then c.PrimaryPart = root end
@@ -340,55 +423,172 @@ local function giveAxe()
 	local grip = gripFor(c)
 	local C1   = root.CFrame:ToObjectSpace(grip)      -- the grip, in the root part's own space
 
+	local teeth, bar = {}, nil
 	for _, d in ipairs(c:IsA("BasePart") and { c } or c:GetDescendants()) do
 		if d:IsA("BasePart") then
-			d.Anchored = false; d.CanCollide = false; d.CanQuery = false
-			d.Massless = true
-			if d ~= root then
-				local wc = Instance.new("WeldConstraint")
-				wc.Part0 = root; wc.Part1 = d; wc.Parent = root
+			d.CanCollide = false; d.CanQuery = false; d.Massless = true
+			if d.Name == "Bar" then bar = d end
+			if d.Name == "Tooth" then
+				-- (!) A TOOTH IS NEVER WELDED AND STAYS ANCHORED. It is written from the bar's
+				-- live CFrame every frame; welding it would nail it to the bar (a chain that
+				-- never moves) and un-anchoring it without a weld would drop it on the floor.
+				teeth[#teeth + 1] = d
+			else
+				d.Anchored = false
+				if d ~= root then
+					local wc = Instance.new("WeldConstraint")
+					wc.Part0 = root; wc.Part1 = d; wc.Parent = root
+				end
 			end
 		end
 	end
 
 	c.Parent = char
-	axeHold = Instance.new("Weld")
-	axeHold.Name = "AxeHold"
-	axeHold.Part0 = hand
-	axeHold.Part1 = root
-	axeHold.C1 = C1
-	axeHold.C0 = CFrame.new(0, -0.35, 0) * CFrame.Angles(math.rad(AXE_PITCH), 0, math.rad(AXE_ROLL))
-	axeHold.Parent = root
-	axeHeld = c
-	pcall(_G.CarrySay, "axe")
-	print("[Smores] axe handed over -- welded into the hand by the handle (shared to other players)")
+	sawHold = Instance.new("Weld")
+	sawHold.Name = "SawHold"
+	sawHold.Part0 = hand
+	sawHold.Part1 = root
+	sawHold.C1 = C1
+	-- the small -Z pushes the grip just ahead of the palm and the -0.42 drops it under the
+	-- fist, so the housing sits in the hand rather than through the wrist
+	sawHold.C0 = CFrame.new(0, -0.42, -0.12) * CFrame.Angles(math.rad(SAW_PITCH), 0, math.rad(SAW_ROLL))
+	sawHold.Parent = root
+	sawHeld = c
+
+	-- ---- what makes it a RUNNING saw rather than a saw-shaped object --------------------
+	-- All three are optional and all three are found BY NAME, so a chainsaw you place in Studio
+	-- gets the chain, the engine note and the exhaust for free the moment its parts are called
+	-- Bar / Tooth / Body / Exhaust -- and one whose parts are named none of those is simply
+	-- held, silently, exactly as the axe used to be.
+	sawChain = nil
+	if bar and #teeth > 0 then
+		-- THE RACETRACK THE TEETH RUN: the straight top and bottom of the bar plus a half-circle
+		-- round each end. L is the half-length of the straight run and H the half-height, both
+		-- MEASURED OFF THE BAR you actually handed us rather than assumed, so a longer bar just
+		-- works. L is shortened by H because the straights stop where the nose curve starts.
+		local H = bar.Size.Y * 0.5
+		sawChain = { bar = bar, teeth = teeth, H = H,
+			L = math.max(0.1, bar.Size.Z * 0.5 - H), phase = 0 }
+	end
+	local body = c:FindFirstChild("Body", true) or root
+	if SOUND_SAW ~= "" and body then
+		-- THE ENGINE. The mill blade's id -- a known-good asset in this place -- looped and
+		-- pitched DOWN to an idle. Volume and pitch both ride the cut in the loop below, so
+		-- burying the bar in a trunk sounds nothing like standing there holding it.
+		local snd = Instance.new("Sound")
+		snd.Name = "SawEngine"; snd.SoundId = SOUND_SAW; snd.Looped = true
+		snd.Volume = 0.16; snd.PlaybackSpeed = 0.7
+		snd.RollOffMinDistance = 8; snd.RollOffMaxDistance = 70
+		snd.Parent = body; snd:Play()
+		if sawChain then sawChain.snd = snd end
+	end
+	local ex = c:FindFirstChild("Exhaust", true)
+	if ex and ex:IsA("BasePart") then
+		local sm = Instance.new("ParticleEmitter")
+		sm.Texture = "rbxasset://textures/particles/smoke_main.dds"
+		sm.Color = ColorSequence.new(Color3.fromRGB(200, 198, 194))
+		sm.Size = NumberSequence.new(0.35); sm.Lifetime = NumberRange.new(0.4, 0.8)
+		sm.Rate = 0; sm.Speed = NumberRange.new(1.5, 3); sm.SpreadAngle = Vector2.new(24, 24)
+		sm.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.55),
+			NumberSequenceKeypoint.new(1, 1) })
+		sm.Parent = ex
+		if sawChain then sawChain.smoke = sm end
+	end
+
+	pcall(_G.CarrySay, "chainsaw")
+	print(("[Smores] chainsaw handed over -- welded into the hand by the grip, %d chain teeth "
+		.. "running (shared to other players)"):format(#teeth))
 end
 
--- the swing is an animation of the weld, so the arm and the axe move together
-RunService.RenderStepped:Connect(function()
-	if not (axeHold and axeHold.Parent) then return end
-	local sw = 0
-	if axeSwingUntil and os.clock() < axeSwingUntil then
-		sw = math.sin((1 - (axeSwingUntil - os.clock()) / 0.55) * math.pi)
+-- ============================================================================
+-- THE SAW, EVERY FRAME: buzz, bite, chain, engine note, exhaust
+-- ============================================================================
+-- ⚠ THE AXE'S 120-DEGREE SWING IS GONE, AND IT HAD TO GO. An axe is WOUND UP overhead and
+-- dropped through the cut, which is why the old animation subtracted 120 degrees from the rest
+-- pitch. Doing that with a chainsaw throws a running two-stroke back over your own shoulder
+-- twice a second. A saw does the opposite: it is held STILL and LEANED INTO the wood, and all
+-- the movement you can see is the engine shaking it and the chain going round.
+--
+--   buzz   always on while it is held, harder in the cut -- a running engine is never still,
+--          and that shake is most of what says "running" rather than "prop shaped like a saw"
+--   bite   the cut pushes the bar forward and noses it down, and it EASES OFF between bites,
+--          so chopping reads as repeated bites into the trunk rather than one long shove
+--   chain  the teeth run the racetrack round the bar, forward along the UNDERSIDE, which is
+--          the direction a real saw throws its chips away from the person holding it
+RunService.RenderStepped:Connect(function(dt)
+	if not (sawHold and sawHold.Parent) then return end
+
+	-- 0..1, full the instant a bite lands and easing out over 0.35s. Chopping re-stamps
+	-- sawCutUntil about twice a second, so this pulses rather than sitting pinned at 1.
+	local cut = math.clamp(((sawCutUntil or 0) - os.clock()) / 0.35, 0, 1)
+
+	-- THREE INCOMMENSURATE SINES. One sine is a wobble; three that do not divide into each
+	-- other are a vibration, and the difference is obvious the moment you hold the thing.
+	local buzz = math.rad(SAW_FEEL.idleBuzz + (SAW_FEEL.cutBuzz - SAW_FEEL.idleBuzz) * cut)
+	local n = os.clock() * 57
+	sawHold.C0 = CFrame.new(0, -0.42, -0.12 - 0.42 * cut)
+		* CFrame.Angles(math.rad(SAW_PITCH - 8 * cut) + math.sin(n) * buzz,
+			math.sin(n * 0.71) * buzz,
+			math.rad(SAW_ROLL) + math.sin(n * 1.33) * buzz)
+
+	local ch = sawChain
+	if not (ch and ch.bar and ch.bar.Parent) then return end
+
+	-- ---- THE CHAIN ------------------------------------------------------------------
+	-- The teeth ride one closed loop: the straight top run, a half-circle round the nose, the
+	-- straight underside, a half-circle round the back. Everything is measured in the BAR's own
+	-- frame and multiplied by its live CFrame, so the chain follows the bar through the buzz,
+	-- the bite, the arm animation and your own camera without any of them being accounted for.
+	local L, H = ch.L, ch.H
+	local run  = 4 * L + 2 * math.pi * H            -- total length of the loop
+	-- MINUS, not plus. Advancing the phase the other way runs the cutters backwards along the
+	-- underside, which looks like a saw trying to climb out of the cut at you.
+	ch.phase = (ch.phase
+		- (SAW_FEEL.idleChain + (SAW_FEEL.cutChain - SAW_FEEL.idleChain) * cut) * dt) % run
+	local cf, count = ch.bar.CFrame, #ch.teeth
+	for i, tooth in ipairs(ch.teeth) do
+		local d = (ch.phase + (i - 1) / count * run) % run
+		local y, z
+		if d < 2 * L then                            -- top run, back to front
+			y, z = H, L - d
+		elseif d < 2 * L + math.pi * H then          -- round the nose
+			local a = (d - 2 * L) / H
+			y, z = H * math.cos(a), -L - H * math.sin(a)
+		elseif d < 4 * L + math.pi * H then          -- underside, front to back
+			y, z = -H, -L + (d - 2 * L - math.pi * H)
+		else                                         -- round the back
+			local a = (d - 4 * L - math.pi * H) / H
+			y, z = -H * math.cos(a), L + H * math.sin(a)
+		end
+		tooth.CFrame = cf * CFrame.new(0, y, z)
 	end
-	axeHold.C0 = CFrame.new(0, -0.35, 0)
-		* CFrame.Angles(math.rad(AXE_PITCH - 120 * sw), 0, math.rad(AXE_ROLL))
+
+	-- ---- ENGINE NOTE AND EXHAUST ----------------------------------------------------
+	-- Pitch AND volume, because either one on its own reads as a radio being turned up. A saw
+	-- under load drops in pitch and gets louder; free-running it thins out to a whine.
+	if ch.snd then
+		ch.snd.PlaybackSpeed = 0.7 + 0.55 * cut
+		ch.snd.Volume = 0.16 + 0.34 * cut
+	end
+	if ch.smoke then ch.smoke.Rate = 3 + 22 * cut end
 end)
 
 -- a respawn drops the weld with the old character, so hand it back
 player.CharacterAdded:Connect(function()
-	axeHeld, axeHold = nil, nil
-	task.delay(1.5, function() if step == 1 then giveAxe() end end)
+	-- sawChain goes with them: its teeth and its sound belonged to the OLD character and are
+	-- already gone, and the frame loop must not be left holding a table of destroyed parts.
+	sawHeld, sawHold, sawChain = nil, nil, nil
+	task.delay(1.5, function() if step == 1 then giveSaw() end end)
 end)
 
 -- ============================================================================
 -- THE BACKPACK -- everything you gather goes in it
 -- ============================================================================
--- The NPC hands this over with the axe. Carrying things in your arms capped you at what you
+-- The NPC hands this over with the chainsaw. Carrying things in your arms capped you at what you
 -- could physically hold, which is why six mushrooms would not fit; the pack is the inventory,
 -- and what is in it shows as items poking out of the top.
 --
--- It is WELDED to the torso rather than positioned each frame, for the same reason as the axe:
+-- It is WELDED to the torso rather than positioned each frame, for the same reason as the saw:
 -- an anchored prop driven by CFrame fights the character's animation and reads as floating.
 -- FIT THE HAT TO THE HEAD THAT IS WEARING IT.
 --
@@ -450,14 +650,25 @@ end
 local pack, packSlots = nil, {}
 local hidHair = {}
 
+-- ⚠ WHAT YOU CARRY IS NOT DRAWN. Every gathered log and mushroom used to pop out of the rolled
+-- top of the pack, one prop per slot. It was legible from behind and it was also six lumps of
+-- geometry rotating with your back through every chop, every prompt and every camera angle --
+-- and the same complaint applies as on island11's diamonds: the count belongs on the objective
+-- line, not welded to the player.
+--
+-- The slots are still BUILT (buildBackpack makes them and this is still the one place they are
+-- cleared), so re-showing them is a one-line change here rather than a rebuild -- but nothing is
+-- ever made visible. The pack itself stays: it is worn gear, not cargo, and it is what makes
+-- "it went in your bag" read at all.
+--
+-- The count is not lost: the objective banner already carries "logs n/6" and the mill/campfire
+-- steps read `carried` directly, exactly as before.
 local function refreshPack()
-	for i, sl in ipairs(packSlots) do
-		local item  = carried[i]
-		local isLog = item and item.kind == "log"
-		sl.log.Transparency  = isLog and 0 or 1
-		sl.face.Transparency = isLog and 0 or 1
-		sl.cap.Transparency  = (item and not isLog) and 0 or 1
-		sl.stem.Transparency = (item and not isLog) and 0 or 1
+	for _, sl in ipairs(packSlots) do
+		sl.log.Transparency  = 1
+		sl.face.Transparency = 1
+		sl.cap.Transparency  = 1
+		sl.stem.Transparency = 1
 	end
 end
 
@@ -623,6 +834,28 @@ local function buildBackpack()
 	print(("[Smores] backpack + camp hat on -- hat fitted at %.2f scale"):format(HAT_SCALE))
 end
 
+--[[ HALF a log: the cut half-round the mill produces. `side` is -1 (the piece nearer the
+     operator) or 1. The full log is simply two of these sitting flush, which is what lets the
+     blade genuinely SPLIT it -- before this the log rode through the blade whole and then
+     vanished, so the one thing the machine is for never happened on screen. ]]
+local function buildLogHalf(side)
+	local m = Instance.new("Model"); m.Name = "PineHalf"; m.Parent = camp
+	-- a half-round: the bark shell, flattened on the cut face
+	local body = mk({ Shape = Enum.PartType.Cylinder, Color = PAL.BARK,
+	                  Size = Vector3.new(3.0, 0.9, 0.46),
+	                  CFrame = CFrame.new(0, 0, side * 0.23), Parent = m })
+	-- the SAWN FACE, pale and flat -- this is the surface that tells you it has been cut
+	mk({ Color = PAL.WOOD_L, Size = Vector3.new(3.0, 0.88, 0.06),
+	     CFrame = CFrame.new(0, 0, side * 0.02), Parent = m })
+	for _, e in ipairs({ -1, 1 }) do
+		mk({ Shape = Enum.PartType.Cylinder, Color = PAL.WOOD_L,
+		     Size = Vector3.new(0.1, 0.9, 0.44),
+		     CFrame = CFrame.new(e * 1.5, 0, side * 0.23), Parent = m })
+	end
+	m.PrimaryPart = body; m.WorldPivot = CFrame.new()
+	return m
+end
+
 local function buildLogProp()
 	local m = Instance.new("Model"); m.Name = "PineLog"; m.Parent = camp
 	local body = mk({ Shape = Enum.PartType.Cylinder, Color = PAL.BARK,
@@ -693,25 +926,48 @@ do
 	pd.PaddingLeft = UDim.new(0, 14); pd.PaddingRight = UDim.new(0, 14); pd.Parent = objLabel
 end
 
+--[[ A progress bar the banner CAN show.
+
+     WARNING -- THIS QUEST'S GUI IS NEVER SEEN. objGui is named "SmoresObjective", and
+     ObjectiveBannerBridge hides every "*Objective" ScreenGui and mirrors only the LABEL TEXT
+     onto the realm banner. A Frame-and-fill progress bar built here would be invisible to
+     every player, however good it looked in Studio. Block characters live inside the string,
+     so they survive the mirror and arrive on the banner intact.
+
+     Ten cells: filled, then hollow, then the raw count for anyone who wants the number. ]]
+local function bar(done, total)
+	local n = 10
+	local f = (total > 0) and math.clamp(done / total, 0, 1) or 0
+	local full = math.floor(f * n + 0.5)
+	return ("%s%s  %d/%d"):format(string.rep("\u{25AE}", full),
+		string.rep("\u{25AF}", n - full), done, total)
+end
+
 refreshBanner = function()
 	local txt
 	if milling then
-		objLabel.Text = ("\xF0\x9F\xAA\x9A Sawing a roasting stick...  %d strokes left"):format(millLeft)
+		-- the saw gets a bar too: "3 taps to go" is a number you have to hold in your head,
+		-- where a bar filling toward the end of the cut is just visible progress
+		objLabel.Text = ("\xF0\x9F\xAA\x9A SAWING   %s")
+			:format(bar(MILL_STROKES - millLeft, MILL_STROKES))
 		return
 	end
 	if step >= 5 then
 		txt = "\xF0\x9F\x8F\x95 The campsite is complete. Enjoy the fire!"
 	elseif step == 4 then
-		txt = ("\xF0\x9F\x94\xA5 Take the mallows to the Candy Npc:  %d/%d sticks loaded")
-			:format(loaded, #sticks)
+		txt = ("\xF0\x9F\x94\xA5 STEP 5/5  Take the mallows to the Candy NPC   %s")
+			:format(bar(loaded, #sticks))
 	elseif step == 3 then
-		txt = ("\xF0\x9F\x8D\x84 Gather Mallow Mushrooms:  %d/%d"):format(shroomsHeld, SHROOMS_NEEDED)
+		txt = ("\xF0\x9F\x8D\xA1 STEP 4/5  Pick marshmallows around the camp   %s")
+			:format(bar(shroomsHeld, SHROOMS_NEEDED))
 	elseif step == 2 then
-		txt = ("\xF0\x9F\xAA\x93 Mill your logs, one at a time:  %d/%d"):format(logsMilled, LOGS_NEEDED)
+		txt = ("\xF0\x9F\xAA\x93 STEP 3/5  Mill the logs   %s")
+			:format(bar(logsMilled, LOGS_NEEDED))
 	elseif step == 1 then
-		txt = ("\xF0\x9F\x8C\xB2 Chop Pine Trees:  %d/%d"):format(logsMilled + logsHeld, LOGS_NEEDED)
+		txt = ("\xF0\x9F\x8C\xB2 STEP 2/5  Saw down pines -- TAP to rev the chainsaw   %s")
+			:format(bar(logsMilled + logsHeld, LOGS_NEEDED))
 	else
-		txt = "\xF0\x9F\x8F\x95 Talk to the Candy Npc to start the campsite."
+		txt = "\xF0\x9F\x8F\x95 STEP 1/5  Talk to the Candy NPC -- follow the arrow"
 	end
 	objLabel.Text = txt
 end
@@ -737,15 +993,46 @@ end)
 local millBlade, millBladeCF, millAng, millCradle, millOut
 local millCarriage, millCarryCF, millLever, millLeverCF, millDust
 local millDrive, millDriveCF
+local millSawdust                  -- the heap under the blade; grows one cut at a time
+local millBelt = {}                -- the cleats on the drive belt; they travel while it runs
+local millLoad = 0                 -- 0 free-running .. 1 biting; drives blade speed + pitch
 local millSnd                      -- the looped saw; built with the station, faded while cutting
 
 -- Blade and flywheel sit on the SAME SHAFT, so one call turns both. They're Models rather than
 -- bare parts because the teeth and spokes have to travel with them -- a smooth disc spinning
 -- inside a static ring of teeth reads as broken.
 local function spinMill(d)
+	-- ⚠ THE BLADE BOGS DOWN IN THE CUT. A saw that holds a constant speed whether it is in
+	-- fresh air or halfway through a pine reads as a spinning decoration. millLoad rises the
+	-- moment a stroke lands and bleeds off after, so the disc visibly labours and recovers --
+	-- and the loop that owns the sound drops its pitch on the same value.
+	millLoad = math.max(0, millLoad - 0.02)
+	d = d * (1 - millLoad * 0.55)
 	millAng = (millAng or 0) + d
+	-- the belt cleats travel with the shaft, so the drive reads as connected
+	for _, c in ipairs(millBelt) do
+		local f = (c.f + (millAng * 0.06) * (c.up and 1 or -1)) % 1
+		c.part.CFrame = c.at * CFrame.new(0, (c.up and 6.05 or 3.45), -c.span * f)
+	end
 	if millBlade and millBladeCF then millBlade:PivotTo(millBladeCF * CFrame.Angles(millAng, 0, 0)) end
 	if millDrive and millDriveCF then millDrive:PivotTo(millDriveCF * CFrame.Angles(millAng * 0.28, 0, 0)) end
+end
+
+-- Where the finished halves live. Filled by stackCut as each cut completes.
+local millStack = {}
+
+--[[ Lay one cut log's two halves on the out-rack. `n` is how many cuts were already done, so
+     they tier up in rows of two -- a stack that grows sideways then upward, the way a sawyer
+     would actually pile them. ]]
+local function stackCut(a, b, n)
+	if not millOut then a:Destroy(); b:Destroy(); return end
+	local row  = n % 3          -- three pairs to a layer
+	local tier = math.floor(n / 3)
+	local base = millOut * CFrame.new(-1.2 - row * 1.05, -1.5 + tier * 0.95, 0)
+	a:PivotTo(base * CFrame.Angles(0, math.rad(90), 0) * CFrame.new(0, 0, -0.3))
+	b:PivotTo(base * CFrame.Angles(0, math.rad(90), 0) * CFrame.new(0, 0, 0.3))
+	millStack[#millStack + 1] = a
+	millStack[#millStack + 1] = b
 end
 
 local function buildMill(part)
@@ -834,6 +1121,89 @@ local function buildMill(part)
 	millCradle = at * CFrame.new(6.6, 3.6, 0)
 	millOut    = at * CFrame.new(-6.6, 3.6, 0)
 
+	-- ---- WHAT HOLDS THE BLADE UP -------------------------------------------------------
+	-- The blade, its flywheel and the belt all sat 2.2 studs ABOVE the bench with nothing
+	-- between: a shaft assembly floating in mid-air. Two posts up from the bench top into
+	-- bearing blocks at the shaft ends is what carries the load in a real bench saw, and it is
+	-- the piece your eye looks for without knowing it.
+	--
+	-- ⚠ AT Z +/- 2.1, NOT NEARER. The log rides through lying along Z and spans +/- 1.5, so a
+	-- post at 1.7 would have its inner face at 1.35 -- inside the log's path, and every cut
+	-- would drive the log straight through the machine's own frame.
+	for _, pz in ipairs({ -2.1, 2.1 }) do
+		piece({ Color = PAL.WOOD_D, Size = Vector3.new(0.75, 2.5, 0.75), CanCollide = true },
+			at * CFrame.new(0, 4.05, pz))
+		piece({ Color = PAL.IRON_D, Size = Vector3.new(1.15, 1.0, 1.15) },
+			at * CFrame.new(0, 5.1, pz * 0.93))                       -- bearing block
+		piece({ Color = PAL.IRON, Shape = Enum.PartType.Cylinder,
+			Size = Vector3.new(0.5, 0.55, 0.55) },
+			at * CFrame.new(0, 5.1, pz * 0.93) * CFrame.Angles(0, math.rad(90), 0))
+		-- a diagonal brace back to the bench, so the posts are not two bare sticks
+		piece({ Color = PAL.WOOD, Size = Vector3.new(0.4, 2.2, 0.4) },
+			at * CFrame.new(0, 3.9, pz * 1.5) * CFrame.Angles(math.rad(pz > 0 and -26 or 26), 0, 0))
+	end
+
+	-- ---- THE SAWDUST CHUTE -------------------------------------------------------------
+	-- The heap on the floor had nothing above it explaining how it got there. A slot under the
+	-- blade and a board angled down to the pile closes that loop: dust falls through the bench,
+	-- runs down the chute, lands where the heap is growing. Kept BELOW y 2.2 -- the log rides
+	-- at 3.6, so nothing here can foul its run.
+	piece({ Color = Color3.fromRGB(28, 24, 20), Size = Vector3.new(1.6, 0.16, 3.4) },
+		at * CFrame.new(0, 2.93, 0))                                  -- the slot the dust drops through
+	piece({ Color = PAL.WOOD, Size = Vector3.new(2.4, 0.2, 3.6) },
+		at * CFrame.new(0, 1.5, 0.55) * CFrame.Angles(math.rad(34), 0, 0))
+	for _, cz in ipairs({ -1.7, 1.7 }) do
+		piece({ Color = PAL.WOOD_D, Size = Vector3.new(2.4, 0.5, 0.16) },
+			at * CFrame.new(0, 1.62, 0.55 + cz * 0.02) * CFrame.Angles(math.rad(34), 0, 0)
+				* CFrame.new(0, 0.2, cz))                             -- side walls of the chute
+	end
+
+	-- ---- THE LOG DECK ------------------------------------------------------------------
+	-- Where logs wait before they are fed. It is the one part of a sawmill that says what the
+	-- machine is FOR at a glance, and it gives the in-feed end something to be.
+	for _, dz in ipairs({ -1.5, 1.5 }) do
+		piece({ Color = PAL.WOOD_D, Size = Vector3.new(4.0, 0.5, 0.6), CanCollide = true },
+			at * CFrame.new(10.2, 2.2, dz))
+		piece({ Color = PAL.WOOD_D, Size = Vector3.new(0.55, 2.0, 0.55), CanCollide = true },
+			at * CFrame.new(10.2, 1.2, dz))
+	end
+	for i = 1, 3 do
+		piece({ Shape = Enum.PartType.Cylinder, Color = PAL.BARK,
+			Size = Vector3.new(3.2, 1.0, 1.0), CastShadow = true },
+			at * CFrame.new(9.6 + (i % 2) * 1.1, 2.95 + math.floor((i - 1) / 2) * 0.95, 0)
+				* CFrame.Angles(0, math.rad(90), 0))
+		piece({ Shape = Enum.PartType.Cylinder, Color = PAL.WOOD_L,
+			Size = Vector3.new(0.12, 1.02, 1.02) },
+			at * CFrame.new(9.6 + (i % 2) * 1.1, 2.95 + math.floor((i - 1) / 2) * 0.95, -1.55)
+				* CFrame.Angles(0, math.rad(90), 0))
+	end
+
+	-- ---- BLADE GUARD, ROLLERS AND A SAWDUST PILE ---------------------------------------
+	-- An exposed disc on a bench reads as a wheel. A hood over the top half of it is what says
+	-- SAW: it is the shape every real bench saw has, and it hides the blade exactly where the
+	-- log is not, so it never blocks the cut you want to watch.
+	for k = 0, 6 do
+		local a = math.rad(20 + k * 23)
+		piece({ Color = PAL.IRON_D, Size = Vector3.new(0.7, 0.34, 0.42) },
+			at * CFrame.new(0, 3.9 + math.sin(a) * 2.3, math.cos(a) * 2.3)
+				* CFrame.Angles(-a, 0, 0))
+	end
+	piece({ Color = PAL.IRON, Size = Vector3.new(0.9, 0.28, 0.28) }, at * CFrame.new(0, 6.35, 0))
+
+	-- IN-FEED ROLLERS either side of the blade: they explain how the log is held straight
+	-- while it is pushed through, and they break up the long bare rail.
+	for _, rx in ipairs({ 2.4, -2.4 }) do
+		piece({ Shape = Enum.PartType.Cylinder, Color = PAL.IRON,
+			Size = Vector3.new(2.8, 0.5, 0.5) },
+			at * CFrame.new(rx, 3.15, 0) * CFrame.Angles(0, 0, math.rad(90)))
+	end
+
+	-- THE SAWDUST PILE under the blade. It starts flat and is grown by growSawdust() on every
+	-- cut, so the mess accumulates over the seven logs -- the same "the pile is the progress
+	-- bar" idea as the out-rack stack.
+	millSawdust = piece({ Color = PAL.WOOD_L, Shape = Enum.PartType.Ball,
+		Size = Vector3.new(1.6, 0.3, 1.6) }, at * CFrame.new(0, 0.16, 0))
+
 	-- ---- THE CARRIAGE. A log riding a bare rail looks like it is floating; a wheeled carriage
 	-- underneath it explains the motion and gives the cut something to travel on.
 	millCarryCF  = millCradle
@@ -900,6 +1270,27 @@ local function buildMill(part)
 	-- gives the whole station something large and slow turning behind the fast little blade.
 	millDrive   = Instance.new("Model"); millDrive.Name = "DriveWheel"; millDrive.Parent = f
 	millDriveCF = at * CFrame.new(0, 4.4, -6.4) * CFrame.Angles(0, math.rad(90), 0)
+
+	-- ---- THE DRIVE BELT ------------------------------------------------------------------
+	-- A flywheel and a blade turning in sympathy with nothing between them is two spinning
+	-- discs; a belt is what makes one DRIVE the other. Two straight runs (the taut top and the
+	-- slack-ish bottom) between the blade shaft at (0, 5.1, 0) and the flywheel at (0, 4.4,
+	-- -6.4), plus cleats that travel along them while the saw is running.
+	local bA, bB = Vector3.new(0, 5.1, 0), Vector3.new(0, 4.4, -6.4)
+	local span = (bB - bA).Magnitude
+	for _, off in ipairs({ 0.95, -0.95 }) do
+		local mid = at * CFrame.new((bA + bB) * 0.5 + Vector3.new(0, off, 0))
+		piece({ Color = PAL.IRON_D, Size = Vector3.new(0.16, 0.22, span) },
+			mid * CFrame.Angles(math.rad(off > 0 and -3 or 3), 0, 0))
+	end
+	-- eight cleats, spaced along the belt loop; the run loop below slides them
+	for i = 1, 8 do
+		local up = (i <= 4)
+		local f = ((i - 1) % 4) / 4
+		local cl = piece({ Color = PAL.IRON, Size = Vector3.new(0.24, 0.3, 0.34) },
+			at * CFrame.new(0, (up and 6.05 or 3.45), -span * f))
+		millBelt[#millBelt + 1] = { part = cl, up = up, f = f, at = at, span = span }
+	end
 	local dhub = piece({ Shape = Enum.PartType.Cylinder, Color = PAL.WOOD_D,
 		Size = Vector3.new(0.7, 1.6, 1.6) }, millDriveCF, millDrive)
 	for i = 1, 6 do                                        -- rim laid as 6 flat segments
@@ -1044,7 +1435,7 @@ end
 -- would have meant two sets of tuning to keep in step.
 --
 -- Input goes through a full-screen invisible button rather than UserInputService, so a tap
--- meant for the mini-game cannot also swing the axe, and it works on touch without a second
+-- meant for the mini-game cannot also rev the saw, and it works on touch without a second
 -- code path.
 local mgGui = Instance.new("ScreenGui")
 mgGui.Name = "SmoresMiniGame"; mgGui.ResetOnSpawn = false; mgGui.DisplayOrder = 9
@@ -1058,69 +1449,142 @@ mgCatch.Parent = mgGui
 local mgPanel = Instance.new("Frame")
 mgPanel.Size = UDim2.new(0, 540, 0, 152)
 mgPanel.Position = UDim2.new(0.5, -270, 0.74, 0)
-mgPanel.BackgroundColor3 = PAL.PANEL; mgPanel.BackgroundTransparency = 0.12
+-- ⚠ BRIGHT, NOT DARK. This was PAL.PANEL (34,30,24) -- a near-black slab, which is the one
+-- thing this realm's HUD palette rules out: every other card here is the house blue/white/
+-- lime/gold, and a black panel in the middle of them reads as a different game's UI.
+-- Only COLOUR and CHILDREN are touched below. Size and Position belong to _G.housePanel,
+-- which re-asserts them and names anyone who writes them after adoption.
+mgPanel.BackgroundColor3 = Color3.fromRGB(255, 252, 246); mgPanel.BackgroundTransparency = 0
 mgPanel.BorderSizePixel = 0; mgPanel.ZIndex = 2; mgPanel.Parent = mgGui
--- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+do
+	-- a whisper of vertical gradient: a flat fill reads as printed, a graded one as lit
+	local g = Instance.new("UIGradient")
+	g.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(240, 232, 250))
+	g.Rotation = 90; g.Parent = mgPanel
+end
+-- HOUSE PANEL: the house 700x260 task card, centred in the free band, and the bottom
 -- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
 -- The panel keeps its own size and every child keeps its own pixel coordinates;
 -- it is centred in the house shell and scaled to fit, so nothing inside moves.
+mgPanel:SetAttribute("WantsHousePanel", true)   -- adopted by attribute, so load order cannot lose it
 pcall(_G.housePanel, mgPanel)   -- island14 mill minigame
 Instance.new("UICorner", mgPanel).CornerRadius = UDim.new(0, 16)
 local mgStroke = Instance.new("UIStroke")
-mgStroke.Color = PAL.FLAME; mgStroke.Thickness = 3; mgStroke.Transparency = 0.15
-mgStroke.Parent = mgPanel
+mgStroke.Color = Color3.fromRGB(255, 122, 190); mgStroke.Thickness = 4
+mgStroke.Transparency = 0; mgStroke.Parent = mgPanel
 
 local mgTitle = Instance.new("TextLabel")
-mgTitle.Size = UDim2.new(1, -24, 0, 32); mgTitle.Position = UDim2.new(0, 12, 0, 10)
+-- ⚠ LAID OUT IN SCALE, NOT IN PIXELS FROM A 540x152 STRIP.
+-- _G.housePanel RESIZES this panel to the house card (700x260). These children were authored
+-- for the 540x152 panel it used to be, in fixed pixel offsets -- so after adoption they all
+-- huddled in the top-left corner and well over half the card was dead space. Anchoring the
+-- rows in SCALE means the layout fills whatever the house card is today, and keeps filling it
+-- if that card is ever resized again.
+mgTitle.Size = UDim2.new(1, -200, 0, 46); mgTitle.Position = UDim2.new(0, 26, 0, 18)
 mgTitle.BackgroundTransparency = 1; mgTitle.Font = Enum.Font.GothamBlack
-mgTitle.TextSize = 22; mgTitle.TextColor3 = Color3.fromRGB(255, 246, 232)
+mgTitle.TextSize = 30; mgTitle.TextColor3 = Color3.fromRGB(74, 38, 66)
 mgTitle.TextXAlignment = Enum.TextXAlignment.Left; mgTitle.ZIndex = 3
 mgTitle.Text = ""; mgTitle.Parent = mgPanel
 
 local mgCount = Instance.new("TextLabel")
-mgCount.Size = UDim2.new(0, 120, 0, 32); mgCount.Position = UDim2.new(1, -132, 0, 10)
+mgCount.Size = UDim2.new(0, 160, 0, 46); mgCount.Position = UDim2.new(1, -186, 0, 18)
 mgCount.BackgroundTransparency = 1; mgCount.Font = Enum.Font.GothamBlack
-mgCount.TextSize = 22; mgCount.TextColor3 = PAL.FLAME
+mgCount.TextSize = 32; mgCount.TextColor3 = Color3.fromRGB(226, 142, 30)
 mgCount.TextXAlignment = Enum.TextXAlignment.Right; mgCount.ZIndex = 3
 mgCount.Text = ""; mgCount.Parent = mgPanel
 
 local mgTrack = Instance.new("Frame")
-mgTrack.Size = UDim2.new(1, -32, 0, 44); mgTrack.Position = UDim2.new(0, 16, 0, 52)
-mgTrack.BackgroundColor3 = Color3.fromRGB(22, 20, 17); mgTrack.BorderSizePixel = 0
+-- the track IS the mini-game, so it gets the whole middle band of the card rather than a
+-- 44px sliver near the top -- a wider, taller groove is also a fairer target to hit
+mgTrack.Size = UDim2.new(1, -52, 0.3, 0); mgTrack.Position = UDim2.new(0, 26, 0.3, 0)
+mgTrack.BackgroundColor3 = Color3.fromRGB(232, 226, 242); mgTrack.BorderSizePixel = 0
 mgTrack.ClipsDescendants = true; mgTrack.ZIndex = 3; mgTrack.Parent = mgPanel
-Instance.new("UICorner", mgTrack).CornerRadius = UDim.new(0, 10)
+Instance.new("UICorner", mgTrack).CornerRadius = UDim.new(0, 12)
+do
+	-- an inset rim, so the track reads as a groove the needle runs IN rather than a bar
+	-- painted on top of the card
+	local st = Instance.new("UIStroke")
+	st.Color = Color3.fromRGB(206, 196, 222); st.Thickness = 2; st.Parent = mgTrack
+end
 
 local mgZone = Instance.new("Frame")
 mgZone.Size = UDim2.new(0.2, 0, 1, 0); mgZone.Position = UDim2.new(0.4, 0, 0, 0)
-mgZone.BackgroundColor3 = Color3.fromRGB(92, 196, 96); mgZone.BackgroundTransparency = 0.25
+mgZone.BackgroundColor3 = Color3.fromRGB(150, 226, 96); mgZone.BackgroundTransparency = 0.1
 mgZone.BorderSizePixel = 0; mgZone.ZIndex = 4; mgZone.Parent = mgTrack
-Instance.new("UICorner", mgZone).CornerRadius = UDim.new(0, 8)
+Instance.new("UICorner", mgZone).CornerRadius = UDim.new(0, 10)
+do
+	-- THE ZONE IS THE WHOLE GAME -- it is the thing you are aiming at, and at 0.25
+	-- transparency on a black track it was the quietest element on the card. Solid lime with
+	-- a darker rim, so where to hit is the first thing your eye finds.
+	local zs = Instance.new("UIStroke")
+	zs.Color = Color3.fromRGB(92, 168, 52); zs.Thickness = 2; zs.Parent = mgZone
+	local zg = Instance.new("UIGradient")
+	zg.Color = ColorSequence.new(Color3.fromRGB(196, 242, 140), Color3.fromRGB(132, 208, 84))
+	zg.Rotation = 90; zg.Parent = mgZone
+end
 
 local mgFill = Instance.new("Frame")
-mgFill.Size = UDim2.new(0, 0, 1, 0); mgFill.BackgroundColor3 = PAL.FLAME
-mgFill.BackgroundTransparency = 0.55; mgFill.BorderSizePixel = 0
+mgFill.Size = UDim2.new(0, 0, 1, 0); mgFill.BackgroundColor3 = Color3.fromRGB(255, 186, 74)
+mgFill.BackgroundTransparency = 0.18; mgFill.BorderSizePixel = 0
 mgFill.ZIndex = 5; mgFill.Parent = mgTrack
+Instance.new("UICorner", mgFill).CornerRadius = UDim.new(0, 12)
+do
+	local fg = Instance.new("UIGradient")
+	fg.Color = ColorSequence.new(Color3.fromRGB(255, 214, 130), Color3.fromRGB(246, 146, 60))
+	fg.Parent = mgFill
+end
 
 local mgNeedle = Instance.new("Frame")
-mgNeedle.Size = UDim2.new(0, 6, 1, 0); mgNeedle.BackgroundColor3 = Color3.fromRGB(255, 250, 240)
+mgNeedle.Size = UDim2.new(0, 12, 1, 10); mgNeedle.Position = UDim2.new(0, 0, 0, -5)
+mgNeedle.BackgroundColor3 = Color3.fromRGB(74, 38, 66)
 mgNeedle.BorderSizePixel = 0; mgNeedle.ZIndex = 6; mgNeedle.Parent = mgTrack
+do
+	-- taller than the track and rounded, so it reads as a marker sitting ACROSS the groove.
+	-- A 6px white sliver on a white-ish track would vanish exactly when it matters.
+	Instance.new("UICorner", mgNeedle).CornerRadius = UDim.new(0, 5)
+	local ns = Instance.new("UIStroke")
+	ns.Color = Color3.fromRGB(255, 255, 255); ns.Thickness = 2; ns.Parent = mgNeedle
+end
+
+-- ---- STROKE TICKS -------------------------------------------------------------------
+-- MILL_STROKES notches across the groove, so the bar is COUNTABLE. A smooth fill tells you
+-- roughly how far along you are; notches tell you "three more" -- and knowing there are three
+-- more is the difference between mashing hopefully and mashing to a finish line.
+for i = 1, MILL_STROKES - 1 do
+	local tick = Instance.new("Frame")
+	tick.Size = UDim2.new(0, 2, 0.55, 0)
+	tick.Position = UDim2.new(i / MILL_STROKES, -1, 0.225, 0)
+	tick.BackgroundColor3 = Color3.fromRGB(198, 188, 216)
+	tick.BackgroundTransparency = 0.35
+	tick.BorderSizePixel = 0; tick.ZIndex = 6; tick.Parent = mgTrack
+end
 
 local mgHint = Instance.new("TextLabel")
-mgHint.Size = UDim2.new(1, -32, 0, 26); mgHint.Position = UDim2.new(0, 16, 0, 106)
+mgHint.Size = UDim2.new(1, -52, 0.16, 0); mgHint.Position = UDim2.new(0, 26, 0.7, 0)
 mgHint.BackgroundTransparency = 1; mgHint.Font = Enum.Font.GothamMedium
-mgHint.TextSize = 16; mgHint.TextColor3 = Color3.fromRGB(206, 198, 186)
+mgHint.TextSize = 20; mgHint.TextColor3 = Color3.fromRGB(132, 106, 128)
 mgHint.TextXAlignment = Enum.TextXAlignment.Left; mgHint.ZIndex = 3
 mgHint.Text = ""; mgHint.Parent = mgPanel
+
+-- One reused pop label. Creating a fresh TextLabel per tap would churn a dozen Instances
+-- through a four-second mash; one label that restarts its own tween does the same job.
+local mgPop = Instance.new("TextLabel")
+mgPop.Size = UDim2.new(0, 160, 0, 40); mgPop.BackgroundTransparency = 1
+mgPop.Font = Enum.Font.GothamBlack; mgPop.TextSize = 30
+mgPop.TextColor3 = Color3.fromRGB(226, 142, 30)
+mgPop.TextStrokeTransparency = 0.6
+mgPop.TextStrokeColor3 = Color3.fromRGB(255, 255, 255)
+mgPop.ZIndex = 9; mgPop.Visible = false; mgPop.Parent = mgPanel
 
 local mgBusy = false
 
 local function mgFlash(good)
-	mgStroke.Color = good and Color3.fromRGB(120, 220, 120) or Color3.fromRGB(224, 76, 60)
+	mgStroke.Color = good and Color3.fromRGB(86, 190, 72) or Color3.fromRGB(226, 62, 84)
 	-- THE POP IS A SCALE, NOT A RESIZE. It used to punch Size to 552x156 and tween back to
 	-- 540x152 -- fine when the panel owned its own size, but _G.housePanel now sets every task
-	-- HUD to the house 700x520, and this was the one place that wrote Size AFTER adoption. The
-	-- first correct answer in the mini-game would have shrunk the card to a 540x152 strip and
-	-- left it there, permanently out of step with every other HUD.
+	-- HUD to the house card (now 700x260), and this was the one place that wrote Size AFTER
+	-- adoption. The first correct answer in the mini-game would have shrunk it to a 540x152 strip
+	-- and left it there, permanently out of step with every other HUD.
 	--
 	-- Scaling gets the identical punch without touching the geometry the house card depends on.
 	-- housePanel sets this UIScale once at adopt and never writes it again, so it is ours to move.
@@ -1129,7 +1593,7 @@ local function mgFlash(good)
 		us.Scale = 1.022
 		tween(us, 0.16, { Scale = 1 })
 	end
-	task.delay(0.18, function() mgStroke.Color = PAL.FLAME end)
+	task.delay(0.18, function() mgStroke.Color = Color3.fromRGB(255, 122, 190) end)
 end
 
 local function mgOpen(title, hint, showZone)
@@ -1137,98 +1601,175 @@ local function mgOpen(title, hint, showZone)
 	mgTitle.Text = title; mgHint.Text = hint; mgCount.Text = ""
 	mgFill.Size = UDim2.new(0, 0, 1, 0)
 	mgGui.Enabled = true
-	mgPanel.Position = UDim2.new(0.5, -270, 0.82, 0)
-	tween(mgPanel, 0.22, { Position = UDim2.new(0.5, -270, 0.74, 0) }, Enum.EasingStyle.Back)
+	-- ===== SCALE POP, NOT A SLIDE (same fix the island 13 wrench needed) =====
+	-- This wrote Position AFTER adoption: (0.5,-270, 0.82) -> (0.5,-270, 0.74). Those are SCREEN
+	-- coordinates from before _G.housePanel adopted this panel. Inside the 700x260 shell the same
+	-- UDim2 resolves to x = 0.5*700 - 270 = 80, y = 0.74*260 = 192 -- low and left of centre, with
+	-- half the card outside the house frame, while every other task HUD sat dead centre.
+	-- The Size punch in mgFlash was already converted to a UIScale for exactly this reason; the
+	-- open/close slide was missed. housePanel writes this UIScale once at adopt and never again.
+	do
+		local us = mgPanel:FindFirstChildOfClass("UIScale")
+		if us then
+			us.Scale = 0.92
+			tween(us, 0.22, { Scale = 1 }, Enum.EasingStyle.Back)
+		end
+	end
 end
 
 local function mgClose()
-	tween(mgPanel, 0.18, { Position = UDim2.new(0.5, -270, 0.84, 0) })
+	-- close: shrink away rather than slide, for the same reason as mgOpen above
+	do
+		local us = mgPanel:FindFirstChildOfClass("UIScale")
+		if us then tween(us, 0.18, { Scale = 0.92 }) end
+	end
 	task.delay(0.2, function() mgGui.Enabled = false end)
 end
 
--- SAWING. The needle runs the track and you tap it inside the band. Every landed stroke
--- speeds it up and narrows the band, so the last cut is the hard one -- otherwise it is the
--- same tap eight times over and there is nothing to get better at.
+-- SAWING -- A MASH, NOT A TIMING TEST (picked from the options). It used to be a needle sweeping
+-- a track that you tapped inside a shrinking green band -- a skill game, but an abstract one, and
+-- the wrong kind of pressure for the age this realm is built for. Now EVERY TAP SHOVES THE LOG
+-- ONE NOTCH INTO THE BLADE: no aiming, no window, just speed. The fill bar is the log's travel,
+-- the carriage out in the world lurches forward on the same beat (onStroke drives it, exactly as
+-- before), and every tap lands a flash, the saw bite, and a haptic tick.
+--
+-- IT CANNOT BE FAILED, only sawed slowly: nothing decays, no tap is ever "wrong". The one guard
+-- is a 0.09s cooldown per tap, so a turbo-clicker saws fast rather than instantly. The needle
+-- and the green zone from the old game stay hidden for the duration.
 local function playSaw(strokes, onStroke)
 	if mgBusy then return false end
 	mgBusy = true
-	mgOpen("SAW THE LOG", "Tap when the blade is inside the green", true)
+	mgOpen("SAW THE LOG", "TAP FAST -- every tap shoves the log into the blade!", false)
+	mgNeedle.Visible = false
+	mgCount.Text = ("0 / %d"):format(strokes)
 
-	local hit, pos, dir, speed = 0, 0, 1, 0.55
-	local zc, zw = 0.5, 0.24
-	local tapped = false
-	local conn = mgCatch.MouseButton1Down:Connect(function() tapped = true end)
+	local hit, lastTap, streak = 0, 0, 0
+	local conn = mgCatch.MouseButton1Down:Connect(function()
+		if hit >= strokes or os.clock() - lastTap < 0.09 then return end
+		local gap = os.clock() - lastTap
+		lastTap = os.clock()
+		hit += 1
 
-	local function drawZone()
-		mgZone.Position = UDim2.new(zc - zw * 0.5, 0, 0, 0)
-		mgZone.Size     = UDim2.new(zw, 0, 1, 0)
-	end
-	drawZone()
+		-- STREAK: taps landed inside a third of a second keep the run going. It changes no
+		-- rules -- the log still needs the same twelve strokes -- it just tells you that the
+		-- rhythm you have found is the right one, which is the only feedback a mash can give.
+		if gap < 0.34 then streak += 1 else streak = 0 end
 
-	while hit < strokes do
-		local dt = math.min(task.wait(), 0.05)
-		pos += dir * speed * dt
-		if pos >= 1 then pos, dir = 1, -1 elseif pos <= 0 then pos, dir = 0, 1 end
-		mgNeedle.Position = UDim2.new(pos, -3, 0, 0)
 		mgCount.Text = ("%d / %d"):format(hit, strokes)
+		mgHint.Text = (streak >= 3)
+			and ("\xF0\x9F\x94\xA5 KEEP GOING -- STREAK x%d"):format(streak)
+			or "TAP FAST -- every tap shoves the log into the blade!"
 
-		if tapped then
-			tapped = false
-			if math.abs(pos - zc) <= zw * 0.5 then
-				hit += 1
-				speed = math.min(1.75, speed + 0.14)
-				zw    = math.max(0.10, zw - 0.017)
-				zc    = 0.14 + math.random() * 0.72
-				mgFlash(true)
-				playSound(SOUND_SAW, 0.5)
-				if onStroke then onStroke(hit / strokes) end
-			else
-				speed = math.max(0.45, speed - 0.07)   -- a miss costs you time, not progress
-				mgFlash(false)
-			end
-			drawZone()
-			tween(mgFill, 0.15, { Size = UDim2.new(hit / strokes, 0, 1, 0) })
-		end
-	end
+		-- the pop rides the LEADING EDGE of the fill, so the number appears exactly where the
+		-- progress just moved rather than floating in the middle of the card
+		mgPop.Text = (streak >= 3) and ("x%d!"):format(streak) or "+1"
+		mgPop.TextColor3 = (streak >= 3) and Color3.fromRGB(86, 190, 72)
+			or Color3.fromRGB(226, 142, 30)
+		mgPop.Position = UDim2.new(math.clamp(hit / strokes, 0.04, 0.86), 0, 0.28, 0)
+		mgPop.TextTransparency = 0
+		mgPop.Visible = true
+		tween(mgPop, 0.42, { Position = UDim2.new(mgPop.Position.X.Scale, 0, 0.06, 0),
+			TextTransparency = 1 })
 
-	mgCount.Text = ("%d / %d"):format(strokes, strokes)
+		mgFlash(true)
+		playSound(SOUND_SAW, 0.5)
+		if _G.hapticPulse then pcall(_G.hapticPulse, "tick") end
+		tween(mgFill, 0.12, { Size = UDim2.new(hit / strokes, 0, 1, 0) })
+		if onStroke then onStroke(hit / strokes) end
+	end)
+
+	while hit < strokes do task.wait(0.03) end
+
 	conn:Disconnect()
+	mgPop.Visible = false
 	task.wait(0.25)
 	mgClose()
+	mgNeedle.Visible = true
 	mgBusy = false
 	return true
 end
 
--- PULLING. Hold and it comes; let go and it slips back. Quick and forgiving -- this is a
--- mushroom, not a tree.
-local function playPull(secs)
-	if mgBusy then return false end
-	mgBusy = true
-	mgOpen("PULL THE MUSHROOM", "Hold anywhere until the cap comes free", false)
+-- (playPull is deleted with the mushroom step -- the hold-to-pull widget's only caller.)
 
-	local down, v = false, 0
-	local c1 = mgCatch.MouseButton1Down:Connect(function() down = true end)
-	local c2 = mgCatch.MouseButton1Up:Connect(function() down = false end)
-	local c3 = mgCatch.MouseLeave:Connect(function() down = false end)
+-- ============================================================================
+-- NIGHT + THE WATCHER -- island 4's campfire-night design, shared on purpose:
+-- the two camping islands are siblings. Accepting the quest brings night down;
+-- the finished fire brings dawn. While it is dark, straying from the camp (or
+-- the mill's lantern light) draws THE WATCHER out of the treeline -- glowing
+-- amber eyes that creep closer and, if they reach you, pounce: a shove back
+-- toward camp, never a kill. The pines stand out in that dark, which is the
+-- point -- chopping is a venture, the camp is home.
+-- ============================================================================
+local night = {}    -- .tint (ColorCorrection), .watcher (Model), .on (bool)
 
-	while v < 1 do
-		local dt = math.min(task.wait(), 0.05)
-		v = math.clamp(v + (down and dt / secs or -dt / (secs * 0.7)), 0, 1)
-		-- the wobble is resistance: the cap gives in little jerks rather than sliding out
-		local shown = math.clamp(v + (down and math.sin(os.clock() * 16) * 0.018 or 0), 0, 1)
-		mgFill.Size = UDim2.new(shown, 0, 1, 0)
-		mgNeedle.Position = UDim2.new(shown, -3, 0, 0)
-		mgCount.Text = ("%d%%"):format(math.floor(v * 100))
-		mgFill.BackgroundColor3 = PAL.FLAME:Lerp(Color3.fromRGB(120, 220, 120), v)
+local function nightSet(on)
+	if on and not night.tint then
+		local t = Instance.new("ColorCorrectionEffect")
+		t.Name = "SmoresNight"
+		t.TintColor = Color3.fromRGB(150, 165, 215)
+		t.Brightness = -0.18; t.Saturation = -0.2; t.Contrast = 0.03
+		t.Parent = game:GetService("Lighting")
+		night.tint = t
 	end
-
-	mgFlash(true)
-	c1:Disconnect(); c2:Disconnect(); c3:Disconnect()
-	task.wait(0.18)
-	mgClose()
-	mgBusy = false
-	return true
+	if night.tint then night.tint.Enabled = on end
+	night.on = on
+	if not on and night.watcher then night.watcher:Destroy(); night.watcher = nil end
 end
+
+task.spawn(function()
+	while true do
+		task.wait(0.25)
+		local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		local dark = night.on and step >= 1 and step < 5 and hrp ~= nil and firePart ~= nil
+		local safe = true
+		if dark then
+			safe = mgBusy
+				or (hrp.Position - firePart.Position).Magnitude < 45
+				or (millPart ~= nil and (hrp.Position - millPart.Position).Magnitude < 34)
+		end
+		if not dark or safe then
+			if night.watcher then night.watcher:Destroy(); night.watcher = nil end
+		elseif not night.watcher then
+			-- it appears on your dark side -- directly away from the camp
+			local away = hrp.Position - firePart.Position
+			away = Vector3.new(away.X, 0, away.Z)
+			local dir = (away.Magnitude > 1) and away.Unit or Vector3.new(0, 0, 1)
+			local at = hrp.Position + dir * 32 + Vector3.new(0, 1.5, 0)
+			local m = Instance.new("Model"); m.Name = "TheWatcher"
+			local body = mk({ Shape = Enum.PartType.Ball, Size = Vector3.new(3.4, 3.4, 3.4),
+				Color = Color3.fromRGB(22, 16, 12), Transparency = 0.35, CFrame = CFrame.new(at) })
+			body.Parent = m
+			for _, s in ipairs({ -1, 1 }) do
+				local eye = mk({ Shape = Enum.PartType.Ball, Size = Vector3.new(0.55, 0.7, 0.4),
+					Color = Color3.fromRGB(255, 190, 70), Material = Enum.Material.Neon,
+					CFrame = CFrame.new(at + Vector3.new(s * 0.55, 0.5, -1.35)) })
+				eye.Parent = m
+			end
+			m.PrimaryPart = body
+			m.Parent = Workspace
+			night.watcher = m
+		else
+			local wp = night.watcher:GetPivot().Position
+			local to = hrp.Position - wp
+			local d = to.Magnitude
+			if d > 0.1 then
+				night.watcher:PivotTo(CFrame.lookAt(wp + to.Unit * math.min(0.85, d), hrp.Position))
+			end
+			if d <= 7 then
+				-- pounce: a shove back toward the firelight, then it's gone
+				local push = firePart.Position - hrp.Position
+				push = Vector3.new(push.X, 0, push.Z)
+				if push.Magnitude > 1 then
+					hrp.AssemblyLinearVelocity = push.Unit * 44 + Vector3.new(0, 22, 0)
+				end
+				if _G.NotifyCenter then pcall(function() _G.NotifyCenter.push({
+					text = "\xF0\x9F\x91\x80 Something in the trees! Stay near the light!",
+					color = PAL.FLAME }) end) end
+				night.watcher:Destroy(); night.watcher = nil
+			end
+		end
+	end
+end)
 
 -- ============================================================================
 -- ROASTING STICKS -- your three 'Stickthatgoesup' parts
@@ -1305,6 +1846,7 @@ local fireLit   = false
 local function igniteFire()
 	if fireLit then return end
 	fireLit = true
+	nightSet(false)                          -- DAWN: the finished fire ends the night
 
 	local cf, sz = frameOf(fireModel or firePart)
 	local O   = cf.Position
@@ -1778,20 +2320,14 @@ end
 -- WIRING -- prompts go on trees and mushrooms as they turn up
 -- ============================================================================
 local millPrompt
-local treeList, shroomList = {}, {}
-
-local function enableShroomPrompts(on)
-	for _, s in ipairs(shroomList) do
-		if s.prompt then s.prompt.Enabled = on end
-	end
-end
+local treeList = {}
 
 local function wireTree(tr)
 	if tr:GetAttribute("SmoresWired") then return end
 	local anchor = tr:IsA("BasePart") and tr or tr:FindFirstChildWhichIsA("BasePart", true)
 	if not anchor then return end                 -- still an empty shell; the sweep retries
 	tr:SetAttribute("SmoresWired", true)
-	-- NO PROMPT. Trees are registered and then hit by swinging the axe at them.
+	-- NO PROMPT. Trees are registered and then cut by standing at them with the saw running.
 	table.insert(treeList, { model = tr, anchor = anchor, hits = 0, down = false })
 end
 
@@ -1948,16 +2484,49 @@ local function fellTree(t)
 		end
 		place(FULL)
 
-		-- 5. leave a stump where it stood
+		-- 5. leave a stump where it stood -- A CUT TREE, NOT A PUCK. The old stump was one bark
+		-- cylinder with a flat lid: it read as a coaster dropped on the grass. A real stump has
+		-- root flares where it grips the ground, a pale cut face with GROWTH RINGS, and a rim
+		-- torn ragged where the hinge fibres gave -- and the standing splinters from step 2 now
+		-- read as part of it instead of floating beside a puck.
 		local sr = math.max(0.9, rad)
+		local sy = math.random() * math.pi          -- each stump turned its own way
+		local sCF = CFrame.new(hinge.Position) * CFrame.Angles(0, sy, 0)
+		-- the bark drum, slightly taller and very slightly tipped, like the tree tore off it
 		mk({ Shape = Enum.PartType.Cylinder, Color = PAL.BARK_D, CanCollide = true,
-			Size = Vector3.new(1.5, sr * 2, sr * 2),
-			CFrame = CFrame.new(hinge.Position + Vector3.new(0, 0.5, 0)) * CFrame.Angles(0, 0, math.rad(90)),
+			Size = Vector3.new(1.9, sr * 2, sr * 2),
+			CFrame = sCF * CFrame.new(0, 0.7, 0) * CFrame.Angles(0, 0, math.rad(90 + 2)),
 			Parent = camp })
+		-- root flares: four flattened bark lumps around the base, gripping the ground
+		for i = 1, 4 do
+			local a = (i / 4) * math.pi * 2 + sy
+			mk({ Color = PAL.BARK_D, CanCollide = true,
+				Size = Vector3.new(sr * 0.7, 0.55, sr * 0.9),
+				CFrame = sCF * CFrame.new(math.cos(a) * sr * 0.95, 0.22, math.sin(a) * sr * 0.95)
+					* CFrame.Angles(math.rad(-14), -a, 0),
+				Parent = camp })
+		end
+		-- the cut face: pale wood with two darker growth rings, staggered a hair so they never
+		-- z-fight, and set a touch off-level like a hand-sawn cut
+		local faceCF = sCF * CFrame.new(0, 1.66, 0) * CFrame.Angles(math.rad(2.5), 0, 0)
 		mk({ Shape = Enum.PartType.Cylinder, Color = PAL.WOOD_L,
 			Size = Vector3.new(0.16, sr * 1.9, sr * 1.9),
-			CFrame = CFrame.new(hinge.Position + Vector3.new(0, 1.28, 0)) * CFrame.Angles(0, 0, math.rad(90)),
-			Parent = camp })
+			CFrame = faceCF * CFrame.Angles(0, 0, math.rad(90)), Parent = camp })
+		mk({ Shape = Enum.PartType.Cylinder, Color = PAL.BARK_D,
+			Size = Vector3.new(0.06, sr * 1.3, sr * 1.3),
+			CFrame = faceCF * CFrame.new(0, 0.06, 0) * CFrame.Angles(0, 0, math.rad(90)), Parent = camp })
+		mk({ Shape = Enum.PartType.Cylinder, Color = PAL.BARK_D,
+			Size = Vector3.new(0.06, sr * 0.6, sr * 0.6),
+			CFrame = faceCF * CFrame.new(0, 0.12, 0) * CFrame.Angles(0, 0, math.rad(90)), Parent = camp })
+		-- the ragged rim: bark shards standing proud where the trunk tore away
+		for i = 1, 4 do
+			local a = (i / 4) * math.pi * 2 + sy + 0.4
+			mk({ Color = (i % 2 == 0) and PAL.BARK_D or PAL.WOOD_L,
+				Size = Vector3.new(0.22, 0.5 + (i % 3) * 0.35, 0.3),
+				CFrame = sCF * CFrame.new(math.cos(a) * sr * 0.88, 1.75, math.sin(a) * sr * 0.88)
+					* CFrame.Angles(math.rad(6), -a, math.rad((i - 2.5) * 6)),
+				Parent = camp })
+		end
 
 		-- 6. and it goes, Rust-style. Sink and fade together -- fading alone leaves a ghost
 		-- lying there, sinking alone pops out of view at the last frame.
@@ -1982,7 +2551,7 @@ local function fellTree(t)
 	pickUp("log")
 	if logsMilled + logsHeld >= LOGS_NEEDED then
 		step = 2
-		takeAxe()                                             -- chopping is done
+		takeSaw()                                             -- chopping is done
 		if millPrompt then millPrompt.Enabled = true end
 	end
 	refreshBanner()
@@ -2006,82 +2575,289 @@ local function targetTree()
 	return best
 end
 
--- CLICK OR TAP TO SWING. No ProximityPrompt: you just look at a pine and click.
-local swinging = false
-local function swingAxe()
-	if step ~= 1 or not axeHeld or swinging or mgBusy then return end
-	swinging = true
-	axeSwingUntil = os.clock() + 0.55
-	playSound(SOUND_CHOP, 0.7)
-	local aim = targetTree()
-	if aim then chopPoint(aim) end                -- fix the chop side before the hit lands
+-- ============================================================================
+-- THE SAW CUTS BY ITSELF -- BUT TAPPING REVS IT AND BITES DEEPER
+-- ============================================================================
+-- It used to be click-to-swing (42 taps for the step), then a pure 7-second timer you stood and
+-- watched -- 7 trees x 7s was 49 seconds of literally no input, the most boring block on the
+-- island. The middle ground: standing in reach with the saw out still starts the cut and the
+-- CHOP_SECONDS timer still guarantees the tree comes down with zero input -- but EVERY TAP lands
+-- an extra swing that bites CHOP_BONUS seconds off the cut. A lively chopper drops a pine in
+-- about 3 seconds; ignoring it entirely still works in 7. Skill makes it shorter, never longer.
+--
+-- THE TIMER IS THE TRUTH, not the swing count. Swings are the animation over the top of it, so a
+-- dropped frame or a slow phone cannot make a tree take LONGER than seven seconds.
+--
+-- WALKING AWAY PAUSES IT, IT DOES NOT RESET IT. Losing five seconds of cutting because you
+-- side-stepped a rock is the kind of punishment nobody reads as a rule; the progress stays on the
+-- tree and picks up where it left off when you come back.
+local CHOP_SECONDS = 7
+local CHOP_BONUS   = 0.9     -- seconds of cut credited per tap (rate-limited to ~2 taps/s)
 
-	-- the hit lands part-way through the swing, not on the click, so the axe visibly
-	-- connects before the tree reacts
-	task.delay(0.26, function()
-		local t = targetTree()
-		if t then
-			t.hits += 1
-			local em, host = sawChips(t.anchor.CFrame * CFrame.new(0, 1, 0))
-			em:Emit(14); Debris:AddItem(host, 2)
-			-- a shudder up the trunk on every hit that is not the last
-			chipHit(t)                                -- chips off the trunk, nothing stuck to it
-			if t.hits < SWINGS_PER_TREE then
-				local base = t.model:IsA("Model") and t.model:GetPivot() or t.anchor.CFrame
-				task.spawn(function()
-					for i = 1, 6 do
-						local k = math.sin(i / 6 * math.pi) * math.rad(1.6)
-						local j = base * CFrame.Angles(k, 0, k * 0.5)
-						if t.model:IsA("Model") then t.model:PivotTo(j) else t.anchor.CFrame = j end
-						task.wait(0.03)
-					end
-					if t.model:IsA("Model") then t.model:PivotTo(base) else t.anchor.CFrame = base end
-				end)
+do
+	local chopping, chopBar, chopFill, chopHost   -- block-scoped: the loop below owns all of it
+
+	-- THE TAP. Any click/touch while a tree is being chopped lands an extra swing worth
+	-- CHOP_BONUS seconds of cut. Rate-limited so a turbo-clicker chops fast, not instantly;
+	-- gameProcessed taps (UI presses) and minigame time are ignored.
+	local lastBonus = 0
+	UserInputService.InputBegan:Connect(function(io, gp)
+		if gp or mgBusy or step ~= 1 then return end
+		if io.UserInputType ~= Enum.UserInputType.MouseButton1
+			and io.UserInputType ~= Enum.UserInputType.Touch then return end
+		local t = chopHost
+		if not t or t.down then return end
+		if os.clock() - lastBonus < 0.45 then return end
+		lastBonus = os.clock()
+		t.cut = (t.cut or 0) + CHOP_BONUS
+		sawCutUntil = os.clock() + 0.4          -- a sharper, deeper bite on the rev
+		playSound(SOUND_CHOP, 0.8)
+		if _G.hapticPulse then pcall(_G.hapticPulse, "tick") end
+		chipHit(t)
+		if chopFill then                          -- the bar pops green so the tap visibly lands
+			chopFill.BackgroundColor3 = Color3.fromRGB(140, 230, 110)
+			task.delay(0.15, function()
+				if chopFill then chopFill.BackgroundColor3 = Color3.fromRGB(226, 186, 86) end
+			end)
+		end
+	end)
+
+	-- the progress collar, drawn on the tree being cut. It is the only feedback that the seven
+	-- seconds are going somewhere, and without it an auto-cut reads as a saw that is not biting.
+	local function bar(t)
+		if chopHost == t then return end
+		if chopBar then chopBar:Destroy(); chopBar = nil end
+		chopHost = t
+		if not t then return end
+		chopBar = Instance.new("BillboardGui")
+		chopBar.Name = "ChopProgress"
+		chopBar.Size = UDim2.new(0, 130, 0, 16)
+		chopBar.StudsOffsetWorldSpace = Vector3.new(0, 5.5, 0)
+		chopBar.AlwaysOnTop = true
+		chopBar.Adornee = t.anchor
+		chopBar.Parent = t.anchor
+		local back = Instance.new("Frame")
+		back.Size = UDim2.fromScale(1, 1); back.BackgroundColor3 = Color3.fromRGB(28, 24, 20)
+		back.BackgroundTransparency = 0.25; back.BorderSizePixel = 0; back.Parent = chopBar
+		Instance.new("UICorner").Parent = back
+		chopFill = Instance.new("Frame")
+		chopFill.Size = UDim2.new(0, 0, 1, 0)
+		chopFill.BackgroundColor3 = Color3.fromRGB(226, 186, 86)
+		chopFill.BorderSizePixel = 0; chopFill.Parent = back
+		Instance.new("UICorner").Parent = chopFill
+	end
+
+	task.spawn(function()
+		while true do
+			local dt = task.wait(0.1)
+			local t = (step == 1 and sawHeld and not mgBusy) and targetTree() or nil
+			if not t then
+				chopping = false
+				if chopHost then bar(nil) end
 			else
-				fellTree(t)
+				bar(t)
+				chopping = true
+				t.cut = (t.cut or 0) + dt
+				chopPoint(t)                              -- fixes the cut side on the first tick
+				if chopFill then
+					chopFill.Size = UDim2.new(math.clamp(t.cut / CHOP_SECONDS, 0, 1), 0, 1, 0)
+				end
+
+				-- a bite roughly every 0.55s, with the chips landing mid-bite so the bar
+				-- visibly digs in before the trunk reacts. Purely the show; see the note above.
+				if not t.nextSwing or os.clock() >= t.nextSwing then
+					t.nextSwing = os.clock() + 0.55
+					sawCutUntil = os.clock() + 0.55
+					playSound(SOUND_CHOP, 0.7)
+					if _G.hapticPulse then pcall(_G.hapticPulse, "tick") end
+					task.delay(0.26, function()
+						if t.down or not t.anchor.Parent then return end
+						local em, host = sawChips(t.anchor.CFrame * CFrame.new(0, 1, 0))
+						em:Emit(14); Debris:AddItem(host, 2)
+						chipHit(t)
+						-- the shudder up the trunk, on every swing that is not the felling one
+						if (t.cut or 0) < CHOP_SECONDS then
+							local base = t.model:IsA("Model") and t.model:GetPivot() or t.anchor.CFrame
+							task.spawn(function()
+								for i = 1, 6 do
+									local k = math.sin(i / 6 * math.pi) * math.rad(1.6)
+									local j = base * CFrame.Angles(k, 0, k * 0.5)
+									if t.model:IsA("Model") then t.model:PivotTo(j) else t.anchor.CFrame = j end
+									task.wait(0.03)
+								end
+								if t.model:IsA("Model") then t.model:PivotTo(base) else t.anchor.CFrame = base end
+							end)
+						end
+					end)
+				end
+
+				if t.cut >= CHOP_SECONDS then
+					bar(nil)
+					chopping = false
+					fellTree(t)
+				end
 			end
 		end
 	end)
-	task.delay(0.62, function() swinging = false end)
 end
 
-UserInputService.InputBegan:Connect(function(input, processed)
-	if processed then return end
-	if input.UserInputType == Enum.UserInputType.MouseButton1
-		or input.UserInputType == Enum.UserInputType.Touch then
-		swingAxe()
-	end
-end)
+-- ============================================================================
+-- THE MALLOW PATCH -- picked after the last log is milled
+-- ============================================================================
+-- ⚠ YOUR PLANTS FIRST. There ARE hand-placed marshmallow plants on island14 -- the gather
+-- step that used to wire them was deleted along with its 90-second hold-to-pull minigame, and
+-- deleting the wiring orphaned the plants: they have been standing there unpickable ever
+-- since. This scans for them by every plausible name before growing anything, so the step
+-- runs on YOUR models and the built patch is only ever a fallback for a world without them.
+--
+-- 'marshmallowbig' is deliberately EXCLUDED: those three are the roasting mallows that go ON
+-- the sticks, and letting this pick them would eat the props the finale needs.
+--
+-- Whatever it finds is named in the log, so if your plants are called something this misses,
+-- that line says exactly what to add here.
+local mallowPicks = {}
 
-local function wireShroom(sh)
-	if sh:GetAttribute("SmoresWired") then return end
-	local cap = sh:IsA("BasePart") and sh or topPartOf(sh)
-	if not cap then return end
-	sh:SetAttribute("SmoresWired", true)
-	cap.CanQuery = true
+local function isMallowPlant(d)
+	if not (d:IsA("Model") or d:IsA("BasePart")) then return false end
+	local n = tostring(d.Name):lower():gsub("[%s_%-]", "")
+	if n:find("big") then return false end                    -- the roasting mallows: hands off
+	return n:find("mallowmushroom") ~= nil or n:find("mallowplant") ~= nil
+		or n:find("marshmallowplant") ~= nil or n == "mallow" or n == "marshmallow"
+		or (n:find("mallow") ~= nil and n:find("plant") ~= nil)
+		or (n:find("mallow") ~= nil and n:find("shroom") ~= nil)
+end
 
+local function pickablePart(d)
+	if d:IsA("BasePart") then return d end
+	return topPartOf(d) or d:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function wireMallow(cap, owner)
 	local pr = Instance.new("ProximityPrompt")
-	pr.Name = "PickPrompt"; pr.ActionText = "Pick"; pr.ObjectText = "Mallow Mushroom"
+	pr.ActionText = "Pick"; pr.ObjectText = "Marshmallow"
 	pr.HoldDuration = 0; pr.MaxActivationDistance = 12
-	pr.RequiresLineOfSight = false; pr.Enabled = (step == 3); pr.Parent = cap
-	table.insert(shroomList, { model = sh, prompt = pr, cap = cap })
-
+	pr.RequiresLineOfSight = false; pr.Enabled = false; pr.Parent = cap
 	pr.Triggered:Connect(function(plr)
 		if plr ~= player or step ~= 3 then return end
-		if #carried >= CARRY_MAX or shroomsHeld >= SHROOMS_NEEDED then return end
+		if shroomsHeld >= SHROOMS_NEEDED then return end
 		pr.Enabled = false
-		if not playPull(SHROOM_PULL) then pr.Enabled = true; return end
-		playSound(SOUND_POP, 0.6)
-		-- ONLY THE CAP comes away. Everything else in the model is the stem, so it simply
-		-- stays put; the cap hides and grows back later.
-		hideThing(cap, true)
 		pickUp("cap")
-		refreshBanner()
-		task.delay(REGROW_TIME, function()
-			hideThing(cap, false)
-			if step == 3 and shroomsHeld < SHROOMS_NEEDED then pr.Enabled = true end
-		end)
+		playSound(SOUND_POP, 0.6)
+		if _G.hapticPulse then pcall(_G.hapticPulse, "tick") end
+		-- ⚠ IT GOES THE INSTANT YOU PICK IT, and the POP is a separate throwaway part.
+		--
+		-- Two bugs lived in the old order (tween the real cap, hide it 0.32s later):
+		--   1. hideThing SAVES the current Transparency in a SmoresT attribute so it can put
+		--      the plant back. Running it AFTER the fade saved Transparency = 1, so any later
+		--      restore would have returned the plant permanently invisible -- a plant that
+		--      "comes back" as nothing.
+		--   2. A BasePart plant (owner == nil) only had its Transparency set, so you could
+		--      still walk into a marshmallow that was no longer there.
+		-- Hiding first fixes both: the real values are captured while they are still real, and
+		-- hideThing turns collision off with the visibility.
+		hideThing(owner or cap, true)
+
+		-- the pop is a copy, so nothing that animates can leave the real plant mid-tween
+		local puff = mk({ Color = PAL.MALLOW, Size = cap.Size,
+			CFrame = cap.CFrame, Parent = camp })
+		pcall(function() Instance.new("SpecialMesh", puff).MeshType = Enum.MeshType.Sphere end)
+		tween(puff, 0.3, { CFrame = puff.CFrame * CFrame.new(0, 3, 0), Transparency = 1 })
+		Debris:AddItem(puff, 0.45)
+		if shroomsHeld >= SHROOMS_NEEDED then
+			step = 4
+			-- quota met: put every remaining prompt away in one pass. Leaving a hundred live
+			-- "Pick" prompts around a camp you have finished with is clutter you cannot act on.
+			for _, other in ipairs(mallowPicks) do
+				if other.Parent then other.Enabled = false end
+			end
+			refreshBanner()
+			if npcHead then
+				showBubble(npcHead, "That's the lot! Bring them here and I'll load the sticks.", false)
+			end
+		else
+			refreshBanner()
+		end
 	end)
+	mallowPicks[#mallowPicks + 1] = pr
+end
+
+local function buildMallowPatch()
+	if #mallowPicks > 0 or not firePart then return end
+
+	-- ---- 1. YOUR PLANTS -------------------------------------------------------------
+	-- findAll(SHROOM_NAME) is the exact lookup the deleted gather step used, so this finds the
+	-- same models it always did. The looser isMallowPlant sweep runs only as a second pass, for
+	-- any plant named off-pattern.
+	local found, seen = {}, {}
+	for _, sh in ipairs(findAll(SHROOM_NAME, island)) do
+		local cap = pickablePart(sh)
+		if cap and not seen[cap] then
+			seen[cap] = true
+			found[#found + 1] = { cap = cap, owner = sh:IsA("Model") and sh or nil }
+		end
+	end
+	for _, d in ipairs((island or Workspace):GetDescendants()) do
+		if isMallowPlant(d) then
+			local cap = pickablePart(d)
+			if cap and not seen[cap] then
+				seen[cap] = true
+				found[#found + 1] = { cap = cap, owner = d:IsA("Model") and d or nil }
+			end
+		end
+	end
+	if #found > 0 then
+		table.sort(found, function(a, b)
+			return (a.cap.Position - firePart.Position).Magnitude
+				< (b.cap.Position - firePart.Position).Magnitude
+		end)
+		-- ⚠ EVERY PLANT IS PICKABLE, not the first six. You only need SHROOMS_NEEDED, but
+		-- WHICH ones you take is your choice -- capping the wiring at six meant the plants you
+		-- happened to walk to were dead props with no prompt, which reads as broken scenery
+		-- rather than as a quota already met. The quota is enforced in the handler; the world
+		-- is simply all live.
+		for _, f in ipairs(found) do wireMallow(f.cap, f.owner) end
+		for _, pr in ipairs(mallowPicks) do pr.Enabled = true end
+		print(("[Smores] %d '%s' plant(s) on the island -- ALL wired to pick; you need %d")
+			:format(#mallowPicks, SHROOM_NAME, SHROOMS_NEEDED))
+		return
+	end
+
+	-- ---- 2. FALLBACK: grow a patch, so a world without plants can still finish -------
+	warn("[Smores] no marshmallow plants found on island14 -- growing a patch instead. "
+		.. "Name your plants 'MallowPlant' (or 'MallowMushroom') and yours will be used.")
+	local centre = firePart.Position
+	for i = 1, SHROOMS_NEEDED do
+		local a  = (i / SHROOMS_NEEDED) * math.pi * 2 + 0.6
+		local r  = 26 + (i % 3) * 9
+		local at = centre + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+		local rp = RaycastParams.new()
+		rp.FilterType = Enum.RaycastFilterType.Exclude
+		rp.FilterDescendantsInstances = { player.Character, camp }
+		local hit = Workspace:Raycast(at + Vector3.new(0, 90, 0), Vector3.new(0, -260, 0), rp)
+		if hit then
+			local base = hit.Position
+			local m = Instance.new("Model"); m.Name = "MallowPick"; m.Parent = camp
+			-- a stubby stem under a fat cap, so it reads as something growing rather than a
+			-- marshmallow dropped on the grass
+			mk({ Shape = Enum.PartType.Cylinder, Color = PAL.WOOD_L,
+			     Size = Vector3.new(1.1, 0.34, 0.34),
+			     CFrame = CFrame.new(base + Vector3.new(0, 0.55, 0))
+			         * CFrame.Angles(0, 0, math.rad(90)), Parent = m })
+			local cap = mk({ Color = PAL.MALLOW, Size = Vector3.new(1.5, 1.5, 1.5),
+			     CFrame = CFrame.new(base + Vector3.new(0, 1.55, 0))
+			         * CFrame.Angles(0, a, 0), Parent = m })
+			pcall(function() Instance.new("SpecialMesh", cap).MeshType = Enum.MeshType.Sphere end)
+			mk({ Color = PAL.MALLOW, Size = Vector3.new(1.15, 1.15, 1.15),
+			     CFrame = CFrame.new(base + Vector3.new(0, 2.45, 0))
+			         * CFrame.Angles(0, a * 1.4, 0), Parent = m })
+			m.PrimaryPart = cap
+
+			wireMallow(cap, m)
+		end
+	end
+	for _, pr in ipairs(mallowPicks) do pr.Enabled = true end
+	print(("[Smores] mallow patch grown -- %d marshmallow(s) to pick around the camp")
+		:format(#mallowPicks))
 end
 
 -- ============================================================================
@@ -2133,47 +2909,86 @@ task.spawn(function()
 		return best
 	end
 
-	-- ---- the axe: COPY IT FIRST, while it still looks right, then hide the world one.
-	-- Cloning after hiding would copy a transparent axe.
-	local axeSource = pollSolid(AXE_NAME, 40)
-	if axeSource then
-		axeTemplate = axeSource:Clone()
-		hideThing(axeSource, true)
-		print(("[Smores] axe found ('%s') -- original hidden, copy kept for the player")
-			:format(axeSource.Name))
+	-- ---- the chainsaw: COPY IT FIRST, while it still looks right, then hide the world one.
+	-- Cloning after hiding would copy a transparent saw. A model called 'axe' is still accepted
+	-- (SAW_LEGACY) so an island that has one placed keeps working -- 'chainsaw' simply wins, and
+	-- the 40-second budget is split between the two rather than doubled.
+	local sawSource = pollSolid(SAW_NAME, 20) or pollSolid(SAW_LEGACY, 20)
+	if sawSource then
+		sawTemplate = sawSource:Clone()
+		hideThing(sawSource, true)
+		print(("[Smores] chainsaw found ('%s') -- original hidden, copy kept for the player. Name "
+			.. "its parts Grip/Bar/Tooth/Body/Exhaust to get the moving chain and the engine.")
+			:format(sawSource.Name))
 	else
-		-- ⚠ NO HAND-PLACED AXE ON ISLAND14 -- BUILD ONE. This used to warn and carry on empty-handed
-		-- ("chopping still works, you just will not hold one"), which is the one outcome nobody
-		-- wants from a quest whose first instruction is "take the axe": you walk up to a tree,
-		-- swing, and the wood comes off with nothing in your hands.
+		-- ⚠ NO HAND-PLACED SAW ON ISLAND14 -- BUILD ONE. This used to warn and carry on empty-
+		-- handed ("chopping still works, you just will not hold one"), which is the one outcome
+		-- nobody wants from a quest whose first instruction is "take the chainsaw": you walk up
+		-- to a tree, pull the trigger, and the wood comes off with nothing in your hands.
 		--
-		-- Every other prop on this island already has a fallback if the world does not provide one;
-		-- the axe was the only required tool that did not. Same shape CarryView draws for OTHER
-		-- players (see buildAxe there), so what you hold and what they see match.
-		axeTemplate = Instance.new("Model")
-		axeTemplate.Name = "Axe"
+		-- Every other prop on this island already has a fallback if the world does not provide
+		-- one. Same shape CarryView draws for OTHER players (see buildChainsaw there), so what
+		-- you hold and what they see match.
+		sawTemplate = Instance.new("Model")
+		sawTemplate.Name = "Chainsaw"
 		local function ap(nm, size, cf, colour, material)
 			local p = Instance.new("Part")
 			p.Name = nm; p.Size = size; p.CFrame = cf; p.Color = colour
 			p.Anchored = true; p.CanCollide = false; p.CanQuery = false; p.CastShadow = false
 			p.Material = material or Enum.Material.SmoothPlastic
 			p.TopSurface = Enum.SurfaceType.Smooth; p.BottomSurface = Enum.SurfaceType.Smooth
-			p.Parent = axeTemplate
+			p.Parent = sawTemplate
 			return p
 		end
-		-- the shaft is the LONGEST axis and the head sits at one end: gripFor() reads exactly that
-		-- to work out which end is the handle, so this has to stay a long thin shaft plus a heavy
-		-- head or the axe ends up held by the blade.
-		local shaft = ap("Shaft", Vector3.new(0.24, 3.2, 0.24), CFrame.new(0, 0, 0),
-			Color3.fromRGB(146, 102, 58), Enum.Material.Wood)
-		ap("Head",  Vector3.new(0.34, 0.95, 1.15), CFrame.new(0, 1.45, 0.35),
-			Color3.fromRGB(84, 80, 84), Enum.Material.Metal)
-		ap("Blade", Vector3.new(0.17, 1.0, 0.5), CFrame.new(0, 1.45, 1.0),
-			Color3.fromRGB(196, 198, 204), Enum.Material.Metal)
-		ap("Butt",  Vector3.new(0.3, 0.24, 0.3), CFrame.new(0, -1.55, 0), Color3.fromRGB(58, 55, 60))
-		axeTemplate.PrimaryPart = shaft
-		print("[Smores] no 'axe' in the world -- built one, so the quest still hands you a tool. "
-			.. "Name a model 'axe' on island14 to use your own instead.")
+		-- ⚠ THE ORIGIN IS THE FIST. 'Grip' sits at 0,0,0 with its own -Z running out along the
+		-- bar, gripFor() returns it verbatim, and every offset below therefore reads directly as
+		-- "how far in front of your hand" (-Z) and "how far above it" (+Y). Do not re-centre this
+		-- model on its bounding box: the whole point of a named grip is that nothing is guessed.
+		local grip = ap("Grip", Vector3.new(0.34, 0.42, 0.85), CFrame.new(0, 0, 0.1),
+			Color3.fromRGB(44, 44, 50))
+		-- the engine block, ORANGE, because an orange body is the silhouette everybody already
+		-- reads as "chainsaw" -- it does the job here that red does on a stop sign
+		ap("Body",    Vector3.new(0.92, 1.02, 1.5), CFrame.new(0, 0.16, 1.0), PAL.FLAME)
+		ap("Cover",   Vector3.new(0.96, 0.5, 0.9),  CFrame.new(0, 0.5, 0.75),
+			Color3.fromRGB(232, 236, 240))
+		ap("Exhaust", Vector3.new(0.3, 0.34, 0.34), CFrame.new(0.5, 0.5, 1.62), PAL.IRON_D,
+			Enum.Material.Metal)
+		ap("Pull",    Vector3.new(0.2, 0.2, 0.5),   CFrame.new(-0.5, 0.35, 1.72), PAL.MALLOW)
+		ap("Trigger", Vector3.new(0.14, 0.24, 0.2), CFrame.new(0, -0.1, 0.42),
+			Color3.fromRGB(28, 28, 32))
+		-- the TOP HANDLE, the loop your other hand would be on. Three bits, because a single bar
+		-- floating over the engine reads as a spare part rather than as a handle.
+		ap("HandleT", Vector3.new(0.7, 0.16, 0.16),  CFrame.new(0, 0.95, 0.55),
+			Color3.fromRGB(44, 44, 50))
+		ap("HandleF", Vector3.new(0.16, 0.5, 0.16),  CFrame.new(0, 0.75, 0.05),
+			Color3.fromRGB(44, 44, 50))
+		ap("HandleB", Vector3.new(0.16, 0.42, 0.16), CFrame.new(0, 0.8, 1.05),
+			Color3.fromRGB(44, 44, 50))
+		-- HAND GUARD / CHAIN BRAKE. It is the piece that stops the saw reading as a hairdryer
+		-- with a blade on it: a bare bar coming straight out of a box has nothing between it
+		-- and the hand holding it.
+		ap("Guard",   Vector3.new(0.9, 0.6, 0.14),  CFrame.new(0, 0.55, -0.22),
+			Color3.fromRGB(232, 236, 240))
+		-- ⚠ THE BAR IS FLAT AND ITS LONG AXIS IS Z. The chain loop reads Size.Y as the bar's
+		-- height and Size.Z as its length to lay out the racetrack, so turning the bar in here
+		-- takes the teeth off it.
+		local bar = ap("Bar", Vector3.new(0.14, 0.5, 3.4), CFrame.new(0, 0.08, -1.6),
+			PAL.IRON, Enum.Material.Metal)
+		ap("BarStripe", Vector3.new(0.16, 0.16, 3.0), CFrame.new(0, 0.08, -1.6),
+			Color3.fromRGB(238, 240, 244), Enum.Material.Metal)
+		-- THE CHAIN. 22 teeth on a ~7-stud loop is one every third of a stud: close enough to
+		-- read as a continuous chain at arm's length, few enough that driving them by hand every
+		-- frame costs nothing. They are ANCHORED and unwelded on purpose -- see giveSaw. Every
+		-- third one is a bright CUTTER, which is what makes the motion legible: 22 identical
+		-- dark blocks going round look like a dark stripe that is not moving at all.
+		for i = 1, 22 do
+			local t = ap("Tooth", Vector3.new(0.2, 0.16, 0.22), bar.CFrame, PAL.IRON_D,
+				Enum.Material.Metal)
+			if i % 3 == 0 then t.Color = Color3.fromRGB(226, 230, 236) end
+		end
+		sawTemplate.PrimaryPart = grip
+		print("[Smores] no 'chainsaw' or 'axe' in the world -- built one, so the quest still hands "
+			.. "you a tool. Name a model 'chainsaw' on island14 to use your own instead.")
 	end
 
 	-- ---- the giant marshmallows: hidden until their stick is loaded
@@ -2185,15 +3000,25 @@ task.spawn(function()
 	millPart = pollSolid(MILL_NAME, 40)
 	if millPart then
 		millPrompt = buildMill(millPart)
-		print("[Smores] cutting station built on the 'mill' block")
+		print("[Smores] cutting station built on the 'mill' block -- logs split at the blade "
+		.. "and stack on the out-rack")
 	else
 		warn("[Smores] no block named 'mill' found -- no cutting station")
 	end
 
 	-- ---- trees and mushrooms
 	for _, tr in ipairs(pollMany(TREE_NAME, LOGS_NEEDED, 40)) do wireTree(tr) end
-	for _, sh in ipairs(pollMany(SHROOM_NAME, SHROOMS_NEEDED, 40)) do wireShroom(sh) end
-	print(("[Smores] %d tree(s), %d mushroom(s) wired"):format(#treeList, #shroomList))
+	-- say it once, at boot, rather than leaving you to notice mid-quest that cuts 4..7 raise
+	-- nothing by the fire
+	task.delay(6, function()
+		if #sticks > 0 and #sticks < LOGS_NEEDED then
+			warn(("[Smores] %d log(s) to mill but only %d '%s' part(s) in the world -- cuts %d..%d "
+				.. "will raise no stick. Add %d more by the fire for one stick per log.")
+				:format(LOGS_NEEDED, #sticks, STICK_NAME, #sticks + 1, LOGS_NEEDED,
+					LOGS_NEEDED - #sticks))
+		end
+	end)
+	print(("[Smores] %d tree(s) wired"):format(#treeList))
 
 	-- ---- your roasting sticks, hidden until the mill cuts them
 	for _, sp in ipairs(pollMany(STICK_NAME, 3, 40)) do wireStick(sp) end
@@ -2206,7 +3031,6 @@ task.spawn(function()
 		for _ = 1, 60 do
 			task.wait(3)
 			for _, tr in ipairs(findAll(TREE_NAME, island))   do wireTree(tr) end
-			for _, sh in ipairs(findAll(SHROOM_NAME, island)) do wireShroom(sh) end
 			for _, mm in ipairs(findAll(MARSH_NAME, island)) do
 				local known = false
 				for _, k in ipairs(marshParts) do if k == mm then known = true; break end end
@@ -2253,21 +3077,36 @@ task.spawn(function()
 				end
 				-- THE CARRIAGE ONLY MOVES WHEN YOU LAND A STROKE. It chases the target rather
 				-- than snapping to it, so each stroke reads as a shove of the log into the blade.
-				local lg = buildLogProp()
-				lg:PivotTo(millCradle * CFrame.Angles(0, math.rad(90), 0))
+				-- TWO HALVES, flush to start with. They part company at the blade.
+				local lgA, lgB = buildLogHalf(-1), buildLogHalf(1)
+				local spawnCF = millCradle * CFrame.Angles(0, math.rad(90), 0)
+				lgA:PivotTo(spawnCF); lgB:PivotTo(spawnCF)
 				local target, shown, running = 0, 0, true
 				task.spawn(function()
 					while running do
 						spinMill(0.22)                    -- blade and flywheel on the one shaft
 						shown += (target - shown) * 0.11
 						local ride = millCradle:Lerp(millOut, math.clamp(shown, 0, 1))
-						lg:PivotTo(ride * CFrame.Angles(0, math.rad(90), 0))
+						local rideCF = ride * CFrame.Angles(0, math.rad(90), 0)
+						-- ⚠ THE SPLIT. The blade sits at the middle of the run, so anything past
+						-- shown = 0.5 has been through it: the two halves ease apart from there,
+						-- and their pale sawn faces come into view as they separate. That is the
+						-- whole point of the machine, and it was the one thing not shown.
+						local past = math.clamp((shown - 0.5) / 0.5, 0, 1)
+						local gap = past * 0.55
+						lgA:PivotTo(rideCF * CFrame.new(0, past * 0.06, -gap))
+						lgB:PivotTo(rideCF * CFrame.new(0, past * 0.06, gap))
 						if millCarriage then millCarriage:PivotTo(ride) end
 						-- the saw rises with the blade rather than firing once at the top of the
 						-- job: this loop already runs every frame the log is in the machine, so it
 						-- is the honest place to own the volume
 						if millSnd then
 							millSnd.Volume += (0.96 - millSnd.Volume) * 0.12
+							-- pitch sags with the same load the blade slows on: a saw biting
+							-- into wood drops in tone, and hearing that is half of why a cut
+							-- feels like effort rather than a timer
+							local wantP = 1 - millLoad * 0.3
+							millSnd.PlaybackSpeed += (wantP - millSnd.PlaybackSpeed) * 0.15
 						end
 						task.wait()
 					end
@@ -2286,13 +3125,26 @@ task.spawn(function()
 					target   = p
 					millLeft = math.max(0, MILL_STROKES - math.floor(p * MILL_STROKES + 0.5))
 					refreshBanner()
+					millLoad = 1                     -- this stroke is biting: bog the blade down
 					em:Emit(16)
 					if millDust then millDust:Emit(12) end
 				end)
 
 				task.wait(0.5)                            -- let the carriage finish its run out
 				running = false
-				lg:Destroy()
+				-- ⚠ THE HALVES STAY, ON THE OUT-RACK. They used to be destroyed the instant the
+				-- cut finished, so the rack was permanently empty and seven cuts left no trace
+				-- anywhere -- the machine ate logs. Stacking them means the pile IS the progress
+				-- bar: you can see how many you have done without reading the banner.
+				stackCut(lgA, lgB, logsMilled)
+				-- the heap under the blade gets a little wider and taller with every log
+				if millSawdust then
+					local g = math.min(logsMilled + 1, LOGS_NEEDED)
+					millSawdust.Size = Vector3.new(1.6 + g * 0.34, 0.3 + g * 0.12, 1.6 + g * 0.3)
+					millSawdust.CFrame = CFrame.new(millSawdust.Position.X,
+						millSawdust.Position.Y, millSawdust.Position.Z)
+						* (millSawdust.CFrame - millSawdust.Position)
+				end
 				if millCarriage then millCarriage:PivotTo(millCradle) end
 				Debris:AddItem(host, 2)
 				if millLever then millLever:PivotTo(millLeverCF * CFrame.Angles(0, 0, math.rad(16))) end
@@ -2304,10 +3156,18 @@ task.spawn(function()
 				refreshBanner()
 
 				if logsMilled >= LOGS_NEEDED then
+					-- ===== LAST STICK CUT -> STRAIGHT OUT TO PICK THE MALLOWS =====
+					-- shroomsHeld used to be credited in full here, so the mallows appeared in
+					-- your pack having never been touched. The patch is grown instead and the
+					-- picking is the step: sticks up, now go and fill them.
 					step = 3
-					enableShroomPrompts(true)
+					shroomsHeld = 0
+					if millPrompt then millPrompt.Enabled = false end
+					buildMallowPatch()
 					refreshBanner()
-					if npcHead then showBubble(npcHead, "Sticks are up! Now we need mallows.", false) end
+					if npcHead then
+						showBubble(npcHead, "Sticks are up! Now pick me some mallows -- they grow round the camp.", false)
+					end
 				else
 					millPrompt.Enabled = (logsHeld > 0)
 					if npcHead and logsHeld == 0 then
@@ -2322,9 +3182,13 @@ task.spawn(function()
 	local function startQuest()
 		if questAccepted then return end
 		questAccepted = true; step = 1
-		giveAxe()
+		nightSet(true)                       -- NIGHT FALLS with the quest
+		giveSaw()
 		buildBackpack()
 		refreshBanner()
+		if _G.NotifyCenter then pcall(function() _G.NotifyCenter.push({
+			text = "\xF0\x9F\x8C\x99 Night's falling on the camp -- the firelight is safe, the treeline isn't!",
+			color = PAL.FLAME }) end) end
 	end
 
 	-- THIS ISLAND'S NPC, not somebody else's. There are several models called "Candy Npc" in
@@ -2379,21 +3243,21 @@ task.spawn(function()
 				return { "Best night this camp has had in years.", "Sit. Have one. \xF0\x9F\x8D\xA1" }
 			elseif step == 4 then
 				if shroomsHeld > 0 then return { "Hand them over, I will load the sticks." } end
-				return { ("%d of %d sticks loaded. Keep the mallows coming."):format(loaded, #sticks) }
-			elseif step == 3 then
-				return { "Mallow mushrooms grow all over this island.",
-				         ("Take the caps only -- leave the stems and they grow back. %d of %d.")
-				             :format(shroomsHeld, SHROOMS_NEEDED) }
+				return { ("%d of %d sticks loaded. Keep going!"):format(loaded, #sticks) }
 			elseif step == 2 then
-				return { "Good chopping. Now run those logs through the mill." }
+				return { "Good chopping!",
+				         "At the Lumber Mill, hold Load the Mill." }
 			elseif step == 1 then
-				return { ("Four pines should do it. %d down."):format(logsMilled + logsHeld) }
+				return { ("%d pines needed. %d down so far."):format(LOGS_NEEDED, logsMilled + logsHeld),
+				         "Stand at a pine and TAP to rev!",
+				         "Watch the treeline. Something's out there..." }
 			end
+			-- the amounts come from the constants so the camper can never ask for the wrong job
 			return {
-				"You picked a good night to turn up.",
-				"I have a fire pit with no fire, and nothing to roast on either.",
-				"Here -- take my axe. Fell four pines and run them through the mill.",
-				"Then bring me six mallow mushrooms and we will get this camp going.",
+				"Good night for it. And I mean NIGHT.",
+				("Take my chainsaw. Fell %d pine trees."):format(LOGS_NEEDED),
+				"Hold Load the Mill on each log.",
+				"Then come back. Stay near the light!",
 			}
 		end
 
@@ -2446,6 +3310,17 @@ task.spawn(function()
 							local ce = ReplicatedStorage:FindFirstChild("CoinEvent")
 							if ce then pcall(function() ce:FireServer(COIN_REWARD) end) end
 							_G.smoresQuestComplete = true
+							-- PAYOFF SHOT. The same camera move island 3's cookie gets, from the shared RevealCommand:
+							-- it resolves island 14's subject from that file's TARGETS table, so the framing lives in ONE
+							-- place and re-aiming this island later is an edit there, not here.
+							--
+							-- Delayed, because the thing worth looking at does not exist yet at this line -- the world
+							-- changes on completion (island 11's MineShaft is CREATED by the blast) and a camera that
+							-- arrives first frames the before shot. playReveal is also silent when the target is missing
+							-- and refuses to run on top of itself, so a quest that reaches this twice cannot double up.
+							task.delay(0.9, function()
+								if _G.revealIsland then pcall(_G.revealIsland, 14) end
+							end)
 							print(("[Smores] QUEST COMPLETE -- +%d coins"):format(COIN_REWARD))
 						end)
 					end
@@ -2453,28 +3328,21 @@ task.spawn(function()
 				return
 			end
 
-			if index == 0 then pages = pagesFor() end
+			if index == 0 then pages = (_G.capBubble and _G.capBubble(pagesFor())) or pagesFor() end
 			index += 1
 			if not pages or index > #pages then closeIt(); return end
-			if index == 3 and step == 0 then startQuest() end   -- the page where he hands the axe over
+			if index == 3 and step == 0 then startQuest() end   -- the page where he hands the saw over
 			local last = index >= #pages
-			showBubble(npcHead, pages[index], true,
-				last and "[E] close" or ("[E] more  (%d/%d)"):format(index, #pages))
-			prompt.ActionText = last and "Close" or "Continue"
+			-- no "[E] ..." badge in the bubble: the ProximityPrompt IS the E prompt, and the
+			-- page count rides its ActionText instead of a second floating HUD
+			showBubble(npcHead, pages[index], true, nil)
+			prompt.ActionText = last and "Close" or ("Continue  (%d/%d)"):format(index, #pages)
 		end)
 		prompt.PromptHidden:Connect(function() if index ~= 0 then closeIt() end end)
 	end
 
-	-- step 3 -> 4 once you have enough caps
-	task.spawn(function()
-		while step < 5 do
-			if step == 3 and shroomsHeld >= SHROOMS_NEEDED then step = 4; refreshBanner() end
-			task.wait(0.4)
-		end
-	end)
-
 	refreshBanner()
-	print("[Smores] ready -- chop -> mill -> gather -> deliver -> ignite")
+	print("[Smores] ready -- night -> chop -> mill -> deliver -> ignite -> dawn")
 	-- RETAINER SIGNAL: the quest reached the end of its build with its world objects up. QuestRetainer
 	-- watches this flag; anything still false once its island has streamed in gets force-streamed and
 	-- re-run. It is set HERE, at the ready print, not at the top of the file -- a quest that bailed
@@ -2488,18 +3356,65 @@ end)
 -- Island-scoped, the same as the other quests: typed anywhere else it does nothing, so it
 -- can never light island 14's fire from across the map.
 local function onCommand(msg)
-	if tostring(msg or ""):lower():sub(1, 9) ~= "/complete" then return end
+	-- DEV ONLY. QuestDevGate publishes this; read at command time so load order cannot matter,
+	-- and nil (gate not up yet) refuses. Without it any player could type their way to the whole realm.
+	if not _G.questDevOK then return end
+	local cmd = tostring(msg or ""):lower()
+
+	-- ---- /wood : skip the CHOP, keep the MILL ------------------------------------------
+	-- Deliberately NOT a second /complete. Felling seven pines is the long repetitive half of
+	-- this quest and the part you do not want to redo every time you test the mill -- but the
+	-- mill is the half worth watching, so this hands over the logs and stops. It leaves you at
+	-- step 2 with a full pack, exactly as if you had just felled the last tree yourself.
+	if cmd:sub(1, 5) == "/wood" then
+		local hrpW = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		if not (firePart and firePart.Parent and hrpW) then return end
+		if (hrpW.Position - firePart.Position).Magnitude > 420 then return end
+		if step >= 3 or logsMilled >= LOGS_NEEDED then
+			print("[Smores][TEST] /wood -- the chopping step is already behind you")
+			return
+		end
+		questAccepted = true
+		takeSaw()
+		-- Fell every pine that is still standing, so the WORLD matches the inventory. Logs in
+		-- hand beside a forest of untouched trees is a state the quest can never reach on its
+		-- own, and inconsistent world state is exactly what makes a later bug hard to read.
+		-- fellTree already no-ops on an already-down tree, so this needs no guard of its own.
+		local felled = 0
+		for _, t in ipairs(treeList) do
+			if not t.down then
+				felled += 1
+				pcall(fellTree, t)
+			end
+		end
+		-- pickUp(), not `logsHeld = N`: it is what keeps the carried list, the backpack display
+		-- and the banner in step with each other. CARRY_MAX is 8 and LOGS_NEEDED is 7, so a
+		-- full load fits -- but it is capped on the pack's own answer rather than that
+		-- assumption, so raising LOGS_NEEDED past the backpack cannot silently lose logs here.
+		local got = 0
+		while logsHeld + logsMilled < LOGS_NEEDED do
+			if not pickUp("log") then break end
+			got += 1
+		end
+		step = 2
+		if millPrompt then millPrompt.Enabled = true end
+		refreshBanner()
+		print(("[Smores][TEST] /wood -- %d tree(s) felled, %d log(s) in hand. Mill them at the "
+			.. "cutting station."):format(felled, got))
+		return
+	end
+
+	if cmd:sub(1, 9) ~= "/complete" then return end
 	local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
 	if not (firePart and firePart.Parent and hrp) then return end
 	if (hrp.Position - firePart.Position).Magnitude > 420 then return end
 	if step >= 5 then return end
 
 	questAccepted = true
-	takeAxe()
+	takeSaw()
 	dropAll("log"); dropAll("cap")
 	logsHeld, shroomsHeld = 0, 0
 	logsMilled = LOGS_NEEDED
-	enableShroomPrompts(false)
 	if millPrompt then millPrompt.Enabled = false end
 	step = 5
 	refreshBanner()
@@ -2529,6 +3444,17 @@ local function onCommand(msg)
 		local ce = ReplicatedStorage:FindFirstChild("CoinEvent")
 		if ce then pcall(function() ce:FireServer(COIN_REWARD) end) end
 		_G.smoresQuestComplete = true
+		-- PAYOFF SHOT. The same camera move island 3's cookie gets, from the shared RevealCommand:
+		-- it resolves island 14's subject from that file's TARGETS table, so the framing lives in ONE
+		-- place and re-aiming this island later is an edit there, not here.
+		--
+		-- Delayed, because the thing worth looking at does not exist yet at this line -- the world
+		-- changes on completion (island 11's MineShaft is CREATED by the blast) and a camera that
+		-- arrives first frames the before shot. playReveal is also silent when the target is missing
+		-- and refuses to run on top of itself, so a quest that reaches this twice cannot double up.
+		task.delay(0.9, function()
+			if _G.revealIsland then pcall(_G.revealIsland, 14) end
+		end)
 		print(("[Smores][TEST] /complete -- campsite finished, +%d coins"):format(COIN_REWARD))
 	end)
 end

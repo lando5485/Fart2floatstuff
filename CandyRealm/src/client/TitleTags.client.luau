@@ -25,7 +25,30 @@
 local Players = game:GetService("Players")
 local RS      = game:GetService("ReplicatedStorage")
 
-local Gamepasses = require(RS:WaitForChild("Shared"):WaitForChild("Gamepasses"))
+-- ===== PORTABLE GAMEPASS LOOKUP (this file is shared by every realm) =====
+-- The three places mount their shared folder somewhere different -- Food at RS.Shared, Dino at
+-- RS.DinosaurRealm, Space at the RS root -- and the Dino Realm has no Gamepasses module at all. A
+-- hard-coded require would therefore work in exactly one place and ERROR OUT in the others, taking the
+-- titles down with it: the VIP badge is a bonus LINE on this billboard, not the reason it exists.
+-- So it is searched for by name and treated as optional. Found -> VIP badges render. Not found ->
+-- titles render alone, which is exactly right in a realm that sells no VIP pass.
+local Gamepasses
+do
+	local deadline = os.clock() + 10 -- the module replicates with everything else; do not race it
+	repeat
+		for _, d in ipairs(RS:GetDescendants()) do
+			if d:IsA("ModuleScript") and d.Name == "Gamepasses" then
+				local ok, mod = pcall(require, d)
+				if ok and type(mod) == "table" and type(mod.owns) == "function" then Gamepasses = mod end
+				break
+			end
+		end
+		if not Gamepasses then task.wait(0.5) end
+	until Gamepasses or os.clock() > deadline
+	if not Gamepasses then
+		print("[TitleTags] no Gamepasses module in this realm -- earned titles render, VIP badges do not")
+	end
+end
 
 local TAG_NAME = "PlayerTitleTag"
 
@@ -51,7 +74,7 @@ local function applyTitle(player, character)
 	-- Collect the lines to draw, TOP-FIRST. VIP sits above the earned title so the paid badge never pushes a
 	-- title out of the way -- both are always fully visible when a player has both.
 	local lines = {}
-	if Gamepasses.owns(player, "VIP") then
+	if Gamepasses and Gamepasses.owns(player, "VIP") then
 		lines[#lines + 1] = { text = Gamepasses.VIP_TAG_TEXT, color = Gamepasses.VIP_TAG_COLOR }
 	end
 
@@ -110,9 +133,11 @@ local function watch(player)
 	-- Same for VIP. Ownership resolves asynchronously on join (PlayerStats does a UserOwnsGamePassAsync round
 	-- trip) and can also land mid-session on a purchase, so without this a brand-new VIP would see no badge
 	-- until they respawned.
-	player:GetAttributeChangedSignal(Gamepasses.ATTR.VIP):Connect(function()
-		applyTitle(player, player.Character)
-	end)
+	if Gamepasses and Gamepasses.ATTR and Gamepasses.ATTR.VIP then
+		player:GetAttributeChangedSignal(Gamepasses.ATTR.VIP):Connect(function()
+			applyTitle(player, player.Character)
+		end)
+	end
 end
 
 for _, p in ipairs(Players:GetPlayers()) do watch(p) end -- players already here when this script starts

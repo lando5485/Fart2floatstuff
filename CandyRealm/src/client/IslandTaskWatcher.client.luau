@@ -44,16 +44,25 @@ local QUESTS = {
 	{ id = "cookie",   flag = "cookieQuestComplete"   }, -- island3  Cookie Repair
 	{ id = "park",     flag = "parkQuestComplete"     }, -- island13 Ancient Tree
 	{ id = "storm",    flag = "stormQuestComplete"    }, -- island5  Taffy Storm
-	{ id = "summit",   flag = "summitQuestComplete"   }, -- island8  Summit Bell
-	{ id = "jelly",    flag = "jellyQuestComplete"    }, -- island2  Jelly Tower
+	{ id = "crystal",  flag = "crystalQuestComplete"  }, -- island8  Crystal Mine
+	-- jelly (island2) REMOVED: quest retired, flag can never be set -- watching it was a
+	-- permanent "1 of 15 never completes"
 	{ id = "tunnel",   flag = "tunnelQuestComplete"   }, -- island11 Tunnel Blast
-	{ id = "crystal",  flag = "crystalQuestComplete"  }, -- island11 Crystal Mine
 	{ id = "campfire", flag = "campfireQuestComplete" }, -- island4  Campfire Freeze
+	{ id = "summit",   flag = "summitQuestComplete"   }, -- island4  Summit Bell (same island as the campfire)
 	{ id = "smores",   flag = "smoresQuestComplete"   }, -- island14 Camp S'mores
 	{ id = "bakery",   flag = "bakeryQuestComplete"   }, -- island15 The Great Bake-Off
 	{ id = "pancake",  flag = "pancakeQuestComplete"  }, -- island18 Wake the Pancake Monster (off-ladder)
 	{ id = "tractor",  flag = "tractorQuestComplete"  }, -- island19 Broken Tractor (off-ladder)
+	{ id = "candymine", flag = "candyMineQuestComplete" }, -- island16 Candy Mine Explosion (off-ladder)
 }
+
+-- (!) THE ISLAND NUMBERS IN THE COMMENTS ABOVE ARE THE VERIFIED ONES. They used to read `summit` as
+-- island8 and `crystal` as island11; the quest files say otherwise -- SummitBellQuest is
+-- ISLAND_NAME = "island4" and CrystalMineQuest is ISLAND_NAME = "island8". Only the FLAG names matter
+-- to this file, so the stale comments cost nothing here, but they were copied into CrateTokens' reward
+-- ladder, where they mispriced four quests, and into QuestJournal, where players read them. Both are
+-- corrected now; keep these three in step.
 
 local ClaimEvent = ReplicatedStorage:WaitForChild("ClaimIslandTaskTokens", 60)
 if not ClaimEvent then

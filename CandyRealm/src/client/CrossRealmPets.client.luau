@@ -278,12 +278,22 @@ local function makeIcon(card, realm, entry, page, mystery)
 		do local c = Instance.new("UITextSizeConstraint"); c.MaxTextSize = 46; c.Parent = q end
 		local qs = Instance.new("UIStroke"); qs.Color = Color3.fromRGB(246, 232, 196); qs.Thickness = 2; qs.Parent = q
 
-		-- Breathing, not blinking: the egg rocks a few degrees, like something inside it moved. Loops with
-		-- the card and dies with it (Roblox cancels tweens on a destroyed instance) -- nothing to clean up.
+		-- ⚠⚠ NEVER ROTATE ANYTHING IN A SCROLLING LIST. THIS WAS THE BUG.
+		-- The egg used to rock between -4 and +4 degrees ("breathing, not blinking"), and in Roblox a
+		-- GuiObject with a non-zero Rotation IS NOT CLIPPED BY ITS ANCESTORS. ClipsDescendants is a
+		-- rectangle test done in the parent's own axis-aligned space, and a rotated child opts out of
+		-- it entirely -- so every "?" egg escaped the ScrollingFrame and painted over the panel, the
+		-- tab bar and the screen, while the cards around them clipped correctly. That is why only the
+		-- first two rows ever looked right: those are the rows whose cards are inside the viewport
+		-- anyway, so nothing had to be clipped to make them look correct.
+		--
+		-- The breathing is kept -- it is a good detail -- but driven by SIZE instead, which clips and
+		-- scrolls like everything else. A ±4% pulse on a 66x84 egg reads as the same "something moved
+		-- in there" at the same tempo.
 		local TweenService = game:GetService("TweenService")
-		egg.Rotation = -4
+		egg.Size = UDim2.new(0, 63, 0, 88)
 		TweenService:Create(egg, TweenInfo.new(1.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
-			{ Rotation = 4 }):Play()
+			{ Size = UDim2.new(0, 69, 0, 80) }):Play()
 
 		-- STOPS HERE. No template lookup, no model: cloning the real dinosaur in behind this would ship the
 		-- answer to anyone who opened the instance tree.
@@ -408,11 +418,27 @@ end)
 
 -- ONE OWNED CARD. Age word + level + the realm's XP bar, and an informational strip saying where it can
 -- actually be equipped and levelled.
+--======================================================================
+-- GRID GEOMETRY
+--======================================================================
+-- These have to be solved together, because the padding that fixes the scrollbar overlap eats the
+-- width the second column needs:
+--     panel 700  ->  overlay 680 (contentInset w = -20)  ->  scroll 660 (Size 1,-20)
+--     usable = 660 - GUTTER - (GUTTER + SCROLLBAR_W) = 660 - 8 - 14 = 638
+--     two columns = CARD_W * 2 + CellPadding.X = 310 * 2 + 8 = 628   <= 638  OK
+-- The card was 322 wide, which needs 652 and does NOT fit once the scrollbar gutter exists -- the
+-- grid would silently collapse to ONE column and the page would look broken in a new way. 310 is
+-- the widest card that keeps two columns with room to spare. Everything inside a card is placed in
+-- SCALE (UDim2.new(1, -16, ...)), so the 12px trim needs no other change.
+local CARD_W, CARD_H = 310, 252
+local GUTTER      = 8
+local SCROLLBAR_W = 6
+
 local function buildOwnedCard(page, realm, entry, p, isRare, order)
 	local level = math.clamp(tonumber(p.level) or 1, 1, 25)
 	local card = Instance.new("Frame")
 	card.Name = realm.tabId .. "_" .. entry.key .. (isRare and "_R" or "")
-	card.LayoutOrder = order; card.Size = UDim2.new(0, 322, 0, 252) -- realm 1's grid-card size
+	card.LayoutOrder = order; card.Size = UDim2.new(0, CARD_W, 0, CARD_H) -- UIGridLayout overrides this
 	card.BackgroundColor3 = isRare and Color3.fromRGB(46, 28, 86) or CARD_BLUE
 	card.ClipsDescendants = true
 	card.ZIndex = 5 -- ABOVE the page (3) and its scroll (4): at the default 1 the whole card hid behind them
@@ -499,7 +525,7 @@ local function buildLockedCard(page, realm, entry, order, catalogIndex, total)
 	-- Explorer hands over the whole answer and makes the egg on the front decoration rather than a secret.
 	-- The Food tab keeps real keys -- those cards show the pet anyway, so there is nothing to protect.
 	card.Name = realm.tabId .. "Locked_" .. (realm.mystery and tostring(catalogIndex) or entry.key)
-	card.LayoutOrder = order; card.Size = UDim2.new(0, 322, 0, 252) -- realm 1's grid-card size
+	card.LayoutOrder = order; card.Size = UDim2.new(0, CARD_W, 0, CARD_H) -- UIGridLayout overrides this
 	card.BackgroundColor3 = CARD_BLUE; card.Parent = page.scroll -- SAME blue as an owned card, deliberately
 	uicorner(card, 12); uistroke(card, GOLD_EDGE, 2)        -- gold "locked" border is the only frame change
 
@@ -547,9 +573,26 @@ local function buildLockedCard(page, realm, entry, order, catalogIndex, total)
 	how.Size = UDim2.new(1, -20, 0, 26); how.Position = UDim2.new(0, 10, 0, 204)
 	how.BackgroundTransparency = 1; how.Font = Enum.Font.Gotham; how.TextSize = 12; how.TextWrapped = true
 	how.TextColor3 = PALE_BLUE; how.TextYAlignment = Enum.TextYAlignment.Top; how.ZIndex = 6; how.Parent = card
-	how.Text = entry.secret
-		and ("Return to the " .. realm.realmName .. " and collect every pet to unlock this secret pet")
-		or  ("Return to the " .. realm.realmName .. " to complete this pet's quest")
+	how.TextSize = 11   -- the per-pet line is longer than the one-size-fits-all one it replaced
+	-- PER PET, NOT ONE LINE FOR THE WHOLE REALM. Every locked card used to read the same two
+	-- sentences, so six locked cards were six copies of "return to the Dino Realm" -- the ??? name
+	-- was doing all the work and the body said nothing you could act on. `entry.quest` is the
+	-- override; with none set it is built from `entry.where`, which is real per-pet data.
+	--
+	-- EXCEPT ON A MYSTERY TAB, where naming the island is precisely the spoiler the tab exists to
+	-- withhold -- the same reason the name reads "? ? ?" and the island "Unknown" above.
+	if mystery then
+		how.Text = entry.secret
+			and ("Collect every pet in the " .. realm.realmName .. " to unlock this secret pet")
+			or  ("Return to the " .. realm.realmName .. " and find where this one is hiding")
+	elseif entry.quest then
+		how.Text = entry.quest
+	elseif entry.secret then
+		how.Text = "Collect every pet in the " .. realm.realmName .. " to unlock this secret pet"
+	else
+		how.Text = ("Complete this pet's quest at %s, in the %s"):format(
+			entry.where or realm.realmName, realm.realmName)
+	end
 
 	local more = Instance.new("TextLabel")
 	more.Size = UDim2.new(1, -16, 0, 20); more.Position = UDim2.new(0, 8, 0, 230)
@@ -568,7 +611,7 @@ local pages = {} -- [tabId] = { overlay, scroll, title, realm }
 local function buildPage(realm)
 	local panel = _G.PetHub and _G.PetHub.panel
 	if not panel then return nil end
-	local inset = (_G.PetHub and _G.PetHub.contentInset) or { x = 10, y = 108, w = -20, h = -118 }
+	local inset = (_G.PetHub and _G.PetHub.contentInset) or { x = 10, y = 108, w = -20, h = -128 } -- fallback mirrors the hub's inset (h clears the panel's 18px rounded corner)
 
 	local overlay = Instance.new("Frame")
 	overlay.Name = realm.tabId .. "PetsPage"
@@ -576,6 +619,11 @@ local function buildPage(realm)
 	overlay.Position = UDim2.new(0, inset.x, 0, inset.y)
 	overlay.BackgroundColor3 = Color3.fromRGB(150, 18, 88); overlay.BackgroundTransparency = 0.25
 	overlay.BorderSizePixel = 0; overlay.Visible = false; overlay.Parent = panel
+	-- CLIP THE BAND ITSELF, not just the scroll inside it. The scroll already clips its cards,
+	-- but the band is the bordered card the player reads as "the panel" -- with this on, nothing
+	-- parented here (today or later) can paint across its border stroke or past its bottom/right
+	-- edge, whatever its ZIndex or geometry.
+	overlay.ClipsDescendants = true
 	uicorner(overlay, 12)
 
 	local title = Instance.new("TextLabel")
@@ -593,12 +641,37 @@ local function buildPage(realm)
 	sub.Text = realm.realmName .. " collection \xE2\x80\x94 return there to hatch & level"; sub.Parent = overlay
 
 	local scroll = Instance.new("ScrollingFrame")
-	scroll.Size = UDim2.new(1, -20, 1, -62); scroll.Position = UDim2.new(0, 10, 0, 54)
-	scroll.BackgroundTransparency = 1; scroll.BorderSizePixel = 0; scroll.ScrollBarThickness = 6
-	scroll.ScrollBarImageColor3 = Color3.fromRGB(255, 215, 0); scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+	-- bottom offset -70 (not -62): the scroll's cut edge ends 16px above the band's bottom, clear
+	-- of the band's 12px rounded corner -- a card cut mid-scroll cannot sit across the rounded
+	-- border. (The band itself already stops 20px above the panel edge via contentInset.)
+	scroll.Size = UDim2.new(1, -20, 1, -70); scroll.Position = UDim2.new(0, 10, 0, 54)
+	scroll.BackgroundTransparency = 1; scroll.BorderSizePixel = 0
+	scroll.ScrollBarThickness = SCROLLBAR_W
+	scroll.ScrollBarImageColor3 = Color3.fromRGB(255, 215, 0)
+	-- CLIP: without this a card mid-scroll draws OUTSIDE the frame, over the title and the tab bar.
+	scroll.ClipsDescendants = true
+	-- THE CANVAS MEASURES ITSELF NOW. rebuild() used to compute it as
+	--       math.ceil(cards / 2) * 260 + 20
+	-- which bakes in two assumptions: that the grid lays out in exactly TWO columns, and that a row
+	-- is exactly 260 tall. Both are guesses about what UIGridLayout decided, and when either was
+	-- wrong -- a narrower panel dropping to one column, or the bottom padding -- the canvas came out
+	-- SHORTER than the content and the bottom row could not be scrolled to at all. AutomaticCanvasSize
+	-- asks the layout instead of guessing, and stays right if the cell or the panel ever changes.
+	-- (CanvasSize must stay 0 on Y or it fights the automatic size.)
+	scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 	scroll.Parent = overlay
+
+	-- The scrollbar is drawn INSIDE the frame's width, so without a matching right pad it sits on
+	-- top of the right-hand column's border. PaddingRight is the gutter plus the bar's own width.
+	local gpad = Instance.new("UIPadding")
+	gpad.PaddingTop = UDim.new(0, 8);  gpad.PaddingBottom = UDim.new(0, 12)
+	gpad.PaddingLeft = UDim.new(0, GUTTER); gpad.PaddingRight = UDim.new(0, GUTTER + SCROLLBAR_W)
+	gpad.Parent = scroll
+
 	local grid = Instance.new("UIGridLayout")
-	grid.CellSize = UDim2.new(0, 322, 0, 252); grid.CellPadding = UDim2.new(0, 8, 0, 8) -- realm 1's cell
+	grid.CellSize = UDim2.new(0, CARD_W, 0, CARD_H); grid.CellPadding = UDim2.new(0, 8, 0, 8)
+	grid.HorizontalAlignment = Enum.HorizontalAlignment.Center
 	grid.SortOrder = Enum.SortOrder.LayoutOrder; grid.Parent = scroll
 
 	return { overlay = overlay, scroll = scroll, title = title, sub = sub, realm = realm }
@@ -638,7 +711,12 @@ local function rebuild(tabId)
 		end
 	end
 
-	page.scroll.CanvasSize = UDim2.new(0, 0, 0, math.ceil(cards / 2) * 260 + 20)
+	-- No CanvasSize maths here any more -- AutomaticCanvasSize measures the real layout. See makePage.
+	-- The header is the SUM of what every page reports, so both counters come from the same catalogs
+	-- and cannot disagree.
+	if _G.PetHub and _G.PetHub.setRealmProgress then
+		pcall(_G.PetHub.setRealmProgress, realm.tabId, ownedSpecies, total)
+	end
 	page.title.Text = ("%s %s   %d / %d"):format(realm.icon, realm.headerName or "PETS", ownedSpecies, total)
 	page.sub.Text = ("%s collection  %d / %d \xE2\x80\x94 return there to hatch & level")
 		:format(realm.realmName, ownedSpecies, total)

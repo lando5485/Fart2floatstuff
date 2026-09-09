@@ -63,16 +63,27 @@ end
 --======================================================================
 local function shout(name, height, friend)
 	local text = friend
-		and string.format("\xF0\x9F\x94\xA5  YOU BEAT %s'S BEST!  %s studs", string.upper(name), tostring(height))
-		or  string.format("\xE2\x9A\xA1  PASSED %s'S BEST THIS ROUND  \xE2\x80\xA2  %s studs", string.upper(name), tostring(height))
+		and string.format("\xF0\x9F\x94\xA5  YOU BEAT %s!", string.upper(name))
+		or  string.format("\xE2\x9A\xA1  PASSED %s'S BEST", string.upper(name))
 
 	if _G.NotifyCenter and _G.NotifyCenter.push then
 		pcall(_G.NotifyCenter.push, {
+			-- BEATING A FRIEND still gets the hero lane -- it is the loudest social moment in the game and it
+			-- happens once. Passing a stranger's best-this-round happens several times a climb and is muted by
+			-- the banner budget (kind = "rival_pass", see NotifyCenter's MUTED table).
+			kind = (not friend) and "rival_pass" or nil,
 			text = text,
 			color = friend and Color3.fromRGB(255, 206, 92) or Color3.fromRGB(120, 186, 255),
-			-- SOCIAL, not REWARD. This fires mid-flight and must never sit on top of an island-landing banner
-			-- or a crate reveal -- those are the things the player actually stopped to look at.
-			priority = (_G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.SOCIAL) or 10,
+			-- HERO LANE, at the LOWEST hero rank. It used to be SOCIAL, which routed it to the small top-left
+			-- pill stack -- the corner nobody looks at while they are staring up at the sky, mid-climb, watching
+			-- the thing this banner is about. Beating a friend's best is the loudest social moment in the game
+			-- and it was being whispered.
+			--
+			-- REWARD (40) rather than anything higher keeps the original promise intact: an island landing (100),
+			-- a purchase (90) or an event (80) still preempts it, so this can never cover the thing the player
+			-- actually stopped to look at. It just gets the centre of the screen when nothing better wants it.
+			priority = (_G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.REWARD) or 40,
+			duration = 3.5,
 		})
 	end
 	if _G.Sfx then pcall(_G.Sfx.play, friend and "levelup" or "pop") end

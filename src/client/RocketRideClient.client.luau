@@ -1306,7 +1306,7 @@ RideEvent.OnClientEvent:Connect(function(kind, payload)
 			TweenService:Create(sheet, TweenInfo.new(0.6), { BackgroundTransparency = 1 }):Play()
 			task.delay(0.7, function() gui:Destroy() end)
 		end)
-		toast(("\xF0\x9F\x9A\x80 THE STARS! +%d crate tokens \xE2\x80\x94 what a way to go"):format(tonumber(payload) or 0),
+		toast(("\xF0\x9F\x9A\x80 THE STARS! +%d crate tickets \xE2\x80\x94 what a way to go"):format(tonumber(payload) or 0),
 			C_AMBER, 6)
 		leave(true)
 

@@ -64,6 +64,19 @@ local PetEquipEvent        = RS:FindFirstChild("PetEquipEvent")
 local PetInventoryEvent    = RS:FindFirstChild("PetInventoryEvent")
 local PetRequestStateEvent = RS:FindFirstChild("PetRequestStateEvent")
 
+-- ===== THE CUSTOMIZE COUNTER =====
+-- SkinCrateService is the authority for traits, tickets and what each pet is wearing; this panel only asks.
+-- Its remotes live in a folder rather than loose in ReplicatedStorage, and it creates them before it requires
+-- anything, so these are safe to wait on. Both are optional: a place running an older server still gets a
+-- fully working NAP tab, with the Customize tab reporting itself unavailable rather than erroring.
+local SkinRemotes  = RS:WaitForChild("SkinRemotes", 30)
+local BuyTraitRF   = SkinRemotes and SkinRemotes:WaitForChild("BuyTrait", 10)
+local SetPetTraitRE = SkinRemotes and SkinRemotes:WaitForChild("SetPetTrait", 10)
+local Shared     = RS:WaitForChild("Shared")
+local PetTraits  = require(Shared:WaitForChild("PetTraits"))
+local PetSkins   = require(Shared:WaitForChild("PetSkins"))   -- for tierColor: one rarity ladder, game-wide
+local TraitShop  = require(Shared:WaitForChild("TraitShop"))
+
 --======================================================================
 -- TUNING
 --======================================================================
@@ -122,11 +135,11 @@ local function speciesOf(skey)
 end
 local function ageScale(level) return 0.6 + 0.4 * math.clamp(((level or 1) - 1) / 24, 0, 1) end
 
--- What a pet of this age earns while it sleeps, in coins per minute.
--- MIRRORS PetBarn.server's coinsForLevel() x 6 ticks a minute -- change one, change both. This is the number
+-- What a pet of this age earns while it sleeps, in TICKETS PER HOUR.
+-- MIRRORS PetBarn.server's ticketsPerHour() exactly -- change one, change both. This is the number
 -- that decides WHICH pet you drop off, so showing it on the card is the difference between an informed pick
 -- and a guess; a wrong number here is worse than none.
-local function coinsPerMin(level)
+local function ticketsPerHour(level)
 	return math.clamp(1 + math.floor((tonumber(level) or 1) / 6), 1, 5) * 6
 end
 
@@ -470,6 +483,35 @@ local function pressable(btn)
 end
 
 --======================================================================
+-- WHAT A PET IS WEARING
+--======================================================================
+-- The cosmetic state (tickets, the trait wardrobe, the skin+trait on each pet) belongs to SkinCrateService and
+-- reaches every client on its own SkinStateEvent push, which PetSkinLook mirrors onto _G. This panel READS
+-- that mirror rather than keeping a copy, so a trait bought here, a crate opened at the shop and a skin
+-- equipped in the Pet Hub all land in one place and the previews can never disagree with the live pet.
+--
+-- IT IS ALSO THE FIX FOR A LONG-STANDING BUG IN THIS FILE. Every preview here used to pass `card.skin` and
+-- `card.trait` off PetInventoryEvent's payload -- fields that payload has never carried. Both were always
+-- nil, so every pet in the hut (the big panel, the picker thumbs) rendered in its default look no matter what
+-- it was actually wearing. The nap roster was the only correct one, because the SERVER fills its skin/trait
+-- in from _G.skinEquippedFor.
+local function cosmeticState()
+	local s = _G.petSkinState
+	if type(s) ~= "table" then s = {} end
+	return s, (type(s.ownedTraits) == "table" and s.ownedTraits or {}),
+		math.floor(tonumber(s.tokens) or tonumber(_G.crateTokenBalance) or 0)
+end
+
+-- The skin and trait `petId` is wearing right now. Either may be nil -- a pet can wear a bought trait with no
+-- skin at all, which is exactly what you get the moment you buy your first one.
+local function wornOn(petId)
+	local eq = _G.petSkinEquipped
+	local e = (type(eq) == "table") and eq[petId] or nil
+	if type(e) ~= "table" then return nil, nil end
+	return e.skin, e.trait
+end
+
+--======================================================================
 -- 3D PET PREVIEWS
 --======================================================================
 -- The single biggest upgrade over an emoji: the card shows the ACTUAL pet -- right species, right skin, right
@@ -569,10 +611,23 @@ local SHADOWS = {}
 local applyPanelScale
 do
 	local s = Instance.new("UIScale"); s.Parent = panel
+	-- MEASURED AGAINST THE PANEL, NOT AGAINST 1280x720. The old rule was min(vp.X/1280, vp.Y/720, 1), which
+	-- assumes the panel is always the full 700x520 -- so a state that renders 480 tall was still shrunk as if
+	-- it were 520, and on a handset the whole panel sat at ~0.55 with 12px text rendering at 6px.
+	--
+	-- Scaling against the panel's OWN current size fixes both ends: it can never overflow the viewport (that
+	-- is the point), and a short state is allowed to stay big. The NAP tab with one pet goes from 0.55 to
+	-- about 0.78 on a phone. Never above 1 -- this shrinks to fit, it does not blow the panel up on a
+	-- monitor -- and never below 0.5, because past that the type is unreadable whatever we do and the honest
+	-- answer is that the panel is too tall for the device.
+	--
+	-- fitPanel() calls this, because the height it picks is exactly the input here.
 	applyPanelScale = function()
 		local cam = Workspace.CurrentCamera
 		local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
-		s.Scale = math.min(vp.X / 1280, vp.Y / 720, 1)
+		local pw = math.max(1, panel.Size.X.Offset)
+		local ph = math.max(1, panel.Size.Y.Offset)
+		s.Scale = math.clamp(math.min((vp.X - 24) / pw, (vp.Y - 24) / ph), 0.5, 1)
 	end
 	applyPanelScale()
 	if Workspace.CurrentCamera then
@@ -622,7 +677,12 @@ local PAD       = 12                       -- panel edge, used on all four sides
 local HEAD_H    = 54
 local STRIP_Y   = PAD + HEAD_H + 8         -- 74
 local STRIP_H   = 32
-local BODY_TOP  = STRIP_Y + STRIP_H + 10   -- 116
+-- THE TAB ROW. The hut does two jobs now -- mind a napping pet, and dress the ones you keep -- and they are
+-- different enough that stacking them in one scroll would bury whichever came second. Everything below reads
+-- BODY_TOP, so inserting a row here moves all three body states together and fitPanel absorbs the height.
+local TAB_Y     = STRIP_Y + STRIP_H + 8    -- 114
+local TAB_H     = 34
+local BODY_TOP  = TAB_Y + TAB_H + 10       -- 158
 
 -- ===== HEADER =====
 -- Icon, title, close -- and nothing else, so PET HUT has nothing to compete with. 54 tall instead of 66, and
@@ -694,6 +754,19 @@ local subLbl = mkLabel(panel, { Text = "", Font = Enum.Font.GothamBold, TextSize
 	TextColor3 = C.txtDim, Size = UDim2.new(1, -320, 0, STRIP_H), Position = UDim2.new(0, PAD + 4, 0, STRIP_Y),
 	TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3 })
 
+-- THE TICKET BALANCE lives in the strip row, in the slot the bed chip occupies on the NAP tab. The two are
+-- never both relevant: how many beds are free means nothing while you are shopping, and your ticket balance
+-- means nothing while you are picking a pet to nap. Sharing the slot is what keeps the strip one row instead
+-- of two, and it puts the number you are spending at the top of the panel rather than buried in a corner of
+-- the wardrobe.
+local ticketChip = mkFrame(panel, { AnchorPoint = Vector2.new(1, 0), Size = UDim2.new(0, 150, 0, STRIP_H),
+	Position = UDim2.new(1, -PAD, 0, STRIP_Y), BackgroundColor3 = C.well, Visible = false, ZIndex = 3 })
+mkCorner(ticketChip, 10)
+local ticketLbl = mkLabel(ticketChip, { Text = "", Font = Enum.Font.FredokaOne, TextSize = 17, TextColor3 = C.gold,
+	Size = UDim2.new(1, -20, 1, 0), Position = UDim2.new(0, 10, 0, 0),
+	TextXAlignment = Enum.TextXAlignment.Right, TextScaled = true, ZIndex = 4 })
+do local c = Instance.new("UITextSizeConstraint", ticketLbl); c.MaxTextSize = 17; c.MinTextSize = 11 end
+
 --======================================================================
 -- PILLS THAT CANNOT CLIP
 --======================================================================
@@ -744,12 +817,25 @@ local CHOOSE_Y = BODY_TOP + FEAT_H + 8 -- 392
 
 -- Panel height is derived from whatever the visible state actually ends at, so no state ever pads itself out
 -- with empty blue and none of them can drift apart when one is edited.
-local function fitPanel(bodyBottom)
-	local h = bodyBottom + 10 + FOOT_H + PAD
+-- FORWARD DECLARATION. The footer is built further down (it is bottom-anchored, so it does not care about
+-- build order) but fitPanel below shows and hides it. Without this line that reference compiles as a GLOBAL
+-- read, comes back nil, and throws on the first render -- the local-ordering trap this file's siblings warn
+-- about. Costs no extra register: the declaration below becomes a plain assignment.
+local footBar
+
+-- `noFooter` drops the tip bar's 42px from the height as well as hiding it. The Customize tab uses it: the
+-- footer exists to answer "which pet do I leave here?", which is a NAP question, and on a phone those 42px
+-- are worth more as panel scale than as a sentence nobody reads twice.
+local function fitPanel(bodyBottom, noFooter)
+	footBar.Visible = not noFooter
+	local h = bodyBottom + (noFooter and PAD or (10 + FOOT_H + PAD))
 	panel.Size = UDim2.new(0, PANEL_W, 0, h)
 	for _, sh in ipairs(SHADOWS) do
 		sh.frame.Size = UDim2.new(0, PANEL_W + sh.spread, 0, h + sh.spread)
 	end
+	-- The height we just chose is what the scale is measured against, so re-run it here rather than only on a
+	-- viewport change: a short state should be allowed to render bigger on a phone than a tall one.
+	if applyPanelScale then applyPanelScale() end
 	return h
 end
 
@@ -898,12 +984,188 @@ local asleepHint = mkLabel(asleepCard, { Text = "", Font = Enum.Font.Gotham, Tex
 	TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, ZIndex = 4 })
 asleepHint.LineHeight = 1.2
 
+--======================================================================
+-- THE TAB BAR
+--======================================================================
+-- Two jobs, two tabs, and the pet SELECTION is deliberately shared between them (both read `selectedKey`), so
+-- picking a pet to dress and then switching to NAP drops off the pet you were just looking at. Nothing here
+-- rebuilds the body: renderPanel already show/hides three frames, and this adds a fourth to the same switch.
+local activeTab = "nap" -- "nap" | "custom"
+local tabBtns = {}
+do
+	local TW = 152
+	for i, spec in ipairs({
+		{ id = "nap",    text = "\xF0\x9F\x92\xA4  NAP" },
+		{ id = "custom", text = "\xF0\x9F\x8E\xA9  CUSTOMIZE" },
+	}) do
+		local b = pressable(mkButton(panel, {
+			Size = UDim2.new(0, TW, 0, TAB_H), Position = UDim2.new(0, PAD + (i - 1) * (TW + 8), 0, TAB_Y),
+			BackgroundColor3 = C.inset, Text = spec.text, Font = Enum.Font.FredokaOne, TextSize = 15,
+			TextColor3 = C.txtDim, AutoButtonColor = false, ZIndex = 4,
+		}))
+		mkCorner(b, 10)
+		local st = mkStroke(b, C.white, 0)
+		tabBtns[#tabBtns + 1] = { id = spec.id, btn = b, stroke = st }
+		b.MouseButton1Click:Connect(function()
+			if activeTab == spec.id then return end
+			activeTab = spec.id
+			renderPanel()
+		end)
+	end
+end
+
+-- Paint the tabs. Split out because renderPanel calls it and so does the open, and a selected tab is drawn by
+-- VALUE (lighter fill, white text, a stroke) rather than by an underline -- the same "depth is value, not
+-- borders" rule the rest of the panel follows.
+local function paintTabs()
+	for _, t in ipairs(tabBtns) do
+		local on = (t.id == activeTab)
+		t.btn.BackgroundColor3 = on and C.orange or C.inset
+		t.btn.TextColor3 = on and C.ink or C.txtDim
+		t.stroke.Thickness = on and 2.5 or 0
+	end
+end
+
+--======================================================================
+-- BODY C: CUSTOMIZE -- the trait wardrobe
+--======================================================================
+-- WHAT THIS SELLS. A trait is the accessory layer -- King's crown and cape, Wizard's hat, Astronaut's helmet.
+-- Traits have always existed, but they could only arrive welded inside a crate pull's pet|skin|trait entry.
+-- Here you pick the one you want and pay a fixed price in Crate Tickets, and it goes in your WARDROBE: owned
+-- outright, wearable on any pet you own, forever. Prices come from the shared TraitShop table the server
+-- charges from, so the number on the card is the number that is taken.
+--
+-- TRY BEFORE YOU BUY, AND TWO TAPS TO SPEND. Tapping a trait card does not buy it -- it FOCUSES it, and the
+-- big preview on the left puts it on your actual pet, wearing your actual skin, immediately. The purchase is
+-- the separate button underneath. A grid where one stray tap spends 7,500 tickets is a refund request.
+-- ===== THE LAYOUT IS BUILT FOR A PHONE FIRST =====
+-- The first pass put all 21 traits on screen at once as a two-column grid of 182x58 cards. On a desktop that
+-- is busy; on a phone it is unusable. The panel's UIScale bottoms out around 0.6 on a handset, which turns a
+-- 58px card into 36px of touch target and 10px tier text into 6px of unreadable grey.
+--
+-- So this shows ONE TIER AT A TIME, chosen with a big left/right pager. That is at most five traits on screen
+-- (Legendary has four, every other tier five), which buys enough room to make each one a full-width 38px row
+-- with 17px type -- readable and tappable at 0.6 scale -- and it drops the panel 28px shorter into the
+-- bargain, which is the single thing that most improves the scale a phone can afford. Paging by tier also
+-- reads as browsing shelves rather than scrolling a spreadsheet, and it puts King and Wizard on a Legendary
+-- shelf of their own, which is the point of moving them there.
+local TRAITS_H = 272
+local TR = { cards = {}, tierIdx = 1 } -- every instance this tab owns in one table: the file has a local budget
+
+local traitsCard = mkFrame(panel, { Size = UDim2.new(1, -PAD * 2, 0, TRAITS_H), Position = UDim2.new(0, PAD, 0, BODY_TOP),
+	BackgroundColor3 = C.inset, Visible = false, ZIndex = 3 })
+mkCorner(traitsCard, 18); mkStroke(traitsCard, C.white, 3)
+
+do
+	local P, PREV = 14, 214                  -- the preview pane
+	local COL_X = P + PREV + 14              -- 242
+	local COL_W = INNER - COL_X - P          -- 420
+	local ROW_H, ROW_GAP = 38, 4
+
+	TR.prevHolder = mkFrame(traitsCard, { Size = UDim2.new(0, PREV, 0, 176), Position = UDim2.new(0, P, 0, P),
+		BackgroundColor3 = C.sky, ClipsDescendants = true, ZIndex = 4 })
+	mkCorner(TR.prevHolder, 14)
+
+	-- The focused trait's name sits ON the preview: the player is looking at the pet, and that is where the
+	-- answer to "what am I looking at" belongs. 19px with a dark stroke so it holds up against any pet colour.
+	TR.focusName = mkLabel(traitsCard, { Text = "", Font = Enum.Font.FredokaOne, TextSize = 19, TextColor3 = C.txt,
+		Size = UDim2.new(0, PREV - 12, 0, 24), Position = UDim2.new(0, P + 6, 0, P + 176 - 30),
+		TextXAlignment = Enum.TextXAlignment.Center, TextScaled = true, ZIndex = 6 })
+	do local c = Instance.new("UITextSizeConstraint", TR.focusName); c.MaxTextSize = 19; c.MinTextSize = 12 end
+	mkStroke(TR.focusName, Color3.fromRGB(8, 28, 70), 2)
+
+	-- THE ONE BUTTON THAT SPENDS. Same slab-and-lip as DROP OFF and WAKE UP, so the primary action is the same
+	-- physical object in every state of this panel. 56 tall, not 52: it is the only button here that costs
+	-- money, and it is the one that most has to survive being shrunk onto a phone.
+	TR.actBase = mkFrame(traitsCard, { Size = UDim2.new(0, PREV, 0, 56), Position = UDim2.new(0, P, 0, P + 176 + 14),
+		BackgroundColor3 = C.greenLo, ZIndex = 3 })
+	mkCorner(TR.actBase, 14)
+	TR.actBtn = pressable(mkButton(traitsCard, { Size = UDim2.new(0, PREV, 0, 56),
+		Position = UDim2.new(0, P, 0, P + 176 + 10), BackgroundColor3 = C.green, Text = "",
+		Font = Enum.Font.FredokaOne, TextSize = 21, TextColor3 = C.txt, TextScaled = true, ZIndex = 4 }))
+	mkCorner(TR.actBtn, 14); mkStroke(TR.actBtn, C.white, 3)
+	do
+		local c = Instance.new("UITextSizeConstraint", TR.actBtn); c.MaxTextSize = 21; c.MinTextSize = 13
+		local pd = Instance.new("UIPadding", TR.actBtn)
+		pd.PaddingLeft = UDim.new(0, 10); pd.PaddingRight = UDim.new(0, 10)
+	end
+
+	-- ----- the right column: the tier pager, then that tier's traits -----
+	-- A PAGER, NOT A ROW OF FIVE TIER CHIPS. Five chips across 420px is 78px each, and "UNCOMMON" inside 78px
+	-- is 10px type that vanishes on a handset. Two big arrows and one large tier name say the same thing with
+	-- two 40px touch targets and 20px type.
+	TR.tierPrev = pressable(mkButton(traitsCard, { Size = UDim2.new(0, 40, 0, 34), Position = UDim2.new(0, COL_X, 0, P),
+		BackgroundColor3 = C.well, Text = "\xE2\x97\x80", Font = Enum.Font.GothamBold, TextSize = 16,
+		TextColor3 = C.txt, AutoButtonColor = false, ZIndex = 5 }))
+	mkCorner(TR.tierPrev, 10)
+	TR.tierNext = pressable(mkButton(traitsCard, { Size = UDim2.new(0, 40, 0, 34),
+		Position = UDim2.new(0, COL_X + COL_W - 40, 0, P), BackgroundColor3 = C.well, Text = "\xE2\x96\xB6",
+		Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = C.txt, AutoButtonColor = false, ZIndex = 5 }))
+	mkCorner(TR.tierNext, 10)
+	TR.tierName = mkLabel(traitsCard, { Text = "", Font = Enum.Font.FredokaOne, TextSize = 20, TextColor3 = C.txt,
+		Size = UDim2.new(0, COL_W - 92, 0, 34), Position = UDim2.new(0, COL_X + 46, 0, P),
+		TextXAlignment = Enum.TextXAlignment.Center, TextScaled = true, ZIndex = 5 })
+	do local c = Instance.new("UITextSizeConstraint", TR.tierName); c.MaxTextSize = 20; c.MinTextSize = 13 end
+
+	local LIST_Y = P + 34 + 8
+	TR.list = mkFrame(traitsCard, { Size = UDim2.new(0, COL_W, 0, TRAITS_H - LIST_Y - P),
+		Position = UDim2.new(0, COL_X, 0, LIST_Y), BackgroundColor3 = C.well, ZIndex = 4 })
+	mkCorner(TR.list, 12)
+	do
+		local pd = Instance.new("UIPadding", TR.list)
+		pd.PaddingTop = UDim.new(0, 6); pd.PaddingLeft = UDim.new(0, 6); pd.PaddingRight = UDim.new(0, 6)
+		local ly = Instance.new("UIListLayout")
+		ly.FillDirection = Enum.FillDirection.Vertical; ly.Padding = UDim.new(0, ROW_GAP)
+		ly.SortOrder = Enum.SortOrder.LayoutOrder; ly.Parent = TR.list
+	end
+
+	-- THE ROWS ARE BUILT ONCE, all 21 of them, and paging only flips `Visible`. There are exactly 21 and the
+	-- set never changes -- only their state does (locked / owned / worn) -- so rebuilding them in renderTraits
+	-- would destroy and recreate 21 frames a few times a second for a list that is identical every time.
+	-- renderPanel runs on a 3-second tick AND on every roster broadcast from every other player in the server.
+	TR.rows = TraitShop.catalogue()
+	for i, row in ipairs(TR.rows) do
+		local card = pressable(mkButton(TR.list, { Size = UDim2.new(1, 0, 0, ROW_H), LayoutOrder = i, Text = "",
+			BackgroundColor3 = C.inset, AutoButtonColor = false, Visible = false, ZIndex = 5 }))
+		mkCorner(card, 9)
+		local cs = mkStroke(card, row.color, 1.5)
+		-- A tier-coloured spine down the left edge. The trait's accent colour is already its identity in the
+		-- crate reel and the reveal card, so reusing it means a player recognises King before reading the word.
+		local spine = mkFrame(card, { Size = UDim2.new(0, 5, 1, -12), Position = UDim2.new(0, 7, 0, 6),
+			BackgroundColor3 = row.color, ZIndex = 6 })
+		mkCorner(spine, 3)
+		mkLabel(card, { Text = row.displayName, Font = Enum.Font.FredokaOne, TextSize = 17, TextColor3 = C.txt,
+			Size = UDim2.new(1, -130, 1, 0), Position = UDim2.new(0, 19, 0, 0),
+			TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 6 })
+		-- The state is the only other thing on the row. The tier is NOT repeated here -- the pager above
+		-- already says it for every row on screen, and printing it 5 times was pure noise.
+		local state = mkLabel(card, { Text = "", Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = C.gold,
+			Size = UDim2.new(0, 104, 1, 0), Position = UDim2.new(1, -114, 0, 0),
+			TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 6 })
+		TR.cards[row.id] = { btn = card, stroke = cs, state = state, row = row }
+		card.MouseButton1Click:Connect(function()
+			TR.focus = row.id
+			renderPanel()
+		end)
+	end
+
+	-- Paging keeps the FOCUS where it is rather than snapping it to the new tier's first trait: the preview is
+	-- the expensive thing on screen and flipping past four shelves should not rebuild a pet model four times.
+	local function page(step)
+		local n = #TraitShop.TIER_ORDER
+		TR.tierIdx = ((TR.tierIdx - 1 + step) % n) + 1
+		renderPanel()
+	end
+	TR.tierPrev.MouseButton1Click:Connect(function() page(-1) end)
+	TR.tierNext.MouseButton1Click:Connect(function() page(1) end)
+end
+
 -- ===== FOOTER: ONE BAR, IDENTICAL IN BOTH STATES =====
 -- Same bar in both states, so switching never nudges it. Deliberately the quietest thing on the panel: no
 -- outline, a barely-there well, 12px muted text. It is a tip, and a tip that competes with the primary
 -- button for attention is a design mistake -- the previous version had a 1.5px stroke and 13px text, which
 -- gave a footnote the same visual weight as the stat tiles.
-local footBar = mkFrame(panel, { Size = UDim2.new(1, -PAD * 2, 0, FOOT_H),
+footBar = mkFrame(panel, { Size = UDim2.new(1, -PAD * 2, 0, FOOT_H),
 	Position = UDim2.new(0, PAD, 1, -(FOOT_H + PAD)), BackgroundColor3 = C.well, ZIndex = 3 })
 mkCorner(footBar, 10)
 -- The bulb gets its own small round chip so the tip reads as a labelled bar rather than a sentence that
@@ -963,17 +1225,40 @@ end
 -- already spelled out in the big panel, and repeating it here would turn a picker back into a grid of cards.
 local function mkThumb(skey, card, order, selected)
 	local petId = speciesOf(skey)
+	local skin, trait = wornOn(petId) -- the pet's REAL look; see the wornOn header for why not card.skin
 	local t = mkButton(chooser, { Size = UDim2.new(0, 58, 0, 58), LayoutOrder = order, Text = "",
 		BackgroundColor3 = C.sky, AutoButtonColor = false, ClipsDescendants = true, ZIndex = 4 })
 	mkCorner(t, 12)
 	mkStroke(t, selected and C.gold or (card.rare and Color3.fromRGB(255, 226, 150) or C.white), selected and 3 or 2)
-	petViewport(t, { Size = UDim2.new(1, 0, 1, 0), ZIndex = 5 }, petId, card.level, card.skin, card.trait)
+	petViewport(t, { Size = UDim2.new(1, 0, 1, 0), ZIndex = 5 }, petId, card.level, skin, trait)
 	t.MouseButton1Click:Connect(function()
 		if selectedKey == skey then return end
 		selectedKey = skey
 		renderPanel()
 	end)
 	return t
+end
+
+-- THE PICKER STRIP, shared by both tabs. Rebuilt on a signature rather than every render: renderPanel runs on
+-- a 3-second tick and on every roster broadcast from every other player in the server, and re-cloning one pet
+-- Union per tile on each of those is not affordable. The signature carries each pet's WORN look, so buying a
+-- hat repaints the thumbs -- that is the feedback that tells you the purchase landed.
+local function paintChooser(keys)
+	local sig = { selectedKey }
+	for i, skey in ipairs(keys) do
+		local c = inventory[skey]
+		local skin, trait = wornOn(speciesOf(skey))
+		sig[i + 1] = string.format("%s:%d:%s:%s:%s", skey, c.level or 1, tostring(c.rare),
+			tostring(skin), tostring(trait))
+	end
+	sig = table.concat(sig, "|")
+	if sig == chooseSig then return end
+	chooseSig = sig
+	for _, ch in ipairs(chooser:GetChildren()) do
+		if ch:IsA("GuiButton") then ch:Destroy() end
+	end
+	for i, skey in ipairs(keys) do mkThumb(skey, inventory[skey], i, skey == selectedKey) end
+	chooser.CanvasSize = UDim2.new(0, #keys * 58 + (#keys - 1) * 8 + 20, 0, 0)
 end
 
 -- Paints the big panel for whichever pet is selected. Split out from the render so the pet MODEL is only
@@ -985,12 +1270,13 @@ local function paintFeatured(skey, card)
 	local age, ageCol = ageName(level)
 	local full = (#latestRoster >= MAX_SLOTS)
 
-	local sig = string.format("%s:%d:%s:%s:%s", skey, level, tostring(card.rare), tostring(card.skin), tostring(card.trait))
+	local skin, trait = wornOn(petId) -- the pet's REAL look; see the wornOn header for why not card.skin
+	local sig = string.format("%s:%d:%s:%s:%s", skey, level, tostring(card.rare), tostring(skin), tostring(trait))
 	if sig ~= featSig then
 		featSig = sig
 		if featVp then spinners[featVp] = nil; featVp:Destroy() end
 		-- 1.75 instead of the default 2.1: this pane is 280 wide and the pet is the reason the panel exists.
-		featVp = petViewport(featPrev, { Size = UDim2.new(1, 0, 1, 0), ZIndex = 5 }, petId, level, card.skin, card.trait, 1.75)
+		featVp = petViewport(featPrev, { Size = UDim2.new(1, 0, 1, 0), ZIndex = 5 }, petId, level, skin, trait, 1.75)
 	end
 
 	featName.Text = displayNameOf(petId, card.rare)
@@ -1008,7 +1294,7 @@ local function paintFeatured(skey, card)
 		end
 	end)
 
-	rateVal.Text = "\xF0\x9F\xAA\x99 " .. coinsPerMin(level) .. " / min"
+	rateVal.Text = ticketsPerHour(level) .. " tickets / hour"
 
 	dropBtn.Text = full and "ALL BEDS FULL" or "DROP OFF"
 	dropBtn.TextSize = full and 20 or 26
@@ -1016,6 +1302,175 @@ local function paintFeatured(skey, card)
 	dropBase.BackgroundColor3 = full and Color3.fromRGB(84, 94, 110) or C.greenLo
 	if dropConn then dropConn:Disconnect() end
 	dropConn = dropBtn.MouseButton1Click:Connect(function() dropOff(skey, card, dropBtn) end)
+end
+
+--======================================================================
+-- CUSTOMIZE: RENDER + ACTIONS
+--======================================================================
+local function renderTraits()
+	local _, owned, tokens = cosmeticState()
+	local card = selectedKey and inventory[selectedKey] or nil
+	local petId = selectedKey and speciesOf(selectedKey) or nil
+	-- Two statements, not `local skin, worn = petId and wornOn(petId)`: an `and` expression is adjusted to ONE
+	-- value, so that one-liner silently drops the second return and `worn` is nil forever -- which reads as
+	-- "nothing is ever equipped" and would make TAKE IT OFF unreachable.
+	local skin, worn
+	if petId then skin, worn = wornOn(petId) end
+
+	ticketLbl.Text = "\xF0\x9F\x8E\x9F " .. tostring(tokens)
+
+	-- DEFAULT THE FOCUS to whatever the pet already has on -- opening the tab should show you your pet as it
+	-- actually looks, not an arbitrary hat -- and open the pager on that trait's own shelf. Falls back to the
+	-- first (cheapest) trait for a bare pet.
+	if not (TR.focus and TR.cards[TR.focus]) then
+		TR.focus = worn or (TR.rows[1] and TR.rows[1].id)
+		local ft = TR.focus and PetTraits.tierOf(TR.focus)
+		for i, t in ipairs(TraitShop.TIER_ORDER) do if t == ft then TR.tierIdx = i end end
+	end
+	local focus = TR.focus
+	local meta = focus and PetTraits.get(focus) or nil
+	local price = focus and TraitShop.priceOf(focus) or nil
+	local haveIt = focus and owned[focus] == true
+
+	-- ----- the tier pager + this tier's rows -----
+	local tier = TraitShop.TIER_ORDER[TR.tierIdx] or TraitShop.TIER_ORDER[1]
+	local shown, ownedHere = 0, 0
+	for _, c in pairs(TR.cards) do
+		local on = (c.row.tier == tier)
+		c.btn.Visible = on
+		if on then
+			shown = shown + 1
+			local isOwned, isWorn, isFocus = owned[c.row.id] == true, (worn == c.row.id), (focus == c.row.id)
+			if isOwned then ownedHere = ownedHere + 1 end
+			if isWorn then
+				c.state.Text = "WORN"; c.state.TextColor3 = Color3.fromRGB(126, 236, 150)
+			elseif isOwned then
+				c.state.Text = "OWNED"; c.state.TextColor3 = C.txtMute
+			else
+				c.state.Text = "\xF0\x9F\x8E\x9F " .. tostring(c.row.price)
+				-- Greyed rather than hidden when it is out of reach: a price you cannot pay yet is the reason
+				-- to keep playing, and hiding it would make the wardrobe look smaller than it is.
+				c.state.TextColor3 = (tokens >= c.row.price) and C.gold or Color3.fromRGB(150, 164, 186)
+			end
+			c.btn.BackgroundColor3 = isFocus and C.panel or C.inset
+			c.stroke.Color = isFocus and C.white or c.row.color
+			c.stroke.Thickness = isFocus and 2.5 or 1.5
+		end
+	end
+	-- The shelf label carries its own progress ("2/4 owned"), which is the one number that makes paging feel
+	-- like collecting rather than browsing -- and it costs no extra row to show.
+	TR.tierName.Text = string.format("%s  %d/%d", tier:upper(), ownedHere, shown)
+	-- The RARITY colour, not one of the traits' own accent colours: every trait in a tier has a different
+	-- accent (Bowtie is red, Sunglasses grey), so picking one would tint the shelf heading differently
+	-- depending on pairs() order. PetSkins.tierColor is the same ladder the crate reel and the inventory
+	-- stripes use, so a gold LEGENDARY here means the same thing it means everywhere else in the game.
+	TR.tierName.TextColor3 = PetSkins.tierColor(tier)
+
+	-- ----- the preview -----
+	-- Rebuilt only when the pet, its skin or the focused trait actually changes: this runs on the 3-second
+	-- tick and on every other player's roster broadcast, and re-cloning a Union that often would be brutal.
+	TR.focusName.Text = meta and meta.displayName or ""
+	local sig = string.format("%s:%s:%s:%s", tostring(petId), tostring(card and card.level or 1),
+		tostring(skin), tostring(focus))
+	if sig ~= TR.sig then
+		TR.sig = sig
+		if TR.vp then spinners[TR.vp] = nil; TR.vp:Destroy(); TR.vp = nil end
+		if petId then
+			TR.vp = petViewport(TR.prevHolder, { Size = UDim2.new(1, 0, 1, 0), ZIndex = 5 },
+				petId, card and card.level or 1, skin, focus, 1.8)
+		end
+	end
+
+	-- ----- the one button that acts -----
+	local txt, col, base = "", C.green, C.greenLo
+	if not petId then
+		txt, col, base = "GET A PET FIRST", C.grey, Color3.fromRGB(84, 94, 110)
+	elseif worn == focus then
+		txt, col, base = "TAKE IT OFF", Color3.fromRGB(196, 96, 108), Color3.fromRGB(140, 62, 72)
+	elseif haveIt then
+		txt = "WEAR IT"
+	elseif price and tokens >= price then
+		txt = "BUY  \xF0\x9F\x8E\x9F " .. tostring(price)
+	else
+		txt, col, base = "NEED \xF0\x9F\x8E\x9F " .. tostring(price or "?"), C.grey, Color3.fromRGB(84, 94, 110)
+	end
+	if TR.busy then txt, col, base = "...", C.grey, Color3.fromRGB(84, 94, 110) end
+	-- No TextSize juggling by string length any more: the button is TextScaled between 13 and 21 with real
+	-- padding, so "TAKE IT OFF" and "BUY 7500" each step down to fit on their own instead of being guessed at.
+	TR.actBtn.Text = txt
+	TR.actBtn.BackgroundColor3 = col
+	TR.actBase.BackgroundColor3 = base
+end
+
+-- THE ACTION. One button, four meanings, and the branch is decided HERE from the same mirror the paint reads
+-- -- never from what the button happens to say, which a mid-flight state push could have changed.
+local function traitAction()
+	if TR.busy then return end
+	local _, owned, tokens = cosmeticState()
+	local petId = selectedKey and speciesOf(selectedKey) or nil
+	local focus = TR.focus
+	if not (petId and focus) then return end
+	local _, worn = wornOn(petId)
+
+	-- TAKE IT OFF / WEAR IT -- both are free and both are fire-and-forget. The panel does NOT flip its own
+	-- label: the server's state push is what repaints it, so a request the server refuses (pet not unlocked,
+	-- trait not owned) leaves the button telling the truth instead of lying optimistically.
+	if worn == focus then
+		if SetPetTraitRE then SetPetTraitRE:FireServer(petId, false) end
+		return
+	end
+	if owned[focus] then
+		if SetPetTraitRE then SetPetTraitRE:FireServer(petId, focus) end
+		return
+	end
+
+	-- BUY. A RemoteFunction because the player needs to know it went through before the button can change,
+	-- and it yields -- so it runs off the click thread with a busy latch, or a double-tap would send two.
+	local price = TraitShop.priceOf(focus)
+	if not price then return end
+	if tokens < price then
+		if _G.NotifyCenter and _G.NotifyCenter.social then
+			pcall(_G.NotifyCenter.social, string.format("You need %d Crate Tickets for %s \xE2\x80\x94 you have %d.",
+				price, PetTraits.displayName(focus), tokens))
+		end
+		return
+	end
+	if not BuyTraitRF then return end
+
+	TR.busy = true
+	renderTraits()
+	task.spawn(function()
+		local ok, res = pcall(function() return BuyTraitRF:InvokeServer(focus) end)
+		TR.busy = false
+		if ok and type(res) == "table" and res.ok then
+			-- Bought it -- now put it on, which is what the player was actually trying to do. The wear is a
+			-- separate call on purpose: buying and wearing are different permissions on the server (you can
+			-- own a trait for a pet you have not unlocked), so folding them into one would hide the refusal.
+			if SetPetTraitRE then SetPetTraitRE:FireServer(petId, focus) end
+			if _G.NotifyCenter and _G.NotifyCenter.social then
+				pcall(_G.NotifyCenter.social, string.format("Unlocked %s! \xE2\x80\xA2 %d tickets left",
+					PetTraits.displayName(focus), tonumber(res.tokens) or 0))
+			end
+		elseif _G.NotifyCenter and _G.NotifyCenter.social then
+			local why = (type(res) == "table" and res.reason) or "error"
+			pcall(_G.NotifyCenter.social,
+				(why == "not_enough_tokens" and "Not enough Crate Tickets.")
+				or (why == "already_owned" and "You already own that trait.")
+				or (why == "cooldown" and "One at a time!")
+				or "That purchase didn't go through.")
+		end
+		if panelOpen then renderPanel() end
+	end)
+end
+TR.actBtn.MouseButton1Click:Connect(traitAction)
+
+-- A cosmetic push (a purchase, a crate open, a skin equipped in the Pet Hub) has to repaint this tab, or the
+-- wardrobe would sit stale until the 3-second tick happened to come round.
+if SkinRemotes then
+	local ev = SkinRemotes:FindFirstChild("SkinStateEvent")
+	-- Deferred: PetSkinLook is the script that writes the _G mirror this tab reads, and both handlers are on
+	-- the same signal. Reading it on the same frame would be a coin toss on connection order.
+	if ev then ev.OnClientEvent:Connect(function() if panelOpen then task.defer(renderPanel) end end) end
 end
 
 renderPanel = function()
@@ -1050,11 +1505,61 @@ renderPanel = function()
 			ui.label.Text = ""
 		end
 	end
+	paintTabs()
 	-- Full white, not a dim blue. This is the number that decides whether the DROP OFF button will even work,
 	-- so it is the one label in the strip that gets full contrast.
 	countLbl.Text = (taken >= MAX_SLOTS) and "ALL BEDS TAKEN"
 		or string.format("%d of %d free", MAX_SLOTS - taken, MAX_SLOTS)
 	countLbl.TextColor3 = (taken >= MAX_SLOTS) and Color3.fromRGB(255, 176, 158) or C.txt
+
+	-- ===== THE PET LIST, SHARED BY BOTH TABS =====
+	-- SORTED, not pairs(). inventory is a hash keyed by storage key, so iterating it raw would deal the cards
+	-- into a different order on every rebuild.
+	-- BEST EARNER FIRST: age decides the nap payout, so sorting by age puts the pet you should actually drop
+	-- off first. Rares tie-break above equal-age normals because that is the one you want to show off in the
+	-- row of sleeping pets outside -- and, on the Customize tab, the one you most want to dress.
+	local keys = {}
+	for skey in pairs(inventory) do keys[#keys + 1] = skey end
+	table.sort(keys, function(a, b)
+		local A, B = inventory[a], inventory[b]
+		if (A.level or 1) ~= (B.level or 1) then return (A.level or 1) > (B.level or 1) end
+		if (A.rare and true or false) ~= (B.rare and true or false) then return A.rare and true or false end
+		return a < b
+	end)
+	-- KEEP THE SELECTION IF IT IS STILL VALID. Falls back to keys[1] -- the best napper -- which is what a
+	-- fresh open, a traded-away pet and a just-dropped-off pet should all land on.
+	if not (selectedKey and inventory[selectedKey]) then selectedKey = keys[1] end
+
+	-- ===== CUSTOMIZE =====
+	-- Its own branch and an early return: dressing a pet has nothing to do with the nap roster, and it stays
+	-- available while your pet is asleep -- you can still buy a hat for one of the pets you kept.
+	if activeTab == "custom" then
+		featured.Visible = false
+		asleepCard.Visible = false
+		-- THE BED RAIL IS NAP-ONLY. How many beds are free is meaningless while you are shopping, and eight
+		-- dots plus "6 of 8 free" was the single busiest thing on the Customize tab. The ticket balance takes
+		-- the same slot instead -- see the ticketChip header.
+		bedChip.Visible = false
+		ticketChip.Visible = true
+		emptyLbl.Visible = (#keys == 0)
+		emptyLbl.Text = "You don't have any pets yet!\n\nHatch or find one first, then come back and dress it up."
+		traitsCard.Visible = (#keys > 0)
+		if #keys > 0 then renderTraits() end
+
+		local showChooser = (#keys > 1)
+		chooser.Visible = showChooser
+		chooser.Position = UDim2.new(0, PAD, 0, BODY_TOP + TRAITS_H + 8)
+		if showChooser then paintChooser(keys) else chooseSig = nil end
+
+		fitPanel(#keys == 0 and (BODY_TOP + 150)
+			or (showChooser and (BODY_TOP + TRAITS_H + 8 + CHOOSE_H) or (BODY_TOP + TRAITS_H)), true)
+		subLbl.Text = "Tap a trait to try it on."
+		return
+	end
+	traitsCard.Visible = false
+	bedChip.Visible = true
+	ticketChip.Visible = false
+	chooser.Position = UDim2.new(0, PAD, 0, CHOOSE_Y)
 
 	if mine then
 		featured.Visible = false
@@ -1082,28 +1587,10 @@ renderPanel = function()
 		local mins = math.max(0, math.floor((os.time() - (mine.since or os.time())) / 60))
 		statTiles[1].Text = (mins < 1) and "just now" or (mins .. " min")
 		statTiles[2].Text = tostring(mine.earned or 0)
-		statTiles[3].Text = tostring(coinsPerMin(mine.level or 1))
+		statTiles[3].Text = tostring(ticketsPerHour(mine.level or 1))
 		asleepHint.Text = "\xF0\x9F\x92\xA4  Sleeping pets can't be equipped from the Pet Hub. Wake it up here and it goes straight back with you \xE2\x80\xA2 leave the game and it keeps its bed for 15 more minutes."
 	else
 		asleepCard.Visible = false
-
-		-- SORTED, not pairs(). inventory is a hash keyed by storage key, so iterating it raw would deal the
-		-- cards into a different order on every rebuild.
-		-- BEST EARNER FIRST: age decides the payout, so sorting by age puts the pet you should actually drop
-		-- off top-left. Rares tie-break above equal-age normals because that is the one you want to show off
-		-- in the row of sleeping pets outside.
-		local keys = {}
-		for skey in pairs(inventory) do keys[#keys + 1] = skey end
-		table.sort(keys, function(a, b)
-			local A, B = inventory[a], inventory[b]
-			if (A.level or 1) ~= (B.level or 1) then return (A.level or 1) > (B.level or 1) end
-			if (A.rare and true or false) ~= (B.rare and true or false) then return A.rare and true or false end
-			return a < b
-		end)
-
-		-- KEEP THE SELECTION IF IT IS STILL VALID. It falls back to keys[1] -- the best napper -- which is what
-		-- a fresh open, a traded-away pet and a just-dropped-off pet should all land on.
-		if not (selectedKey and inventory[selectedKey]) then selectedKey = keys[1] end
 
 		featured.Visible = (#keys > 0)
 		emptyLbl.Visible = (#keys == 0)
@@ -1113,30 +1600,10 @@ renderPanel = function()
 			paintFeatured(selectedKey, inventory[selectedKey])
 		end
 
-		-- THE PICKER, ONLY WHEN THERE IS SOMETHING TO PICK. Rebuilt on the same
-		-- signature rule as everything else: this function runs on every roster broadcast from every other
-		-- player in the server, and re-cloning one pet model per tile on each of those is not affordable.
+		-- THE PICKER, ONLY WHEN THERE IS SOMETHING TO PICK.
 		local showChooser = (#keys > 1)
 		chooser.Visible = showChooser
-		if showChooser then
-			local sig = { selectedKey }
-			for i, skey in ipairs(keys) do
-				local c = inventory[skey]
-				sig[i + 1] = string.format("%s:%d:%s:%s:%s", skey, c.level or 1, tostring(c.rare),
-					tostring(c.skin), tostring(c.trait))
-			end
-			sig = table.concat(sig, "|")
-			if sig ~= chooseSig then
-				chooseSig = sig
-				for _, ch in ipairs(chooser:GetChildren()) do
-					if ch:IsA("GuiButton") then ch:Destroy() end
-				end
-				for i, skey in ipairs(keys) do mkThumb(skey, inventory[skey], i, skey == selectedKey) end
-				chooser.CanvasSize = UDim2.new(0, #keys * 58 + (#keys - 1) * 8 + 20, 0, 0)
-			end
-		else
-			chooseSig = nil
-		end
+		if showChooser then paintChooser(keys) else chooseSig = nil end
 
 		-- Height follows whichever piece actually ends lowest, so nothing pads itself out with empty blue.
 		if #keys == 0 then
@@ -1155,16 +1622,16 @@ renderPanel = function()
 	-- opens this panel with -- "which one do I leave?" -- by naming the best earner they own. With a pet
 	-- already asleep there is nothing left to choose, so it goes back to stating the rule.
 	if mine then
-		footLbl.Text = "Coins only tick while you're in the server \xE2\x80\xA2 one bed each, so everyone gets one"
+		footLbl.Text = "Tickets only tick while you're in the server \xE2\x80\xA2 one bed each, so everyone gets one"
 	else
 		local bestK, bestL = nil, -1
 		for skey, c in pairs(inventory) do
 			if (c.level or 1) > bestL then bestK, bestL = skey, c.level or 1 end
 		end
 		footLbl.Text = bestK
-			and string.format("Best napper: %s \xE2\x80\x94 %d coins/min \xE2\x80\xA2 older pets always earn more!",
-				displayNameOf(speciesOf(bestK), inventory[bestK].rare), coinsPerMin(bestL))
-			or "Older pets earn more \xE2\x80\xA2 coins only tick while you're in the server"
+			and string.format("Best napper: %s \xE2\x80\x94 %d tickets/hour \xE2\x80\xA2 older pets always earn more!",
+				displayNameOf(speciesOf(bestK), inventory[bestK].rare), ticketsPerHour(bestL))
+			or "Older pets earn more \xE2\x80\xA2 tickets only tick while you're in the server"
 	end
 end
 
@@ -1203,9 +1670,13 @@ local function setOpen(open)
 		if PetRequestStateEvent then pcall(function() PetRequestStateEvent:FireServer() end) end
 		PetBarnEvent:FireServer("sync")
 		renderPanel()
-		panel.Size = UDim2.new(0, 640, 0, 476)
+		-- POP IN TO WHATEVER renderPanel JUST SIZED US TO, not to a hard-coded 700x520. Each state ends at its
+		-- own height (fitPanel derives it) and the Customize tab is the tallest of them, so a fixed target
+		-- animated to the wrong size and then snapped to the right one on the next 3-second tick.
+		local target = panel.Size
+		panel.Size = UDim2.new(0, PANEL_W - 60, 0, math.max(120, target.Y.Offset - 44))
 		TweenService:Create(panel, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-			{ Size = UDim2.new(0, 700, 0, 520) }):Play()
+			{ Size = target }):Play()
 		if _G.applyHudScaling then pcall(_G.applyHudScaling) end
 	else
 		_G.MainMenuManager.notifyClosed("PetHouse")
@@ -1413,7 +1884,7 @@ task.spawn(function()
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "PetHousePrompt"
 	prompt.ActionText = "Pet Hut"
-	prompt.ObjectText = "Leave a pet to nap"
+	prompt.ObjectText = "Nap a pet \xE2\x80\xA2 dress it up" -- both tabs named, or the shop is only found by accident
 	prompt.KeyboardKeyCode = Enum.KeyCode.E
 	prompt.HoldDuration = 0
 	prompt.MaxActivationDistance = 18

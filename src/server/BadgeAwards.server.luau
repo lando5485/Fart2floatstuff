@@ -29,6 +29,16 @@
 local Players      = game:GetService("Players")
 local BadgeService = game:GetService("BadgeService")
 
+-- s->c: (badgeLabel). The client turns this into a hero banner -- see Achievements.client.lua. Created
+-- here rather than assumed, so load order with anything else touching ReplicatedStorage cannot leave it
+-- missing and silently lose the announcement again.
+local BadgeBanner = game:GetService("ReplicatedStorage"):FindFirstChild("BadgeEarnedEvent")
+if not BadgeBanner then
+	BadgeBanner = Instance.new("RemoteEvent")
+	BadgeBanner.Name = "BadgeEarnedEvent"
+	BadgeBanner.Parent = game:GetService("ReplicatedStorage")
+end
+
 if _G.__BadgeAwardsServer then
 	warn("[Badges] a SECOND copy is running -- this one is bailing out.")
 	return
@@ -142,13 +152,11 @@ local function award(player, badge)
 		print(string.format("[Badges] awarded '%s' to %s", badge.label, player.Name))
 		-- A badge that lands silently is a badge nobody notices. Roblox shows its own toast, but that toast is
 		-- easy to miss mid-flight, so say it in the game's own voice too.
-		if _G.NotifyCenter and _G.NotifyCenter.push then
-			pcall(_G.NotifyCenter.push, {
-				text = "\xF0\x9F\x8F\x85  BADGE EARNED  \xE2\x80\x94  " .. badge.label,
-				color = Color3.fromRGB(255, 206, 92),
-				priority = (_G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.REWARD) or 40,
-			})
-		end
+		-- THIS USED TO READ _G.NotifyCenter DIRECTLY AND WAS DEAD CODE. NotifyCenter is a LocalScript, so
+		-- _G.NotifyCenter only ever exists in the CLIENT's global table; on the server that check was always
+		-- nil, so no badge -- including Master Collector, the 100%-collection reward -- has ever bannered.
+		-- The award itself always worked, which is why this never looked broken.
+		pcall(function() BadgeBanner:FireClient(player, badge.label) end)
 	else
 		-- Expected in Studio. Say it once, clearly, then stop -- this is not a bug and should not look like one.
 		if not warnedNoStudio then

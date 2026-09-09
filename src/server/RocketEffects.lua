@@ -39,6 +39,8 @@ local CONSTRUCTION_FULLVOL   = 200   -- studs: stays at FULL volume out to here 
 local CONSTRUCTION_ROLLOFF   = 450   -- studs: faded to silence by here -- well short of island 2 (~614 away), so stays LOCAL
 local COUNTDOWN_SOUND_ID     = "rbxassetid://1841791990"
 local COUNTDOWN_VOLUME       = 1     -- unified volume: matches the meteor intro sound
+local COUNTDOWN_HEAR_MIN     = 90    -- studs: full volume out to here (covers the launch site + the stand)
+local COUNTDOWN_HEAR_MAX     = 520   -- studs: silent past here -- Bean Farm only, island 2 is 630 up
 local LAUNCH_SOUND_ID        = "rbxassetid://135490777114772"
 local LAUNCH_VOLUME          = 1     -- unified volume: matches the meteor intro sound
 
@@ -451,14 +453,32 @@ end
 -- BasePart), so it plays globally / 2D for every client. Created on the
 -- server => replicates to everyone. Played once.
 --======================================================================
-function RocketEffects.startCountdownSound()
-	local folder = ensureFolder()
+-- ===== THE COUNTDOWN IS AN ISLAND-1 SOUND, NOT A SERVER-WIDE ONE =====
+-- It used to be parented to the effects FOLDER, and a Sound under a non-BasePart plays GLOBALLY at full
+-- volume for every client in the server. The rocket sits on Bean Farm; a player 38,000 studs up on Pizza
+-- Palms was hearing a launch countdown for something they could not see, could not reach, and had no part
+-- in. Worse, it lands in the middle of the one thing they ARE doing -- a flight.
+--
+-- Parented to the rocket's own part it becomes a 3D sound with a rolloff, which is the same rule the rest
+-- of the world already follows: you hear it if you are near the thing making it. The radius covers Bean Farm
+-- and stops well short of island 2, so "only on the first island" needs no island check at all -- it falls
+-- out of the geometry. Fallback to the folder ONLY if the rocket has no part yet, which would mean the
+-- countdown is running on a rocket that does not exist.
+function RocketEffects.startCountdownSound(primary)
 	local snd = Instance.new("Sound")
 	snd.Name = "CountdownGlobal"
 	snd.SoundId = COUNTDOWN_SOUND_ID
 	snd.Volume = COUNTDOWN_VOLUME
 	snd.Looped = false
-	snd.Parent = folder            -- Folder (non-BasePart) parent => global/server-wide
+	if primary and primary:IsA("BasePart") then
+		snd.RollOffMode = Enum.RollOffMode.InverseTapered
+		snd.RollOffMinDistance = COUNTDOWN_HEAR_MIN   -- full volume anywhere near the launch site
+		snd.RollOffMaxDistance = COUNTDOWN_HEAR_MAX   -- silent before the next island up
+		snd.Parent = primary
+	else
+		warn("[RocketEffects] countdown sound has no rocket part -- falling back to server-wide")
+		snd.Parent = ensureFolder()
+	end
 	snd:Play()
 	table.insert(activeSounds, snd)
 	snd.Ended:Connect(function()

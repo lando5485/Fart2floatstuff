@@ -151,6 +151,10 @@ end
 -- 1) /done
 -- ============================================================================
 local function runDone()
+	-- DEV ONLY, and it goes HERE rather than only on the chat handler because _G.islandDone below is a
+	-- second door onto the same function. QuestDevGate publishes the flag; read at call time, so load
+	-- order cannot matter and nil (gate not up yet) refuses.
+	if not _G.questDevOK then return end
 	local char = player.Character
 	local hrp  = char and char:FindFirstChild("HumanoidRootPart")
 	if not hrp then banner("/done -- no character yet."); return end
@@ -211,6 +215,9 @@ local function runDone()
 end
 
 local function onCommand(msg)
+	-- DEV ONLY. QuestDevGate publishes this; read at command time so load order cannot matter,
+	-- and nil (gate not up yet) refuses. Without it any player could type their way to the whole realm.
+	if not _G.questDevOK then return end
 	local m = tostring(msg or ""):lower():gsub("^%s+", "")
 	if m:sub(1, 5) ~= "/done" then return end
 	runDone()
@@ -228,5 +235,6 @@ pcall(function() player.Chatted:Connect(onCommand) end)
 -- Also exposed as a call, so a button or another script can trigger it without going through chat.
 _G.islandDone = runDone
 
-print("[Done] ready -- type /done to complete the quest on the island you are standing on."
+print(("[Done] ready -- /done is %s for this account (QuestDevGate)."
 	.. "  _G.questLocked(name) publishes the 'talk to the NPC first' banner.")
+	:format(_G.questDevOK and "ENABLED" or "off"))

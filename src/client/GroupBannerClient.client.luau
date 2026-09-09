@@ -1,11 +1,16 @@
 --[[
 	GroupBannerClient.client.luau  (StarterPlayerScripts.GroupBannerClient)
 
-	A one-per-session "JOIN THE GROUP" popup, ported from the Space Realm banner and re-skinned to the house
-	palette. Shown ONCE, after 1 MINUTE OF PLAYTIME.
+	A "JOIN THE GROUP" popup, ported from the Space Realm banner and re-skinned to the house palette. First
+	shown after 1 MINUTE OF PLAYTIME, then every 12.5 minutes of playtime after that.
 
-	UI ONLY: the JOIN button opens the MLR Studios group page (group 758781978); closing or tapping Join
-	dismisses it for the session. NO reward is granted -- see the TODO in the Join handler.
+	IT NEVER APPEARS FOR A MEMBER: IsInGroup is checked before every single appearance, and tapping JOIN ends
+	the asking for the session too (IsInGroup caches, so a player who joins right now still reads as a
+	non-member until they rejoin -- the Join tap is what covers that window).
+
+	UI ONLY: the JOIN button opens the MLR Studios group page (group 758781978). The X dismisses THAT
+	appearance (it comes back on the next turn); tapping JOIN dismisses it for the session. NO reward is
+	granted -- see the TODO in the Join handler.
 
 	WHY A TIMER INSTEAD OF "AFTER THE INTRO": the Space version waited for the intro cinematic to end, which
 	meant it landed the instant a brand-new player got control -- the single worst moment to interrupt, before
@@ -27,11 +32,19 @@ local TweenService = game:GetService("TweenService")
 local GuiService = game:GetService("GuiService")
 local UserInputService = game:GetService("UserInputService")
 
-local GROUP_ID = 758781978
-local GROUP_URL = "https://www.roblox.com/groups/758781978" -- MLR Studios
+-- Shared with RewardsService and SocialRewards -- the id and url used to be hand-copied into all three, and
+-- this file's url was still the old /groups/ form after Roblox renamed them to communities.
+local GroupMembership = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("GroupMembership"))
+local GROUP_ID  = GroupMembership.GROUP_ID
+local GROUP_URL = GroupMembership.GROUP_URL -- MLR Studios
 
--- One minute of playtime before the ask. Tune here; Space and Candy carry the same value.
+-- One minute of playtime before the FIRST ask, then once every 12.5 minutes after it. Tune here.
+--
+-- It repeats because one ask a session is one ask a player ever ignores; 12.5 minutes is long enough that
+-- it never feels like it is following you around. Both counters are PLAYTIME, so a long cinematic or a
+-- realm hop does not silently burn the gap.
 local PLAYTIME_SECONDS = 60
+local REPEAT_SECONDS    = 750
 
 -- Any ScreenGui in PlayerGui with one of these names means a cinematic is on screen: the playtime counter
 -- pauses and the banner will not open. Every realm's cover GUI is listed so this file stays identical
@@ -64,7 +77,9 @@ local isPhone = UserInputService.TouchEnabled and not UserInputService.KeyboardE
 local REST_SCALE = isPhone and 0.7 or 1
 local POP_SCALE = 0.6 * REST_SCALE
 
-local shown = false
+-- popupOpen stops a second copy stacking on the first; joined ends the rotation for the session once the
+-- player has actually tapped JOIN (see the Join handler for why that tap is the signal we can trust).
+local popupOpen, joined = false, false
 
 local function cinematicUp()
 	for _, name in ipairs(CINEMATIC_GUIS) do
@@ -77,10 +92,10 @@ local function cinematicUp()
 end
 
 local function showBanner()
-	if shown then
+	if popupOpen then
 		return
 	end
-	shown = true
+	popupOpen = true
 
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "GroupBanner"
@@ -200,7 +215,7 @@ local function showBanner()
 	body.Position = UDim2.new(0.5, 0, 0, 138)
 	body.Size = UDim2.new(1, -44, 0, 96)
 	body.Font = Enum.Font.GothamMedium
-	body.Text = "Join MLR Studios for exclusive rewards coming soon!"
+	body.Text = "Join MLR Studios for exclusive rewards coming soon -- and make sure to LIKE the game and add it to your FAVOURITES!"
 	body.TextColor3 = MUTED
 	body.TextWrapped = true
 	body.TextSize = 20
@@ -231,7 +246,7 @@ local function showBanner()
 		TweenService:Create(shadowScale, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = REST_SCALE }):Play()
 	end)
 
-	print(("[GroupBanner] shown (group %d) after %ds of playtime"):format(GROUP_ID, PLAYTIME_SECONDS))
+	print(("[GroupBanner] shown (group %d) -- next ask in %ds of playtime unless they join"):format(GROUP_ID, REPEAT_SECONDS))
 
 	-- ===== Dismiss (once) =====
 	local dismissed = false
@@ -240,6 +255,7 @@ local function showBanner()
 			return
 		end
 		dismissed = true
+		popupOpen = false -- the rotation can open a fresh one when its next turn comes round
 		print("[GroupBanner] closed/join tapped")
 		pcall(function()
 			TweenService:Create(panelScale, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { Scale = POP_SCALE }):Play()
@@ -263,36 +279,83 @@ local function showBanner()
 			GuiService:OpenBrowserWindow(GROUP_URL)
 		end)
 
-		-- TODO(reward): grant a "joined the group" reward HERE once it's designed.
-		--   1) Verify membership AUTHORITATIVELY on the server -- the client `player:IsInGroup(GROUP_ID)` is
-		--      spoofable, so a server RemoteFunction should call player:IsInGroup(758781978) and gate the grant.
-		--   2) Award it via that server path, once-per-player (persisted), then flip this banner to a
-		--      "reward claimed" state. NO reward is granted yet -- this banner is UI only for now.
+		-- Tapping JOIN ends the asking for this session. It is NOT proof they joined -- it just means the group
+		-- page opened in front of them, and continuing to nag someone we just sent to the page reads as broken.
+		-- It also covers the IsInGroup blind spot below: a player who joins right now still reads as a
+		-- non-member until they rejoin the server, so without this flag they would be asked all session.
+		joined = true
+
+		-- TELL THE SERVER TO LOOK AGAIN, so the +10% coin perk switches on for someone who joins from THIS
+		-- popup and never opens the Rewards panel. The server is the authority -- this only asks it to
+		-- re-read membership (CheckGroupNow -> Shared.GroupMembership, uncached), it cannot assert anything.
+		-- Bounded and slow: each ask is a web request on the server, and it stops on the first yes.
+		task.spawn(function()
+			local remote = game:GetService("ReplicatedStorage"):FindFirstChild("CheckGroupNow")
+			if not remote then return end
+			for _ = 1, 12 do            -- 12 x 5s = one minute, which is longer than joining a group takes
+				task.wait(5)
+				local res
+				local ok = pcall(function() res = remote:InvokeServer() end)
+				if ok and type(res) == "table" and res.isMember then
+					print("[GroupBanner] membership confirmed after the join -- perk applied, no rejoin needed")
+					return
+				end
+			end
+		end)
 
 		dismiss()
 	end)
 end
 
--- Run once: bank a minute of actual playtime, then open (never over a cinematic).
-task.spawn(function()
-	if not player.Character then
-		player.CharacterAdded:Wait()
-	end
+-- ===== ALREADY A MEMBER? THEN NEVER ASK ======================================================
+-- Checked before EVERY appearance, not once at boot, so the popup stops the moment the answer changes.
+--
+-- Two things to know about this check. It is CLIENT-side and therefore spoofable -- which is fine here and
+-- only here, because nothing is granted: the worst a spoof buys you is hiding an advert from yourself. And
+-- IsInGroup caches for the session, so someone who joins the group mid-game still reads as a non-member
+-- until they rejoin. That gap is what the `joined` flag from the Join button covers.
+local function inGroup()
+	local ok, yes = pcall(function() return player:IsInGroup(GROUP_ID) end)
+	return ok and yes == true
+end
 
+-- Bank `seconds` of real PLAYTIME -- the counter stops dead while a cinematic is up, so a 25-second intro
+-- does not eat half the delay -- then hold until the screen belongs to the player again.
+local function bankPlaytime(seconds)
 	local elapsed = 0
-	while elapsed < PLAYTIME_SECONDS do
+	while elapsed < seconds do
 		local dt = task.wait(0.5)
 		if not cinematicUp() then
 			elapsed += dt
 		end
 	end
-
-	-- A cinematic could have started on the very tick the minute completed (an event, a realm arrival);
+	-- A cinematic could have started on the very tick the timer completed (an event, a realm arrival);
 	-- hold until the screen is the player's again.
 	while cinematicUp() do
 		task.wait(0.25)
 	end
 	task.wait(0.6) -- a beat of air so it doesn't pop on the same frame as whatever just closed
+end
 
-	showBanner()
+-- First ask after a minute of playtime, then every REPEAT_SECONDS until they join or tap Join.
+task.spawn(function()
+	if not player.Character then
+		player.CharacterAdded:Wait()
+	end
+
+	bankPlaytime(PLAYTIME_SECONDS)
+
+	if inGroup() then
+		print(("[GroupBanner] already a member of group %d -- the join popup is disabled for this session"):format(GROUP_ID))
+		return
+	end
+
+	while true do
+		showBanner()
+		bankPlaytime(REPEAT_SECONDS)
+		if joined or inGroup() then
+			print("[GroupBanner] player joined (or tapped Join) -- no further asks this session")
+			return
+		end
+	end
 end)

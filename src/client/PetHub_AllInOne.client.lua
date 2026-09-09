@@ -218,10 +218,12 @@ end
 -- QUESTS overlay
 local questsOverlay = Instance.new("Frame"); questsOverlay.Name = "QuestsOverlay"; questsOverlay.Size = UDim2.new(1,-24,1,-74); questsOverlay.Position = UDim2.new(0,12,0,68)
 questsOverlay.BackgroundColor3 = Color3.fromRGB(16,60,140); questsOverlay.Visible = false; questsOverlay.Parent = panel; uicorner(questsOverlay, 12); uistroke(questsOverlay, Color3.fromRGB(10,40,100), 2)
-local qoTitle = Instance.new("TextLabel"); qoTitle.Size = UDim2.new(1,-120,0,28); qoTitle.Position = UDim2.new(0,12,0,8); qoTitle.BackgroundTransparency = 1
+local qoTitle = Instance.new("TextLabel"); qoTitle.Size = UDim2.new(1,-48,0,28); qoTitle.Position = UDim2.new(0,12,0,8); qoTitle.BackgroundTransparency = 1
 qoTitle.Font = Enum.Font.GothamBold; qoTitle.TextSize = 18; qoTitle.TextColor3 = Color3.fromRGB(255,215,0); qoTitle.TextXAlignment = Enum.TextXAlignment.Left; qoTitle.Text = "\xF0\x9F\x97\xBA Pet Quests"; qoTitle.Parent = questsOverlay
-local qoBack = Instance.new("TextButton"); qoBack.Size = UDim2.new(0,100,0,28); qoBack.Position = UDim2.new(1,-108,0,8); qoBack.BackgroundColor3 = Color3.fromRGB(120,120,120)
-qoBack.Font = Enum.Font.GothamBold; qoBack.TextSize = 13; qoBack.TextColor3 = Color3.new(1,1,1); qoBack.Text = "\xE2\x97\x80 Pets"; qoBack.Parent = questsOverlay; uicorner(qoBack, 8)
+-- Back is the arrow alone: a grey slab reading "\xE2\x97\x80 Pets" spent 100px repeating what the
+	-- glyph already says, on an overlay whose only exit it is. Square, red, no reading required.
+local qoBack = Instance.new("TextButton"); qoBack.Size = UDim2.new(0,28,0,28); qoBack.Position = UDim2.new(1,-36,0,8); qoBack.BackgroundColor3 = Color3.fromRGB(220,50,50)
+qoBack.Font = Enum.Font.GothamBold; qoBack.TextSize = 16; qoBack.TextColor3 = Color3.new(1,1,1); qoBack.Text = "\xE2\x97\x80"; qoBack.Parent = questsOverlay; uicorner(qoBack, 8)
 local questsScroll = Instance.new("ScrollingFrame"); questsScroll.Size = UDim2.new(1,-16,1,-46); questsScroll.Position = UDim2.new(0,8,0,42); questsScroll.BackgroundTransparency = 1; questsScroll.BorderSizePixel = 0
 questsScroll.ScrollBarThickness = 6; questsScroll.ScrollBarImageColor3 = Color3.fromRGB(255,215,0); questsScroll.CanvasSize = UDim2.new(0,0,0,0); questsScroll.Parent = questsOverlay
 local questsList = Instance.new("UIListLayout"); questsList.Padding = UDim.new(0,8); questsList.SortOrder = Enum.SortOrder.LayoutOrder; questsList.Parent = questsScroll
@@ -631,10 +633,12 @@ tradeBtn.Text = "\xF0\x9F\x94\x81 TRADE"; tradeBtn.Parent = header; uicorner(tra
 
 local tradeOverlay = Instance.new("Frame"); tradeOverlay.Name = "TradeOverlay"; tradeOverlay.Size = UDim2.new(1,-24,1,-74); tradeOverlay.Position = UDim2.new(0,12,0,68)
 tradeOverlay.BackgroundColor3 = Color3.fromRGB(16,60,140); tradeOverlay.Visible = false; tradeOverlay.Parent = panel; uicorner(tradeOverlay, 12); uistroke(tradeOverlay, Color3.fromRGB(10,40,100), 2)
-local ovTitle = Instance.new("TextLabel"); ovTitle.Size = UDim2.new(1,-120,0,28); ovTitle.Position = UDim2.new(0,12,0,8); ovTitle.BackgroundTransparency = 1
+local ovTitle = Instance.new("TextLabel"); ovTitle.Size = UDim2.new(1,-48,0,28); ovTitle.Position = UDim2.new(0,12,0,8); ovTitle.BackgroundTransparency = 1
 ovTitle.Font = Enum.Font.GothamBold; ovTitle.TextSize = 18; ovTitle.TextColor3 = Color3.fromRGB(255,215,0); ovTitle.TextXAlignment = Enum.TextXAlignment.Left; ovTitle.Text = "Trade"; ovTitle.Parent = tradeOverlay
-local ovBack = Instance.new("TextButton"); ovBack.Size = UDim2.new(0,100,0,28); ovBack.Position = UDim2.new(1,-108,0,8); ovBack.BackgroundColor3 = Color3.fromRGB(120,120,120)
-ovBack.Font = Enum.Font.GothamBold; ovBack.TextSize = 13; ovBack.TextColor3 = Color3.new(1,1,1); ovBack.Text = "\xE2\x97\x80 Pets"; ovBack.Parent = tradeOverlay; uicorner(ovBack, 8)
+-- Back is the arrow alone: a grey slab reading "\xE2\x97\x80 Pets" spent 100px repeating what the
+	-- glyph already says, on an overlay whose only exit it is. Square, red, no reading required.
+local ovBack = Instance.new("TextButton"); ovBack.Size = UDim2.new(0,28,0,28); ovBack.Position = UDim2.new(1,-36,0,8); ovBack.BackgroundColor3 = Color3.fromRGB(220,50,50)
+ovBack.Font = Enum.Font.GothamBold; ovBack.TextSize = 16; ovBack.TextColor3 = Color3.new(1,1,1); ovBack.Text = "\xE2\x97\x80"; ovBack.Parent = tradeOverlay; uicorner(ovBack, 8)
 
 local pickerView = Instance.new("Frame"); pickerView.Size = UDim2.new(1,-16,1,-46); pickerView.Position = UDim2.new(0,8,0,42); pickerView.BackgroundTransparency = 1; pickerView.Parent = tradeOverlay
 local pickerScroll = Instance.new("ScrollingFrame"); pickerScroll.Size = UDim2.new(1,0,1,0); pickerScroll.BackgroundTransparency = 1; pickerScroll.BorderSizePixel = 0

@@ -1,6 +1,18 @@
 --======================================================================
 -- CandyGumballQuest_AllInOne.client.lua  (LocalScript)
 --======================================================================
+-- ISLAND 1 RUNS THIS QUEST. The Bridge Toll (CandyTrollBridge_AllInOne) briefly replaced it
+-- and has been stood down again -- island 1 is the Gumball Hunt, as it was before the troll.
+--
+-- ⚠ THIS QUEST OWNS ISLAND 1'S LADDER RUNG. IslandConfig gives island 1
+-- `questId = "candy"` with `gutUnlock = { unlocksTier = 2 }`, and IslandTaskWatcher reads
+-- `_G.candyQuestComplete` to pay it. Tier 1 is max = 0 -- NOBODY CAN FLY until island 1's
+-- quest completes -- so this file must never be switched off without something else setting
+-- that flag, or every new player is stranded on the ground forever.
+--
+-- The troll file is kept (DISABLED at its top) so it can be swapped back in; exactly one of
+-- the two may be live at a time, because both build props on island 1 and both claim the rung.
+
 -- ISLAND-1 QUEST: "Collect 8 scattered gumballs for the Candy Npc."
 --
 -- The world already has: an NPC model named "Candy Npc" and 8 bricks named
@@ -34,8 +46,9 @@ local PlayerGui  = player:WaitForChild("PlayerGui")
 -- ============================================================================
 -- CONFIG
 -- ============================================================================
--- FOUR, not eight. Every gumball now costs a 15s minigame, so 8 of them was two solid
--- minutes of the same panel on the tutorial island -- well past the tedium line.
+-- FOUR, not eight. Every gumball costs a rattle minigame, so 8 of them was two solid
+-- minutes of the same panel on the tutorial island -- well past the tedium line. (The
+-- minigame itself is now ~10s rather than 15; see the RATTLE_ constants below.)
 local TOTAL            = 4
 local GUMBALL_NAME     = "gumball"                 -- brick name (case-insensitive)
 local NPC_NAMES        = { "candy npc", "candynpc" } -- accepted NPC names (lowercased)
@@ -43,13 +56,38 @@ local COLLECT_DISTANCE = 12                          -- studs to collect an orb
 -- CHUTE RATTLE: the per-gumball minigame. RATTLE_SECONDS is a HARD floor, not a target --
 -- a rising ceiling clamps the bar every frame, so mashing cannot finish it early (and going
 -- slower than the ceiling still costs you extra time on top).
-local RATTLE_SECONDS   = 15
--- ~9 clean hits to fill. Worth doing the arithmetic: the knocker sweeps ~0.7 laps/sec at
--- mid-fill, so the green comes past roughly 1.4x/sec -- 9 hits is well inside 15s for a
--- player who waits for it, which is the point. The ceiling still holds the 15s floor for a
--- perfect run; sloppier players just take longer.
-local RATTLE_HIT       = 0.11    -- bar per WELL-TIMED knock
-local RATTLE_MISS      = 0.05    -- bar lost on a mistimed knock -- a setback, never a fail
+--
+-- ===== RETUNED EASIER (this is the TUTORIAL island, played four times) =====
+-- The old numbers asked for ~9 clean hits inside 15s while the green patch shrank to 0.12
+-- of the track and the knocker sped up to ~0.97 sweeps/sec. That is a 0.12-SECOND window on
+-- the last hits -- shorter than human reaction time -- so the ending was a coin flip, and a
+-- miss cost 0.05 of the bar on top. The arithmetic in the old comment ("well inside 15s")
+-- only worked if you hit ~90% of the passes, which is not a tutorial.
+--
+-- The retune keeps the same shape (wait for the green, do not mash) and fixes the window:
+--   * 5 hits instead of 9, so the patch only narrows four times and never reaches its floor
+--   * the patch STARTS wider (0.34) and narrows a third as fast (0.008 a hit)
+--   * the knocker is capped slower, so the green is on screen ~0.36s even at full tilt
+--   * a miss costs less
+-- Net: ~6.7 chances at the green for the 5 you need -- a 35% margin instead of 10% -- and
+-- four gumballs take ~45s rather than 75.
+-- ⚠ 10 -> 6. The rising ceiling is an exact, un-gameable anti-mash device and it stays -- but
+-- it also capped the SKILLED player: five clean, well-timed knocks could not finish a gumball
+-- any sooner than five lucky ones, so on the realm's one genuinely skill-based minigame,
+-- playing well bought you nothing. Four orbs at a 10s floor was 40 seconds of locked modal on
+-- the TUTORIAL island. Six keeps mashing worthless (a masher still cannot beat the ceiling)
+-- while letting a good run close a gumball in ~6s instead of 10 -- ~24s across the quest.
+local RATTLE_SECONDS   = 6
+local RATTLE_HIT       = 0.22    -- bar per WELL-TIMED knock (5 hits fills it)
+local RATTLE_MISS      = 0.03    -- bar lost on a mistimed knock -- a setback, never a fail
+-- The green patch. It still narrows as the gumball loosens, so the last knock is the
+-- hardest, but it can no longer narrow past the point where it is readable.
+local ZONE_START       = 0.34    -- fraction of the track lit green at the first knock
+local ZONE_SHRINK      = 0.008   -- narrowed by this much per clean hit
+local ZONE_MIN         = 0.20    -- never narrower than this (a floor, not a target)
+-- Knocker sweep speed, in track-lengths per second: SWEEP_BASE at empty, +SWEEP_GAIN at full.
+local SWEEP_BASE       = 0.50
+local SWEEP_GAIN       = 0.35
 local ORB_SIZE         = 2.6
 local COLLECT_SOUND_ID = ""                          -- drop in an OWNED pickup sound id; "" = silent
 
@@ -70,18 +108,19 @@ local CANDY_COLORS = {
 -- `hint` is the NPC's nudge toward the nearest gumball (nil before the quest starts)
 local function questPages(collected, hint)
 	if collected >= TOTAL then
-		return { "You gathered every gumball!", "Sweet -- the candy stand is saved! \xF0\x9F\x8D\xAC" }
+		return { "You found every gumball!", "Candy Stand saved! Go crank the machine! \xF0\x9F\x8D\xAC" }
 	end
 	if collected > 0 then
-		local pages = { "Still a few rolling around out there!", ("Found: %d of %d."):format(collected, TOTAL) }
+		local pages = { ("You've found %d of %d gumballs."):format(collected, TOTAL),
+			"Walk up to each and hold Shake Loose." }
 		if hint then pages[#pages + 1] = hint end
 		return pages
 	end
 	return {
-		"Catastrophe! I tipped my gumball machine over.",
-		"Four gumballs went bouncing off across the island.",
-		"They've wedged themselves into things -- you'll have to shake each one loose.",
-		"Round them all up and I'll let you crank the machine yourself!",
+		"Oh no, I tipped my gumball machine over!",
+		("%d gumballs bounced away across the island."):format(TOTAL),
+		"Hold Shake Loose on each one.",
+		"Bring them back and crank the machine!",
 	}
 end
 
@@ -168,7 +207,7 @@ local collected = 0
 local questAccepted = false
 _G.candyQuestComplete = false -- island-1 Candy Stand (Shop_AllInOne) stays LOCKED until this is true
 
-local OBJ_TALK = "\xF0\x9F\x8D\xAD Go talk to the Candy NPC!"
+local OBJ_TALK = "\xF0\x9F\x8D\xAD Talk to the Candy NPC to start -- follow the green arrows!"
 
 local objGui = Instance.new("ScreenGui")
 objGui.Name = "CandyQuestObjective"; objGui.ResetOnSpawn = false; objGui.DisplayOrder = 7; objGui.Parent = PlayerGui
@@ -187,8 +226,11 @@ do local sz = Instance.new("UITextSizeConstraint"); sz.MaxTextSize = 22; sz.Pare
 -- Candy Stand on island 1 stays LOCKED until the quest is finished).
 local function baseObjectiveText()
 	if not questAccepted then return OBJ_TALK end
-	if collected >= TOTAL then return "\xF0\x9F\x8D\xAC Candy Stand unlocked! Quest complete." end
-	return ("\xF0\x9F\x8D\xAC Collect gumballs to unlock the Candy Stand!  %d/%d"):format(collected, TOTAL)
+	if collected >= TOTAL then
+		return ("\xF0\x9F\x8D\xAC All %d gumballs found! Go hold Crank on the Gumball Machine!"):format(TOTAL)
+	end
+	return ("\xF0\x9F\x8D\xAC Find the lost gumballs -- hold Shake Loose on each one!  %d/%d")
+		:format(collected, TOTAL)
 end
 local objFlashToken = 0
 local bannerActive = false -- the banner only actually shows when near island1 (proximity loop below)
@@ -382,9 +424,12 @@ local function buildMachine(head)
 
 	-- ---- the glass globe, full of candy ---------------------------------------
 	local globeCenter = foot + Vector3.new(0, 6.9, 0)
+	-- SOLID: the globe is the machine's widest part and sits right at torso/head height,
+	-- so it -- not the column -- is what stops you walking through. Ball parts collide as a
+	-- true sphere, so you slide around it instead of snagging on a hull.
 	local globe = mk({ Name = "Globe", Shape = Enum.PartType.Ball, Size = Vector3.new(6.0, 6.0, 6.0),
 		Color = Color3.fromRGB(232, 248, 255), Material = Enum.Material.Glass,
-		Transparency = 0.72, Reflectance = 0.2 })
+		Transparency = 0.72, Reflectance = 0.2, CanCollide = true })
 	globe.CFrame = CFrame.new(globeCenter); globe.Parent = m
 
 	-- candy PILED in the bottom of the globe (three rings, tightest at the base)
@@ -403,9 +448,9 @@ local function buildMachine(head)
 	end
 
 	-- ---- brass lid + finial ----------------------------------------------------
-	cyl("Collar", 0.35, 3.9, 3.65 + 0.0, BRASS, Enum.Material.Metal)          -- where globe meets column
-	cyl("Lid",    0.55, 2.6, 9.85 - 0.1, RED,   Enum.Material.SmoothPlastic)
-	cyl("LidRim", 0.22, 3.0, 9.55,       BRASS, Enum.Material.Metal)
+	cyl("Collar", 0.35, 3.9, 3.65 + 0.0, BRASS, Enum.Material.Metal, true)    -- where globe meets column
+	cyl("Lid",    0.55, 2.6, 9.85 - 0.1, RED,   Enum.Material.SmoothPlastic, true)
+	cyl("LidRim", 0.22, 3.0, 9.55,       BRASS, Enum.Material.Metal, true)
 	local finial = mk({ Name = "Finial", Shape = Enum.PartType.Ball, Size = Vector3.new(0.9, 0.9, 0.9),
 		Color = BRASS, Material = Enum.Material.Metal })
 	finial.CFrame = CFrame.new(foot + Vector3.new(0, 10.4, 0)); finial.Parent = m
@@ -504,7 +549,7 @@ local function winBanner(text)
 	local msg = text
 	if _G.NotifyCenter and _G.NotifyCenter.push then
 		pcall(function() _G.NotifyCenter.push({
-			top      = "â¨ QUEST COMPLETE",
+			top      = "\xE2\x9C\xA8 QUEST COMPLETE",
 			text     = msg,
 			color    = STROKE,
 			priority = _G.NotifyCenter.PRIORITY and _G.NotifyCenter.PRIORITY.EVENT or nil,
@@ -527,51 +572,9 @@ local PRIZES = {
 	{ name = "Cotton Candy",    color = Color3.fromRGB(255, 120, 220) },
 }
 
--- The prize: a sparkling AURA in the flavour's colour. Orbiting neon motes + sparkles
--- that follow you around, survive respawns, and use no external assets (nothing to
--- fail to load). Built in Workspace and driven each frame off the character.
-local auraOn = false
-local function grantAura(color, name)
-	if auraOn then return end
-	auraOn = true
-
-	local folder = Instance.new("Folder"); folder.Name = "PrizeAura"; folder.Parent = Workspace
-	local motes = {}
-	for i = 1, 6 do
-		local o = mk({ Name = "AuraMote", Shape = Enum.PartType.Ball, Size = Vector3.new(0.5, 0.5, 0.5),
-			Color = color, Material = Enum.Material.Neon, Transparency = 1 })
-		local sp = Instance.new("Sparkles"); sp.SparkleColor = color; sp.Parent = o
-		if i <= 2 then   -- only a couple carry lights, so six of them don't blow out the scene
-			local li = Instance.new("PointLight"); li.Color = color; li.Brightness = 1.3; li.Range = 9; li.Parent = o
-		end
-		o.Parent = folder
-		motes[i] = o
-	end
-
-	local t = 0
-	RunService.RenderStepped:Connect(function(dt)
-		local char = player.Character
-		local hrp  = char and char:FindFirstChild("HumanoidRootPart")
-		if not hrp then   -- dead / respawning: park the motes until the character is back
-			for _, o in ipairs(motes) do o.Transparency = 1 end
-			return
-		end
-		t += dt
-		for i, o in ipairs(motes) do
-			local a = t * 1.7 + (i / #motes) * math.pi * 2
-			o.Transparency = 0
-			o.CFrame = CFrame.new(hrp.Position + Vector3.new(
-				math.cos(a) * 2.9,
-				math.sin(t * 2.2 + i * 1.3) * 1.1 + 0.4,
-				math.sin(a) * 2.9))
-		end
-	end)
-
-	if _G.NotifyCenter then
-		pcall(function() _G.NotifyCenter.push({ text = ("\xE2\x9C\xA8 You won the %s aura!"):format(name), color = color }) end)
-	end
-	print(("[CandyQuest] prize aura granted: %s"):format(name))
-end
+-- NO PRIZE AURA. The win used to grant six orbiting neon motes + sparkles that followed the
+-- player around for the rest of the session -- removed on request. The gumball itself is still
+-- the payoff: it hops out of the chute, flies to you and bursts in the flavour's colour.
 
 local crankPrompt
 local cranked = false
@@ -634,15 +637,14 @@ local function armCrank()
 				local char = player.Character
 				local hrp  = char and char:FindFirstChild("HumanoidRootPart")
 				if not hrp then ball:Destroy(); return end
-				-- the gumball floats over to you and bursts into your new aura
+				-- the gumball floats over to you and bursts in your face -- that IS the prize
 				local fly = TweenService:Create(ball, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
 					{ CFrame = hrp.CFrame * CFrame.new(0, 1.2, 0) })
 				fly.Completed:Connect(function()
 					local at = ball.Position
 					ball:Destroy()
 					burst(at, prize.color)
-					grantAura(prize.color, prize.name)
-					winBanner(("\xE2\x9C\xA8 %s aura!"):format(prize.name))
+					winBanner(("\xF0\x9F\x8D\xAC You won a %s gumball!"):format(prize.name))
 				end)
 				fly:Play()
 			end)
@@ -769,10 +771,33 @@ local rattleOpen = false
 local function openRattle(orbModel, onDone)
 	if rattleOpen then return end          -- one panel at a time
 	rattleOpen = true
+	-- Layout marker. This is the ONLY place the Shake-it-loose card is built, so this line in the
+	-- output window is proof of which build is actually running -- if it does not appear when the
+	-- panel opens, Studio is running a stale copy and Rojo has not synced this file.
+	print("[CandyQuest] chute rattle HUD open -- LAYOUT V3: 700x520 Pet Hub card, one full-width "
+		.. "column filling the card: bar 48 tall, 20px pips, track 76 tall, KNOCK 660x148")
 
 	local candy = orbModel and orbModel:FindFirstChild("Candy")
 	local light = candy and candy:FindFirstChildWhichIsA("PointLight")
 	local baseSize = candy and candy.Size
+
+	-- ===== LAYOUT FOR THE 700x520 HOUSE CARD (the Pet Hub's card) =====
+	-- The card is the Pet Hub's now, so this is ONE full-width column, and every element is sized to
+	-- FILL the 520 rather than sit in a strip at the top. The two-column version was built for a
+	-- 700x260 card and left half the panel empty the moment the card went back to menu height.
+	--
+	-- The vertical budget, top to bottom -- it adds up to 520 with a 22px tail:
+	--     12..68    header band (title, hint, close X)
+	--     82..98    HOW LOOSE label + % readout
+	--    104..152   the fill bar          (48 tall -- was 28)
+	--    162..182   the five pips         (20px dots -- were 14)
+	--    196..214   WAIT FOR THE GREEN label
+	--    220..296   the timing track      (76 tall -- was 52)
+	--    304..332   streak chip
+	--    344..492   the KNOCK button      (148 tall, full width -- was 126 in a side column)
+	local COL_X    = 20           -- left margin; everything shares it
+	local COL_W    = 660          -- 700 less a 20px margin each side
+	local NEEDLE_W = 10           -- marker width; its travel is inset by half this at both ends
 
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "ChuteRattle"; gui.ResetOnSpawn = false; gui.IgnoreGuiInset = true
@@ -783,76 +808,253 @@ local function openRattle(orbModel, onDone)
 	film.Size = UDim2.fromScale(1, 1); film.BackgroundColor3 = Color3.new(0, 0, 0)
 	film.BackgroundTransparency = 0.5; film.BorderSizePixel = 0; film.Parent = gui
 
+	-- ========================================================================
+	-- THE PANEL. House palette (blue card, white inset trays, lime/gold fills) --
+	-- deliberately NOT the dark navy the trays used to be: every task HUD in this realm
+	-- is a bright card, and a near-black bar on a blue card read as a hole in the panel.
+	-- ========================================================================
+	-- AUTHORED AT THE HOUSE SIZE (700x260), not 440x352.
+	--
+	-- The old comment here claimed housePanel "keeps its own size ... scaled to fit, so nothing
+	-- inside it moves". That stopped being true when HousePanel switched from scale-to-fit to an
+	-- outright RESIZE: this 440x352 card was being stretched to the house card every time it
+	-- opened, and every child below is placed in absolute pixels, so they no longer matched the
+	-- box they were sitting in. The KNOCK button ended up hanging off the bottom edge, and the
+	-- pips -- spaced 22px apart for a 400-wide bar -- bunched up under the left quarter of a
+	-- 660-wide one.
+	--
+	-- Authoring at 700x260 makes the adoption resize a no-op, so what this file says is what
+	-- renders. THE CARD IS WIDE AND SHORT (see HousePanel: task HUDs are half the menus' height),
+	-- so the content is laid out in TWO COLUMNS rather than one tall stack:
+	--     LEFT  x 20..400  -- how-loose bar, pips, timing track   (the things you read)
+	--     RIGHT x 420..680 -- the KNOCK button                    (the thing you hit)
+	-- Everything lands inside y 76..238, clear of the 56px header band and the bottom edge.
 	local panel = Instance.new("Frame")
-	panel.Size = UDim2.fromOffset(420, 292); panel.Position = UDim2.fromScale(0.5, 0.5)
+	panel.Size = UDim2.fromOffset(700, 260); panel.Position = UDim2.fromScale(0.5, 0.5)
 	panel.AnchorPoint = Vector2.new(0.5, 0.5)
-	panel.BackgroundColor3 = Color3.fromRGB(25, 90, 185); panel.BorderSizePixel = 0; panel.Parent = gui
-	-- HOUSE PANEL: every task HUD is the Pet Hub's 700x520 card in the Pet Hub's spot, and the
-	-- bottom buttons hide while it is up. The panel keeps its own size and every child keeps its
-	-- own pixel coordinates -- it is centred in the house shell and scaled to fit, so nothing
-	-- inside it moves. One call does both jobs -- see HousePanel.client.luau.
+	panel.BackgroundColor3 = Color3.fromRGB(37, 108, 200); panel.BorderSizePixel = 0; panel.Parent = gui
+	-- HOUSE PANEL: every task HUD is the house 700x260 task card, centred in the free band, and
+	-- the bottom buttons hide while it is up. One call does both jobs -- see HousePanel.client.luau.
+	panel:SetAttribute("WantsHousePanel", true)   -- adopted by attribute, so load order cannot lose it
 	pcall(_G.housePanel, panel)   -- island1 gumball chute rattle
-	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 14)
+	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 18)
 	local ps = Instance.new("UIStroke", panel); ps.Color = Color3.new(1, 1, 1); ps.Thickness = 3
+	do -- top-lit card, so it reads as a raised surface rather than a flat rectangle
+		local g = Instance.new("UIGradient", panel)
+		g.Rotation = 90
+		g.Color = ColorSequence.new(Color3.fromRGB(58, 132, 226), Color3.fromRGB(24, 84, 172))
+	end
+
+	-- HEADER BAND -- a lighter strip behind the title, so the gold has something to sit on.
+	local head = Instance.new("Frame")
+	head.Size = UDim2.new(1, -24, 0, 56); head.Position = UDim2.fromOffset(12, 12)
+	head.BackgroundColor3 = Color3.fromRGB(20, 74, 154); head.BorderSizePixel = 0; head.Parent = panel
+	Instance.new("UICorner", head).CornerRadius = UDim.new(0, 12)
+
+	local icon = Instance.new("TextLabel")
+	icon.BackgroundTransparency = 1; icon.Size = UDim2.fromOffset(40, 40); icon.Position = UDim2.fromOffset(10, 8)
+	icon.Font = Enum.Font.GothamBold; icon.TextSize = 28; icon.Text = "\xF0\x9F\x8D\xAC"; icon.Parent = head
 
 	local title = Instance.new("TextLabel")
-	title.BackgroundTransparency = 1; title.Size = UDim2.new(1, -60, 0, 40); title.Position = UDim2.fromOffset(18, 12)
-	title.Font = Enum.Font.GothamBold; title.TextSize = 22; title.TextXAlignment = Enum.TextXAlignment.Left
-	title.TextColor3 = Color3.fromRGB(255, 215, 0); title.Text = "Shake it loose!"; title.Parent = panel
+	title.BackgroundTransparency = 1; title.Size = UDim2.new(1, -110, 0, 26); title.Position = UDim2.fromOffset(54, 6)
+	title.Font = Enum.Font.FredokaOne; title.TextSize = 24; title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextColor3 = Color3.fromRGB(255, 215, 0); title.Text = "Shake it loose!"; title.Parent = head
+	do local t = Instance.new("UIStroke", title); t.Color = Color3.fromRGB(40, 20, 60); t.Thickness = 2 end
 
 	local hint = Instance.new("TextLabel")
-	hint.BackgroundTransparency = 1; hint.Size = UDim2.new(1, -36, 0, 22); hint.Position = UDim2.fromOffset(18, 48)
+	hint.BackgroundTransparency = 1; hint.Size = UDim2.new(1, -66, 0, 20); hint.Position = UDim2.fromOffset(54, 30)
 	hint.Font = Enum.Font.Gotham; hint.TextSize = 14; hint.TextXAlignment = Enum.TextXAlignment.Left
-	hint.TextColor3 = Color3.new(1, 1, 1); hint.Text = "Knock when the marker hits the green"; hint.Parent = panel
+	hint.TextColor3 = Color3.fromRGB(198, 224, 255); hint.Text = "Knock when the marker hits the green"
+	hint.Parent = head
 
 	local close = Instance.new("TextButton")
-	close.Size = UDim2.fromOffset(34, 34); close.Position = UDim2.new(1, -44, 0, 12)
-	close.BackgroundColor3 = Color3.fromRGB(220, 70, 70); close.Text = "X"; close.TextColor3 = Color3.new(1, 1, 1)
+	close.Size = UDim2.fromOffset(34, 34); close.Position = UDim2.new(1, -46, 0, 14)
+	close.BackgroundColor3 = Color3.fromRGB(228, 74, 88); close.Text = "X"; close.TextColor3 = Color3.new(1, 1, 1)
 	close.Font = Enum.Font.GothamBold; close.TextSize = 18; close.AutoButtonColor = true; close.Parent = panel
-	Instance.new("UICorner", close).CornerRadius = UDim.new(0, 8)
+	Instance.new("UICorner", close).CornerRadius = UDim.new(1, 0)
+	-- Border, not Contextual: on a TextButton the default mode strokes the GLYPHS, so a white
+	-- 2px stroke on a white "X" fattened the letter into a blob instead of ringing the button.
+	do
+		local t = Instance.new("UIStroke", close); t.Color = Color3.new(1, 1, 1); t.Thickness = 2
+		t.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	end
 
-	-- progress bar
+	-- ===== HOW LOOSE IS IT -- the progress tray =====
+	local barLbl = Instance.new("TextLabel")
+	barLbl.BackgroundTransparency = 1; barLbl.Size = UDim2.new(0, 160, 0, 18); barLbl.Position = UDim2.fromOffset(COL_X, 80)
+	barLbl.Font = Enum.Font.GothamBold; barLbl.TextSize = 15; barLbl.TextXAlignment = Enum.TextXAlignment.Left
+	barLbl.TextColor3 = Color3.fromRGB(198, 224, 255); barLbl.Text = "HOW LOOSE"; barLbl.Parent = panel
+
+	local pct = Instance.new("TextLabel")
+	-- right-aligned to the card edge now that the readout spans the full width
+	pct.BackgroundTransparency = 1; pct.Size = UDim2.new(0, 90, 0, 18); pct.Position = UDim2.new(1, -110, 0, 80)
+	pct.Font = Enum.Font.GothamBold; pct.TextSize = 16; pct.TextXAlignment = Enum.TextXAlignment.Right
+	pct.TextColor3 = Color3.fromRGB(255, 215, 0); pct.Text = "0%"; pct.Parent = panel
+
 	local track = Instance.new("Frame")
-	track.Size = UDim2.new(1, -36, 0, 26); track.Position = UDim2.fromOffset(18, 92)
-	track.BackgroundColor3 = Color3.fromRGB(12, 50, 110); track.BorderSizePixel = 0; track.Parent = panel
-	Instance.new("UICorner", track).CornerRadius = UDim.new(0, 8)
+	track.Size = UDim2.fromOffset(COL_W, 48); track.Position = UDim2.fromOffset(COL_X, 104)
+	track.BackgroundColor3 = Color3.fromRGB(226, 238, 255); track.BorderSizePixel = 0; track.Parent = panel
+	Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+	do local t = Instance.new("UIStroke", track); t.Color = Color3.fromRGB(20, 74, 154); t.Thickness = 2 end
+
 	local fillBar = Instance.new("Frame")
 	fillBar.Size = UDim2.fromScale(0, 1); fillBar.BackgroundColor3 = Color3.fromRGB(150, 235, 130)
 	fillBar.BorderSizePixel = 0; fillBar.Parent = track
-	Instance.new("UICorner", fillBar).CornerRadius = UDim.new(0, 8)
+	Instance.new("UICorner", fillBar).CornerRadius = UDim.new(1, 0)
+	do -- lime -> gold as it loosens, so "nearly there" is legible at a glance
+		local g = Instance.new("UIGradient", fillBar)
+		g.Color = ColorSequence.new(Color3.fromRGB(126, 226, 108), Color3.fromRGB(255, 214, 92))
+	end
 
-	-- THE TIMING TRACK. A knocker slides back and forth; the green patch is where the
-	-- gumball is jammed. Knock while the marker is ON the patch and it shifts down the
-	-- chute. Every clean hit speeds the knocker up AND narrows the patch AND moves it
-	-- somewhere new -- so the last knock is the hard one, and there is something to get
-	-- better at instead of the same blind tap twelve times.
+	-- THE GUMBALL ITSELF, riding the front of the fill. A bar going up is an abstraction; a
+	-- sweet visibly working its way down the chute is the thing the quest is actually about,
+	-- and it costs one frame to say it. It is coloured to match the orb you tapped, so the
+	-- panel and the world are obviously the same object.
+	local gum = Instance.new("Frame")
+	gum.Size = UDim2.fromOffset(38, 38); gum.AnchorPoint = Vector2.new(0.5, 0.5)
+	gum.Position = UDim2.new(0, 0, 0.5, 0); gum.ZIndex = 4
+	gum.BackgroundColor3 = (candy and candy.Color) or Color3.fromRGB(255, 92, 138); gum.BorderSizePixel = 0
+	gum.Parent = track
+	Instance.new("UICorner", gum).CornerRadius = UDim.new(1, 0)
+	do local t = Instance.new("UIStroke", gum); t.Color = Color3.fromRGB(40, 20, 60); t.Thickness = 2 end
+	-- the little specular dot that makes a flat circle read as a glossy sweet
+	local shine = Instance.new("Frame")
+	shine.Size = UDim2.fromOffset(10, 10); shine.Position = UDim2.fromOffset(7, 6); shine.ZIndex = 5
+	shine.BackgroundColor3 = Color3.new(1, 1, 1); shine.BackgroundTransparency = 0.25
+	shine.BorderSizePixel = 0; shine.Parent = gum
+	Instance.new("UICorner", shine).CornerRadius = UDim.new(1, 0)
+
+	-- ===== PROGRESS PIPS =====
+	-- Five dots at 20% each. The bar already says how loose it is, but a bar is a smooth
+	-- unreadable thing to a seven-year-old mid-panic; five dots that go CLUNK one at a time
+	-- give the run a shape, and the last one lighting up is the payoff. They read fill, NOT
+	-- hit count -- the rising ceiling means a hit is sometimes worth less than a full step,
+	-- and pips that lit per tap would lie about how close you are.
+	-- THE PIPS RIDE THEIR OWN ROW, WHICH IS EXACTLY AS WIDE AS THE BAR.
+	-- They used to be hand-placed at 20 + (i-1)*22, which spaced five 14px dots across 122px --
+	-- a spacing picked for a 400-wide bar and wrong even then, and badly wrong once the card
+	-- became 660 wide: all five bunched under the bar's left edge instead of marking its fifths.
+	-- The row inherits the bar's geometry and each pip is centred on its own fifth IN SCALE, so
+	-- pip i always sits under bar segment i no matter how wide the card gets.
+	local pipRow = Instance.new("Frame")
+	pipRow.BackgroundTransparency = 1
+	pipRow.Size = UDim2.fromOffset(COL_W, 20); pipRow.Position = UDim2.fromOffset(COL_X, 162)
+	pipRow.Parent = panel
+
+	local pips = {}
+	for i = 1, 5 do
+		local d = Instance.new("Frame")
+		d.Size = UDim2.fromOffset(20, 20)
+		d.AnchorPoint = Vector2.new(0.5, 0)
+		d.Position = UDim2.new((i - 0.5) / 5, 0, 0, 0)   -- centre of segment i
+		d.BackgroundColor3 = Color3.fromRGB(20, 74, 154); d.BorderSizePixel = 0; d.Parent = pipRow
+		Instance.new("UICorner", d).CornerRadius = UDim.new(1, 0)
+		local t = Instance.new("UIStroke", d); t.Color = Color3.fromRGB(96, 150, 215); t.Thickness = 2
+		pips[i] = d
+	end
+
+	-- ===== STREAK CHIP -- hidden until it means something (2+ in a row) =====
+	local streakChip = Instance.new("TextLabel")
+	streakChip.AnchorPoint = Vector2.new(0.5, 0)
+	streakChip.Size = UDim2.fromOffset(150, 28); streakChip.Position = UDim2.new(0.5, 0, 0, 304)
+	streakChip.BackgroundColor3 = Color3.fromRGB(255, 214, 92); streakChip.BorderSizePixel = 0
+	streakChip.Font = Enum.Font.GothamBold; streakChip.TextSize = 16
+	streakChip.TextColor3 = Color3.fromRGB(74, 30, 58); streakChip.Text = ""
+	streakChip.Visible = false; streakChip.Parent = panel
+	Instance.new("UICorner", streakChip).CornerRadius = UDim.new(1, 0)
+	-- Border: this is the chip's outline, not an outline on its text (see the close button note).
+	do
+		local t = Instance.new("UIStroke", streakChip); t.Color = Color3.fromRGB(40, 20, 60); t.Thickness = 2
+		t.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	end
+
+	-- ===== THE TIMING TRACK =====
+	-- A knocker slides back and forth; the green patch is where the gumball is jammed. Knock
+	-- while the marker is ON the patch and it shifts down the chute. Every clean hit speeds
+	-- the knocker up AND narrows the patch AND moves it somewhere new -- so the last knock is
+	-- the hard one, and there is something to get better at instead of the same blind tap.
+	local trackLbl = Instance.new("TextLabel")
+	trackLbl.BackgroundTransparency = 1; trackLbl.Size = UDim2.new(0, 260, 0, 18)
+	trackLbl.Position = UDim2.fromOffset(COL_X, 196)
+	trackLbl.Font = Enum.Font.GothamBold; trackLbl.TextSize = 15; trackLbl.TextXAlignment = Enum.TextXAlignment.Left
+	trackLbl.TextColor3 = Color3.fromRGB(198, 224, 255); trackLbl.Text = "WAIT FOR THE GREEN"
+	trackLbl.Parent = panel
+
 	local trackF = Instance.new("Frame")
-	trackF.Size = UDim2.new(1, -36, 0, 46); trackF.Position = UDim2.fromOffset(18, 132)
-	trackF.BackgroundColor3 = Color3.fromRGB(12, 50, 110); trackF.BorderSizePixel = 0; trackF.Parent = panel
-	Instance.new("UICorner", trackF).CornerRadius = UDim.new(0, 8)
+	trackF.Size = UDim2.fromOffset(COL_W, 76); trackF.Position = UDim2.fromOffset(COL_X, 220)
+	trackF.ClipsDescendants = false   -- the needle overhangs top and bottom on purpose
+	trackF.BackgroundColor3 = Color3.fromRGB(226, 238, 255); trackF.BorderSizePixel = 0; trackF.Parent = panel
+	Instance.new("UICorner", trackF).CornerRadius = UDim.new(0, 12)
+	do local t = Instance.new("UIStroke", trackF); t.Color = Color3.fromRGB(20, 74, 154); t.Thickness = 2 end
 
 	local zone = Instance.new("Frame")
 	zone.BackgroundColor3 = Color3.fromRGB(150, 235, 130); zone.BorderSizePixel = 0
-	zone.Size = UDim2.new(0.26, 0, 1, 0); zone.Parent = trackF
-	Instance.new("UICorner", zone).CornerRadius = UDim.new(0, 6)
+	zone.Size = UDim2.new(ZONE_START, 0, 1, 0); zone.Parent = trackF
+	Instance.new("UICorner", zone).CornerRadius = UDim.new(0, 10)
+	do
+		local g = Instance.new("UIGradient", zone)
+		g.Rotation = 90
+		g.Color = ColorSequence.new(Color3.fromRGB(178, 245, 150), Color3.fromRGB(108, 206, 96))
+	end
+	-- Held as a named local, not buried in a do-block, because the render loop PULSES it the
+	-- whole time the needle is inside -- the moment to tap is a thing you should be able to
+	-- see out of the corner of your eye, not something you have to read the needle for.
+	local zoneStroke = Instance.new("UIStroke", zone)
+	zoneStroke.Color = Color3.fromRGB(72, 156, 66); zoneStroke.Thickness = 2
 
+	-- INSET SO IT NEVER HANGS OFF THE TRACK ENDS. Anchored on its own centre and driven by
+	-- needleX() below, which maps pos 0..1 onto centres 4..W-4 -- the same trick the gumball on
+	-- the bar already uses. Before this it was pinned at Position.X = -4 with no anchor, so at
+	-- pos 0 and pos 1 half the marker sat outside the track and read as clipped.
 	local needle = Instance.new("Frame")
 	needle.BackgroundColor3 = Color3.new(1, 1, 1); needle.BorderSizePixel = 0
-	needle.Size = UDim2.new(0, 6, 1, 0); needle.ZIndex = 3; needle.Parent = trackF
-	Instance.new("UICorner", needle).CornerRadius = UDim.new(0, 3)
+	needle.Size = UDim2.new(0, NEEDLE_W, 1, 8)
+	needle.AnchorPoint = Vector2.new(0.5, 0)
+	needle.Position = UDim2.new(0, NEEDLE_W * 0.5, 0, -4)
+	needle.ZIndex = 3; needle.Parent = trackF
+	Instance.new("UICorner", needle).CornerRadius = UDim.new(0, 4)
+	do local t = Instance.new("UIStroke", needle); t.Color = Color3.fromRGB(40, 20, 60); t.Thickness = 2 end
+
+	-- ===== THE BUTTON =====
+	-- IN THE RIGHT COLUMN, FULLY INSIDE THE CARD. It used to be a full-width bar at y 246 with a
+	-- 74px height -- bottom edge 320 against a card that is 260 tall, so it hung off the panel.
+	-- The wide-and-short house card has room beside the readouts instead of under them, and a
+	-- tall key on the right is a bigger tap target than the strip ever was.
+	local knockShadow = Instance.new("Frame")
+	knockShadow.Size = UDim2.fromOffset(COL_W, 148); knockShadow.Position = UDim2.fromOffset(COL_X, 350)
+	knockShadow.BackgroundColor3 = Color3.fromRGB(16, 60, 130); knockShadow.BorderSizePixel = 0
+	knockShadow.ZIndex = 1; knockShadow.Parent = panel
+	Instance.new("UICorner", knockShadow).CornerRadius = UDim.new(0, 16)
 
 	local knock = Instance.new("TextButton")
-	knock.Size = UDim2.new(1, -36, 0, 76); knock.Position = UDim2.fromOffset(18, 190)
+	knock.Size = UDim2.fromOffset(COL_W, 148); knock.Position = UDim2.fromOffset(COL_X, 344)
 	knock.BackgroundColor3 = Color3.fromRGB(214, 92, 158); knock.Text = "KNOCK"
-	knock.TextColor3 = Color3.new(1, 1, 1); knock.Font = Enum.Font.GothamBold; knock.TextSize = 30
-	knock.AutoButtonColor = false; knock.Parent = panel
-	Instance.new("UICorner", knock).CornerRadius = UDim.new(0, 10)
-	local kst = Instance.new("UIStroke", knock); kst.Color = Color3.new(1, 1, 1); kst.Thickness = 2
+	knock.TextColor3 = Color3.new(1, 1, 1); knock.Font = Enum.Font.FredokaOne; knock.TextSize = 54
+	knock.AutoButtonColor = false; knock.ZIndex = 2; knock.Parent = panel
+	Instance.new("UICorner", knock).CornerRadius = UDim.new(0, 16)
+	do -- top-lit so the button reads as a physical key; BackgroundColor3 still tints it, which
+		-- is what flash() drives on a hit or a miss.
+		local g = Instance.new("UIGradient", knock)
+		g.Rotation = 90
+		g.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(206, 206, 206))
+	end
+	-- ONE stroke only. A second UIStroke on the same object does not stack -- it just shadows
+	-- this one, and flash() would then be recolouring an outline nobody can see.
+	--
+	-- ===== WHY THE LABEL WAS UNREADABLE =====
+	-- ApplyStrokeMode defaults to Contextual, and on a TextButton that means the stroke is drawn
+	-- around the TEXT, not around the button. So this 3px WHITE stroke was being painted around
+	-- white 32px glyphs: each letter grew a 3px halo, the halos of neighbouring letters merged,
+	-- and "KNOCK" rendered as one doubled-up smear. Nothing was duplicated and no font failed to
+	-- load -- FredokaOne is a built-in Enum.Font and always resolves; it was one stroke drawn in
+	-- the wrong place. Border puts it back on the button edge, which is what flash() recolours.
+	local kst = Instance.new("UIStroke", knock); kst.Color = Color3.new(1, 1, 1); kst.Thickness = 3
+	kst.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 
 	local fill, ceiling = 0, 0
 	local ceilRate = 1 / RATTLE_SECONDS
 	local pos, dir = 0, 1
-	local zc, zw = 0.5, 0.26          -- zone centre / width, both re-rolled on every hit
+	local zc, zw = 0.5, ZONE_START    -- zone centre / width, both re-rolled on every hit
 	local streak = 0
 	local finished = false
 	local conn
@@ -884,22 +1086,64 @@ local function openRattle(orbModel, onDone)
 		end)
 	end
 
+	-- A knock should LAND. The gumball punches up in scale and settles, and a word flies off
+	-- it and fades -- so a clean hit is felt in the panel and not just totalled in a bar.
+	-- Everything here is a tween on a throwaway instance: nothing is polled, and `finished`
+	-- guards the callbacks so bailing mid-flight cannot animate a destroyed panel.
+	local function popGum(good)
+		if finished or not gum.Parent then return end
+		local big = good and 50 or 30
+		gum:TweenSize(UDim2.fromOffset(big, big), Enum.EasingDirection.Out, Enum.EasingStyle.Back, 0.10, true,
+			function()
+				if finished or not gum.Parent then return end
+				gum:TweenSize(UDim2.fromOffset(38, 38), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.14, true)
+			end)
+	end
+
+	local CALLOUTS = { "NICE!", "GOOD!", "CLUNK!", "SHIFTED!" }
+	local function callout(text, color)
+		if finished then return end
+		local l = Instance.new("TextLabel")
+		l.BackgroundTransparency = 1; l.Size = UDim2.fromOffset(300, 34)
+		l.AnchorPoint = Vector2.new(0.5, 0)
+		l.Position = UDim2.new(0.5, 0, 0, 250); l.ZIndex = 6
+		l.Font = Enum.Font.FredokaOne; l.TextSize = 30; l.TextColor3 = color
+		l.Text = text; l.Parent = panel
+		local t = Instance.new("UIStroke", l); t.Color = Color3.fromRGB(40, 20, 60); t.Thickness = 2
+		l:TweenPosition(UDim2.new(0.5, 0, 0, 196), Enum.EasingDirection.Out,
+			Enum.EasingStyle.Quad, 0.45, true)
+		task.spawn(function()
+			for i = 1, 10 do
+				if not l.Parent then return end
+				l.TextTransparency = i / 10
+				t.Transparency = i / 10
+				task.wait(0.045)
+			end
+			l:Destroy()
+		end)
+	end
+
 	knock.Activated:Connect(function()
 		if finished then return end
 		if math.abs(pos - zc) <= zw * 0.5 then
 			streak += 1
 			fill = math.min(fill + RATTLE_HIT, ceiling)   -- clamped on input as well as per-frame
-			-- it gets harder as it loosens: faster knocker, tighter patch, new spot
-			zw = math.max(0.12, zw - 0.012)
+			-- it gets harder as it loosens: faster knocker, tighter patch, new spot -- but the
+			-- patch bottoms out at ZONE_MIN so the window stays reactable to the last knock.
+			zw = math.max(ZONE_MIN, zw - ZONE_SHRINK)
 			zc = 0.16 + math.random() * 0.68
 			drawZone()
 			hint.Text = (streak >= 3) and ("Nice -- %d in a row!"):format(streak) or "Good knock!"
 			flash(true)
+			popGum(true)
+			callout(CALLOUTS[math.min(streak, #CALLOUTS)], Color3.fromRGB(255, 214, 92))
 		else
 			streak = 0
 			fill = math.max(0, fill - RATTLE_MISS)
 			hint.Text = "Missed it -- wait for the green"
 			flash(false)
+			popGum(false)
+			callout("MISSED", Color3.fromRGB(255, 150, 150))
 		end
 	end)
 	close.Activated:Connect(function() shut(false) end)
@@ -909,14 +1153,41 @@ local function openRattle(orbModel, onDone)
 		ceiling = math.min(1, ceiling + ceilRate * dt)
 		fill = math.min(fill, ceiling)
 		fillBar.Size = UDim2.fromScale(fill, 1)
+		pct.Text = math.floor(fill * 100 + 0.5) .. "%"
 
-		-- knocker sweeps faster the looser the gumball gets
-		pos += dir * (0.42 + fill * 0.55) * dt
+		-- the gumball rides the leading edge of the fill, inset so it never clips the tray ends
+		gum.Position = UDim2.new(fill, math.floor(19 - fill * 38 + 0.5), 0.5, 0)
+
+		-- pips read FILL, not taps (see the note where they are built)
+		local lit = math.floor(fill * 5 + 0.0001)
+		for i = 1, 5 do
+			pips[i].BackgroundColor3 = (i <= lit) and Color3.fromRGB(255, 214, 92) or Color3.fromRGB(20, 74, 154)
+		end
+
+		if streak >= 2 then
+			streakChip.Visible = true
+			streakChip.Text = ("%d IN A ROW"):format(streak)
+		else
+			streakChip.Visible = false
+		end
+
+		-- knocker sweeps faster the looser the gumball gets, capped so the green is still on
+		-- screen long enough to react to (~0.36s at full tilt, against a ~0.31-wide patch).
+		pos += dir * (SWEEP_BASE + fill * SWEEP_GAIN) * dt
 		if pos >= 1 then pos, dir = 1, -1 elseif pos <= 0 then pos, dir = 0, 1 end
-		needle.Position = UDim2.new(pos, -3, 0, 0)
-		-- the marker turns green the instant it's over the patch, so the timing is READABLE
+		needle.Position = UDim2.new(pos, NEEDLE_W * 0.5 - NEEDLE_W * pos, 0, -4)
+		-- the marker turns green the instant it's over the patch, so the timing is READABLE,
+		-- and the patch itself pulses while the needle is inside it -- two independent tells
+		-- for the same moment, because one of them is always the one a given player notices.
 		local onZone = math.abs(pos - zc) <= zw * 0.5
 		needle.BackgroundColor3 = onZone and Color3.fromRGB(150, 235, 130) or Color3.new(1, 1, 1)
+		if onZone then
+			zoneStroke.Thickness = 3 + math.abs(math.sin(os.clock() * 14)) * 3
+			zoneStroke.Color = Color3.fromRGB(255, 255, 255)
+		else
+			zoneStroke.Thickness = 2
+			zoneStroke.Color = Color3.fromRGB(72, 156, 66)
+		end
 
 		-- the real gumball rattles harder the closer it is to coming free
 		if candy and candy.Parent and baseSize then
@@ -943,7 +1214,9 @@ local function spawnOrb(brick, idx)
 	local orb = Instance.new("Part")
 	orb.Name = "Candy"; orb.Shape = Enum.PartType.Ball; orb.Material = Enum.Material.SmoothPlastic
 	orb.Size = Vector3.new(ORB_SIZE, ORB_SIZE, ORB_SIZE); orb.Color = color; orb.Reflectance = 0.2
-	orb.Anchored = true; orb.CanCollide = false; orb.CanQuery = true; orb.CastShadow = false
+	-- SOLID: you bump into a loose gumball instead of walking through it. Ball parts collide
+	-- as a true sphere, so at 2.6 studs you slide off it rather than standing on the bob.
+	orb.Anchored = true; orb.CanCollide = true; orb.CanQuery = true; orb.CastShadow = false
 	orb.CFrame = center; orb.Parent = model
 	model.PrimaryPart = orb
 
@@ -1030,14 +1303,18 @@ local function wireNPC(head)
 	end
 
 	prompt.Triggered:Connect(function()
-		if index == 0 then pages = questPages(collected, questAccepted and nextHint() or nil) end
+		if index == 0 then
+			local pg = questPages(collected, questAccepted and nextHint() or nil)
+			pages = (_G.capBubble and _G.capBubble(pg)) or pg
+		end
 		index += 1
 		if not pages or index > #pages then closeDialogue(); return end
 		if index == 2 then acceptQuest() end -- reading past page 1 = accepting the quest
 		local last = index >= #pages
-		local footer = last and "[E] close" or ("[E] more  (%d/%d)"):format(index, #pages)
-		showBubble(head, pages[index], true, footer)
-		prompt.ActionText = last and "Close" or "Continue"
+		-- no "[E] ..." badge in the bubble: the ProximityPrompt IS the E prompt, and the page
+		-- count rides its ActionText instead of a second floating HUD over the NPC's head
+		showBubble(head, pages[index], true, nil)
+		prompt.ActionText = last and "Close" or ("Continue  (%d/%d)"):format(index, #pages)
 		startWatcher()
 	end)
 	prompt.PromptHidden:Connect(function() if index ~= 0 then closeDialogue() end end)
@@ -1047,10 +1324,9 @@ end
 -- GO
 -- ============================================================================
 task.spawn(function()
-	npcHead = pollFor(findNPCHead, 45)
-	if not npcHead then
-		warn("[CandyQuest] no NPC named 'Candy Npc' found in Workspace -- quest NPC not wired")
-	else
+	-- everything that has to happen once she exists, in one place, so the late re-poll below can
+	-- run exactly what the first-time path runs
+	local function wireHer()
 		wireNPC(npcHead)
 		buildMachine(npcHead)   -- her gumball machine, right beside her (the finale's stage)
 		-- On spawn: show the "go talk to the Candy NPC" banner + directional arrows leading
@@ -1062,6 +1338,35 @@ task.spawn(function()
 				task.wait(2)
 			end
 			if _G.guideTrailClear then _G.guideTrailClear() end
+		end)
+	end
+
+	npcHead = pollFor(findNPCHead, 45)
+	if npcHead then
+		wireHer()
+	else
+		-- SHE IS NOT OPTIONAL HERE, WHICH IS WHY THIS KEEPS LOOKING.
+		--
+		-- collect() refuses every gumball until questAccepted, and questAccepted is only ever set by
+		-- reading past page 1 of HER dialogue. So on island1 -- the SPAWN island, whose Candy Stand
+		-- stays locked behind _G.candyQuestComplete (Shop_AllInOne) -- a missed NPC is not a degraded
+		-- quest, it is a player who can never start the first quest and can never buy the first food.
+		-- The old code warned once and gave up, and the retainer cannot save it either: this build
+		-- reaches its ready print and sets questBuilt_candy regardless, so it is never re-run.
+		--
+		-- 180s rather than another 45 for the same reason CrystalMine uses 180 -- outlasting a slow
+		-- join costs one FindFirstChild sweep every half second and buys back the whole island.
+		warn("[CandyQuest] no NPC named 'Candy Npc' found in 45s -- still watching for her")
+		task.spawn(function()
+			npcHead = pollFor(findNPCHead, 180)
+			if npcHead then
+				wireHer()
+				print("[CandyQuest] Candy Npc streamed in late -- wired")
+			else
+				warn("[CandyQuest] no NPC named 'Candy Npc' anywhere after 180s -- the gumball quest CANNOT "
+					.. "be started and island1's Candy Stand stays locked. Check island1 has a model named "
+					.. "exactly 'Candy Npc' with a Head.")
+			end
 		end)
 	end
 
@@ -1165,6 +1470,9 @@ end)
 -- /complete -- test command: instantly finish the gumball quest (unlocks the stand)
 -- ============================================================================
 local function onCommand(msg)
+	-- DEV ONLY. QuestDevGate publishes this; read at command time so load order cannot matter,
+	-- and nil (gate not up yet) refuses. Without it any player could type their way to the whole realm.
+	if not _G.questDevOK then return end
 	if tostring(msg or ""):lower():sub(1, 9) ~= "/complete" then return end
 	-- only completes when you're standing on island1 (near ITS NPC). If that NPC isn't found
 	-- yet, do nothing -- never complete on a "maybe", or /complete on another island fires this.

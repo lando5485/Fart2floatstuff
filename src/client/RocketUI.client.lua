@@ -95,22 +95,9 @@ countdown.Text = ""
 countdown.Visible = false
 countdown.Parent = gui
 
--- Countdown / LIFTOFF text control. A generation token guarantees a scheduled
--- auto-hide only ever clears the SAME message it was scheduled for (never a newer
--- one) AND that the LIFTOFF always disappears. hideCountdown() bumps the token, so
--- it instantly invalidates any pending auto-hide and leaves the label blank + hidden.
-local countdownGen = 0
-local function showCountdown(text)
-	countdownGen = countdownGen + 1
-	countdown.Text = text
-	countdown.Visible = true
-	return countdownGen
-end
-local function hideCountdown()
-	countdownGen = countdownGen + 1   -- invalidate any pending auto-hide
-	countdown.Visible = false
-	countdown.Text = ""
-end
+-- The countdown is CONTROLLED FURTHER DOWN, not here. It is gated on standing at the launch site, and
+-- that check needs the player-position helpers defined below -- so the label is only BUILT here, and
+-- requestCountdown() / clearCountdown() live under "THE LAUNCH BELONGS TO BEAN FARM".
 
 --======================================================================
 -- "Go to Island 1" teleport button. Visible ONLY while the rocket event is
@@ -264,6 +251,87 @@ local function hideTeleportBtn()
 	applyTeleportBtn()
 end
 
+--======================================================================
+-- THE LAUNCH BELONGS TO BEAN FARM
+--======================================================================
+-- The rocket is built and launched in the middle of Island 1 and nowhere else, but every part of its
+-- presentation used to be fired at the whole server: someone grinding a crossing at Milk Marsh, 13,000
+-- studs up, got a giant red "Launch in 3..." across the middle of their screen and a white flash over
+-- their sky, for a rocket they could not see, could not reach in time, and had no part in. An event that
+-- happens in one place should only be VISIBLE in that place.
+--
+-- GATED TO THE SITE                    NOT GATED, ON PURPOSE
+--   the "Launch in n..." countdown       "event starting -- everyone go to Island 1!"
+--   the LIFTOFF card                     the "Go to Island 1" teleport button
+--   the "hatch is OPEN" boarding call    the closing "the rocket reached the stars!"
+--   the explosion sky flash
+--
+-- That split IS the design: the two announcements exist to GET people to Bean Farm, so gating them to
+-- Bean Farm would mean only the players already standing there ever heard about it, and the event would
+-- quietly stop drawing a crowd. Everything that is the launch ITSELF is site-only.
+--
+-- ONE SWITCH: set this false and every phase shows server-wide again, exactly as it did before.
+local LAUNCH_UI_ISLAND1_ONLY = true
+
+-- ===== THE SITE RADIUS IS DELIBERATELY WIDER THAN onIsland1() =====
+-- onIsland1() answers "do I still need the teleport button", so it is tight (400 studs) -- standing at
+-- the far edge of the island already counts as arrived. This answers "can I see the rocket", which
+-- reaches further: the launch pad is the island's middle (RocketEventManager resolves it from
+-- "Stand1Pos"), but the RIDE STAND is a separate Studio marker ('rocketplacement') sitting well off the
+-- island proper, and a player waiting at the stand to board must not be the one person who loses the
+-- countdown.
+--
+-- THE HEIGHT BAND IS WHAT SEPARATES THE ISLANDS, not the radius. Island 2 is only ~134 studs out
+-- horizontally from Island 1 -- it is directly overhead -- so an XZ test alone would keep the countdown
+-- on screen the whole way up the tower. It is 630 studs UP, so a 400-stud band excludes it cleanly while
+-- still covering anyone hovering over Bean Farm on a fart.
+local SITE_XZ = 1600
+local SITE_Y  = 400
+
+local function atLaunchSite()
+	if not LAUNCH_UI_ISLAND1_ONLY then return true end
+	local ch  = player.Character
+	local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+	if not hrp then return false end
+	local p = (_G.ISLAND_POS and _G.ISLAND_POS[1]) or { x = 0, y = 150, z = 0 }
+	local d = hrp.Position - Vector3.new(p.x, p.y, p.z)
+	return (Vector3.new(d.X, 0, d.Z).Magnitude <= SITE_XZ) and (math.abs(d.Y) <= SITE_Y)
+end
+
+-- ===== THE COUNTDOWN IS RE-DECIDED EVERY POLL, NOT ONCE WHEN IT ARRIVES =====
+-- A player can take the teleport button DURING the count -- that is exactly what the button is for --
+-- and they must land into a countdown already in progress rather than a blank screen until the next
+-- number ticks. Equally, a player who farts off Bean Farm at "3" should lose it on the way up. So the
+-- phase handler records WHAT the event wants shown (wantCountdown) and applyCountdown() re-decides every
+-- half second whether this player is somewhere it should be shown.
+--
+-- The generation token sits on the REQUEST, not on the write: applyCountdown() runs constantly, and a
+-- token that moved on every write would invalidate the LIFTOFF's own auto-hide within half a second of
+-- it appearing -- leaving LIFTOFF on screen forever, which is the exact bug the token exists to prevent.
+local wantCountdown = nil
+local countdownGen  = 0
+
+local function applyCountdown()
+	if wantCountdown and atLaunchSite() then
+		countdown.Text = wantCountdown
+		countdown.Visible = true
+	else
+		countdown.Visible = false
+		countdown.Text = ""
+	end
+end
+local function requestCountdown(text)
+	countdownGen  = countdownGen + 1
+	wantCountdown = text
+	applyCountdown()
+	return countdownGen
+end
+local function clearCountdown()
+	countdownGen  = countdownGen + 1   -- invalidate any pending auto-hide
+	wantCountdown = nil
+	applyCountdown()
+end
+
 -- The player crosses the boundary under their own power -- they fly off Island 1, or they take the teleport
 -- and arrive. Neither fires an event we could listen to, so the state is re-derived on a slow poll. Gated on
 -- eventActive so it costs nothing outside a rocket event, and applyTeleportBtn returns early when nothing
@@ -272,6 +340,9 @@ task.spawn(function()
 	while true do
 		task.wait(0.5)
 		if eventActive then applyTeleportBtn() end
+		-- NOT gated on eventActive. The countdown carries its own "is anything wanted" flag, and a stale
+		-- countdown still up after an event ended is precisely what this has to be able to clear.
+		if wantCountdown then applyCountdown() end
 	end
 end)
 
@@ -331,6 +402,7 @@ end
 -- shake meaningfully if the player is reasonably near the site so far-
 -- away players aren't rattled for no reason.
 --======================================================================
+local lastRocketSite = nil -- the pad's Vector3, remembered from the "shake" phase for the launch shake
 local function cameraShake(sitePos, intensity, seconds)
 	local cam = workspace.CurrentCamera
 	if not cam then return end
@@ -390,13 +462,25 @@ end
 -- LIFTOFF / countdown / banner / teleport button can persist from a prior state.
 --======================================================================
 hideBanner()
-hideCountdown()
+clearCountdown()
 hideTeleportBtn()
 
 --======================================================================
 -- Listen to the server-driven sync events.
 --======================================================================
+-- ONE-SHOT MOMENTS THAT ONLY MEAN ANYTHING AT THE PAD. Unlike the countdown these are never re-decided
+-- later: if you were not there when the hatch opened or when it exploded, you missed it, and replaying it
+-- on arrival would be narrating something that already happened somewhere you were not.
+--   boarding -- "hold E at the rocket's base"; there is no base within 13,000 studs of you.
+--   flash    -- a white blast across your sky for an explosion happening out of sight.
+-- The camera-SHAKE phases are deliberately absent from this list: cameraShake() already scales itself to
+-- zero past ~600 studs from the site, which is the same rule expressed better -- you feel it in
+-- proportion to how close you actually are, instead of snapping on and off at a boundary.
+local SITE_ONLY_PHASES = { boarding = true, flash = true }
+
 sync.OnClientEvent:Connect(function(phase, payload)
+	if SITE_ONLY_PHASES[phase] and not atLaunchSite() then return end
+
 	if phase == "start" then
 		showBanner(payload or "🚀 The Big Rocket Construction Event Starting! Everyone go to Island 1!", 5)
 		showTeleportBtn()   -- show the "Go to Island 1" button for the event
@@ -409,19 +493,31 @@ sync.OnClientEvent:Connect(function(phase, payload)
 
 	elseif phase == "countdown" then
 		-- payload = the number n.
-		showCountdown("Launch in " .. tostring(payload) .. "…")
+		requestCountdown("Launch in " .. tostring(payload) .. "…")
+		-- 3..2..1 felt in the hand. `tock`, not the launch roar -- the roar is the payoff and must stay unique.
+		if _G.hapticPulse then pcall(_G.hapticPulse, "tock") end
 
 	elseif phase == "shake" then
-		-- payload = the site Vector3.
+		-- payload = the site Vector3. Remembered so LIFTOFF below can shake from the pad rather than from the
+		-- camera -- the launch carries no payload of its own, and a shake centred on the player ignores how
+		-- far away they are watching from.
+		lastRocketSite = payload
 		cameraShake(payload, 0.6, 0.4)
 
 	elseif phase == "launch" then
+		-- IT LEAVES THE PAD. The pre-launch rumble ("shake", 0.6 over 0.4s) is the engines building; this is
+		-- the thing itself, so it is longer and harder and it lands on the same frame as the LIFTOFF card.
+		-- Distance-scaled by cameraShake, so watching from three islands up is a tremor, not a punch.
+		cameraShake(lastRocketSite or (workspace.CurrentCamera and workspace.CurrentCamera.CFrame.Position),
+			0.9, 1.1)
+		if _G.hapticPulse then pcall(_G.hapticPulse, "launch") end
+
 		-- LIFTOFF shows ONLY during the launch phase: shown here, auto-hidden after
 		-- 2s, and force-cleared on "end". The token makes the hide robust — it fires
 		-- for THIS LIFTOFF even if the text changed, and never hides a newer message.
-		local g = showCountdown("🚀 LIFTOFF!")
+		local g = requestCountdown("🚀 LIFTOFF!")
 		task.delay(2, function()
-			if countdownGen == g then hideCountdown() end
+			if countdownGen == g then clearCountdown() end
 		end)
 
 	elseif phase == "flash" then
@@ -430,7 +526,7 @@ sync.OnClientEvent:Connect(function(phase, payload)
 		cameraShake(workspace.CurrentCamera and workspace.CurrentCamera.CFrame.Position, 0.4, 0.5)
 
 	elseif phase == "end" then
-		hideCountdown()     -- launch/event over -> the LIFTOFF (and any countdown) disappears immediately
+		clearCountdown()    -- launch/event over -> the LIFTOFF (and any countdown) disappears immediately
 		hideTeleportBtn()   -- event over -> hide the teleport button
 		showBanner(payload or "🚀 The rocket reached the stars!", 4)
 	end

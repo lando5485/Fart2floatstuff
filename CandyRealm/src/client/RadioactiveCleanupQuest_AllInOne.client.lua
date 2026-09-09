@@ -42,27 +42,54 @@ print("[Cleanup] >>> VERSION redpanel-v4 loaded <<<")
 -- ============================================================================
 -- CONFIG
 -- ============================================================================
-local CRANE_NAME     = "beanliftcrane"       -- matched with norm() (spaces/underscores ignored)
+-- ============================================================================
+-- ONE TABLE INSTEAD OF SEVENTEEN LOCALS -- THE 200-REGISTER CEILING
+-- ============================================================================
+-- Luau caps a function at 200 local registers, and the main chunk of this file is a
+-- function. It went over, so Roblox refused to load the script at all:
+--     'Out of local registers when trying to allocate finishScan: exceeded limit 200'
+-- and the whole quest silently never ran. tools/registers.py counted 190 and passed it --
+-- its static count is a FLOOR, not the compiler's number, so trust the Studio log over it.
+--
+-- That is now load-bearing rather than cosmetic: under the space economy this quest funds
+-- gut tier 3, so a quest that cannot load is a HARD DEAD-END at slot 2 -- the ceiling never
+-- lifts and the tower ends there -- instead of merely a missing reward.
+--
+-- Every constant below was referenced exactly ONCE, so folding them into a single table
+-- costs one register instead of seventeen and cannot change behaviour. If this file grows
+-- and trips the ceiling again, do the same to the next cluster of single-use values.
+local K = {
+	CRANE_NAME        = "beanliftcrane",  -- matched with norm() (spaces/underscores ignored)
+	FINDINGS_NAME     = "findings",  -- block(s) that become the data terminal
+	SMOKE_BRICK_NAME  = "smokebrick",  -- extra chimneys: bricks that just belch smoke
+	PILE_NAMES        = { "waste", "cocoawaste", "radioactivecocoa" },  -- "waste" also catches "WastePile"
+	NPC_NAMES         = { "candynpc" },
+	HAND_CARRY_HEIGHT = 3.4,  -- how high the pile rides while you carry it
+	HAND_DROP_RANGE   = 14,  -- how near the bin you must get to tip it in
+	VIEW_YAW          = 270,  -- fallback facing, only used if there's no crate to aim at
+	OPERATE_RANGE     = 18,  -- how close you must be to take the controls
+	AUTO_SPEED        = 1.8,  -- multiplier on the assist's drive/slew/hoist speed
+	NPC_MAX_DIST      = 500,
+	SLEW_WORDS        = { "boom", "rope", "crate", "hook", "pulley", "axle", "jib" },
+	HOIST_WORDS       = { "crate", "hook" },  -- + the drop rope, handled separately
+	LEG_WORDS         = { "leg" },
+	HEEL_WORDS        = { "basepulley", "baseaxle", "heel" },
+	TIP_WORDS         = { "tippulley", "tipaxle" },
+	DROPROPE          = { "ropedrop", "droprope" },
+}
+
 local ENTER_NAME     = "entercrane"          -- the pad you stand on to take the controls
 local VIEW_NAME      = "craneview"           -- a part whose CFrame IS the operator camera
-local FINDINGS_NAME  = "findings"            -- block(s) that become the data terminal
 -- Piles the crane physically can't reach are done by hand instead, with a shovel
 -- this script BUILDS for you (nothing to place in Studio). The NPC hands it over once the
 -- crane has cleared everything it can, so you only ever visit the crane once.
-local SMOKE_BRICK_NAME  = "smokebrick"       -- extra chimneys: bricks that just belch smoke
-local HAND_CARRY_HEIGHT = 3.4                -- how high the pile rides while you carry it
-local HAND_DROP_RANGE   = 14                 -- how near the bin you must get to tip it in
 local TERMINAL_YAW   = 90                    -- degrees CCW to spin each terminal on its block
-local VIEW_YAW       = 270                   -- fallback facing, only used if there's no crate to aim at
 local VIEW_RIDES_ARM = true                  -- true = the camera is bolted to the boom and swings with it
 -- where the waste gets dumped. Exact (normalised) names, so "Nuclear Waste" counts but a
 -- pile called "waste 3" doesn't get mistaken for the chamber.
 local CHAMBER_NAMES  = { "nuclearwaste", "containmentchamber" }
-local PILE_NAMES     = { "waste", "cocoawaste", "radioactivecocoa" }  -- "waste" also catches "WastePile"
-local NPC_NAMES      = { "candynpc" }
 
 local LOADS_REQUIRED = 4                     -- how many piles to clear (3-5 reads best)
-local OPERATE_RANGE  = 18                    -- how close you must be to take the controls
 
 local SLEW_SPEED     = 38                    -- degrees/sec the boom swings
 local HOIST_SPEED    = 9                     -- studs/sec the hook drops
@@ -71,10 +98,21 @@ local HOIST_SPEED    = 9                     -- studs/sec the hook drops
 -- controls rolls it straight back to where it started, so from outside it never shifted.
 local DRIVE_SPEED    = 7                     -- studs/sec the machine rolls
 local DRIVE_RANGE    = 16                    -- MAX studs it may travel from its parked spot
-local MAX_DROP       = 42                    -- how far below its rest height the hook can go
+-- MAX_DROP is a FLOOR, not the limit. The real one is rig.maxDrop, solved from the crane's
+-- actual height above the piles once they exist -- see "THE DROP BUDGET" in spawnPiles. A flat
+-- 42 is a guess about a machine whose height off the ground is whatever the builder left it at
+-- in Studio, and when the guess is short the crane swings over a pile, lowers to its limit,
+-- stops in mid-air and reports "COULDN'T REACH IT" -- indistinguishable from a broken crane.
+local MAX_DROP       = 42                    -- minimum usable stroke, in studs
+-- One table, not three locals: this file is near Luau's 200-live-locals ceiling (see
+-- tools/registers.py) and going over it is a SILENT compile failure, not an error.
+local CRANE = {
+	DROP_SLACK   = 4,      -- extra rope past the deepest target, so the crate never just grazes it
+	DROP_CEILING = 600,    -- sanity cap; the rope is cosmetic, but a runaway solve is not
+	DUMP_PARTS   = false,  -- print every crane BasePart at boot (auto-forced if the rig can't classify)
+}
 local GRAB_RADIUS    = 16                    -- how near the crate must be to a pile to grab it
                                              -- (generous on purpose -- small kids play this)
-local AUTO_SPEED     = 1.8                   -- multiplier on the assist's drive/slew/hoist speed
 
 -- Audio: drop in your OWN asset ids. "" = silent, and nothing is ever created for an
 -- empty id -- given how many ids in this place fail auth, silence is the safe default.
@@ -229,17 +267,16 @@ _G.cleanupQuestComplete = false
 --
 -- NOTE "BasePulley"/"BaseAxle" contain "base" but are the boom's heel at the TOP of the
 -- tower -- so slew words are tested FIRST, or they'd be mistaken for the crane's base.
-local SLEW_WORDS  = { "boom", "rope", "crate", "hook", "pulley", "axle", "jib" }
-local HOIST_WORDS = { "crate", "hook" }          -- + the drop rope, handled separately
-local LEG_WORDS   = { "leg" }
-local HEEL_WORDS  = { "basepulley", "baseaxle", "heel" }
-local TIP_WORDS   = { "tippulley", "tipaxle" }
-local DROPROPE    = { "ropedrop", "droprope" }
 
+-- The per-part listing is 77 lines of boot log for this crane. It is genuinely useful when the
+-- rig classifies wrongly and useless otherwise, so it is off by default (CRANE.DUMP_PARTS) and
+-- forced on by buildRig when the name matching finds no moving parts.
 local function dumpCraneParts(parts)
 	warn(("[Cleanup] BeanLiftCrane contains %d BasePart(s) -- listing them so the rig can be tuned:"):format(#parts))
 	for _, p in ipairs(parts) do
-		print(("    '%s'  %s  size=%.1f,%.1f,%.1f  offsetFromBase=%.1f,%.1f,%.1f"):format(
+		-- these are WORLD positions. The label used to read "offsetFromBase", which sent you
+		-- looking for a bug in the rig's maths every time the Y column showed 3632 instead of 8.
+		print(("    '%s'  %s  size=%.1f,%.1f,%.1f  worldPos=%.1f,%.1f,%.1f"):format(
 			p.Name, p.ClassName, p.Size.X, p.Size.Y, p.Size.Z,
 			p.Position.X, p.Position.Y, p.Position.Z))
 	end
@@ -254,7 +291,7 @@ local function buildRig(craneInst)
 	local modelCF, modelSize = boundsOf(craneInst)
 	local bottomY = modelCF.Position.Y - modelSize.Y * 0.5
 
-	dumpCraneParts(parts)
+	if CRANE.DUMP_PARTS then dumpCraneParts(parts) end
 
 	local r = {
 		all = parts, base = {}, upper = {}, cable = nil, hook = nil,
@@ -269,21 +306,23 @@ local function buildRig(craneInst)
 	r.hoists, r.dropRope, r.heel, r.tipPart = {}, nil, nil, nil
 	local legs = {}
 	for _, p in ipairs(parts) do
-		if nameHas(p.Name, SLEW_WORDS) then
+		if nameHas(p.Name, K.SLEW_WORDS) then
 			r.upper[#r.upper + 1] = p
-			if nameHas(p.Name, HOIST_WORDS) then r.hoists[#r.hoists + 1] = p end
-			if nameHas(p.Name, DROPROPE) then r.dropRope = p end
-			if nameHas(p.Name, HEEL_WORDS) and not r.heel then r.heel = p end
-			if nameHas(p.Name, TIP_WORDS)  and not r.tipPart then r.tipPart = p end
+			if nameHas(p.Name, K.HOIST_WORDS) then r.hoists[#r.hoists + 1] = p end
+			if nameHas(p.Name, K.DROPROPE) then r.dropRope = p end
+			if nameHas(p.Name, K.HEEL_WORDS) and not r.heel then r.heel = p end
+			if nameHas(p.Name, K.TIP_WORDS)  and not r.tipPart then r.tipPart = p end
 			if nameHas(p.Name, { "hook" })  and not r.hook then r.hook = p end
 		else
 			r.base[#r.base + 1] = p
-			if nameHas(p.Name, LEG_WORDS) then legs[#legs + 1] = p end
+			if nameHas(p.Name, K.LEG_WORDS) then legs[#legs + 1] = p end
 		end
 	end
 
 	-- nothing name-matched (a differently-built crane) -> fall back to geometry
 	if #r.upper == 0 then
+		-- THIS is when the listing earns its keep: the names told us nothing, so print them.
+		if not CRANE.DUMP_PARTS then dumpCraneParts(parts) end
 		local cutoff = bottomY + math.max(2, modelSize.Y * 0.55)
 		r.base, r.upper = {}, {}
 		for _, p in ipairs(parts) do
@@ -404,6 +443,26 @@ local function buildRig(craneInst)
 		r.crateBottomRestY = lowest
 			or (r.hook and (r.hook.Position.Y - r.hook.Size.Y * 0.5))
 			or r.crateRestPos.Y
+	end
+
+	-- ===== THE DROP BUDGET -- how far the rope actually has to pay out ==================
+	-- MAX_DROP was a flat 42 studs: a guess about a machine whose height above the ground is
+	-- whatever the builder left it at in Studio. When the guess is short the crane swings over
+	-- a pile correctly, pays out its 42, halts in mid-air, and the grab then fails on the 3D
+	-- distance test in tryGrab -- which looks exactly like a crane that does not work, with
+	-- nothing in the log to say why.
+	--
+	-- So the stroke is SOLVED from the geometry: the crate's resting underside versus the real
+	-- top of everything it must be lowered onto. It lives on the rig and is fed by noteDrop as
+	-- each of those things is built, because the piles and the containment bin are set up by
+	-- different functions in an order neither of them controls. MAX_DROP survives as a floor.
+	r.dropNeeded = 0
+	r.maxDrop    = MAX_DROP
+	r.noteDrop = function(topY, clearance)
+		if not topY then return end
+		local d = (r.crateBottomRestY - (topY + (clearance or 1.5))) + CRANE.DROP_SLACK
+		if d > r.dropNeeded then r.dropNeeded = d end
+		r.maxDrop = math.clamp(math.max(MAX_DROP, r.dropNeeded), MAX_DROP, CRANE.DROP_CEILING)
 	end
 
 	-- OPERATOR CAMERA: the part you named "crane view". Its CFrame *is* the shot.
@@ -577,7 +636,7 @@ local function applyRig()
 		if target then
 			viewCF = CFrame.lookAt(eyeCF.Position, target)
 		else
-			viewCF = eyeCF * CFrame.Angles(0, math.rad(VIEW_YAW), 0)  -- nothing to watch: use the raw facing
+			viewCF = eyeCF * CFrame.Angles(0, math.rad(K.VIEW_YAW), 0)  -- nothing to watch: use the raw facing
 		end
 
 		local cam = Workspace.CurrentCamera
@@ -614,6 +673,73 @@ local function hookPosition()
 end
 
 -- ============================================================================
+-- MULTIPLAYER -- the crane other people can watch, and the one-at-a-time desks
+-- ============================================================================
+-- This whole quest is a LocalScript, so the boom you swing is CFramed on YOUR client only:
+-- everyone else was watching a crane stand perfectly still while a player stood frozen on the
+-- boarding pad beside it. CraneFxSync relays the pose -- three numbers and a carrying flag --
+-- and each viewer puts its own copy of the crane into it.
+--
+-- The same relay arbitrates the two SEATS. The crane has one set of controls and the lab has one
+-- terminal, and two players driving or scanning at once meant two people fighting over one
+-- machine (and, at the crane, two clients writing different CFrames onto the same parts every
+-- frame). The server hands out one claim per station, and everything here is scenery and UI --
+-- nobody's samples, loads or completion ever cross the wire.
+--
+-- ONE top-level local: a table costs one register no matter how many fields, and this file runs
+-- close to Luau's 200-local ceiling.
+local NET = {
+	ev = nil,            -- the RemoteEvent, once it exists
+	sentAt = 0,          -- last pose sent (throttle)
+	sentCarry = false,   -- last carrying flag sent, so a grab/dump goes out immediately
+	holder = {},         -- [station] = display name of whoever holds it (nil = free)
+	ghost = nil,         -- the load a REMOTE operator is hauling, drawn in our own crate
+	remoteAt = 0,        -- when the last remote pose arrived (the crane rests after a lull)
+}
+
+-- A claim goes stale on the server if its owner stops talking (that is what stops a crashed
+-- client locking a desk forever), so anyone actually SITTING at one renews it on a slow timer.
+-- Re-claiming a station you already hold just refreshes it.
+function NET.hold(station)
+	local now = os.clock()
+	if now - (NET[station .. "Held"] or 0) < 8 then return end
+	NET[station .. "Held"] = now
+	NET.claim(station)
+end
+
+-- who is at a station, other than us. nil when it is free or it is our own claim.
+function NET.busy(station)
+	local who = NET.holder[station]
+	if not who or who == player.Name then return nil end
+	return who
+end
+
+function NET.claim(station)   -- optimistic: the server's reply confirms or bounces it
+	if NET.ev then NET.ev:FireServer("claim", station) end
+end
+function NET.release(station)
+	if NET.ev then NET.ev:FireServer("release", station) end
+	if NET.holder[station] == player.Name then NET.holder[station] = nil end
+end
+
+-- the load in a remote operator's crate. Their pile models are their own client's; ours are
+-- ours, and matching them up would mean replicating pile identity for a cosmetic blob. So the
+-- viewer draws a generic lump of sludge instead -- from outside, that is all a crate of waste is.
+function NET.showGhost(on, at)
+	if on and at then
+		if not (NET.ghost and NET.ghost.Parent) then
+			NET.ghost = mk({ Name = "RemoteLoad", Shape = Enum.PartType.Ball,
+				Size = Vector3.new(3.4, 2.4, 3.4), Color = WASTE,
+				Material = Enum.Material.Neon, Transparency = 0.25, Parent = Workspace })
+		end
+		NET.ghost.CFrame = CFrame.new(at)
+	elseif NET.ghost then
+		pcall(function() NET.ghost:Destroy() end)
+		NET.ghost = nil
+	end
+end
+
+-- ============================================================================
 -- SMOKE BRICKS -- any brick you named "smokebrick" becomes a chimney. Same
 -- stacked-emitter trick as the crane's exhaust, since Smoke has no rate control.
 -- The brick itself is left exactly as you built it (visible, solid) -- it's a
@@ -622,7 +748,7 @@ end
 local function wireSmokeBricks()
 	local made = 0
 	for _, d in ipairs(Workspace:GetDescendants()) do
-		if d:IsA("BasePart") and norm(d.Name) == SMOKE_BRICK_NAME then
+		if d:IsA("BasePart") and norm(d.Name) == K.SMOKE_BRICK_NAME then
 			made += 1
 			-- emit from the TOP of the brick rather than its centre, so tall chimneys
 			-- don't look like they're leaking out of their own middle
@@ -650,46 +776,193 @@ end
 -- WASTE PILES -- glowing radioactive cocoa
 -- ============================================================================
 local function makePile(pos, idx)
+	-- ===== A DEPOSIT IN THE GROUND, NOT AN OBJECT ON IT =====
+	-- The old pile was a slate cube with five neon marbles stacked on top -- a prop standing on
+	-- the grass, readable as "a thing somebody placed". A radioactive SPILL reads as ground: a
+	-- wide dark stain flush with the turf, a sick green seep ring inside it, low half-buried
+	-- mounds breaking the surface, and glowing ooze pooled in the gaps at ground level.
+	--
+	-- Everything still lives in ONE model with the same { model, pos, topY, taken } contract, so
+	-- the crane hoisting it reads as the whole contaminated patch of topsoil coming up -- and a
+	-- cleared spot is genuinely CLEAN afterwards, with no residue left behind to say otherwise.
 	local model = Instance.new("Model"); model.Name = "CocoaWaste"
 
-	local heap = mk({ Name = "Heap", Size = Vector3.new(3.4, 1.8, 3.4),
-		Color = Color3.fromRGB(74, 46, 30), Material = Enum.Material.Slate, CanQuery = true })
-	heap.CFrame = CFrame.new(pos + Vector3.new(0, 0.9, 0))
-	heap.Parent = model; model.PrimaryPart = heap
+	-- the stain: a flattened disc barely proud of the ground (0.06 up: flush to the eye, never
+	-- z-fighting the turf). It is also the PrimaryPart, so grabs and pivots key off the ground
+	-- patch itself. A cylinder's axis is X; Angles(0,0,90) stands it vertical -> a flat disc.
+	local stain = mk({ Name = "Stain", Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new(0.22, 8.6, 8.6), Color = Color3.fromRGB(52, 34, 24),
+		Material = Enum.Material.Slate, CanQuery = true })
+	stain.CFrame = CFrame.new(pos + Vector3.new(0, 0.06, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	stain.Parent = model; model.PrimaryPart = stain
+	local seep = mk({ Name = "Seep", Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new(0.2, 6.2, 6.2), Color = WASTE,
+		Material = Enum.Material.SmoothPlastic, Transparency = 0.55 })
+	seep.CFrame = CFrame.new(pos + Vector3.new(0, 0.14, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	seep.Parent = model
 
-	for i = 1, 5 do   -- glowing lumps poking out of the heap
-		local a = (i / 5) * math.pi * 2
-		local lump = mk({ Name = "Lump", Shape = Enum.PartType.Ball, Size = Vector3.new(1.15, 1.15, 1.15),
-			Color = WASTE, Material = Enum.Material.Neon, Transparency = 0.15 })
-		lump.CFrame = CFrame.new(pos + Vector3.new(math.cos(a) * 1.1, 1.35 + (i % 3) * 0.3, math.sin(a) * 1.1))
-		lump.Parent = model
+	-- ===== IT IS A PIT =====
+	-- Someone DUG this, or it burned its way down: a near-black hole faked with a dark disc, a
+	-- glowing sludge pool sitting in its bottom, and an excavated RIM of cocoa-earth chunks
+	-- tipped outward around the lip -- the spoil from the digging. The island floor is Studio
+	-- geometry a LocalScript cannot cut, so the hole is painted, and at play distance a black
+	-- disc under a glowing pool inside a raised lip reads as depth every time.
+	local pit = mk({ Name = "Pit", Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new(0.18, 6.8, 6.8), Color = Color3.fromRGB(22, 15, 10),
+		Material = Enum.Material.Slate, CanQuery = true })
+	pit.CFrame = CFrame.new(pos + Vector3.new(0, 0.1, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	pit.Parent = model
+	local sludge = mk({ Name = "Sludge", Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new(0.14, 5.2, 5.2), Color = WASTE,
+		Material = Enum.Material.Neon, Transparency = 0.45 })
+	sludge.CFrame = CFrame.new(pos + Vector3.new(0, 0.16, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	sludge.Parent = model
+
+	-- the rim: earth chunks thrown up around the lip, tipped outward like real spoil
+	for i = 1, 8 do
+		local a = idx * 1.7 + (i / 8) * math.pi * 2
+		local w = 1.5 + (i % 3) * 0.5
+		local chunk = mk({ Name = "RimChunk",
+			Size = Vector3.new(w, 0.55 + (i % 2) * 0.3, w * 0.7),
+			Color = (i % 2 == 0) and Color3.fromRGB(74, 46, 30) or Color3.fromRGB(58, 36, 24),
+			Material = Enum.Material.Slate })
+		chunk.CFrame = CFrame.new(pos + Vector3.new(math.cos(a) * 3.55, 0.2, math.sin(a) * 3.55))
+			* CFrame.Angles(math.rad(-10), -a + (i % 3) * 0.4, math.rad((i % 3 - 1) * 8))
+		chunk.Parent = model
+	end
+
+	-- ooze blobs half-sunk in the sludge, ANIMATED below: they swell and sink like slow boiling
+	local oozes = {}
+	for i = 1, 3 do
+		local a = idx * 0.9 + (i / 3) * math.pi * 2 + 0.7
+		local r = 0.7 + (i % 2) * 1.1
+		local ooze = mk({ Name = "Ooze", Shape = Enum.PartType.Ball,
+			Size = Vector3.new(1.6, 0.55, 1.35), Color = WASTE,
+			Material = Enum.Material.Neon, Transparency = 0.08 })
+		ooze.CFrame = CFrame.new(pos + Vector3.new(math.cos(a) * r, 0.2, math.sin(a) * r))
+			* CFrame.Angles(0, a, 0)
+		ooze.Parent = model
+		oozes[i] = ooze
+	end
+
+	-- glowing seep cracks running out from under the rim -- the contamination going somewhere
+	local cracks = {}
+	for i = 1, 5 do
+		local a = idx * 1.3 + (i / 5) * math.pi * 2 + 0.3
+		local len = 1.6 + (i % 3) * 1.1
+		local crack = mk({ Name = "SeepCrack", Size = Vector3.new(0.22, 0.1, len),
+			Color = WASTE, Material = Enum.Material.Neon, Transparency = 0.35 })
+		crack.CFrame = CFrame.new(pos + Vector3.new(math.cos(a) * (3.6 + len * 0.5), 0.1,
+			math.sin(a) * (3.6 + len * 0.5))) * CFrame.Angles(0, -a + math.pi * 0.5, 0)
+		crack.Parent = model
+		cracks[i] = crack
 	end
 
 	local glow = Instance.new("PointLight")
-	glow.Color = WASTE; glow.Brightness = 2.2; glow.Range = 14; glow.Parent = heap
-	local spk = Instance.new("Sparkles"); spk.SparkleColor = WASTE; spk.Parent = heap
+	glow.Color = WASTE; glow.Brightness = 2.2; glow.Range = 14; glow.Parent = sludge
+	local spk = Instance.new("Sparkles"); spk.SparkleColor = WASTE; spk.Parent = sludge
+
+	-- ===== SOMETHING COMES OUT OF IT =====
+	-- The pit used to breathe four faint smoke wisps a second off a flat disc, which at any
+	-- distance was nothing at all: a hole in the ground with a green light in it. A pit that is
+	-- actively venting is what makes the island read as contaminated rather than decorated, so
+	-- there are now three things leaving it, all off the sludge surface, all cosmetic
+	-- (CanCollide/CanQuery are off on everything here, nothing blocks a raycast or a placement).
+	--
+	-- 1. THE PLUME -- a proper column of glowing vapour, wide and slow, that you can see from
+	--    the crane cab. EmissionDirection is Front because a Cylinder rolled upright emits out
+	--    of its flat face, not its top.
+	local fizz = Instance.new("ParticleEmitter")
+	fizz.Texture = "rbxasset://textures/particles/smoke_main.dds"
+	fizz.Color = ColorSequence.new(WASTE)
+	fizz.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1.2), NumberSequenceKeypoint.new(1, 5.5) })
+	fizz.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.18, 0.42),
+		NumberSequenceKeypoint.new(1, 1) })
+	fizz.Lifetime = NumberRange.new(2.2, 3.6)
+	fizz.Rate = 14
+	fizz.Speed = NumberRange.new(3.5, 6)
+	fizz.SpreadAngle = Vector2.new(22, 22)
+	fizz.Acceleration = Vector3.new(0, 3.2, 0)
+	fizz.LightEmission = 0.85
+	fizz.EmissionDirection = Enum.NormalId.Front
+	fizz.Parent = sludge
+
+	-- 2. THE SPIT -- bright specks of the stuff thrown clear of the surface and falling back,
+	--    fast and short-lived, so the pool reads as boiling instead of merely lit.
+	local spit = Instance.new("ParticleEmitter")
+	spit.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	spit.Color = ColorSequence.new(WASTE)
+	spit.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 0.05) })
+	spit.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.1), NumberSequenceKeypoint.new(1, 0.6) })
+	spit.Lifetime = NumberRange.new(0.8, 1.5)
+	spit.Rate = 9
+	spit.Speed = NumberRange.new(9, 16)
+	spit.SpreadAngle = Vector2.new(35, 35)
+	spit.Acceleration = Vector3.new(0, -26, 0)      -- thrown up, pulled back down: an arc
+	spit.LightEmission = 1
+	spit.EmissionDirection = Enum.NormalId.Front
+	spit.Parent = sludge
 
 	local hl = Instance.new("Highlight")
 	hl.FillColor = WASTE; hl.FillTransparency = 0.75
 	hl.OutlineColor = WASTE; hl.OutlineTransparency = 0.1
-	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop; hl.Adornee = heap; hl.Parent = model
+	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop; hl.Adornee = model; hl.Parent = model
 
 	model.Parent = Workspace
 
-	-- slow ominous pulse
+	-- slow ominous pulse: the light breathes, the sludge surface shifts, the ooze blobs boil
+	-- (each on its own phase), and the seep cracks flicker out of step with each other
 	task.spawn(function()
 		local t = idx * 0.9
+		local nextBurp = os.clock() + 1.5 + idx * 0.6
 		while model.Parent do
 			t += 0.05
+
+			-- 3. THE BURP -- every few seconds a bubble of gas swells out of the pool, climbs and
+			-- pops. Phased off the pit's index so a field of them never burps in unison, which
+			-- would read as a script rather than as ground that is doing something.
+			if os.clock() >= nextBurp and sludge.Parent then
+				nextBurp = os.clock() + 3.5 + math.random() * 4
+				local bub = mk({ Name = "Burp", Shape = Enum.PartType.Ball,
+					Size = Vector3.new(0.6, 0.6, 0.6), Color = WASTE,
+					Material = Enum.Material.Neon, Transparency = 0.35, Parent = model })
+				local base = sludge.Position + Vector3.new(
+					(math.random() - 0.5) * 3, 0.2, (math.random() - 0.5) * 3)
+				bub.CFrame = CFrame.new(base)
+				-- swells while it climbs, then blows out and vanishes at the top of the rise
+				TweenService:Create(bub, TweenInfo.new(1.1, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+					Size = Vector3.new(2.6, 2.6, 2.6),
+					CFrame = CFrame.new(base + Vector3.new(0, 4.4, 0)),
+					Transparency = 0.75 }):Play()
+				task.delay(1.1, function()
+					if not bub.Parent then return end
+					TweenService:Create(bub, TweenInfo.new(0.25), {
+						Size = Vector3.new(5.5, 5.5, 5.5), Transparency = 1 }):Play()
+					Debris:AddItem(bub, 0.3)
+				end)
+			end
+
 			glow.Brightness = 1.8 + math.sin(t) * 0.9
 			hl.FillTransparency = 0.72 + math.sin(t) * 0.12
+			if sludge.Parent then sludge.Transparency = 0.42 + math.sin(t * 0.7) * 0.1 end
+			for i, o in ipairs(oozes) do
+				if o.Parent then
+					local k = 1 + math.sin(t * 1.6 + i * 2.1) * 0.22
+					o.Size = Vector3.new(1.6 * k, 0.55 * (2 - k), 1.35 * k)
+				end
+			end
+			for i, c in ipairs(cracks) do
+				if c.Parent then c.Transparency = 0.3 + (math.sin(t * 1.1 + i * 1.7) * 0.5 + 0.5) * 0.35 end
+			end
 			task.wait(0.05)
 		end
 	end)
 
-	-- topY: the crown of the heap (heap is 1.8 tall centred at +0.9; the glowing lumps
-	-- poke another ~0.9 above that). The assist lowers the crate onto exactly this.
-	return { model = model, pos = pos, topY = pos.Y + 2.3, taken = false }
+	-- topY: the deposit is LOW now -- the crate settles onto the mound crowns, just above the
+	-- turf. noteDrop below measures the extra rope the lower target needs, so the crane's
+	-- stroke solves itself exactly as before.
+	return { model = model, pos = pos, topY = pos.Y + 1.1, taken = false }
 end
 
 local function groundUnder(pos)
@@ -704,30 +977,59 @@ local function groundUnder(pos)
 end
 
 local function spawnPiles()
+	-- ===== NEVER AT THE BIN =====
+	-- The name test below keeps the CHAMBER itself from being read as a pile, but it says
+	-- nothing about a 'waste' marker (or a ring spot) sitting right BESIDE the bin -- which
+	-- put a glowing pit hard against the containment chamber: it read as a load already
+	-- delivered, and it sat in the crane's drop zone. Anything inside the chamber's own
+	-- footprint plus a margin is refused by DISTANCE, whatever it is called.
+	local function nearChamber(p)
+		local c = chamberCF and chamberCF.Position
+			or (chamber and (chamber:IsA("BasePart") and chamber.Position or chamber:GetPivot().Position))
+		if not c then return false end
+		local reach = 12
+		if chamberSize then reach = math.max(chamberSize.X, chamberSize.Z) * 0.5 + 7 end
+		return (Vector3.new(p.X, 0, p.Z) - Vector3.new(c.X, 0, c.Z)).Magnitude < reach
+	end
+
 	-- prefer piles you placed in Studio
 	local found = {}
 	for _, d in ipairs(Workspace:GetDescendants()) do
 		-- "Nuclear Waste" is the CHAMBER, not a pile -- and it contains the word "waste",
 		-- so it (and anything inside it) has to be excluded explicitly.
 		local isChamber = isChamberName(d.Name) or (chamber and d:IsDescendantOf(chamber))
-		if not isChamber and (d:IsA("BasePart") or d:IsA("Model")) and nameHas(d.Name, PILE_NAMES) then
+		if not isChamber and (d:IsA("BasePart") or d:IsA("Model")) and nameHas(d.Name, K.PILE_NAMES) then
 			local part = firstBasePart(d)
 			if part then
-				-- the marker is just an anchor: hide it, build the glowing heap on top
+				-- the marker is just an anchor: hide it, build the glowing pit on top
 				for _, q in ipairs(d:IsA("Model") and d:GetDescendants() or { d }) do
 					if q:IsA("BasePart") then q.Transparency = 1; q.CanCollide = false; q.CanQuery = false end
 				end
-				found[#found + 1] = part.Position
+				if nearChamber(part.Position) then
+					warn(("[Cleanup] 'waste' marker '%s' sits right at the containment chamber -- SKIPPED "
+						.. "(no pit at the bin). Move or delete the marker in Studio to silence this.")
+						:format(d:GetFullName()))
+				else
+					found[#found + 1] = part.Position
+				end
 			end
 		end
 	end
 
 	if #found == 0 and rig then
-		-- none placed -> ring them around the crane, just inside its reach
+		-- none placed -> ring them around the crane, just inside its reach; a ring spot that
+		-- lands at the bin walks around the circle until it is clear of it
 		local r = math.max(10, rig.reach * 0.8)
 		for i = 1, LOADS_REQUIRED do
 			local a = (i / LOADS_REQUIRED) * math.pi * 2 + 0.4
-			found[i] = groundUnder(rig.slewCenter + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r))
+			local p = rig.slewCenter + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+			local tries = 0
+			while nearChamber(p) and tries < 8 do
+				tries += 1
+				a += 0.35
+				p = rig.slewCenter + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+			end
+			found[i] = groundUnder(p)
 		end
 		print(("[Cleanup] no parts named 'waste' found -- generated %d piles around the crane"):format(#found))
 	else
@@ -745,12 +1047,31 @@ local function spawnPiles()
 		if i <= LOADS_REQUIRED then piles[#piles + 1] = makePile(pos, i) end
 	end
 
+	-- Every pile is something the rope has to reach the bottom of -- tell the rig before we
+	-- ask it what it can reach, or the answer is measured against a stroke that is too short.
+	-- (The containment bin does the same from setupChamber; noteDrop only ever raises.)
+	if rig and rig.noteDrop then
+		for _, p in ipairs(piles) do rig.noteDrop(p.topY, 1.2) end
+		print(("[Cleanup] drop budget: crate underside rests at Y=%.0f, deepest target needs %.0f "
+			.. "stud(s) of rope -> stroke %.0f (floor %d, ceiling %d)")
+			:format(rig.crateBottomRestY, rig.dropNeeded, rig.maxDrop, MAX_DROP, CRANE.DROP_CEILING))
+		if rig.dropNeeded > CRANE.DROP_CEILING then
+			warn(("[Cleanup] the crane needs %.0f studs of rope but is capped at %d -- it is parked FAR "
+				.. "above the waste. Lower BeanLiftCrane in Studio (or raise CRANE.DROP_CEILING); every pile "
+				.. "will read as hand-dig until then."):format(rig.dropNeeded, CRANE.DROP_CEILING))
+		end
+	end
+
 	-- Work out which of these the crane can actually get to. Anything outside its swing
-	-- (fixed crate radius, give or take DRIVE_RANGE of roll) has to be carried by hand.
-	local reach, byHand = 0, 0
+	-- (fixed crate radius, give or take DRIVE_RANGE of roll) or below the end of its rope has
+	-- to be carried by hand. `short` matters as much as `miss`: a pile the crane can line up
+	-- over but cannot descend to was previously counted as "in crane range", so the quest
+	-- offered no shovel and the assist just failed on it forever.
+	local reach, byHand, tooLow = 0, 0, 0
 	for _, p in ipairs(piles) do
 		local want = solveFor and solveFor(p.pos, p.topY, 1.2)
-		p.reachable = (want ~= nil) and (want.miss <= GRAB_RADIUS)
+		p.reachable = (want ~= nil) and (want.miss <= GRAB_RADIUS) and not want.short
+		if want and want.short then tooLow += 1 end
 		if p.reachable then reach += 1 else byHand += 1 end
 		-- EVERY pile also gets a "Pick Up Waste" shovel prompt as a reliable fallback -- so a pile
 		-- the crane can't actually grab (or that you'd rather do by hand) is never left stuck. The
@@ -764,7 +1085,9 @@ local function spawnPiles()
 			pr.RequiresLineOfSight = false; pr.Parent = part
 			p.handPrompt = pr   -- kept so an interrupted carry can re-enable it (any-order safety)
 			pr.Triggered:Connect(function()
-				if p.taken then pr.Enabled = false; return end
+				-- deliberately no `taken` check: a deposit is bottomless, so its prompt only ever
+				-- turns off while your hands are already full
+				if handPile then pr.Enabled = false; return end
 				if not hasShovel then
 					if _G.NotifyCenter then
 						pcall(function() _G.NotifyCenter.push({
@@ -778,7 +1101,8 @@ local function spawnPiles()
 			end)
 		end
 	end
-	print(("[Cleanup] %d pile(s) in crane range, %d out of reach (all hand-diggable with the shovel)"):format(reach, byHand))
+	print(("[Cleanup] %d pile(s) in crane range, %d out of reach%s (all hand-diggable with the shovel)")
+		:format(reach, byHand, tooLow > 0 and (" -- %d of those are BELOW the rope's end"):format(tooLow) or ""))
 end
 
 -- ============================================================================
@@ -792,6 +1116,9 @@ local function buildChamberFX()
 	chamberCF, chamberSize = boundsOf(chamber)
 	chamberBottom = chamberCF.Position.Y - chamberSize.Y * 0.5
 	chamberTop    = chamberCF.Position.Y + chamberSize.Y * 0.5
+	-- the crate is lowered onto the bin's rim as well as onto the piles, so it counts toward
+	-- the rope budget. Raising only: whichever of the two is deeper wins, in either order.
+	if rig and rig.noteDrop then rig.noteDrop(chamberTop, 4) end
 
 	-- the sludge that rises inside it
 	chamberFill = mk({ Name = "WasteFill",
@@ -898,11 +1225,25 @@ console.Size = UDim2.new(0, 720, 0, 288)
 console.BackgroundColor3 = PANEL
 console.BorderSizePixel = 0
 console.Parent = gui
--- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
--- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
--- The panel keeps its own size and every child keeps its own pixel coordinates;
--- it is centred in the house shell and scaled to fit, so nothing inside moves.
-pcall(_G.housePanel, console)   -- island9 crane console
+-- ===== THIS ONE IS NOT A HOUSE PANEL, AND THAT IS THE POINT =====
+-- Every other task HUD in this realm is adopted into the centred 700x260 house task card
+-- (_G.housePanel), and that is right for a HUD you read: a recipe list, a repair checklist, a
+-- findings terminal. You look at those, decide, and close them.
+--
+-- THE CRANE CONSOLE IS NOT READ, IT IS FLOWN. It is up for the entire time you are driving the
+-- machine, and the thing you are driving is a 50-stud boom swinging a crate around ABOVE you. A
+-- house card parked in the middle of the screen sits exactly where the load is -- so the panel
+-- you steer with covers the only thing you need to watch while steering. As a 720x288 bar along
+-- the bottom it is the dashboard of a cab: hands at the bottom, windscreen above it, which is the
+-- shape a vehicle HUD has always been.
+--
+-- So it goes back to where it was built to be, and takes the bottom-button hold WITH it --
+-- _G.hudHold is that half of housePanel on its own, published for exactly this case. Without it
+-- the console would land on top of the shop/pets/stomach rail at the bottom of the screen, which
+-- is the collision the house panel was avoiding.
+console.AnchorPoint = Vector2.new(0.5, 1)
+console.Position    = UDim2.new(0.5, 0, 1, -16)
+console.Size        = UDim2.new(0, 720, 0, 288)
 do
 	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 14); c.Parent = console
 	local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(10, 11, 13); s.Thickness = 3; s.Parent = console
@@ -936,7 +1277,7 @@ do
 	local raMsg = Instance.new("TextLabel")
 	raMsg.AnchorPoint = Vector2.new(0.5, 0); raMsg.Position = UDim2.new(0.5, 0, 0, 30); raMsg.Size = UDim2.new(1, -44, 0, 160)
 	raMsg.BackgroundTransparency = 1; raMsg.Font = Enum.Font.GothamBlack; raMsg.TextScaled = true; raMsg.TextWrapped = true
-	raMsg.Text = "\xE2\x9B\x8F THE CRANE CAN'T REACH THE REST!\n\nExit the machine and dig out the last piles with the Secret Shovel."
+	raMsg.Text = "\xE2\x9B\x8F NOTHING IN THE CRANE'S REACH!\n\nGet out of the crane and carry the last piles by hand with the Secret Shovel."
 	raMsg.TextColor3 = Color3.fromRGB(255, 238, 230); raMsg.TextStrokeColor3 = Color3.new(0, 0, 0); raMsg.TextStrokeTransparency = 0
 	raMsg.Parent = redAlert
 	local sz1 = Instance.new("UITextSizeConstraint"); sz1.MaxTextSize = 30; sz1.Parent = raMsg
@@ -1181,7 +1522,7 @@ local function refreshHUD()
 	local col   = (stage == 3 and GREEN_L) or (stage == 2 and AMBER_L) or RED_L
 
 	-- gauges
-	depthFill.Size = UDim2.new(math.clamp(drop / MAX_DROP, 0, 1), 0, 1, 0)
+	depthFill.Size = UDim2.new(math.clamp(drop / math.max(1, (rig and rig.maxDrop) or MAX_DROP), 0, 1), 0, 1, 0)
 	depthLbl.Text  = ("-%04.1fm"):format(drop)
 	slewLbl.Text   = ("%03d\xC2\xB0  R%+05.1f"):format(
 		math.floor((rig and rig.slewAngle or 0) % 360), rig and rig.drive or 0)
@@ -1244,16 +1585,110 @@ end
 -- ============================================================================
 -- OPERATING THE CRANE
 -- ============================================================================
--- the crane only ever considers piles it can actually reach; the rest are hand jobs
+-- ⚠ THE PILES ARE DEPOSITS, NOT PICKUPS. They used to be consumed: grab one, carry it, and it
+-- was gone -- seven objects for a job that needed a fixed number of loads. That made the count
+-- of piles the count of the job, and it made the ones the crane cannot reach a HARD BLOCKER:
+-- run out of reachable heaps and the only way to finish was to get out and hand-dig the rest.
+-- With one crane on the island that reads as the machine being the wrong tool.
+--
+-- These are deep radioactive deposits. There is no reason a heap of contaminated cocoa the size
+-- of a shed empties in one grab, and treating them as bottomless is both more truthful and
+-- better play: the crane sits over ANY deposit and keeps working, the out-of-reach ones become
+-- optional (dig them by hand if you want the variety, ignore them if you do not), and the job
+-- is measured by what is IN THE BIN rather than by how many heaps are left standing.
+--
+-- What the crane carries is therefore a SCOOP -- a small model built per grab -- and the deposit
+-- it came from stays exactly where it was.
+local function makeScoop(pos)
+	local m = Instance.new("Model"); m.Name = "WasteScoop"
+	local core = mk({ Name = "Heap", Size = Vector3.new(2.4, 1.3, 2.4),
+		Color = Color3.fromRGB(74, 46, 30), Material = Enum.Material.Slate })
+	core.CFrame = CFrame.new(pos)
+	core.Parent = m; m.PrimaryPart = core
+	for i = 1, 3 do
+		local a = (i / 3) * math.pi * 2
+		local lump = mk({ Name = "Lump", Shape = Enum.PartType.Ball,
+			Size = Vector3.new(0.95, 0.95, 0.95), Color = WASTE,
+			Material = Enum.Material.Neon, Transparency = 0.15 })
+		lump.CFrame = CFrame.new(pos + Vector3.new(math.cos(a) * 0.75, 0.55, math.sin(a) * 0.75))
+		lump.Parent = m
+	end
+	local glow = Instance.new("PointLight")
+	glow.Color = WASTE; glow.Brightness = 1.8; glow.Range = 11; glow.Parent = core
+	m.Parent = Workspace
+	return m
+end
+
+-- the deposit slumps when you take a scoop out of it and swells back as it settles. Purely
+-- visual, but it is the whole reason "infinite" does not read as "nothing happened".
+local function workDeposit(p)
+	local heap = p.model and p.model.PrimaryPart
+	if not (heap and heap.Parent) then return end
+	local home = p.heapHome or heap.Size
+	p.heapHome = home                      -- remembered, so repeated scoops never shrink it away
+	TweenService:Create(heap, TweenInfo.new(0.25),
+		{ Size = home * Vector3.new(1.06, 0.62, 1.06) }):Play()
+	task.delay(0.3, function()
+		if heap.Parent then
+			TweenService:Create(heap, TweenInfo.new(1.1, Enum.EasingStyle.Sine), { Size = home }):Play()
+		end
+	end)
+	-- a puff of contaminated dust kicked up out of the hole
+	for i = 1, 8 do
+		local a = (i / 8) * math.pi * 2
+		local d = mk({ Shape = Enum.PartType.Ball, Size = Vector3.new(0.7, 0.7, 0.7),
+			Color = WASTE, Material = Enum.Material.Neon, Transparency = 0.3 })
+		d.CFrame = CFrame.new(p.pos + Vector3.new(0, 1.4, 0))
+		d.Parent = Workspace
+		TweenService:Create(d, TweenInfo.new(0.7, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			CFrame = CFrame.new(p.pos + Vector3.new(math.cos(a) * 3.2, 3.4, math.sin(a) * 3.2)),
+			Size = Vector3.new(0.1, 0.1, 0.1), Transparency = 1 }):Play()
+		Debris:AddItem(d, 0.8)
+	end
+end
+
+-- the crane only ever considers deposits it can actually reach; the rest are hand jobs. NOTHING
+-- is filtered on `taken` any more -- a deposit is never used up, so it is always a valid target.
 local function nearestPile()
 	local hp, best, bestD = hookPosition(), nil, nil
 	for _, p in ipairs(piles) do
-		if not p.taken and p.reachable ~= false then
+		if p.reachable ~= false and p.model and p.model.Parent then
 			local d = (p.pos - hp).Magnitude
 			if not bestD or d < bestD then best, bestD = p, d end
 		end
 	end
 	return best, bestD
+end
+
+-- ===== THE ASSIST ROTATES; THE GRAB DOES NOT =====
+-- Deposits are never used up, so "nearest to the hook" made FIND WASTE swing to the SAME pit
+-- every single run: deliver at the bin, press the button, go back to the one pit closest to the
+-- bin, forever. This picks the pit the assist has visited LEAST RECENTLY (never-visited first,
+-- nearest as the tie-break), so successive runs walk the whole field. nearestPile above stays
+-- exactly as it was, because the GRAB test is a physical question -- "which pit is the hook
+-- actually over" -- and rotating THAT would fail grabs over a perfectly good pit.
+local function nextPile()
+	local hp, best, bestD, bestV = hookPosition(), nil, nil, nil
+	for _, p in ipairs(piles) do
+		if p.reachable ~= false and p.model and p.model.Parent then
+			local d = (p.pos - hp).Magnitude
+			local v = p.lastTargeted or 0
+			if not best or v < bestV or (v == bestV and d < bestD) then
+				best, bestD, bestV = p, d, v
+			end
+		end
+	end
+	if best then best.lastTargeted = os.clock() end
+	return best, bestD
+end
+
+-- The crane's SHARE of the job: with infinite deposits it could fill the whole quota from one
+-- pit, so the share is defined by what is LEFT -- once the loads still needed can all come from
+-- the out-of-reach pits, the crane has delivered everything it can usefully add and the rest of
+-- the job belongs to the shovel.
+local function craneShareDone()
+	local remaining = LOADS_REQUIRED - loadsDone
+	return remaining > 0 and unreachableLeft and remaining <= unreachableLeft()
 end
 
 local function overChamber()
@@ -1316,14 +1751,18 @@ local function tryGrab()
 
 	-- GRAB
 	local pile, d = nearestPile()
-	if not pile then setStatus("NO WASTE REMAINING"); refreshHUD(); return end
+	-- "no waste remaining" is impossible now -- a deposit is never used up. This only fires if
+	-- every deposit is out of the crane's reach, which is a placement problem, not a progress one.
+	if not pile then setStatus("NO DEPOSIT IN REACH"); refreshHUD(); return end
 	if d > GRAB_RADIUS then
 		setStatus("!! HOOK NOT OVER WASTE")
 		refreshHUD()
 		return
 	end
-	pile.taken = true
-	carrying, carriedPile = true, pile
+	-- take a SCOOP out of it; the deposit itself is untouched and can be worked again
+	workDeposit(pile)
+	carrying = true
+	carriedPile = { model = makeScoop(pile.pos + Vector3.new(0, 1.2, 0)), deposit = pile }
 	setStatus("LOAD SECURED")
 	-- clamp shut
 	if rig and rig.hookJaw then
@@ -1372,8 +1811,15 @@ solveFor = function(pos, topY, clearance)
 
 	-- pay the rope out until the crate's UNDERSIDE sits just over the target's top face
 	local aimTop = topY or pos.Y
-	local dropWanted = math.clamp(rig.crateBottomRestY - (aimTop + (clearance or 1.5)), 0, MAX_DROP)
-	return { slew = a, roll = roll, drop = dropWanted, miss = miss, clamped = math.abs(wantRoll) > DRIVE_RANGE }
+	local cap        = rig.maxDrop or MAX_DROP
+	local rawDrop    = rig.crateBottomRestY - (aimTop + (clearance or 1.5))
+	local dropWanted = math.clamp(rawDrop, 0, cap)
+	-- `short` = the rope runs out before the crate gets down there. Reported separately from
+	-- `clamped` (which is the rollers running out sideways) because they are different problems
+	-- and the operator is told which one they have.
+	return { slew = a, roll = roll, drop = dropWanted, miss = miss,
+		clamped = math.abs(wantRoll) > DRIVE_RANGE,
+		short   = rawDrop > cap + 0.01 }
 end
 
 local function startAssist()
@@ -1384,7 +1830,23 @@ local function startAssist()
 		autoTarget = { pos = chamberCF.Position, topY = chamberTop, clearance = 4, mode = "bin" }
 		setStatus("AUTO: HEADING TO THE BIN")
 	else
-		local pile = nearestPile()
+		-- ===== THE CRANE'S SHARE IS DONE =====
+		-- The loads still owed are exactly what the out-of-reach pits hold: the crane has
+		-- nothing useful left to add, so FIND WASTE takes the same off-ramp as "nothing in
+		-- reach" -- the red EXIT panel and the shovel.
+		if craneShareDone() then
+			setStatus("!! CRANE SHARE DONE -- EXIT + USE THE SHOVEL")
+			hintLbl.Text = "That's everything the crane can reach!\nEXIT and dig the last pile(s) out with the shovel!"
+			local ag = PlayerGui:FindFirstChild("CraneStuckGui")
+			if ag then ag.Enabled = true end
+			if _G.NotifyCenter then
+				pcall(function() _G.NotifyCenter.push({
+					text = "\xE2\x9B\x8F The crane's done its share! Exit and use the shovel.", color = HAZARD }) end)
+			end
+			refreshHUD()
+			return
+		end
+		local pile = nextPile()
 		if not pile then
 			-- crane's done everything in its reach. Anything left is a hand job.
 			if unreachableLeft() > 0 then
@@ -1417,8 +1879,24 @@ btnAssist.MouseButton1Click:Connect(startAssist)
 local engineWorking = false   -- true while the crane is being driven (smoke thickens)
 local savedWalk, savedJump, returnCF
 local function setOperating(on)
+	-- ONE SET OF CONTROLS. Two operators meant two clients writing different CFrames onto the same
+	-- crane parts every frame -- a boom that jitters between two people's inputs, with both of them
+	-- missing their grabs. This is the fast path off the last broadcast, so the common case never
+	-- opens the console at all; the server's own reply is what settles a same-frame tie.
+	if on and NET.busy("crane") then
+		if _G.NotifyCenter then
+			pcall(function() _G.NotifyCenter.push({
+				text = ("\xE2\x98\xA2 %s is at the crane controls -- wait for them to finish.")
+					:format(NET.busy("crane")), color = HAZARD }) end)
+		end
+		return
+	end
 	operating = on
 	gui.Enabled = on
+	-- the half of _G.housePanel this console still wants: the bottom rail gets out of the way while
+	-- the dashboard is up, and comes back when you climb out. Reference-counted by tag inside
+	-- HousePanel, so it cannot fight another HUD that is also holding it.
+	if _G.hudHold then pcall(_G.hudHold, "craneConsole", on) end
 	if not on then   -- leaving the crane -> always drop the red stuck panel
 		local ag = PlayerGui:FindFirstChild("CraneStuckGui")
 		if ag then ag.Enabled = false end
@@ -1431,6 +1909,9 @@ local function setOperating(on)
 	local cam  = Workspace.CurrentCamera
 
 	if on then
+		NET.claim("crane")          -- and tell everyone else the seat is taken
+		if NET.ev then NET.ev:FireServer("board") end
+
 		-- freeze you where you stand (so you can't wander off while looking through the
 		-- crane) but DON'T move, anchor or platform-stand the character -- that's what was
 		-- ejecting you.
@@ -1449,6 +1930,13 @@ local function setOperating(on)
 		if rig and (rig.drive or 0) ~= 0 then
 			rig.drive = 0
 			applyRig()
+		end
+		-- hand the controls back before anything else: a player who exits and immediately walks
+		-- away should never be the reason nobody else can board.
+		NET.release("crane")
+		if NET.ev then
+			NET.ev:FireServer("pose", rig and rig.slewAngle or 0, rig and rig.drop or 0, 0, false)
+			NET.ev:FireServer("exit")
 		end
 		if onExitBoard then onExitBoard() end   -- stop the pad boarding you straight back in
 		if hum then
@@ -1551,10 +2039,11 @@ RunService.RenderStepped:Connect(function(dt)
 		return
 	end
 	local moved = false
+	NET.hold("crane")   -- sitting at the controls, moving or not, keeps the seat
 
 	if held.left  then rig.slewAngle -= SLEW_SPEED * dt; moved = true end
 	if held.right then rig.slewAngle += SLEW_SPEED * dt; moved = true end
-	if held.down  then rig.drop = math.min(MAX_DROP, rig.drop + HOIST_SPEED * dt); moved = true end
+	if held.down  then rig.drop = math.min(rig.maxDrop or MAX_DROP, rig.drop + HOIST_SPEED * dt); moved = true end
 	if held.up    then rig.drop = math.max(0,        rig.drop - HOIST_SPEED * dt); moved = true end
 	if held.dfwd  then rig.drive = math.min( DRIVE_RANGE, (rig.drive or 0) + DRIVE_SPEED * dt); moved = true end
 	if held.dback then rig.drive = math.max(-DRIVE_RANGE, (rig.drive or 0) - DRIVE_SPEED * dt); moved = true end
@@ -1574,7 +2063,7 @@ RunService.RenderStepped:Connect(function(dt)
 		else
 			local function ease(cur, target, rate)
 				local d = target - cur
-				local step = rate * AUTO_SPEED * dt
+				local step = rate * K.AUTO_SPEED * dt
 				if math.abs(d) <= step then return target, true end
 				return cur + (d > 0 and step or -step), false
 			end
@@ -1619,7 +2108,9 @@ RunService.RenderStepped:Connect(function(dt)
 						-- the rollers are capped, so a pile further out than the cane can
 						-- reach leaves us short. Say so plainly instead of a cryptic miss.
 						if not carrying then
-							setStatus(want.clamped and "!! THAT PILE IS TOO FAR OUT" or "!! COULDN'T REACH IT")
+							setStatus((want.short and "!! THAT PILE IS TOO FAR BELOW")
+								or (want.clamped and "!! THAT PILE IS TOO FAR OUT")
+								or "!! COULDN'T REACH IT")
 						end
 					end
 				else
@@ -1627,7 +2118,9 @@ RunService.RenderStepped:Connect(function(dt)
 						tryGrab()
 						-- still holding it? then we never actually got over the bin
 						if carrying then
-							setStatus(want.clamped and "!! THE BIN IS TOO FAR OUT" or "!! COULDN'T LINE UP ON THE BIN")
+							setStatus((want.short and "!! THE BIN IS TOO FAR BELOW")
+								or (want.clamped and "!! THE BIN IS TOO FAR OUT")
+								or "!! COULDN'T LINE UP ON THE BIN")
 						end
 					end
 				end
@@ -1658,9 +2151,89 @@ RunService.RenderStepped:Connect(function(dt)
 	end
 
 	engineWorking = driving or (autoTarget ~= nil)
+
+	-- ===== TELL EVERYONE ELSE WHERE THE BOOM IS =====
+	-- Throttled to ~12/s (the relay's own limit is 20), and a grab or a dump goes out on the
+	-- frame it happens rather than waiting for the next tick -- a crate that fills a tenth of a
+	-- second late is invisible, one that fills half a second late reads as a glitch.
+	if NET.ev and (driving or carrying ~= NET.sentCarry) then
+		if carrying ~= NET.sentCarry or os.clock() - NET.sentAt > 0.08 then
+			NET.sentAt, NET.sentCarry = os.clock(), carrying
+			NET.ev:FireServer("pose", rig.slewAngle, rig.drop, rig.drive or 0, carrying)
+		end
+	end
 end)
 -- (there's deliberately no "walked too far away" auto-exit: you're anchored in the cab,
 --  which sits ~26 studs above the slew axis, and that check was ejecting you instantly.)
+
+-- ============================================================================
+-- THE RELAY, WIRED UP -- see the NET block near the top for what crosses the wire
+-- ============================================================================
+task.spawn(function()
+	local ev = game:GetService("ReplicatedStorage"):WaitForChild("CraneFxEvent", 30)
+	if not ev then
+		warn("[Cleanup] no CraneFxEvent -- crane operation will not be visible to other players "
+			.. "(is CraneFxSync.server.lua synced?)")
+		return
+	end
+	NET.ev = ev
+
+	ev.OnClientEvent:Connect(function(who, kind, a, b, c, d)
+		-- A REPLY TO US arrives with a string first, a BROADCAST with the player who sent it.
+		-- Keeping the two shapes apart by type means neither has to carry a "this is for you"
+		-- flag that a receiver could misread.
+		if typeof(who) == "string" then
+			if who == "grant" and not a then          -- kind = station, a = granted?
+				-- somebody beat us to it by a frame: back out of whatever we just opened
+				if kind == "crane" and operating then
+					setOperating(false)
+					setStatus("!! SOMEONE ELSE IS AT THE CONTROLS")
+				elseif kind == "terminal" and NET.closeTerm then
+					-- the terminal is built hundreds of lines below this handler, so it hands us
+					-- a closer rather than this reaching forward at a local that isn't in scope yet
+					NET.closeTerm()
+				end
+				if _G.NotifyCenter then
+					pcall(function() _G.NotifyCenter.push({
+						text = ("\xE2\x98\xA2 The %s is in use by %s."):format(
+							kind == "crane" and "crane" or "data terminal", tostring(b or "someone")),
+						color = HAZARD }) end)
+				end
+			end
+			return
+		end
+
+		if kind == "busy" then                        -- a = station, b = holder name or nil
+			NET.holder[a] = b
+			return
+		end
+		if typeof(who) ~= "Instance" or who == player then return end
+
+		if kind == "exit" then
+			NET.showGhost(false)
+			-- park the rollers, the way the operator's own exit does, so the crane is left where
+			-- it has always stood rather than mid-roll on everyone else's screen
+			if rig and not operating and (rig.drive or 0) ~= 0 then rig.drive = 0; applyRig() end
+			return
+		end
+
+		if kind == "pose" and rig and not operating then
+			-- WE ARE NOT DRIVING, so their pose is the truth. If we ARE driving, ours wins and
+			-- theirs is dropped -- two clients writing different CFrames onto the same parts every
+			-- frame is a crane that vibrates, and the seat claim makes it near-impossible anyway.
+			NET.remoteAt = os.clock()
+			rig.slewAngle, rig.drop, rig.drive = a, b, c
+			applyRig()
+			-- and the sludge in their crate, so a haul reads as a haul from the ground
+			local carrier = rig.crate or rig.hook
+			if d and carrier and carrier.Parent then
+				NET.showGhost(true, (carrier.CFrame * CFrame.new(0, 1.6, 0)).Position)
+			else
+				NET.showGhost(false)
+			end
+		end
+	end)
+end)
 
 -- ============================================================================
 -- THE ENGINE -- the crane is ALWAYS running: it idles with a thin haze and a
@@ -1669,6 +2242,10 @@ end)
 -- stops just because the operating loop returned early.
 -- ============================================================================
 RunService.RenderStepped:Connect(function(dt)
+	-- a remote operator who crashes mid-haul never sends their dump, so their load would hang in
+	-- our crate forever. Five seconds of silence and it goes.
+	if NET.ghost and os.clock() - NET.remoteAt > 5 then NET.showGhost(false) end
+
 	if not (rig and rig.smokes) then return end
 	if not operating then engineWorking = false end   -- nobody driving: back to idle
 
@@ -1773,16 +2350,22 @@ do
 	end
 
 	-- ---- the card ----------------------------------------------------------
-	-- 700x520 EXACTLY = the house panel's own size, so _G.housePanel adopts it at scale 1.0.
-	-- (It centres the panel in a 700x520 shell and scales to fit; matching the shell means no
+	-- 700x260 EXACTLY = the house panel's own size, so _G.housePanel adopts it at scale 1.0.
+	-- (It centres the panel in a 700x260 shell and scales to fit; matching the shell means no
 	-- upscale at all, and the chamber renders crisp instead of resampled.)
+	--
+	-- The house card is HALF the height it used to be (520 -> 260, see HousePanel.client.luau):
+	-- task HUDs were being stretched to a menu-sized card with a dead band under the content.
+	-- Authored at the new size rather than left at 520 so this frame never renders one frame at
+	-- the old geometry before adoption resizes it -- and so the source says what actually ships.
 	local termFrame = mk("Frame", termGui, {
 		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
-		Size = UDim2.new(0, 700, 0, 520), BackgroundColor3 = Color3.fromRGB(10, 16, 12),
+		Size = UDim2.new(0, 700, 0, 260), BackgroundColor3 = Color3.fromRGB(10, 16, 12),
 		BorderSizePixel = 0,
 	})
-	-- HOUSE PANEL: the Pet Hub's 700x520 card at (0.5,0),(0.5,-45), and the bottom
+	-- HOUSE PANEL: the house 700x260 task card, centred in the free band, and the bottom
 	-- buttons hide while it is up. One call does both -- see HousePanel.client.luau.
+	termFrame:SetAttribute("WantsHousePanel", true)   -- adopted by attribute, so load order cannot lose it
 	pcall(_G.housePanel, termFrame)   -- island9 findings terminal
 	corner(termFrame, 12); stroke(termFrame, WASTE, 2, 0.4)
 
@@ -2180,6 +2763,7 @@ do
 	-- ========================================================================
 	RunService.RenderStepped:Connect(function(dt)
 		if not termGui.Enabled then return end
+		NET.hold("terminal")   -- standing at the desk keeps it, however long the paperwork takes
 		spinT += dt
 
 		if spinModel and spinModel.PrimaryPart then
@@ -2212,8 +2796,16 @@ do
 
 	-- Opening the terminal always starts on something: the first un-analysed sample if there is
 	-- one, otherwise the last one you brought in. An empty chamber on open looks broken.
+	-- ONE place claims and frees the desk, whichever way the terminal opens or shuts -- the X
+	-- button, boarding the crane, dying at the console or the relay bouncing our claim.
+	NET.closeTerm = function() termGui.Enabled = false end
 	termGui:GetPropertyChangedSignal("Enabled"):Connect(function()
-		if not termGui.Enabled then queue = {}; scanning = false; scanSound:Stop(); return end
+		if not termGui.Enabled then
+			queue = {}; scanning = false; scanSound:Stop()
+			NET.release("terminal")
+			return
+		end
+		NET.claim("terminal")
 		-- `readings` is wiped on quest reset, so a held selection can be a stale table that is no
 		-- longer in the list. Membership, not just `sel ~= nil`, decides whether to keep it.
 		local held = false
@@ -2338,7 +2930,7 @@ local function buildTerminalAt(block)
 				pcall(function() _G.NotifyCenter.push({
 					text = "\xE2\x98\xA2 Talk to the Candy Npc first -- she hands out the job!", color = HAZARD }) end)
 			end
-			objLabel.Text = "\xE2\x98\xA2 You need the job first! Follow the arrows to the Candy Npc."
+			objLabel.Text = "\xE2\x98\xA2 Get the job first! Follow the green arrows to the Candy NPC."
 			task.delay(3, function() if not questAccepted then refreshBanner() end end)
 
 			-- point the tutorial arrows at her until she's actually been spoken to
@@ -2359,6 +2951,19 @@ local function buildTerminalAt(block)
 			return
 		end
 
+		-- ONE ANALYSER, ONE OPERATOR. Two players scanning at once ran two analysis loops against
+		-- one lab: both saw the other's specimen swapped into the chamber mid-scan, and a "SCAN
+		-- ALL" from either one filed the other's queue out from under them. Whoever gets there
+		-- first has the desk until they close it.
+		if NET.busy("terminal") then
+			if _G.NotifyCenter then
+				pcall(function() _G.NotifyCenter.push({
+					text = ("\xE2\x98\xA2 %s is using the data terminal -- wait for them to finish.")
+						:format(NET.busy("terminal")), color = HAZARD }) end)
+			end
+			return
+		end
+
 		if operating then setOperating(false) end   -- can't type while driving the crane
 		refreshTerminal()
 		termGui.Enabled = true
@@ -2370,7 +2975,7 @@ local function buildFindingsTerminals()
 	local made = 0
 	local blocks = {}
 	for _, d in ipairs(Workspace:GetDescendants()) do
-		if (d:IsA("BasePart") or d:IsA("Model")) and norm(d.Name) == FINDINGS_NAME then
+		if (d:IsA("BasePart") or d:IsA("Model")) and norm(d.Name) == K.FINDINGS_NAME then
 			blocks[#blocks + 1] = d
 		end
 	end
@@ -2386,19 +2991,29 @@ end
 -- don't place anything), handed over by the NPC once the crane has done its share,
 -- so a player never has to trek back to the crane a second time.
 -- ============================================================================
+-- ⚠ THESE TWO USED TO COUNT HEAPS LEFT STANDING, and that number is now meaningless: deposits
+-- are bottomless, so it never falls. Every message hanging off them ("the crane can't reach the
+-- rest", "grab the last N piles by hand") would therefore have stuck on forever.
+--
+-- They now answer the two questions the game actually asks:
+--   craneWorkLeft   -- how many loads are still owed, IF the crane can still supply them at all
+--   unreachableLeft -- how many deposits sit outside the crane's arc (optional hand-dig sites)
+-- The "get out and use the shovel" nag therefore only fires in the one case that still warrants
+-- it: the crane has nothing in reach, but there is a deposit you could walk to.
 unreachableLeft = function()
 	local n = 0
 	for _, p in ipairs(piles) do
-		if not p.taken and p.reachable == false then n += 1 end
+		if p.reachable == false and p.model and p.model.Parent then n += 1 end
 	end
 	return n
 end
 craneWorkLeft = function()
-	local n = 0
+	local anyInReach = false
 	for _, p in ipairs(piles) do
-		if not p.taken and p.reachable ~= false then n += 1 end
+		if p.reachable ~= false and p.model and p.model.Parent then anyInReach = true; break end
 	end
-	return n
+	if not anyInReach then return 0 end
+	return math.max(0, LOADS_REQUIRED - loadsDone)
 end
 
 local function buildShovel(atPos, sourceModel)
@@ -2582,9 +3197,10 @@ end
 
 -- carry a pile by hand, then walk it to the bin
 handPickup = function(pile)
-	if handPile or pile.taken or not hasShovel then return end
-	pile.taken = true
-	handPile = pile
+	-- one scoop at a time in your arms, but the deposit is bottomless -- come back for more
+	if handPile or not hasShovel then return end
+	workDeposit(pile)
+	handPile = { model = makeScoop(pile.pos + Vector3.new(0, 1.2, 0)), deposit = pile }
 	refreshBanner()
 	if _G.NotifyCenter then
 		pcall(function() _G.NotifyCenter.push({ text = "\xE2\x98\xA2 You're carrying the waste -- go put it in the bin!", color = WASTE }) end)
@@ -2596,19 +3212,18 @@ task.spawn(function()
 	while true do
 		RunService.RenderStepped:Wait()
 		if handPile and (not handPile.model or not handPile.model.Parent) then
-			-- the carried pile vanished before the bin -> free it up so the run never soft-locks
-			handPile.taken = false
-			if handPile.handPrompt then handPile.handPrompt.Enabled = true end
+			-- the carried SCOOP vanished before the bin. Nothing to restore -- the deposit it came
+			-- from never left the ground -- so just drop the reference and let you dig again.
 			handPile = nil
 		end
 		if handPile and handPile.model and handPile.model.Parent then
 			local char = player.Character
 			local hrp = char and char:FindFirstChild("HumanoidRootPart")
 			if hrp then
-				handPile.model:PivotTo(hrp.CFrame * CFrame.new(0, HAND_CARRY_HEIGHT, -2.2))
+				handPile.model:PivotTo(hrp.CFrame * CFrame.new(0, K.HAND_CARRY_HEIGHT, -2.2))
 				if chamber and chamberCF then
 					local flat = (hrp.Position - chamberCF.Position) * Vector3.new(1, 0, 1)
-					if flat.Magnitude <= math.max(chamberSize.X, chamberSize.Z) * 0.6 + HAND_DROP_RANGE then
+					if flat.Magnitude <= math.max(chamberSize.X, chamberSize.Z) * 0.6 + K.HAND_DROP_RANGE then
 						local m = handPile.model
 						handPile = nil
 						local tw = TweenService:Create(m.PrimaryPart, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
@@ -2627,7 +3242,6 @@ end)
 -- she hands out the job, tracks it, and signs it off. Disambiguated as the NPC
 -- nearest the crane, so island1's/island3's Candy Npc is never grabbed.
 -- ============================================================================
-local NPC_MAX_DIST = 500
 
 local function npcHeadOf(inst)
 	if not inst then return nil end
@@ -2641,12 +3255,12 @@ local function findNPCNear(refPos)
 	for _, d in ipairs(Workspace:GetDescendants()) do
 		local n = norm(d.Name)
 		local match = false
-		for _, want in ipairs(NPC_NAMES) do if n == want then match = true; break end end
+		for _, want in ipairs(K.NPC_NAMES) do if n == want then match = true; break end end
 		if match then
 			local head = npcHeadOf(d)
 			if head then
 				local dist = (head.Position - refPos).Magnitude
-				if dist <= NPC_MAX_DIST and (not bestD or dist < bestD) then best, bestD = head, dist end
+				if dist <= K.NPC_MAX_DIST and (not bestD or dist < bestD) then best, bestD = head, dist end
 			end
 		end
 	end
@@ -2691,41 +3305,42 @@ local function questPages()
 	if findingsFiled then
 		return {
 			"Paperwork filed, reactor stable. You're a natural.",
-			"Go on -- have a cocoa. The safe kind.",
+			"Go have a cocoa. The safe kind.",
 		}
 	end
 	if finished then
 		return {
 			"Bin's sealed! Now the boring bit.",
-			"Get those readings typed into the Findings terminal.",
+			"At the Data Terminal, press Enter findings.",
 		}
 	end
 	if hasShovel and unreachableLeft() > 0 then
 		return {
-			"Mind the tongs -- that stuff is still warm.",
-			("%d pile(s) left to carry over by hand."):format(unreachableLeft()),
-			"Pick one up, walk it to the bin, repeat.",
+			"Careful, that stuff is still warm.",
+			("%d pile(s) are out of the crane's reach."):format(unreachableLeft()),
+			"Hold Pick Up Waste, then walk it over.",
+			"Drop it in the bin. Repeat!",
 		}
 	end
 	if questAccepted and craneWorkLeft() == 0 and unreachableLeft() > 0 then
 		return {
-			"Oh no -- the crane can't reach those last ones!",
-			"There's a SECRET SHOVEL hidden somewhere on this island.",
-			"Go find it, dig them out, and walk them to the bin yourself.",
+			"The crane can't reach those last piles!",
+			"A SECRET SHOVEL is hidden on this island.",
+			"Hold Pick Up Waste on each pile.",
 		}
 	end
 	if questAccepted then
 		return {
 			"Still glowing out there!",
-			("Cleared: %d of %d loads."):format(loadsDone, LOADS_REQUIRED),
-			"Board the crane, drop the grab, fill the bin.",
+			("You've cleared %d of %d loads."):format(loadsDone, LOADS_REQUIRED),
+			"Press Board on the crane. Swing to bin.",
 		}
 	end
 	return {
-		"Don't come closer -- the cocoa's gone CRITICAL.",
-		"A whole batch of beans went radioactive in the roaster.",
-		"Get on the BeanLift crane and shift every pile into the waste bin.",
-		"Then type the readings up at the Findings terminal. Go!",
+		"Don't come closer -- the cocoa's gone RADIOACTIVE.",
+		"1) Press Board on the BeanLift crane.",
+		("2) Grab %d loads into the waste bin."):format(LOADS_REQUIRED),
+		"3) Press Enter findings at the Data Terminal.",
 	}
 end
 
@@ -2771,7 +3386,7 @@ local function wireNPC(head)
 	end
 
 	prompt.Triggered:Connect(function()
-		if index == 0 then pages = questPages() end
+		if index == 0 then pages = (_G.capBubble and _G.capBubble(questPages())) or questPages() end
 		index += 1
 		if not pages or index > #pages then closeDialogue(); return end
 		if index == 2 then acceptQuest() end     -- reading past page 1 = taking the job
@@ -2807,16 +3422,20 @@ end
 
 local function bannerText()
 	if findingsFiled then return "\xE2\x98\xA2 Findings filed. Reactor cleanup complete." end
-	if finished then return "\xE2\x98\xA2 Bin sealed -- now file your findings at the terminal!" end
-	if not questAccepted then return "\xE2\x98\xA2 The reactor is unstable -- talk to the Candy Npc on Island 9!" end
-	if handPile then return "\xE2\x98\xA2 You're carrying the waste -- put it in the bin!" end
+	if finished then return "\xE2\x98\xA2 Bin sealed! Now press Enter findings at the Data Terminal." end
+	if not questAccepted then
+		return "\xE2\x98\xA2 Talk to the Candy NPC to start the cleanup -- follow the green arrows!"
+	end
+	if handPile then return "\xE2\x98\xA2 Carry the waste to the waste bin and drop it in!" end
 	if hasShovel and unreachableLeft() > 0 then
-		return ("\xE2\x98\xA2 Grab the last %d pile(s) by hand!  %d/%d loads"):format(unreachableLeft(), loadsDone, LOADS_REQUIRED)
+		return ("\xE2\x98\xA2 Hold Pick Up Waste on a pile, then carry it to the bin!  %d/%d loads")
+			:format(loadsDone, LOADS_REQUIRED)
 	end
 	if craneWorkLeft() == 0 and unreachableLeft() > 0 then
-		return "\xE2\x9B\x8F The crane can't reach the rest -- go find the SECRET SHOVEL!"
+		return "\xE2\x9B\x8F The crane can't reach the rest -- search the island for the SECRET SHOVEL!"
 	end
-	return ("\xE2\x98\xA2 Clear the radioactive cocoa:  %d/%d loads"):format(loadsDone, LOADS_REQUIRED)
+	return ("\xE2\x98\xA2 Press Board on the BeanLift crane and drop the cocoa in the bin:  %d/%d loads")
+		:format(loadsDone, LOADS_REQUIRED)
 end
 refreshBanner = function()
 	objLabel.Text = bannerText()
@@ -2884,11 +3503,29 @@ local function wireOperatePrompt()
 	local function board()
 		if operating then return end
 		if os.clock() - lastExit < 2 then return end
+		-- ONE OPERATOR. Said here, on the banner, as well as on the pad's own sign and prompt --
+		-- this is the path a player who pressed anyway ends up on, and it should answer them
+		-- rather than do nothing.
+		local busy = NET.busy("crane")
+		if busy then
+			objLabel.Text = ("\xE2\x98\xA2 %s is using the crane -- wait for them to climb out."):format(busy)
+			task.delay(2.5, function() refreshBanner() end)
+			return
+		end
 		-- the crane is locked until the Candy Npc gives you the job (same as the gumballs
 		-- on island1 and the chocolate chunks on island3)
 		if not questAccepted then
-			objLabel.Text = "\xE2\x98\xA2 Talk to the Candy Npc before touching the crane!"
+			objLabel.Text = "\xE2\x98\xA2 Talk to the Candy NPC first -- then you can use the crane!"
 			task.delay(2.5, function() if not questAccepted then refreshBanner() end end)
+			return
+		end
+		-- ===== NO RE-BOARDING ONCE THE CRANE'S SHARE IS DONE =====
+		-- The loads still owed are the shovel pits' share: letting somebody climb back into a
+		-- crane that has nothing left to grab is a dead end with a nice seat. The pad says
+		-- where to go instead.
+		if craneShareDone() then
+			objLabel.Text = "\xE2\x9B\x8F The crane's done its share -- dig the last pile(s) out with the SHOVEL!"
+			task.delay(2.5, function() refreshBanner() end)
 			return
 		end
 		if findingsFiled then return end
@@ -2898,9 +3535,57 @@ local function wireOperatePrompt()
 
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.ActionText = "Board"; prompt.ObjectText = "BeanLift Crane"
-	prompt.HoldDuration = 0; prompt.MaxActivationDistance = OPERATE_RANGE
+	prompt.HoldDuration = 0; prompt.MaxActivationDistance = K.OPERATE_RANGE
 	prompt.RequiresLineOfSight = false; prompt.Parent = anchor
 	prompt.Triggered:Connect(board)
+
+	-- ===== THE PAD SAYS WHO IS DRIVING =====
+	-- There is one set of controls and the server hands them to one player at a time, so a second
+	-- player walking up needs to be told that BEFORE they press anything -- finding out by being
+	-- refused is how a working rule reads as a broken machine. The prompt itself carries it (you
+	-- are looking at that already), and a sign over the pad carries it at a distance.
+	local sign = Instance.new("BillboardGui")
+	sign.Name = "CraneInUse"
+	sign.Size = UDim2.new(0, 230, 0, 46)
+	sign.StudsOffsetWorldSpace = Vector3.new(0, 6, 0)
+	sign.AlwaysOnTop = true
+	sign.Enabled = false
+	sign.Adornee = anchor
+	sign.Parent = anchor
+	do
+		local card = Instance.new("Frame")
+		card.Size = UDim2.fromScale(1, 1); card.BackgroundColor3 = Color3.fromRGB(28, 24, 18)
+		card.BackgroundTransparency = 0.15; card.BorderSizePixel = 0; card.Parent = sign
+		Instance.new("UICorner").Parent = card
+		local stroke = Instance.new("UIStroke")
+		stroke.Color = HAZARD; stroke.Thickness = 2; stroke.Parent = card
+		local txt = Instance.new("TextLabel")
+		txt.Name = "Who"
+		txt.BackgroundTransparency = 1; txt.Size = UDim2.fromScale(1, 1)
+		txt.Font = Enum.Font.GothamBold; txt.TextScaled = true
+		txt.TextColor3 = HAZARD; txt.Text = "IN USE"
+		txt.Parent = card
+	end
+
+	task.spawn(function()
+		local who
+		while anchor.Parent do
+			task.wait(0.4)
+			local busy = NET.busy("crane")
+			if busy ~= who then
+				who = busy
+				sign.Enabled = busy ~= nil
+				if busy then
+					local card = sign:FindFirstChildWhichIsA("Frame")
+					local lbl = card and card:FindFirstChild("Who")
+					if lbl then lbl.Text = ("%s IS DRIVING"):format(string.upper(busy)) end
+				end
+				-- ...and the prompt you would have pressed says the same thing
+				prompt.ActionText = busy and "In Use" or "Board"
+				prompt.ObjectText = busy and ("Crane -- " .. busy) or "BeanLift Crane"
+			end
+		end
+	end)
 
 	if pad then
 		-- stepping on the pad boards you too, and it glows so it reads as a way in
@@ -2945,6 +3630,26 @@ local function applySpeed()
 	if not hum then return end
 	-- never fight the crane (it zeroes WalkSpeed while you operate)
 	if operating then return end
+
+	-- ISLAND9 ONLY, AND THAT IS A FIX, NOT A TIDY-UP. The header two blocks up has always said this
+	-- cycle "runs on its own whenever you're on island9" -- but nothing here ever checked where you
+	-- were, so the re-assert loop below pinned WalkSpeed to 16 x hazardSlow every 0.3s ANYWHERE in
+	-- the realm, for the whole session, from the moment the crane rigged. Two things came of that:
+	--   * every other script that moves WalkSpeed got stamped back over within 0.3s -- the campfire
+	--     quest's cold penalty on island4, the chocolate monster's grab on island3, the candy mine's
+	--     cutscene lock on island16. Each of those sets a speed and then watched it snap back.
+	--   * a radiation cloud that caught you as you left island9 kept you slowed on the next island.
+	-- So off-island it now RELEASES the speed once and writes nothing further, which is what leaves
+	-- the other islands' scripts owning their own player again.
+	local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	if not (hrp and crane and crane.Parent) then return end   -- not rigged yet: this island owns nothing
+	local ok, piv = pcall(function() return crane:GetPivot().Position end)
+	if not ok then return end
+	if (hrp.Position - piv).Magnitude > 900 then              -- the island radius the other quests scope by
+		if hum.WalkSpeed < BASE_WALKSPEED then hum.WalkSpeed = BASE_WALKSPEED end
+		return
+	end
+
 	hum.WalkSpeed = BASE_WALKSPEED * hazardSlow
 end
 
@@ -3155,7 +3860,7 @@ end
 -- GO
 -- ============================================================================
 task.spawn(function()
-	crane = pollFor(function() return findByName(CRANE_NAME) end, 60)
+	crane = pollFor(function() return findByName(K.CRANE_NAME) end, 60)
 	if not crane then
 		warn("[Cleanup] no 'BeanLiftCrane' found in Workspace -- quest inactive")
 		return
@@ -3271,13 +3976,16 @@ end)
 -- /complete -- test command (only near this crane)
 -- ============================================================================
 local function onCommand(msg)
+	-- DEV ONLY. QuestDevGate publishes this; read at command time so load order cannot matter,
+	-- and nil (gate not up yet) refuses. Without it any player could type their way to the whole realm.
+	if not _G.questDevOK then return end
 	if tostring(msg or ""):lower():sub(1, 9) ~= "/complete" then return end
 	local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
 	if not (rig and rig.slewCenter and hrp) then return end
 	if (hrp.Position - rig.slewCenter).Magnitude > 320 then return end
 	questAccepted = true
 	for _, p in ipairs(piles) do
-		if not p.taken then p.taken = true; if p.model then p.model:Destroy() end end
+		if p.model then p.model:Destroy() end   -- job signed off: cap the deposits
 	end
 	loadsDone = LOADS_REQUIRED
 	finished = true

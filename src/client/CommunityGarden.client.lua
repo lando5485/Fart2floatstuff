@@ -73,7 +73,22 @@ end)
 --
 -- NotifyCenter owns the hide, so the token guard and the Enabled flag are both gone -- and with them the
 -- whole class of bug this file already had to fix once (see the [TOASTFIX] note above).
+-- ===== THE SAME REPLY TWICE IN A ROW IS ONE REPLY =====
+-- The server can fire the same refusal several times in under a second -- 'toofar' goes out on every swing
+-- of the can, and a player holding the button gets two or three before they have let go. Each push restarts
+-- the banner: it slides out, slides back in and re-tweens mid-sentence, which reads as the HUD stuttering.
+-- (The boot log caught it: the same "You can't water here" line pushed twice, 0.5s apart.)
+--
+-- So an identical message inside REPEAT_WINDOW is dropped. Not a general banner rule -- NotifyCenter must
+-- keep letting a genuine second thing through -- just this file refusing to say the same sentence twice in
+-- the time it takes to read it once.
+local REPEAT_WINDOW = 4
+local lastText, lastAt = nil, 0
+
 local function toast(text, colour, seconds)
+	if text == lastText and (os.clock() - lastAt) < REPEAT_WINDOW then return end
+	lastText, lastAt = text, os.clock()
+
 	local NC = _G.NotifyCenter
 	if NC and NC.push then
 		pcall(NC.push, {
@@ -146,6 +161,11 @@ GardenWaterEvent.OnClientEvent:Connect(function(payload)
 	if type(payload) ~= "table" then return end
 	if payload.kind == "splash" then
 		pcall(playSplash, Vector3.new(payload.x or 0, payload.y or 0, payload.z or 0), payload.sound)
+		-- Only for OUR pour: this event is broadcast to everyone near the garden, and buzzing every player
+		-- each time anybody waters would make a busy garden unbearable.
+		if payload.who == nil or payload.who == game:GetService("Players").LocalPlayer.Name then
+			if _G.hapticPulse then pcall(_G.hapticPulse, "bump") end
+		end
 	elseif payload.kind == "cooldown" then
 		if (payload.secs or 0) > 0 then setOnCooldown(payload.secs) else setReady() end
 	elseif payload.kind == "denied" then
@@ -154,11 +174,11 @@ GardenWaterEvent.OnClientEvent:Connect(function(payload)
 	elseif payload.kind == "needcan" then
 		-- Only reachable from a stale client now that the WaterSpot prompt is gone. Name the real fix rather
 		-- than reusing "Come back tomorrow!", which would send someone away who could water right now.
-		toast("\xF0\x9F\x92\xA7 Get the Watering Can from the Gardener first!")
+		toast("\xF0\x9F\x92\xA7  GET A CAN FIRST!")
 	elseif payload.kind == "toofar" then
 		-- They swung the can somewhere that isn't the water spot. Say so plainly and immediately -- the arrows
 		-- are already pointing at the right place, so the toast only has to name the mistake.
-		toast("\xE2\x9D\x8C You can't water here! Follow the arrows to the water spot.")
+		toast("\xE2\x9D\x8C  CAN'T WATER HERE!")   -- the arrows already say where; four words is the rule
 	elseif payload.kind == "celebrate" then
 		-- STAGE 2 harvest celebration: gold, and held a little longer than an ordinary reply.
 		--
@@ -422,8 +442,8 @@ RunService.Heartbeat:Connect(function()
 	-- inside one continuous banner, instead of two banners fighting for the same slot.
 	local dist = (hrp.Position - waterSpot.Position).Magnitude
 	if dist <= POUR_RANGE then
-		showHint("\xF0\x9F\x92\xA7  TAP ANYWHERE to pour the water!", Color3.fromRGB(46, 150, 70)) -- green = do it now
+		showHint("\xF0\x9F\x92\xA7  TAP ANYWHERE TO POUR!", Color3.fromRGB(46, 150, 70)) -- green = do it now
 	else
-		showHint("\xF0\x9F\x92\xA7  Follow the green arrows to the water spot", Color3.fromRGB(26, 79, 214))
+		showHint("\xF0\x9F\x92\xA7  FOLLOW THE GREEN ARROWS", Color3.fromRGB(26, 79, 214))
 	end
 end)

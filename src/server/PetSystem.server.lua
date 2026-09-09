@@ -1389,16 +1389,40 @@ local function sendInventory(player)
 		end
 		-- seasonal (garden), starter (free gift) and collection (the secret 10/10 pet) pets are all GRANTED, not
 		-- quested -- none belongs in the quests panel (they still get an OWNED inventory card from the loop above).
-		if questDiscovered(player, petId) and def.questType ~= "seasonal" and def.questType ~= "starter"
+		-- EVERY QUEST IS SENT, not just the ones this player has stood on. The panel used to be gated on
+		-- questDiscovered(), so a new player opened the QUESTS tab and saw nothing at all -- the one screen
+		-- that exists to answer "what is there to do?" was blank until you had already found something to do.
+		-- A quest list you cannot read ahead of is a list of things you have done, which the pet grid already
+		-- shows. Discovery still means something: it is now a per-row state (see `discovered`) rather than the
+		-- difference between a row and no row.
+		--
+		-- Still excluded: seasonal (garden), starter (the free gift), collection (the secret 10/10 pet) and
+		-- rebirth pets. Those are GRANTED, not quested -- there is no quest to list, and putting them here
+		-- would advertise objectives that do not exist.
+		if def.questType ~= "seasonal" and def.questType ~= "starter"
 			and def.questType ~= "collection" and def.questType ~= "rebirth" then
 			local found = foundCount(player, petId)
 			local total = #def.pieceMarkers
 			local status = ownsSpecies(player, petId) and "done" or (found > 0 and "inprogress" or "available")
 			payload.quests[petId] = {
+				-- The key is the petId, but the client sorts these into an ARRAY (island order), which throws
+				-- the key away -- so it has to travel inside the row too, or a card cannot say which quest it
+				-- is when its TRACK button is pressed.
+				petId = petId,
+				-- "Unlocks Broccoli Pet" needs the pet's NAME, not its island's. They are different strings and
+				-- the card was previously only ever shown the island one.
+				displayName = def.displayName or petId,
+				questType = def.questType or "find",
 				islandName = def.islandName or petId,
 				desc = def.questDesc or "",
 				status = status, found = found, total = total,
 				unit = def.questUnit or ((def.questType == "crack") and "coconuts" or "pieces"),
+				-- Has this player actually been to the island yet? The row is shown either way; this only
+				-- decides whether it reads as an objective or as a preview of one.
+				discovered = questDiscovered(player, petId) == true,
+				-- Sort key, so the list climbs the tower in island order instead of whatever order `pairs`
+				-- happens to walk the pet table in. Parsed from the same islandPrefix the spawner uses.
+				island = tonumber(tostring(def.islandPrefix or ""):match("Island_(%d+)_") or "") or 99,
 			}
 		end
 	end
@@ -1520,6 +1544,10 @@ end
 -- (carrying the remainder) while XP fills, up to MAX (50). Diagnostics per the spec.
 local function awardXP(player, amount, source)
 	amount = tonumber(amount) or 0; if amount <= 0 then return end
+	-- PET: BLOSSOM BUNNY'S "BLOOM" (+8%..+40%). Scales every XP source at once -- coins, distance, gas, island
+	-- arrivals -- because it is applied at the single funnel they all pass through rather than at each caller.
+	-- Deliberately the one ability with no coin value: it feeds the pet system itself.
+	if _G.petAbility then amount = amount * _G.petAbility(player, "petXp") end
 	local petId = _G.playerEquippedPet[player]; if not petId or not ownsPet(player, petId) then return end
 	local d = getPetData(player, petId); if not d then return end
 	if d.level >= PET_MAX_LEVEL then return end -- maxed -> no XP needed
@@ -1880,8 +1908,12 @@ _G.grantSeasonalPet = function(player, season)
 	_G.playerOwnedPets[player][petId] = { level = 1, xp = 0, height = 0, time = 0 } -- same table a normal claim writes (persists)
 	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
 	_G.playerDiscoveredQuests[player][petId] = true
+	-- Equipped on the spot, like every other new pet (see the note on the crate path): a garden reward you
+	-- have to go and find in a menu does not feel like a reward.
+	_G.playerEquippedPet[player] = petId
 	sendState(player); sendInventory(player) -- now shows OWNED + equippable immediately (no rejoin)
-	print(string.format("[Pet] seasonal %s granted to %s (%s reward) at Baby (Lv 1)",
+	broadcastEquip(player, "equip")          -- and everyone else sees it walking behind you
+	print(string.format("[Pet] seasonal %s granted to %s (%s reward) at Baby (Lv 1), auto-equipped",
 		petId, player.Name, key))
 	checkCollectionMilestones(player) -- a garden pet counts toward the collection like any other
 	return true
@@ -1921,7 +1953,13 @@ _G.grantPetAtRarity = function(player, petId, rarity)
 
 	_G.playerDiscoveredQuests[player] = _G.playerDiscoveredQuests[player] or {}
 	_G.playerDiscoveredQuests[player][petId] = true
-	if not _G.playerEquippedPet[player] then _G.playerEquippedPet[player] = key end -- auto-equip a first pet
+	-- ===== A NEW PET IS ALWAYS THE EQUIPPED PET =====
+	-- This used to be "equip it only if nothing is equipped", which meant every pet after the first landed
+	-- silently in the index: the player opened a crate, watched the reveal, and their old pet was still the
+	-- one walking behind them. Getting a pet and seeing it are the same moment as far as the player is
+	-- concerned, and anyone who preferred the old one is two taps away in the Pet Hub.
+	-- (The broadcast a few lines down is what puts it on screen for everyone else.)
+	_G.playerEquippedPet[player] = key
 
 	print(string.format("[PetCrate] %s pulled %s %s (x%d)", player.Name, band, petId, newCount))
 	sendState(player); sendInventory(player)
@@ -2444,7 +2482,13 @@ local function completeQuest(player, petId, bypassGates)
 	_G.playerOwnedPets[player] = _G.playerOwnedPets[player] or {}
 	local skey = variantKey(petId, isRare)         -- a rare goes in its own slot so a normal can coexist later
 	_G.playerOwnedPets[player][skey] = data         -- now a table (PlayerStats saves it, incl. the rare flag)
-	if not _G.playerEquippedPet[player] then _G.playerEquippedPet[player] = skey end -- auto-equip your first pet
+	-- ===== A NEW PET IS ALWAYS THE EQUIPPED PET =====
+	-- This used to be "equip it only if nothing is equipped", which meant every pet after the first landed
+	-- silently in the index: the player opened a crate, watched the reveal, and their old pet was still the
+	-- one walking behind them. Getting a pet and seeing it are the same moment as far as the player is
+	-- concerned, and anyone who preferred the old one is two taps away in the Pet Hub.
+	-- (The broadcast a few lines down is what puts it on screen for everyone else.)
+	_G.playerEquippedPet[player] = skey
 	print("[Pet] "..player.Name.." claimed "..skey)
 	print("[Pet] "..skey.." following "..player.Name)
 	if isRare then
@@ -2583,7 +2627,13 @@ _G.petGrantMythicalVariant = function(player, petId)
 	_G.playerOwnedPets[player][skey] = { level = PET_MAX_LEVEL, xp = 0, height = 0, time = 0, rare = true } -- pre-maxed rare
 	_G.playerDiscoveredQuests[player][petId] = true                   -- show it as discovered in the Pet Hub index
 	_G.playerEverCompletedQuests[player][petId] = true               -- permanent, mirrors the hatch path
-	if not _G.playerEquippedPet[player] then _G.playerEquippedPet[player] = skey end -- auto-equip if it's their first pet
+	-- ===== A NEW PET IS ALWAYS THE EQUIPPED PET =====
+	-- This used to be "equip it only if nothing is equipped", which meant every pet after the first landed
+	-- silently in the index: the player opened a crate, watched the reveal, and their old pet was still the
+	-- one walking behind them. Getting a pet and seeing it are the same moment as far as the player is
+	-- concerned, and anyone who preferred the old one is two taps away in the Pet Hub.
+	-- (The broadcast a few lines down is what puts it on screen for everyone else.)
+	_G.playerEquippedPet[player] = skey
 	local name = RARE_NAMES[petId] or petId
 	print(string.format("[Pet] %s won MYTHICAL %s%s", player.Name, name, already and " (already owned)" or ""))
 	pcall(function() PetRareEvent:FireClient(player, petId, name) end) -- same rare-hatch fanfare
@@ -2926,10 +2976,10 @@ local function executeTrade(session)
 	-- a smaller amount than the other side agreed to.
 	local tokA, tokB = math.max(0, math.floor(session.tokensA or 0)), math.max(0, math.floor(session.tokensB or 0))
 	if tokA > 0 and not (_G.crateTokensCanAfford and _G.crateTokensCanAfford(A, tokA)) then
-		closeTrade(session, A.Name.." no longer has "..tokA.." tokens"); return
+		closeTrade(session, A.Name.." no longer has "..tokA.." tickets"); return
 	end
 	if tokB > 0 and not (_G.crateTokensCanAfford and _G.crateTokensCanAfford(B, tokB)) then
-		closeTrade(session, B.Name.." no longer has "..tokB.." tokens"); return
+		closeTrade(session, B.Name.." no longer has "..tokB.." tickets"); return
 	end
 	-- OPEN TRADING with STACKING + VARIANTS: ANY pet for ANY pet. Offers are STORAGE KEYS (petId or petId#R), so a
 	-- normal and a rare of one species are independent units. Receiving a key you already own STACKS it (count++,

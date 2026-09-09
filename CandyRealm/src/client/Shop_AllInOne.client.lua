@@ -25,6 +25,86 @@ local STAND_TRIGGER_RADIUS = 12 -- studs: how close (horizontally) the player mu
 
 -- the shared tower: model number <-> climb slot, and the slot-ordered food list
 local IslandOrder = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("IslandOrder"))
+local IslandConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("IslandConfig"))
+
+--======================================================================
+-- EVERY STAND IS OPEN.  THE QUESTS ARE OPTIONAL.
+--======================================================================
+-- ⚠ STANDS_ALWAYS_OPEN = true: a stand sells the moment you can stand next to it, whether or
+-- not that island's quest is done. The realm is played by kids, and a quest should be something
+-- you PICK because it looks fun -- worth doing for its coins and crate tokens -- never a wall
+-- between a player and the food that lets them keep climbing. Nobody gets stuck on a puzzle
+-- they did not want.
+--
+-- WHAT STILL GATES A STAND: reaching the island. That is `isUnlocked()` below (HighestSlot),
+-- which mirrors the SERVER's own BuyFood check -- it is the real rule and it is untouched, so
+-- no stand ever offers a buy the server would refuse.
+--
+-- WHAT THE QUESTS STILL DO: their coin reward, their crate tokens, their journal tick and the
+-- UnlockedSlot ledger (the wormhole's destination rows still read it). Only the stand lock is
+-- lifted. Set STANDS_ALWAYS_OPEN = false to put the quest gate back exactly as it was -- the
+-- whole gate below is kept working for that reason.
+local STANDS_ALWAYS_OPEN = true
+
+-- This used to be a hand-written chain naming SIX islands (1, 3, 9, 4, 11, 19) and it was
+-- written out TWICE -- once as a boolean chain in the walk-up auto-open and once as an if-ladder
+-- in _G.OpenFoodShop. The other SEVEN ladder islands -- 5, 8, 13, 14, 15, 16, 18 -- had no gate at
+-- all, so their stands sold food the moment you could stand next to them, quest or no quest. Two
+-- copies of a list that has to name thirteen things is a list that will drift, so it is now
+-- DERIVED from IslandConfig: add a rung there and its stand is gated automatically.
+--
+-- questId doubles as the global's prefix (`cookie` -> _G.cookieQuestComplete), with one override
+-- because the ledger id is lower-case and the global is camelCase.
+local QUEST_FLAG_FIX = { candymine = "candyMine" }
+local STAND_GATE = {}
+for _, isle in ipairs(IslandConfig.ISLANDS) do
+	local key = QUEST_FLAG_FIX[isle.questId] or isle.questId
+	STAND_GATE[isle.island] = {
+		slot  = isle.slot,
+		quest = isle.questName,
+		flag  = key .. "QuestComplete",
+		nudge = key .. "QuestNudge",
+	}
+end
+
+--[[
+	Is this island's stand open?
+
+	⚠ TWO SOURCES, AND IT NEEDS BOTH. The _G.<x>QuestComplete flags are only ever set inside a
+	quest's completeQuest() -- they are SESSION state, false again on the next join. Gating on the
+	flag alone would relock the stand of every quest a returning player had already finished, and
+	the token ledger pays once ever, so replaying is the only way back in. UnlockedSlot is the
+	persisted half: GutProgression recomputes it from the ledger on every join as
+	1 + the contiguous run of finished quests, so slot k's quest is done exactly when it exceeds k.
+
+	The flag is still checked FIRST so the stand opens the instant you finish, without waiting for
+	the server to re-publish.
+]]
+local function standUnlocked(islandNum)
+	if STANDS_ALWAYS_OPEN then return true end -- quests are optional; see the top of this section
+	local g = STAND_GATE[islandNum]
+	if not g then return true end            -- a stand off the ladder has no quest to finish
+	if _G[g.flag] then return true end       -- finished it this session
+	return math.floor(tonumber(player:GetAttribute("UnlockedSlot")) or 0) > g.slot
+end
+
+-- Say WHY the stand did not open. Six islands ship a bespoke nudge (it points an arrow at the
+-- quest giver); the other seven get a plain toast naming the quest rather than the silent nothing
+-- that an un-nudged locked stand used to give.
+local function nudgeStand(islandNum)
+	if STANDS_ALWAYS_OPEN then return end    -- nothing is locked, so there is nothing to explain
+	local g = STAND_GATE[islandNum]
+	if not g then return end
+	local fn = _G[g.nudge]
+	if type(fn) == "function" then pcall(fn); return end
+	if _G.NotifyCenter and _G.NotifyCenter.push then
+		pcall(function() _G.NotifyCenter.push({
+			top = "ð STAND LOCKED",
+			text = ("Finish \"%s\" on this island to open the stand."):format(g.quest),
+			duration = 4,
+		}) end)
+	end
+end
 
 -- A FOOD UNLOCKS BY REACHING ITS ISLAND. This used to be a hard-coded set ({1,2,3,5}),
 -- which is wrong in both directions: it opened three stands the player hasn't climbed to
@@ -1123,7 +1203,7 @@ task.spawn(function()
 			if nearStand then
 				lastAwayTime = 0
 				-- only auto-open if no OTHER main menu is open (proximity yields to a deliberately-opened menu)
-				if not shopOpen and not playerClosedShop and not _G.MainMenuManager.isOtherOpen("FoodShop") and not (foundIsland == 1 and not _G.candyQuestComplete) and not (foundIsland == 3 and not _G.cookieQuestComplete) and not (foundIsland == 9 and not _G.cleanupQuestComplete) and not (foundIsland == 4 and not _G.campfireQuestComplete) and not (foundIsland == 11 and not _G.tunnelQuestComplete) and not (foundIsland == 19 and not _G.tractorQuestComplete) then
+				if not shopOpen and not playerClosedShop and not _G.MainMenuManager.isOtherOpen("FoodShop") and standUnlocked(foundIsland) then
 					nearIslandNumber = foundIsland
 					featuredFood = foodForIsland(foundIsland)  -- big display defaults to the island's MAIN food on open
 					updateFoodShop(foundIsland)
@@ -1153,34 +1233,10 @@ end)
 _G.OpenFoodShop = function(islandNum)
 	islandNum = islandNum or nearIslandNumber or 1
 	if _G.MainMenuManager and _G.MainMenuManager.isOtherOpen("FoodShop") then return end
-	-- island-1 "Candy Stand" is LOCKED until the gumball quest is completed
-	if islandNum == 1 and not _G.candyQuestComplete then
-		if _G.candyQuestNudge then _G.candyQuestNudge() end
-		return
-	end
-	-- island-3 "Cookie Stand" is LOCKED until the Giant Cookie quest is completed
-	if islandNum == 3 and not _G.cookieQuestComplete then
-		if _G.cookieQuestNudge then _G.cookieQuestNudge() end
-		return
-	end
-	-- island-9 stand is LOCKED until the reactor cleanup findings are filed
-	if islandNum == 9 and not _G.cleanupQuestComplete then
-		if _G.cleanupQuestNudge then _G.cleanupQuestNudge() end
-		return
-	end
-	-- island-4 stand is LOCKED until the campfire is built (you beat the cold)
-	if islandNum == 4 and not _G.campfireQuestComplete then
-		if _G.campfireQuestNudge then _G.campfireQuestNudge() end
-		return
-	end
-	-- island-11 stand is LOCKED until the "Blast Open the Tunnel" quest is completed
-	if islandNum == 11 and not _G.tunnelQuestComplete then
-		if _G.tunnelQuestNudge then _G.tunnelQuestNudge() end
-		return
-	end
-	-- island-19 stand is LOCKED until the harvest reaches the farm house (Broken Tractor)
-	if islandNum == 19 and not _G.tractorQuestComplete then
-		if _G.tractorQuestNudge then _G.tractorQuestNudge() end
+	-- STANDS_ALWAYS_OPEN (top of file) makes this a no-op: the quest gate is kept only so it can
+	-- be switched back on. Reaching the island is still required, by isUnlocked/the server.
+	if not standUnlocked(islandNum) then
+		nudgeStand(islandNum)
 		return
 	end
 	nearIslandNumber = islandNum
@@ -1196,7 +1252,18 @@ task.spawn(function()
 	while true do
 		local n = 0
 		for _, d in ipairs(workspace:GetDescendants()) do
-			if isStandName(d.Name) then
+			-- A STAND IS A PART OR A MODEL, NOTHING ELSE. Without this class check the sweep
+			-- re-found the ProximityPrompts it had just added: isStandName() norms
+			-- "FoodStandPrompt" to "foodstandprompt", which CONTAINS "foodstand", so every prompt
+			-- matched as a stand, had no BasePart inside it, and warned. Ten warnings a boot, all
+			-- of them this script tripping over its own work.
+			-- ...and QUEST PROPS ARE STILL NOT STANDS. gatherStands() checks isQuestProp; this loop,
+			-- which is the one that actually bolts the prompt on, did not -- so the attribute that
+			-- exists precisely to keep a "Shop"/"Stand"-named quest prop out of the food shop was
+			-- honoured by the half that only counts and ignored by the half that acts. TaffyStorm
+			-- names its loom "ReedLoom" AND tags it QuestProp for exactly this reason, and it was
+			-- only the name saving it.
+			if (d:IsA("BasePart") or d:IsA("Model")) and isStandName(d.Name) and not isQuestProp(d) then
 				local part = d:IsA("BasePart") and d or d:FindFirstChildWhichIsA("BasePart", true)
 				if not part and not seen[d] then
 					-- A NAME MATCH WITH NOTHING TO ATTACH TO. This used to fall through in total
