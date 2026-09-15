@@ -2620,11 +2620,39 @@ local function sendEventWarning(ev, secs)
 	end)
 end
 
+-- THUNDERSTORM WARNING ALERT (audio 111892711539687). A one-shot siren that plays for EVERY player the
+-- moment the thunderstorm heads-up goes out -- i.e. shortly before the storm actually begins. Server-owned
+-- Sound parented to SoundService (no BasePart ancestor -> global 2D sound); the server calling :Play()
+-- replicates the play to every client, so it is heard server-wide without a RemoteEvent. Not looped.
+-- `thunderstormAlertBusy` de-bounces the whole warning window so a single storm can never stack two alerts
+-- (e.g. if the warning path were ever entered twice); it clears itself after the warning lead so the NEXT
+-- storm can alert again (storms are >=240s apart, far past this window).
+local THUNDERSTORM_ALERT_ID = "rbxassetid://111892711539687"
+local thunderstormAlertBusy = false
+local function playThunderstormAlert()
+	if thunderstormAlertBusy then return end   -- already alerted for THIS storm; don't play twice
+	thunderstormAlertBusy = true
+	task.delay(EVENT_WARN_SECONDS + 5, function() thunderstormAlertBusy = false end)
+	pcall(function()
+		local SoundService = game:GetService("SoundService")
+		local sound = Instance.new("Sound")
+		sound.Name = "ThunderstormWarningAlert"
+		sound.SoundId = THUNDERSTORM_ALERT_ID
+		sound.Looped = false
+		sound.Volume = 1
+		sound.Parent = SoundService   -- global 2D sound; server Play() replicates to all clients
+		sound:Play()
+		sound.Ended:Once(function() sound:Destroy() end)
+		task.delay(15, function() if sound.Parent then sound:Destroy() end end) -- safety cleanup if Ended never fires
+	end)
+end
+
 -- Fires the heads-up and waits it out. Returns immediately for an event nobody needs warning about,
 -- so callers can put it in front of every broadcast without special-casing the friendly ones.
 local function warnBeforeEvent(ev)
 	if not (ev and EVENT_WARNED[ev.name]) then return end
 	print("[EventWarn] " .. tostring(ev.name) .. " in " .. EVENT_WARN_SECONDS .. "s -- warning players")
+	if ev.name == "THUNDERSTORM" then playThunderstormAlert() end   -- one-shot siren, storm still begins normally after the wait
 	sendEventWarning(ev)
 	task.wait(EVENT_WARN_SECONDS)
 end

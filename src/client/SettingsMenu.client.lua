@@ -214,7 +214,7 @@ local C = {
 }
 local WHITE   = Color3.new(1, 1, 1)
 local ON_LIME = C.lime
-local OFF_DIM = Color3.fromRGB(90, 116, 168) -- muted blue-gray, still clearly part of the blue panel
+local OFF_DIM = Color3.fromRGB(120, 120, 120) -- neutral grey OFF track; white knob stays clearly visible
 
 local TweenService = game:GetService("TweenService")
 
@@ -440,6 +440,12 @@ local function makeToggleRow(order, labelText, getState, onChanged)
 	track.BackgroundColor3 = OFF_DIM
 	track.ZIndex = 4
 	track.Parent = row
+	-- THIS SWITCH DRIVES ITS OWN FILL (green = ON, grey = OFF). ButtonTextStyle's global sweep otherwise
+	-- remembers the fill it first sees -- green, because the toggle defaults ON -- and re-asserts a darkened
+	-- copy of it every few seconds, which flipped a freshly-greyed OFF track back to green while it still read
+	-- OFF. BTS_Skip is that sweep's own opt-out ("this button drives its own fill, keep out"), so paint() below
+	-- stays the single owner of the colour and OFF stays grey permanently.
+	track:SetAttribute("BTS_Skip", true)
 	corner(track, 16)
 	stroke(track, C.shadow, 1.5)          -- navy rim, never black
 

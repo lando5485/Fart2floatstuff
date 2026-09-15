@@ -2,10 +2,9 @@
 -- GardenGuideTrail.client.luau   (StarterPlayerScripts)
 --======================================================================
 -- A SLEEK GREEN CHEVRON TRAIL (the EXACT look from GreenChevronTrail): a flat,
--- striped "runway" of chevron arrows on the ground that leads the player —
---   1) first to the GARDENER (the global Community Garden NPC), then
---   2) once they arrive, re-routes to the Island 1 FOOD STAND.
--- The trail switches off once they reach the stand.
+-- striped "runway" of chevron arrows on the ground that leads the player STRAIGHT
+-- to the Island 1 BEAN STAND. There is NO Gardener leg -- the beginner trail points
+-- only at the Bean Stand. The trail switches off once they reach the stand.
 --
 -- It only runs AFTER the Community Garden intro: GardenIntro calls
 -- _G.startGardenGuide() the instant the intro finishes (or is skipped).
@@ -139,48 +138,23 @@ local override  = nil    -- Vector3 set by _G.guideTrailTo(); nil = fall back to
 local flownOnce = false  -- LATCH: true forever once the player first fart-flies. Ends the TUTORIAL route only.
 
 -- ===== SAY WHICH LEG THE ARROWS ARE ON =====
--- The on-screen objective card (ObjectiveHUD) used to run its own opinion of what the player should do next,
--- and it opened on "BUY BEANS AT THE FOOD STAND" -- while these arrows were pointing at the GARDENER. The
--- words and the arrows disagreed on the very first instruction a new player is given, which is the one moment
--- they are least able to work out which to trust.
---
--- Rather than teach the card to recompute the route (two copies of the same logic, guaranteed to drift), the
--- trail publishes the leg it is ACTUALLY drawing and the card reads it. The trail owns the route; it is the
--- thing that knows whether the Gardener has been reached, and it is the thing the player can see.
---
---   "gardener" -> arrows point at the Gardener
---   "stand"    -> arrows point at the Island 1 food stand
---   nil        -> no tutorial arrows (not started, both legs done, or the player has flown)
+-- The beginner trail has ONE leg now: it leads straight to the Bean Stand. There is no Gardener leg. The
+-- trail still publishes the leg it is drawing (for any script that reads it):
+--   "stand" -> arrows point at the Island 1 Bean Stand
+--   nil     -> no tutorial arrows (not started, arrived at the stand, or the player has flown)
 local function publishStep()
 	local s = nil
-	if started and not flownOnce and stage < 3 then
-		s = (stage == 1) and "gardener" or "stand"
+	if started and not flownOnce and stage < 2 then
+		s = "stand"
 	end
 	if _G.gardenGuideStep ~= s then _G.gardenGuideStep = s end
 end
 publishStep()
 
--- ===== WATERING COMPLETES THE GARDENER LEG =====
--- The gardener leg used to end ONLY by proximity: step within STOP_DIST (7 studs) of the gardener's pivot.
--- But the actual interaction happens at prompt range and then over at the plots -- take the can, walk to the
--- field, water it -- so a player can finish the whole gardener step without ever tripping the 7-stud check
--- (and the arrival guard below deliberately refuses to advance while an NPC target is live). Result: they
--- watered the garden and the arrows still pointed back at the gardener.
---
--- The server publishes HasWateredGarden on the first successful water (CommunityGarden.server.lua) -- that IS
--- "the gardener interaction is complete", stated by the authority. The moment it lands, re-route to the stand.
--- Checked once on load too, for a player who watered before this script (or the trail) started.
-local function gardenerLegDone()
-	if stage == 1 then
-		stage = 2
-		publishStep()
-		print("[GardenGuideTrail] garden watered -> gardener leg complete, re-routing to the FOOD STAND")
-	end
-end
-if player:GetAttribute("HasWateredGarden") == true then gardenerLegDone() end
-player:GetAttributeChangedSignal("HasWateredGarden"):Connect(function()
-	if player:GetAttribute("HasWateredGarden") == true then gardenerLegDone() end
-end)
+-- ===== NO GARDENER LEG =====
+-- The old code routed to the Gardener first and advanced the leg when the garden was watered
+-- (HasWateredGarden). That leg is REMOVED: the beginner trail goes straight to the Bean Stand, so there is
+-- nothing to advance here and the watering signal no longer touches the tutorial route.
 
 -- ===== THE ARROWS GO UP IMMEDIATELY =====
 -- GardenIntro calls this the instant the cinematic finishes or is skipped. They now appear right then --
@@ -203,7 +177,7 @@ _G.startGardenGuide = function()
 	if started or starting then return end
 	starting = true
 	started = true; publishStep()
-	print("[GardenGuideTrail] started -> guiding to the Gardener (immediately, no wait)")
+	print("[GardenGuideTrail] started -> guiding to the Bean Stand (immediately, no wait)")
 end
 
 -- Point the trail at ANY world position. Meant to be called every frame by whoever owns the target: it is cheap,
@@ -241,10 +215,10 @@ conn = RunService.RenderStepped:Connect(function()
 	-- on every island for the rest of the game.
 	if _G.isFlying and not flownOnce then
 		flownOnce = true
-		stage = 3 -- tutorial over: gardener + food-stand arrows are done for good
+		stage = 2 -- tutorial over: the Bean Stand arrows are done for good
 		publishStep() -- and the objective card drops back to its own advice, since there are no arrows to follow
 		hideFrom(1)
-		print("[GardenGuideTrail] player fart-flew -> Bean Farm tutorial arrows removed for good"
+		print("[GardenGuideTrail] player fart-flew -> Bean Stand tutorial arrows removed for good"
 			.. " (egg trails still work)")
 	end
 
@@ -269,8 +243,8 @@ conn = RunService.RenderStepped:Connect(function()
 	local tpos
 	if override then
 		tpos = override
-	elseif started and stage < 3 and not flownOnce then
-		tpos = (stage == 1) and gardenerPos() or standPos()
+	elseif started and stage < 2 and not flownOnce then
+		tpos = standPos()   -- beginner trail leads ONLY to the Bean Stand
 	end
 	if not tpos then hideFrom(1); return end -- nothing to point at, or the target is not in the world yet
 
@@ -279,16 +253,13 @@ conn = RunService.RenderStepped:Connect(function()
 	local dist = flat.Magnitude
 	if dist <= STOP_DIST then
 		hideFrom(1)
-		-- Arriving at an EGG must not advance the tutorial stage -- the two routes are unrelated, and letting an
-		-- egg tick the tutorial forward would silently skip the food stand for anyone who hatched a pet first.
-		-- PetFollow stops calling guideTrailTo once the egg is hatched, so the trail clears itself.
-		-- Any second consumer added here MUST be in this guard too, or walking up to it silently
-		-- advances the Bean Farm tutorial past the stand.
+		-- Arriving at an EGG (override) must not touch the tutorial -- the two routes are unrelated. PetFollow
+		-- stops calling guideTrailTo once the egg is hatched, so the trail clears itself. Only a real tutorial
+		-- arrival at the Bean Stand ends the beginner guidance.
 		if not override then
-			stage += 1
-			publishStep() -- the card follows the arrows to the next leg on the same frame they re-route
-			if stage == 2 then print("[GardenGuideTrail] reached the Gardener -> re-routing to the FOOD STAND")
-			else print("[GardenGuideTrail] reached the food stand -> guidance complete") end
+			stage = 2   -- reached the Bean Stand -> beginner guidance complete (single leg, no gardener)
+			publishStep()
+			print("[GardenGuideTrail] reached the Bean Stand -> guidance complete")
 		end
 		return
 	end

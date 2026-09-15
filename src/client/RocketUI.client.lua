@@ -312,7 +312,11 @@ local wantCountdown = nil
 local countdownGen  = 0
 
 local function applyCountdown()
-	if wantCountdown and atLaunchSite() then
+	-- The countdown is shown ONLY to players who are CURRENTLY ON ISLAND 1 (onIsland1(), the tight test) --
+	-- NOT the wider atLaunchSite() radius. A player standing on Island 2 (or anywhere else on the tower) sees
+	-- the rocket fly by but gets NO countdown on their screen. This is the ONLY thing island-gated to the tight
+	-- test; the teleport button and the rocket's own site effects (shake/flash) still use their own checks.
+	if wantCountdown and onIsland1() then
 		countdown.Text = wantCountdown
 		countdown.Visible = true
 	else

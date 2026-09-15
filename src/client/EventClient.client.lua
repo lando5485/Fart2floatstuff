@@ -249,7 +249,15 @@ task.spawn(function()
 			.."Replace the id at the top of EventClient.client.lua with a real Sound asset.")
 	end
 end)
-local screechSound=Instance.new("Sound"); screechSound.Name="ScreechSound"; screechSound.SoundId="rbxassetid://3240498563"; screechSound.Volume=1; screechSound.Parent=workspace
+-- ===== BIRD ATTACK AUDIO -- EXACTLY TWO SOUNDS, NOTHING ELSE =====
+-- The old ScreechSound (3240498563) and the spawn chirp (playBirdSound / 121387867149574) are gone. A
+-- bird attack now has ONLY these two, both 2D (SoundService) so they play at a constant volume anywhere and
+-- ride the "Sound Effects" toggle:
+--   * birdWarnSound -- one-shot warning, played ONCE at the start of each warn phase, right before a dive.
+--   * birdHitSound  -- played ONLY when a dive actually connects (applyBirdHalve returns true).
+-- Both Looped=false. No other sound is associated with the bird attack.
+local birdWarnSound=Instance.new("Sound"); birdWarnSound.Name="BirdAttackWarn"; birdWarnSound.SoundId="rbxassetid://112021190857293"; birdWarnSound.Volume=1; birdWarnSound.Looped=false; birdWarnSound.Parent=game:GetService("SoundService")
+local birdHitSound =Instance.new("Sound"); birdHitSound.Name ="BirdAttackHit";  birdHitSound.SoundId ="rbxassetid://136811265205147"; birdHitSound.Volume =1; birdHitSound.Looped =false; birdHitSound.Parent =game:GetService("SoundService")
 
 -- ===== HAZARD-WARNING ALARM =====
 -- Parented to SoundService, not Workspace: this is a 2D alert the player should hear at the same
@@ -326,7 +334,13 @@ local function createBird()
 	local BIRD_WARN_SECS = 4       -- warning before the first dive -- long enough to see it and move
 	local BIRD_STANDOFF  = 34      -- studs it hangs back at while warning
 	local BIRD_DIVES     = 2       -- committed passes before it gives up and leaves
-	local BIRD_HIT_R     = 6       -- how close the dive has to pass to count (unchanged)
+	-- CONTACT, NOT A BUBBLE. The dive only counts when the bird BODY actually overlaps the character. Sized to
+	-- the VISIBLE bird -- a 3 x 1 x 1.5 body meeting the ~2-stud character torso, i.e. roughly half of each
+	-- summed -- so a near miss flies past for free. It was 6, which let a dive that passed a couple of studs
+	-- clear still "connect" -- that is the "I flew out of the way and still got hit" bug. This is a real touch
+	-- distance measured against the player's CURRENT position every frame (see the pass loop below), so moving
+	-- off the dive's line is a genuine dodge.
+	local BIRD_HIT_R     = 3.2
 	task.spawn(function()
 		local dives = 0
 		while birdModel.Parent do
@@ -334,7 +348,10 @@ local function createBird()
 			if not hrpNow then birdModel:Destroy(); break end
 
 			-- ---------- PHASE 1: WARN ----------
-			pcall(function() screechSound:Play() end)
+			-- ONE-SHOT bird-attack WARNING, played immediately before the dive. TimePosition rewound so a
+			-- second dive's warning restarts cleanly instead of being swallowed while the first still plays.
+			-- Not looped. This is the ONLY sound before the attack -- the old screech and warnBeep are gone.
+			pcall(function() birdWarnSound.TimePosition = 0; birdWarnSound:Play() end)
 			if _G.showFloatingText then
 				_G.showFloatingText("🐦 BIRD INCOMING -- MOVE!", Color3.fromRGB(255,170,40))
 			end
@@ -351,7 +368,7 @@ local function createBird()
 				pcall(function() birdVel.Velocity = hold + Vector3.new(0, hrpNow.AssemblyLinearVelocity.Y, 0) end)
 				if os.clock() >= nextBeep then
 					nextBeep = os.clock() + 1
-					pcall(function() warnBeep:Play() end)
+					-- warnBeep:Play() REMOVED -- no warning/alarm audio before a bird attack. Haptic tick kept.
 					if _G.hapticPulse then pcall(_G.hapticPulse, "tick") end
 				end
 				task.wait(0.05)
@@ -369,15 +386,27 @@ local function createBird()
 			dir = dir.Unit
 			local speed = math.max(150, hrpNow.AssemblyLinearVelocity.Magnitude + 90)
 			pcall(function() birdVel.Velocity = dir * speed end)
-			pcall(function() screechSound:Play() end)
+			-- Dive "attack" screech REMOVED -- the only bird sounds are the Phase-1 warning and the hit below.
 
 			local hit = false
 			local passEnd = os.clock() + 2.2
+			local prevPos = body.Position   -- where the bird was last poll, for the swept contact test
 			while birdModel.Parent and os.clock() < passEnd do
 				c = player.Character; hrpNow = c and c:FindFirstChild("HumanoidRootPart")
 				if not hrpNow then break end
-				local diff = hrpNow.Position - body.Position
-				if diff.Magnitude < BIRD_HIT_R then
+				-- SWEPT CONTACT: measure the character against the LINE THE BIRD ACTUALLY TRAVELLED this frame,
+				-- not just its current point. At dive speed the body moves ~12 studs between 0.05s polls, so a
+				-- point test would tunnel clean through the player and never register; this finds the closest
+				-- approach of the real flight path to the character's CURRENT position, so a genuine pass-through
+				-- lands and a dive that goes wide (because the player moved) does not. Uses the tight, visible-size
+				-- BIRD_HIT_R -- no fat catch radius.
+				local nowPos = body.Position
+				local seg = nowPos - prevPos
+				local segLen2 = seg:Dot(seg)
+				local t = (segLen2 > 0) and math.clamp((hrpNow.Position - prevPos):Dot(seg) / segLen2, 0, 1) or 0
+				local closest = prevPos + seg * t
+				local gap = (hrpNow.Position - closest).Magnitude
+				if gap < BIRD_HIT_R then
 					hit = true
 					_G.birdHitThisFlight = true -- [BALANCE LOGGING] read by CoreClient FLIGHT DEBUG
 					-- HIT = DRAIN 20% of CURRENT gas. No kill, no knockdown, no respawn. _G.applyBirdHalve
@@ -385,7 +414,8 @@ local function createBird()
 					-- hit lands inside it -- so an ignored hit is silent here too.
 					local applied = _G.applyBirdHalve and _G.applyBirdHalve()
 					if applied then
-						pcall(function() screechSound:Play() end)
+						-- HIT sound: only fires when the dive actually connects (applyBirdHalve returned true).
+						pcall(function() birdHitSound.TimePosition = 0; birdHitSound:Play() end)
 						if _G.hapticPulse then pcall(_G.hapticPulse, "alert") end
 						if _G.showFloatingText then _G.showFloatingText("🐦 BIRD ATTACK! Gas drained!",Color3.fromRGB(255,80,0)) end
 						pcall(function()
@@ -395,7 +425,8 @@ local function createBird()
 					end
 					break
 				end
-				if diff.Magnitude > 150 then break end
+				if (hrpNow.Position - nowPos).Magnitude > 150 then break end   -- flew well past -- this pass is a clean miss
+				prevPos = nowPos
 				task.wait(0.05)
 			end
 
@@ -416,10 +447,10 @@ local function createBird()
 	end)
 end
 
+-- BIRD ALERT SOUND REMOVED. This used to play audio 121387867149574 the moment a bird appeared (ambient
+-- birds and the Bird Nuke). The alert has been removed by request; the function is kept as a no-op so its
+-- two call sites still work and the bird behaviour (screech on dive, etc.) is otherwise unchanged.
 local function playBirdSound()
-	local sound=Instance.new("Sound"); sound.SoundId="rbxassetid://121387867149574"
-	sound.Volume=0.8; sound.Parent=workspace; sound:Play()
-	game:GetService("Debris"):AddItem(sound,4)
 end
 
 -- ===== BIRD SPAWN — ONE FLAT ROLL PER FLIGHT =====
@@ -1418,16 +1449,23 @@ local function showEventWarning(dispName, seconds)
 	-- tick below -- 20/6 is 3.33s and a per-second loop cannot place a beat on a third of a second.
 	-- The first one fires immediately, so the alarm and the banner arrive together; `pillToken` stops
 	-- it the moment anything newer claims the pill, so a cancelled warning goes quiet at once.
-	task.spawn(function()
-		local gap = left / WARN_BEEPS
-		for i = 1, WARN_BEEPS do
-			if myToken ~= pillToken then return end
-			-- Rewound every time: a Sound asked to Play while already playing carries on from where it
-			-- was instead of restarting, which turns six beats into one long smear.
-			pcall(function() warnBeep.TimePosition = 0; warnBeep:Play() end)
-			if i < WARN_BEEPS then task.wait(gap) end
-		end
-	end)
+	-- THUNDERSTORM's warning siren is now the server-side one-shot alert (audio 111892711539687, played by
+	-- PlayerStats.playThunderstormAlert). To leave EXACTLY ONE warning sound before a thunderstorm, the old
+	-- repeating warnBeep is SKIPPED for thunderstorms. WINDSTORM and HIGH GRAVITY have no new sound, so they
+	-- keep the six-beat countdown alarm below. `word` is the scrubbed, upper-cased hazard name.
+	local isThunderstorm = word:find("THUNDER") ~= nil
+	if not isThunderstorm then
+		task.spawn(function()
+			local gap = left / WARN_BEEPS
+			for i = 1, WARN_BEEPS do
+				if myToken ~= pillToken then return end
+				-- Rewound every time: a Sound asked to Play while already playing carries on from where it
+				-- was instead of restarting, which turns six beats into one long smear.
+				pcall(function() warnBeep.TimePosition = 0; warnBeep:Play() end)
+				if i < WARN_BEEPS then task.wait(gap) end
+			end
+		end)
+	end
 	task.spawn(function()
 		while myToken == pillToken and left > 0 do
 			local NC = _G.NotifyCenter

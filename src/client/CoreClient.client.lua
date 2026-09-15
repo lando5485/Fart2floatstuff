@@ -935,25 +935,13 @@ local function showHudBanner(text, color, holdSeconds)
 	})
 end
 _G.showHudBanner = showHudBanner
--- Periodic reminder: every 20s, if a reward is available and nothing else is on screen, flash the
--- banner for 4s. Stops on its own once the thing is bought (the _G flag flips false).
---
--- THE "Daily Reward Ready! Tap MORE+" CRATE BANNER IS GONE. It sat in this same loop ahead of the
--- gut line, so a claimable crate meant this fired every 20 SECONDS for as long as you left it
--- unclaimed -- by far the most repetitive thing on screen, and pointing at a MORE+ button that
--- already wears its own ready-dot. The crate is untouched: still claimable from MORE+ > Rewards,
--- the dot still marks it, _G.crateIsClaimable still answers for everything else. Only the nag went.
--- (The /banner dev command still force-shows it for testing.)
-task.spawn(function()
-	while true do
-		task.wait(20)
-		if not bannerBusy() then
-			if _G.gutUpgradeAffordable then
-				showHudBanner("Stomach Upgrade Available!", Color3.fromRGB(60, 180, 90), 4)
-			end
-		end
-	end
-end)
+-- STOMACH UPGRADE NAG REMOVED FROM THE TOP BANNER. The old periodic reminder flashed
+-- "Stomach Upgrade Available!" in the hero lane every 20s whenever a gut was merely AFFORDABLE. That
+-- nag is gone: the top banner lane is now reserved for temporary WORLD/EVENT alerts and countdowns only.
+-- Stomach progression is surfaced instead by an animated arrow + a gentle pulse on the sidebar Stomach
+-- button, and ONLY when the player's CURRENT stomach genuinely cannot reach the next island (see the
+-- "GUT REACHABILITY" block further down). showHudBanner() above is KEPT -- rewards, rebirth, daily streak
+-- and other systems still call _G.showHudBanner.
 
 -- ===== MORE+ POPUP MENU + SEASONAL LOCKER ==============================================================
 -- The pink MORE+ side button opens a small rounded popup near the sidebar listing extra menus. It's DATA-DRIVEN:
@@ -2486,60 +2474,227 @@ task.spawn(function()
 	local BuyStomachEvent=RS:WaitForChild("BuyStomachEvent",30)
 	local StomachUpdateEvent=RS:WaitForChild("StomachUpdateEvent",30)
 
-	-- ===== GUT-UPGRADE-AFFORDABLE WIGGLE =====
-	-- Wiggle the bottom-HUD gut icon whenever the player can AFFORD the next (un-owned) coin gut tier:
-	-- a continuous subtle rotation oscillation (-8deg <-> +8deg). Starts when coins >= next gut cost and
-	-- that tier isn't already owned; stops when they can't afford it. Re-checked on coin changes + on
-	-- gut purchase (StomachMax change). Purely visual; touches no gameplay.
-	-- the WHOLE LEFT "Stomach" side button wiggles (rotating the button rotates its icon + label + bg)
-	local gutSideIcon = dailySideFrame
+	-- ===== GUT REACHABILITY: "you must upgrade to reach the next island" =====
+	-- The sidebar Stomach button gently pulses AND a small animated arrow appears beside it ONLY when the
+	-- player's CURRENT stomach, on a full tank, CANNOT climb the gap to the next island -- i.e. an upgrade is
+	-- genuinely required to keep progressing. It is NOT shown merely because a bigger gut is affordable (that
+	-- old top-banner nag is gone). The prompt clears itself the instant a purchased gut can reach the next
+	-- island. Reachability = FlightTuning.fullTankClimb(stomachMax) >= gap to the next island, which is exactly
+	-- the shop's own "wall" intent (the wall gaps sit just above the current tier's full-tank climb by design).
+	-- The button pulse is a subtle rotation oscillation (-8deg <-> +8deg). Purely visual; touches no gameplay.
+	--
+	-- ===== INNER SHAKE LAYER: only the button's VISUAL shakes; the button FRAME stays still =====
+	-- The shake must NOT move the badge/tooltip. So we do NOT rotate dailySideFrame (it stays a still container
+	-- that holds the badge + callout added below). Instead the button's visual body -- its coloured rounded
+	-- frame + icon + label -- is moved into an inner frame, gutShake, and ONLY gutShake rotates. The click
+	-- button stays on dailySideFrame. Result: the button bounces on its own, while the badge + tooltip (children
+	-- of the still dailySideFrame) render exactly where they always did and never move.
+	local gutShake = Instance.new("Frame")
+	gutShake.Name = "GutShakeVisual"
+	gutShake.AnchorPoint = Vector2.new(0.5, 0.5)
+	gutShake.Position = UDim2.new(0.5, 0, 0.5, 0)
+	gutShake.Size = UDim2.new(1, 0, 1, 0)
+	gutShake.BackgroundColor3 = dailySideFrame.BackgroundColor3
+	gutShake.BackgroundTransparency = dailySideFrame.BackgroundTransparency
+	gutShake.BorderSizePixel = 0
+	-- ZIndex 0 = the BACKMOST layer of the button. gutShake is an OPAQUE body filling the whole button; if it
+	-- shared the "Label" caption's ZIndex it would render on top (created later) and HIDE the "Stomach" text.
+	-- At 0 the still caption (ZIndex 1), the click button, the badge and the callout all render above it, and
+	-- gutShake's OWN icon child (higher ZIndex) still shows over the body.
+	gutShake.ZIndex = 0
+	gutShake.Parent = dailySideFrame
+	do
+		-- clone the body's corner + outline onto gutShake, then hide dailySideFrame's own so the look is
+		-- identical (no double image) and only gutShake shows the visible body.
+		local c = dailySideFrame:FindFirstChildOfClass("UICorner")
+		if c then local nc = Instance.new("UICorner"); nc.CornerRadius = c.CornerRadius; nc.Parent = gutShake end
+		local st = dailySideFrame:FindFirstChildOfClass("UIStroke")
+		if st then
+			local ns = Instance.new("UIStroke"); ns.Color = st.Color; ns.Thickness = st.Thickness; ns.Parent = gutShake
+			st.Enabled = false
+		end
+		dailySideFrame.BackgroundTransparency = 1
+		-- Move the ICON(s) into gutShake so they shake WITH the body. Leave the click button behind, AND leave
+		-- the "Label" TextLabel on dailySideFrame: RailGuard identifies the real rail buttons by a DIRECT child
+		-- named "Label" (labelOf) -- move it into gutShake and RailGuard treats this frame as an unlabelled
+		-- stray and HIDES the whole Stomach button. So the caption stays put; only the body + icon bounce.
+		for _, ch in ipairs(dailySideFrame:GetChildren()) do
+			if (ch:IsA("ImageLabel") or ch:IsA("TextLabel")) and ch.Name ~= "Label" then ch.Parent = gutShake end
+		end
+	end
+	local gutSideIcon = gutShake   -- the shake rotates ONLY the visual layer, never the container/tooltip
+	-- The "Stomach" caption stays a DIRECT child of dailySideFrame (RailGuard needs it there), so it is NOT
+	-- inside gutShake and would sit still while the body bounces. To make the whole button read as ONE piece
+	-- shaking (like the MORE+ tile), we rotate the caption in LOCK-STEP with gutShake -- same ±8° tween. At this
+	-- small angle the tilt matches the body's, so the word shakes with the button. Only these two rotate; the
+	-- badge + callout (also children of dailySideFrame) are left out of the tween and never move.
+	local gutLabel = dailySideFrame:FindFirstChild("Label")
 	local gutWiggling = false
 	local gutWiggleTween = nil
+	local gutLabelTween = nil
 	local function stopGutWiggle()
 		if not gutWiggling then return end
 		gutWiggling = false
 		if gutWiggleTween then pcall(function() gutWiggleTween:Cancel() end); gutWiggleTween = nil end
+		if gutLabelTween then pcall(function() gutLabelTween:Cancel() end); gutLabelTween = nil end
 		if gutSideIcon then gutSideIcon.Rotation = 0 end
+		if gutLabel then gutLabel.Rotation = 0 end
 	end
 	local function startGutWiggle()
-		if not gutSideIcon then warn("[wiggle] Stomach side button not found — cannot wiggle"); return end
+		if not gutSideIcon then warn("[gut] Stomach side button not found — cannot pulse"); return end
 		if gutWiggling then return end
-		print("[wiggle] startGutWiggle -> wiggling " .. gutSideIcon:GetFullName())
 		gutWiggling = true
-		gutSideIcon.Rotation = -8
 		local info = TweenInfo.new(0.32, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true) -- loop + reverse
+		gutSideIcon.Rotation = -8
 		gutWiggleTween = TweenService:Create(gutSideIcon, info, { Rotation = 8 })
 		gutWiggleTween:Play()
-	end
-	-- the next UN-OWNED coin gut tier = lowest maxPower above the current StomachMax (Robux/free excluded)
-	local function nextCoinGutTier(curMax)
-		local best = nil
-		for _, t in ipairs(tierDefs) do
-			if (not t.robux) and t.cost > 0 and t.maxPower > curMax then
-				if (not best) or t.maxPower < best.maxPower then best = t end
-			end
+		if gutLabel then
+			gutLabel.Rotation = -8
+			gutLabelTween = TweenService:Create(gutLabel, info, { Rotation = 8 })
+			gutLabelTween:Play()
 		end
-		return best
 	end
-	-- ISLAND GATE. A tier the player has not reached the island for CANNOT BE BOUGHT -- PlayerStats rejects
-	-- the purchase and the shop paints a padlock instead of a price -- so it must not wiggle the button or
-	-- fire the "Stomach Upgrade Available!" banner either. This used to test COINS ALONE, which nagged a
-	-- player on island 3 with 2,000 coins to buy a Medium Gut that the shop was showing them a padlock for.
-	-- Same rule as the shop's own isLocked() below, so the banner and the green BUY button always agree.
-	local function tierUnlocked(tier)
-		if not tier then return false end
-		if tier.robux or not tier.island or tier.island <= 1 then return true end
-		return (player:GetAttribute("HighestIsland") or 1) >= tier.island
+
+	-- ===== NOTIFICATION BADGE (top-right corner of the Stomach button) =====
+	-- A small red "!" bubble on dailySideFrame (the STILL container -- only gutShake inside it rotates), so it
+	-- marks the button's corner WITHOUT shaking. Mobile-game style: circular, white-outlined, red-orange gradient.
+	local badge = Instance.new("Frame")
+	badge.Name = "UpgradeBadge"
+	badge.AnchorPoint = Vector2.new(0.5, 0.5)
+	badge.Position = UDim2.new(1, -2, 0, 2)       -- top-right corner of the button
+	badge.Size = UDim2.new(0, math.floor(24 * scale), 0, math.floor(24 * scale))
+	badge.BackgroundColor3 = Color3.fromRGB(235, 60, 45)
+	badge.BorderSizePixel = 0
+	badge.Visible = false
+	badge.ZIndex = 10
+	badge.Parent = dailySideFrame
+	do
+		local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(1, 0); c.Parent = badge -- full circle
+		local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(255, 255, 255); s.Thickness = 2; s.Parent = badge
+		local g = Instance.new("UIGradient"); g.Rotation = 90
+		g.Color = ColorSequence.new(Color3.fromRGB(255, 110, 60), Color3.fromRGB(220, 40, 35)); g.Parent = badge
+		local ex = Instance.new("TextLabel")
+		ex.BackgroundTransparency = 1; ex.Size = UDim2.new(1, 0, 1, 0); ex.Text = "!"
+		ex.Font = Enum.Font.FredokaOne; ex.TextScaled = true; ex.TextColor3 = Color3.fromRGB(255, 255, 255)
+		ex.ZIndex = 11; ex.Parent = badge
+		local es = Instance.new("UIStroke"); es.Color = Color3.fromRGB(120, 20, 10); es.Thickness = 1.5; es.Parent = ex
+		local ep = Instance.new("UIPadding"); ep.PaddingTop = UDim.new(0, 2); ep.PaddingBottom = UDim.new(0, 3); ep.Parent = ex
 	end
+
+	-- ===== CALLOUT TOOLTIP (beside the button, pointing AT it) =====
+	-- A rounded dark panel with white-outlined text + a left-pointing caret (a 45deg square half-tucked behind
+	-- the panel).
+	-- The callout is a child of dailySideFrame (the STILL button container -- only gutShake inside it rotates),
+	-- positioned in the button's own coordinate space at its right-middle: X scale 1 = the button's right edge,
+	-- Y scale 0.5 = its vertical centre. So the caret tip tracks the button's real position + size on every
+	-- resolution / UI scale and points at its middle-right -- never on Pets, never in the gap above -- and it
+	-- stays perfectly still while the visual shakes underneath. The caret tip sits at the callout's left edge,
+	-- so it lands on the button's right edge at its vertical centre.
+	local callout = Instance.new("Frame")
+	callout.Name = "StomachUpgradeCallout"; callout.AnchorPoint = Vector2.new(0, 0.5)
+	callout.Position = UDim2.new(1, math.floor(-2 * scale), 0.5, 0) -- right edge, vertical centre; -2 sinks the tip onto the button
+	callout.Size = UDim2.new(0, math.floor(206 * scale), 0, math.floor(60 * scale))
+	callout.BackgroundTransparency = 1; callout.Visible = false
+	callout.ZIndex = 12; callout.Parent = dailySideFrame
+	-- the caret: a rotated square, coloured like the panel, its LEFT TIP poking out past the panel toward the
+	-- button. Sized/placed so the tip sits at the callout's left edge (local x ~= 0): a 22px square rotated
+	-- 45deg has a corner ~16px from its centre, so a centre at x=16 puts the tip at x=0. Because the callout's
+	-- left edge is anchored to the button's right-middle (see the callout Position above), the tip physically
+	-- lands on the Stomach button at its vertical centre.
+	local CARET_CX = math.floor(16 * scale)
+	local CARET_NUDGE = math.floor(11 * scale)  -- pulse target: tip nudges deeper toward the button
+	local caret = Instance.new("Frame")
+	caret.Name = "Caret"; caret.AnchorPoint = Vector2.new(0.5, 0.5)
+	caret.Position = UDim2.new(0, CARET_CX, 0.5, 0)
+	caret.Size = UDim2.new(0, math.floor(22 * scale), 0, math.floor(22 * scale))
+	caret.Rotation = 45; caret.BackgroundColor3 = Color3.fromRGB(34, 42, 62); caret.BorderSizePixel = 0
+	caret.ZIndex = 12; caret.Parent = callout
+	do local cs = Instance.new("UIStroke"); cs.Color = Color3.fromRGB(255, 255, 255); cs.Thickness = 2.5; cs.Parent = caret end
+	local panel = Instance.new("Frame")
+	panel.Name = "Panel"; panel.AnchorPoint = Vector2.new(0, 0.5)
+	panel.Position = UDim2.new(0, math.floor(15 * scale), 0.5, 0)      -- starts right of the caret centre, so the left tip stays exposed
+	panel.Size = UDim2.new(1, -math.floor(15 * scale), 1, 0)
+	panel.BackgroundColor3 = Color3.fromRGB(34, 42, 62); panel.BorderSizePixel = 0
+	panel.ZIndex = 13; panel.Parent = callout
+	do
+		local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 12); c.Parent = panel
+		local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(255, 255, 255); s.Thickness = 2.5; s.Parent = panel
+		local g = Instance.new("UIGradient"); g.Rotation = 90
+		g.Color = ColorSequence.new(Color3.fromRGB(46, 56, 82), Color3.fromRGB(26, 32, 50)); g.Parent = panel
+	end
+	local titleL = Instance.new("TextLabel")
+	titleL.BackgroundTransparency = 1; titleL.Size = UDim2.new(1, -16, 0, math.floor(24 * scale))
+	titleL.Position = UDim2.new(0, 12, 0, math.floor(7 * scale))
+	titleL.Font = Enum.Font.FredokaOne; titleL.Text = "UPGRADE STOMACH"
+	titleL.TextColor3 = Color3.fromRGB(255, 205, 70); titleL.TextScaled = true
+	titleL.TextXAlignment = Enum.TextXAlignment.Left; titleL.ZIndex = 14; titleL.Parent = panel
+	do local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(0, 0, 0); s.Thickness = 2; s.Parent = titleL end
+	local subL = Instance.new("TextLabel")
+	subL.BackgroundTransparency = 1; subL.Size = UDim2.new(1, -16, 0, math.floor(20 * scale))
+	subL.Position = UDim2.new(0, 12, 1, -math.floor(24 * scale))
+	subL.Font = Enum.Font.GothamBold; subL.Text = "Needed to reach Island 2"
+	subL.TextColor3 = Color3.fromRGB(255, 255, 255); subL.TextScaled = true
+	subL.TextXAlignment = Enum.TextXAlignment.Left; subL.ZIndex = 14; subL.Parent = panel
+	do local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(0, 0, 0); s.Thickness = 1.5; s.Parent = subL end
+
+	-- No manual positioning loop is needed: the callout is a child of the Stomach button, so it tracks the
+	-- button's real position + size (and its vertical centre) automatically on every resolution / UI scale.
+
+	-- A gentle looping nudge of the caret toward the button, reinforcing that it points AT the button.
+	local caretTween = nil
+	local function stopCalloutPulse()
+		if caretTween then pcall(function() caretTween:Cancel() end); caretTween = nil end
+		caret.Position = UDim2.new(0, CARET_CX, 0.5, 0)
+	end
+	local function startCalloutPulse()
+		if caretTween then return end
+		local info = TweenInfo.new(0.55, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+		caretTween = TweenService:Create(caret, info, { Position = UDim2.new(0, CARET_NUDGE, 0.5, 0) })
+		caretTween:Play()
+	end
+
+	local function showUpgradePrompt(nextIslandNum)
+		subL.Text = "Needed to reach Island " .. nextIslandNum
+		badge.Visible = true
+		callout.Visible = true
+		startCalloutPulse()
+		startGutWiggle()
+	end
+	local function hideUpgradePrompt()
+		badge.Visible = false
+		callout.Visible = false
+		stopCalloutPulse()
+		stopGutWiggle()
+	end
+
+	-- CAN the current stomach (full tank) climb the gap from the CURRENT island to the NEXT one?
+	local function stomachReachesNextIsland(stomachMax)
+		local island = player:GetAttribute("HighestIsland") or 1
+		local here = ISLAND_POS[island]
+		local nxt  = ISLAND_POS[island + 1]
+		if not (here and nxt) then return true, island end -- summit / no next island -> never prompt
+		local gap   = nxt.y - here.y
+		local climb = FlightTuning.fullTankClimb(stomachMax)
+		return (climb >= gap), island
+	end
+
+	-- Name KEPT (checkGutAfford): the purchase handler and the /wiggle dev command both call this.
 	local function checkGutAfford()
 		local ls = player:FindFirstChild("leaderstats")
-		if not ls then stopGutWiggle(); _G.gutUpgradeAffordable = false; return end
-		local sm = ls:FindFirstChild("StomachMax"); local c = ls:FindFirstChild("Coins")
-		if not (sm and c) then stopGutWiggle(); _G.gutUpgradeAffordable = false; return end
-		local nextTier = nextCoinGutTier(sm.Value)                       -- nil once every coin tier is owned
-		local affordable = (nextTier ~= nil) and tierUnlocked(nextTier) and (c.Value >= nextTier.cost)
-		if affordable then startGutWiggle() else stopGutWiggle() end
-		_G.gutUpgradeAffordable = affordable  -- read by the periodic banner scheduler
+		local sm = ls and ls:FindFirstChild("StomachMax")
+		if not sm then
+			hideUpgradePrompt(); _G.stomachUpgradeNeeded = false; _G.gutUpgradeAffordable = false
+			return
+		end
+		local reaches, island = stomachReachesNextIsland(sm.Value)
+		local needUpgrade = not reaches
+		_G.stomachUpgradeNeeded = needUpgrade
+		_G.gutUpgradeAffordable = false  -- deprecated: the top-banner nag that read it has been removed
+		if needUpgrade then
+			showUpgradePrompt(island + 1)   -- badge + button-anchored callout + pulse
+		else
+			hideUpgradePrompt()             -- everything vanishes the instant the gut can reach the next island
+		end
 	end
 	_G.forceGutWiggle = startGutWiggle  -- exposed for the /wiggle dev command (force the wiggle on)
 	_G.checkGutAfford = checkGutAfford  -- exposed so other handlers can re-check
@@ -2710,9 +2865,8 @@ end)
 local function onDevChat(text)
 	local cmd = string.lower((string.gsub(text or "", "^%s*(.-)%s*$", "%1")))
 	if cmd == "/wiggle" then
-		print("[wiggle] /wiggle received (forceGutWiggle ready=" .. tostring(_G.forceGutWiggle ~= nil) .. ", showHudBanner ready=" .. tostring(_G.showHudBanner ~= nil) .. ")")
-		if _G.forceGutWiggle then _G.forceGutWiggle() end -- wiggle the gut button
-		if _G.showHudBanner then _G.showHudBanner("Stomach Upgrade Available!", Color3.fromRGB(60, 180, 90), 4) end -- + its banner (for testing)
+		print("[wiggle] /wiggle received (forceGutWiggle ready=" .. tostring(_G.forceGutWiggle ~= nil) .. ")")
+		if _G.forceGutWiggle then _G.forceGutWiggle() end -- pulse the Stomach button (the top-banner nag is gone; upgrade need now shows as the sidebar arrow via checkGutAfford)
 	elseif cmd == "/banner" then -- [REMOVE BEFORE LAUNCH] force-show the crate notice banner for testing
 		print("[banner] /banner received (showHudBanner ready=" .. tostring(_G.showHudBanner ~= nil) .. ")")
 		if _G.showHudBanner then _G.showHudBanner("Daily Reward Ready!  Tap MORE+", Color3.fromRGB(255, 196, 60), 4) end

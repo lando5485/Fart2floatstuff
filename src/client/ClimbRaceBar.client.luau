@@ -36,6 +36,7 @@ local Players           = game:GetService("Players")
 local TweenService      = game:GetService("TweenService")
 local UserInputService  = game:GetService("UserInputService")
 local Workspace         = game:GetService("Workspace")
+local RunService        = game:GetService("RunService")   -- per-frame drive for the YOU marker (live tracking)
 
 -- Narrow means narrow -- measured, not guessed from TouchEnabled, which is true in a Studio emulator and on
 -- any laptop with a touchscreen.
@@ -46,6 +47,17 @@ end
 
 local player    = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
+
+-- ===== ONE BAR ONLY: THE NEWEST BUILD WINS =====
+-- Rojo only ADDS -- it never overwrites -- so a STALE copy of this script baked into the place file runs
+-- ALONGSIDE the synced one, and its ScreenGui (old small circles, old tooltip) draws over/under this one.
+-- That is exactly the "my change didn't take effect" symptom: the edit is in this file, but a second, older
+-- copy of the file is what you are actually looking at. Every build stamps itself (CRBBuild/CRBGen); the
+-- sweep below (killStaleClimbBars) DESTROYS any other ClimbRaceBar ScreenGui that is an older build, so only
+-- the newest code is ever on screen. Bump CRB_BUILD on any visible-layout change so an older baked copy loses.
+local CRB_BUILD = 4   -- 4 = 24px island circles + tooltip parented to root (inset-proof, below the marker)
+_G.__CRB_gen = (_G.__CRB_gen or 0) + 1
+local CRB_GEN = _G.__CRB_gen
 
 -- ===== THE CLIMB, IN STUDS =====
 -- Island 1's stand sits at Y=245 and Pizza Palms at Y=38,158 (IslandOrder.SLOT_POS). Hard-coded rather than
@@ -132,6 +144,8 @@ gui:SetAttribute("TopAuditKeep", true)
 gui:SetAttribute("NoResponsiveScale", true)
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = PlayerGui
+gui:SetAttribute("CRBBuild", CRB_BUILD)   -- identifies THIS copy so the sweep can tell it from a stale one
+gui:SetAttribute("CRBGen", CRB_GEN)
 
 local root = Instance.new("Frame")        -- the line itself IS the container
 root.Name = "Line"
@@ -354,6 +368,348 @@ local function progressOf(p)
 end
 
 --======================================================================
+-- ISLAND MILESTONE CHECKPOINTS
+--======================================================================
+-- A small themed circle for EVERY island in the realm, evenly spaced across the same track the faces ride
+-- on. This is a SECOND, INDEPENDENT layer from the player markers: island circles are FIXED progression
+-- checkpoints (one per island, never move); the faces are LIVE positions. The circles are drawn UNDER the
+-- faces (ZIndex 4/5 vs 5/8) and sit on the line, so a face never permanently hides a checkpoint -- a face
+-- moves, a checkpoint does not.
+--
+-- ===== THE ORDER AND NAMES ARE THE GAME'S OWN, NOT GUESSED =====
+-- IslandOrder.NAMES is the single source PlayerStats/CoreClient already use, in climb order. We read it if
+-- it has replicated (it lives in ReplicatedStorage.Shared and is up long before a HUD script runs); the
+-- inline list is a same-order fallback so the bar can never be blank, matching this file's "a HUD must not
+-- wait" rule (same reason START_Y/FINISH_Y are inline). A different realm with a different NAMES table just
+-- draws a different number of evenly-spaced circles -- nothing here is hard-coded to 14.
+local ISLE_NAMES = {
+	"Bean Farm","Broccoli Bluff","Cabbage Cliffs","Turnip Tranquil",
+	"Coconut Cove","Bread Board","Pasta Peak","Popcorn Pinnacle",
+	"Milk Marsh","Butter Swamp","Ice Cream Isle","Burger Bluff",
+	"Burrito Barrens","Pizza Palms",
+}
+do
+	local shared = game:GetService("ReplicatedStorage"):FindFirstChild("Shared")
+	local mod = shared and shared:FindFirstChild("IslandOrder")
+	if mod then
+		local ok, io = pcall(require, mod)
+		if ok and type(io) == "table" and type(io.NAMES) == "table" and #io.NAMES > 0 then
+			ISLE_NAMES = io.NAMES
+		end
+	end
+end
+local ISLE_N = #ISLE_NAMES
+
+-- ===== ACTUAL WORLD Y OF EACH ISLAND (for the YOU marker's per-segment progress) =====
+-- The checkpoints are evenly spaced in the UI, but the tower is NOT evenly spaced in the world, so the YOU
+-- marker has to convert the player's real height into progress between the CORRECT two islands. Same source
+-- as the names (IslandOrder.SLOT_POS); an even spread between START_Y..FINISH_Y is the fallback only if the
+-- module has not replicated. Island 1's stand sits ~95 studs above its model centre and the summit stand a
+-- few below its, so the two ends are pinned to the stand heights this file already trusts (START_Y/FINISH_Y)
+-- -- that way STANDING on the first/last island reads as exactly its checkpoint. Used ONLY by the YOU marker.
+local ISLE_WORLD_Y = {}
+do
+	local shared = game:GetService("ReplicatedStorage"):FindFirstChild("Shared")
+	local mod = shared and shared:FindFirstChild("IslandOrder")
+	local ok, io = false, nil
+	if mod then ok, io = pcall(require, mod) end
+	local haveSlot = ok and type(io) == "table" and type(io.SLOT_POS) == "table"
+	for i = 1, ISLE_N do
+		local p = haveSlot and io.SLOT_POS[i]
+		local yv = (type(p) == "table") and tonumber(p.y) or nil
+		if yv == nil then
+			yv = START_Y + (FINISH_Y - START_Y) * ((i - 1) / math.max(1, ISLE_N - 1))
+		end
+		ISLE_WORLD_Y[i] = yv
+	end
+	ISLE_WORLD_Y[1] = START_Y
+	if ISLE_N >= 2 then ISLE_WORLD_Y[ISLE_N] = FINISH_Y end
+end
+
+-- ===== THEME EMOJI, MATCHED TO THE ISLAND'S FOOD =====
+-- Keyed on a word in the island's own name so it stays tied to the real data rather than to a position: if
+-- the order ever changes, the coconut island keeps 🥥. Unmatched themes fall back to an island glyph rather
+-- than a wrong food. Keys are whole words that never collide (no key is a confusing substring of another).
+local ISLAND_EMOJI = {
+	bean = "🫘", broccoli = "🥦", cabbage = "🥬", turnip = "🌱",
+	coconut = "🥥", bread = "🍞", pasta = "🍝", popcorn = "🍿",
+	milk = "🥛", butter = "🧈", ["ice cream"] = "🍦", burger = "🍔",
+	burrito = "🌯", pizza = "🍕",
+}
+local function emojiForName(name)
+	local low = string.lower(name or "")
+	for key, em in pairs(ISLAND_EMOJI) do
+		if string.find(low, key, 1, true) then return em end
+	end
+	return "🏝️"
+end
+
+-- Sizing. Checkpoints are SMALLER than the faces (they are the scenery, the faces are the story) and shrink
+-- further if the track is too short to hold ISLE_N of them with clear gaps -- so with 14 islands on a phone
+-- they still never touch. The current island gets a small size bump, never a dramatic one.
+local ISLE_MIN_GAP   = 4    -- guaranteed clear pixels between two neighbouring checkpoints
+local ISLE_CUR_BONUS = 5    -- the current island is this many px larger than the rest
+local ISLE_Y         = 0    -- centred on the line, like the diagram's ○-on-the-track
+
+-- One shared tooltip (only one island can be hovered/tapped at a time). Named-per-island labels across the
+-- whole bar would be 14 names in a 3px strip -- the exact clutter the bar exists to avoid -- so the name is
+-- shown ON DEMAND: hover on PC, a brief tap on touch.
+local isleTip = Instance.new("Frame")
+isleTip.Name = "IsleTip"
+isleTip.AnchorPoint = Vector2.new(0.5, 0)
+isleTip.BackgroundColor3 = Color3.fromRGB(20, 24, 40)
+isleTip.BackgroundTransparency = 0.05
+isleTip.BorderSizePixel = 0
+isleTip.Size = UDim2.fromOffset(132, 36)
+isleTip.Visible = false
+isleTip.ZIndex = 20
+-- Parented to ROOT (the line), the SAME frame the markers live under -- NOT to `gui`. This is the fix for
+-- the tooltip landing above the bar: `gui` is IgnoreGuiInset while the markers are nested under root, so
+-- reading a marker's AbsolutePosition.Y and writing it into a gui-child's Position.Offset.Y crossed the 36px
+-- GuiInset boundary and threw the tooltip 36px up off the bar (X was unaffected -- the inset is vertical
+-- only, which is why the audit showed it centred horizontally but floating above). Under root there is no
+-- inset round-trip: the tooltip is positioned purely in root-local space below the marker (see showIsleTip).
+isleTip.Parent = root
+Instance.new("UICorner", isleTip).CornerRadius = UDim.new(0, 6)
+do
+	local edge = Instance.new("UIStroke")
+	edge.Color = Color3.fromRGB(126, 186, 255)
+	edge.Thickness = 1.5
+	edge.Transparency = 0.25
+	edge.Parent = isleTip
+end
+local isleTipText = Instance.new("TextLabel")
+isleTipText.Name = "Text"
+isleTipText.BackgroundTransparency = 1
+isleTipText.Size = UDim2.new(1, -8, 1, -6)
+isleTipText.Position = UDim2.fromScale(0.5, 0.5)
+isleTipText.AnchorPoint = Vector2.new(0.5, 0.5)
+isleTipText.Font = Enum.Font.GothamBold
+isleTipText.Text = ""
+isleTipText.TextSize = 12
+isleTipText.TextColor3 = Color3.fromRGB(255, 255, 255)
+isleTipText.TextStrokeTransparency = 0.6
+isleTipText.TextWrapped = true
+isleTipText.ZIndex = 21
+isleTipText.Parent = isleTip
+
+local function showIsleTip(i, holder)
+	local name = ISLE_NAMES[i] or ("Island " .. i)
+	isleTipText.Text = ("%s Island %d\n%s"):format(emojiForName(name), i, name)
+
+	-- ALL ROOT-LOCAL -- no AbsolutePosition.Y is read, so the GuiInset can never move the tooltip off the bar.
+	-- isleTip's AnchorPoint is (0.5, 0) = top-centre.
+	local GAP  = 6
+	local EDGE = 6
+	local trackW = math.max(1, root.AbsoluteSize.X)
+
+	-- VERTICAL: the markers sit centred on the line (root's 0.5). Drop the tooltip's TOP to just past the
+	-- marker's bottom edge = half the marker's height + a small gap, below the line centre. Always downward,
+	-- so it can never be clipped by the top of the screen.
+	local belowY = holder.AbsoluteSize.Y / 2 + GAP
+
+	-- HORIZONTAL: centre on the marker (its own scale position within the track), then clamp so the whole card
+	-- stays on-screen. The screen edges are converted into root-local pixels via root.AbsolutePosition.X (X has
+	-- no inset, which the runtime audit confirmed round-trips correctly), so the first/last island's card
+	-- shifts inward instead of spilling off the side.
+	local w = isleTip.AbsoluteSize.X
+	if w < 1 then w = isleTip.Size.X.Offset end
+	local vpx  = (Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize.X) or 1280
+	local rootX = root.AbsolutePosition.X
+	local mcx = holder.Position.X.Scale * trackW + holder.Position.X.Offset   -- marker centre, root-local px
+	local minX = -rootX + w / 2 + EDGE
+	local maxX = vpx - rootX - w / 2 - EDGE
+	mcx = math.clamp(mcx, minX, math.max(minX, maxX))
+
+	isleTip.Position = UDim2.new(0, math.floor(mcx), 0.5, math.floor(belowY))
+	isleTip.Visible = true
+end
+local function hideIsleTip()
+	isleTip.Visible = false
+end
+
+-- Pooled builder, one circle per island, reused across updates (see markerAt for why pooling).
+local isleSlots = {}
+local function isleMarker(i)
+	if isleSlots[i] then return isleSlots[i] end
+	local holder = Instance.new("Frame")
+	holder.Name = "Isle" .. i
+	holder.AnchorPoint = Vector2.new(0.5, 0.5)
+	holder.Position = UDim2.new(0, 0, 0.5, ISLE_Y)
+	holder.Size = UDim2.fromOffset(14, 14)
+	holder.BackgroundColor3 = Color3.fromRGB(28, 34, 54)
+	holder.BorderSizePixel = 0
+	holder.ZIndex = 4                     -- on the line, UNDER the faces (5/8) so YOU is never hidden
+	holder.Parent = root
+	Instance.new("UICorner", holder).CornerRadius = UDim.new(1, 0)
+
+	local ring = Instance.new("UIStroke")
+	ring.Name = "Ring"
+	ring.Color = Color3.fromRGB(255, 255, 255)
+	ring.Thickness = 1.5
+	ring.Transparency = 0.2
+	ring.Parent = holder
+
+	local em = Instance.new("TextLabel")
+	em.Name = "Emoji"
+	em.BackgroundTransparency = 1
+	em.AnchorPoint = Vector2.new(0.5, 0.5)
+	em.Position = UDim2.fromScale(0.5, 0.5)
+	em.Size = UDim2.fromScale(0.98, 0.98)   -- the icon fills more of the (now larger) circle
+	em.Font = Enum.Font.GothamBold
+	em.Text = emojiForName(ISLE_NAMES[i])
+	em.TextScaled = true
+	em.TextColor3 = Color3.fromRGB(255, 255, 255)
+	em.ZIndex = 5
+	em.Parent = holder
+
+	-- A very small ✓ in the corner of a cleared island. Tiny on purpose, and only shown when the circle is
+	-- big enough to carry it without turning into noise (see updateIslands).
+	local check = Instance.new("TextLabel")
+	check.Name = "Check"
+	check.AnchorPoint = Vector2.new(1, 1)
+	check.Position = UDim2.new(1, 2, 1, 2)
+	check.Size = UDim2.fromOffset(9, 9)
+	check.BackgroundColor3 = Color3.fromRGB(60, 190, 90)
+	check.BorderSizePixel = 0
+	check.Font = Enum.Font.GothamBlack
+	check.Text = "✓"
+	check.TextScaled = true
+	check.TextColor3 = Color3.fromRGB(255, 255, 255)
+	check.ZIndex = 7
+	check.Visible = false
+	check.Parent = holder
+	Instance.new("UICorner", check).CornerRadius = UDim.new(1, 0)
+
+	-- Hover (PC) and tap (touch) reveal the name. Frames raise MouseEnter/Leave, so no invisible button is
+	-- needed; the touch branch auto-hides so a tap does not leave the tooltip stuck open.
+	holder.MouseEnter:Connect(function() showIsleTip(i, holder) end)
+	holder.MouseLeave:Connect(hideIsleTip)
+	holder.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch then
+			showIsleTip(i, holder)
+			task.delay(1.6, hideIsleTip)
+		end
+	end)
+
+	isleSlots[i] = { holder = holder, ring = ring, emoji = em, check = check }
+	return isleSlots[i]
+end
+
+-- ===== EVEN SPACING, COMPUTED -- NEVER EYEBALLED =====
+-- Positions are pure maths off the live track width, so every gap is identical and the whole thing re-solves
+-- on any resolution / aspect / device the moment the track changes size. State (done / current / future) is
+-- read from HighestIsland -- the same server attribute the rest of the HUD uses -- so it updates itself the
+-- instant a new island is reached, with no second progression system to keep in sync.
+local function updateIslands()
+	local n = ISLE_N
+	if n < 1 then return end
+	local trackW = math.max(1, root.AbsoluteSize.X)
+	local vp = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize
+	local small = (vp ~= nil and vp.X < 900)
+	-- Larger again (~33% over the 18px pass -> 24) so the food icons read at a glance; the runtime audit showed
+	-- ~65px between checkpoints on desktop, so 24px leaves a big clear gap. The shrink-to-fit below
+	-- (size = min(base, spacing - gap)) still keeps all N seated without touching on a narrow screen.
+	local base = small and 20 or 24
+
+	-- padding after START and before FINISH so the first / last circle clears the end dots and pills
+	local pad = base / 2 + 6
+	local usable = math.max(1, trackW - 2 * pad)
+	local spacing = (n > 1) and (usable / (n - 1)) or 0
+	-- shrink the circles if the track is too tight to seat them all with a clear gap: never let neighbours touch
+	local size = base
+	if n > 1 then
+		size = math.clamp(math.floor(math.min(base, spacing - ISLE_MIN_GAP)), 9, base)
+	end
+
+	local cur = math.clamp(math.floor(tonumber(player:GetAttribute("HighestIsland")) or 1), 1, n)
+
+	for i = 1, n do
+		local s = isleMarker(i)
+		local xPx = (n > 1) and (pad + (i - 1) * spacing) or (trackW / 2)
+		-- position in SCALE so it tracks the parent's width between solves, all on the one centreline
+		s.holder.Position = UDim2.new(math.clamp(xPx / trackW, 0, 1), 0, 0.5, ISLE_Y)
+
+		local isCur  = (i == cur)
+		local isDone = (i < cur)
+		local sz = isCur and (size + ISLE_CUR_BONUS) or size
+		s.holder.Size = UDim2.fromOffset(sz, sz)
+		s.holder.ZIndex = isCur and 5 or 4       -- current lifts just above its neighbours, still under YOU (8)
+		s.emoji.ZIndex  = s.holder.ZIndex + 1
+		s.check.ZIndex  = s.holder.ZIndex + 3
+
+		if isCur then
+			-- CURRENT: full colour, a gold highlight ring, slightly larger. Obvious at a glance, not shouty.
+			s.emoji.TextTransparency = 0
+			s.holder.BackgroundTransparency = 0
+			s.ring.Color = Color3.fromRGB(255, 210, 70); s.ring.Thickness = 2.5; s.ring.Transparency = 0
+			s.check.Visible = false
+		elseif isDone then
+			-- COMPLETED: bright / normal, with the tiny tick when there is room for it
+			s.emoji.TextTransparency = 0
+			s.holder.BackgroundTransparency = 0
+			s.ring.Color = Color3.fromRGB(255, 255, 255); s.ring.Thickness = 1.5; s.ring.Transparency = 0.15
+			s.check.Visible = (sz >= 12)
+		else
+			-- FUTURE: dimmed but still readable -- the theme stays recognisable
+			s.emoji.TextTransparency = 0.35
+			s.holder.BackgroundTransparency = 0.25
+			s.ring.Color = Color3.fromRGB(180, 190, 210); s.ring.Thickness = 1; s.ring.Transparency = 0.5
+			s.check.Visible = false
+		end
+	end
+end
+
+--======================================================================
+-- THE YOU MARKER'S LIVE POSITION (the only thing this change touches)
+--======================================================================
+-- The player's height is turned into a pixel X on the track by PIECEWISE interpolation between the two
+-- islands they are currently between, mapped onto the EVENLY-SPACED checkpoint positions. So standing on an
+-- island puts YOU exactly on its circle, half-way between two islands puts YOU half-way between the two
+-- circles, and a fall walks YOU back down -- regardless of how far apart those two islands are in the world.
+-- The checkpoint geometry here MUST match updateIslands() so YOU lands dead-on a checkpoint.
+local function youWorldY()
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if hrp then return hrp.Position.Y end
+	local bh = player:GetAttribute("BestHeight")            -- covers loading/dead: last known height
+	if type(bh) == "number" then return bh end
+	return nil
+end
+
+local function youTargetX()
+	local trackW = math.max(1, root.AbsoluteSize.X)
+	local n = ISLE_N
+	if n < 1 then return 0 end
+	-- checkpoint pixel of island i -- identical formula to updateIslands()
+	local vp = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize
+	local small = (vp ~= nil and vp.X < 900)
+	local base = small and 20 or 24
+	local pad = base / 2 + 6
+	local usable = math.max(1, trackW - 2 * pad)
+	local spacing = (n > 1) and (usable / (n - 1)) or 0
+	local function cx(i) return (n > 1) and (pad + (i - 1) * spacing) or (trackW / 2) end
+
+	local y = youWorldY()
+	if type(y) ~= "number" or n < 2 then return cx(1) end   -- unknown height -> sit on the first checkpoint
+	if y <= ISLE_WORLD_Y[1] then return cx(1) end            -- at/below island 1
+	for i = 1, n - 1 do
+		local lo, hi = ISLE_WORLD_Y[i], ISLE_WORLD_Y[i + 1]
+		if lo and hi and y < hi then
+			local p = (hi > lo) and math.clamp((y - lo) / (hi - lo), 0, 1) or 0   -- % of THIS crossing done
+			return cx(i) + (cx(i + 1) - cx(i)) * p
+		end
+	end
+	return cx(n)                                             -- at/above the summit -> final checkpoint
+end
+
+-- The pooled holder currently drawing the local player, its smoothed X, and which holder that was last frame
+-- (so a slot reassignment snaps instead of sliding). Only the YOU marker is driven this way.
+local youHolder = nil
+local youDispX = nil
+local youLastHolder = nil
+
+--======================================================================
 -- UPDATE
 --======================================================================
 -- Twice a second is enough for a bar this size -- a marker moves less than a pixel per frame at climbing
@@ -361,7 +717,10 @@ end
 local TWEEN = TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
 local function refresh()
-	local me = { p = player, t = progressOf(player) or 0, mine = true }
+	-- YOU's position is now the PIECEWISE checkpoint-space fraction (see youTargetX) instead of the old
+	-- linear-world progressOf -- that is the whole fix. Other players still use progressOf (unchanged).
+	local width = math.max(1, root.AbsoluteSize.X)
+	local me = { p = player, t = math.clamp(youTargetX() / width, 0, 1), mine = true }
 	local others = {}
 	for _, p in ipairs(Players:GetPlayers()) do
 		if p ~= player then
@@ -385,7 +744,6 @@ local function refresh()
 	-- So each face is placed in PIXELS, then pushed apart until no two overlap: one pass left to right
 	-- opening MIN_GAP between neighbours, one pass back right to left so the spreading cannot run off the
 	-- end of the line. Nobody moves more than a face-width, so the order and the reading stay honest.
-	local width = math.max(1, root.AbsoluteSize.X)
 	for _, row in ipairs(show) do
 		row.x = row.t * width
 		row.half = ((row.mine and YOU_DOT or DOT) + MIN_GAP) / 2
@@ -414,19 +772,32 @@ local function refresh()
 			s.ring.Transparency = row.mine and 0 or 0.25
 			s.tag.Visible = (row.mine == true) and showYouTag
 			s.img.Image = thumbs[row.p.UserId] ~= "" and thumbs[row.p.UserId] or thumbFor(row.p.UserId)
-			local at = UDim2.new(0, math.floor(row.x + 0.5), 0.5, 0)   -- pixels: the declutter pass works in them
-			if not s.holder.Visible then
+			if row.mine then
+				-- YOU's X is driven every frame by the RenderStepped loop below (live piecewise position), so
+				-- refresh must NOT tween/set it here -- a tween would fight the per-frame drive. It only keeps the
+				-- holder visible and hands the loop the holder currently drawing you.
 				s.holder.Visible = true
-				s.holder.Position = at              -- appear in place, do not fly in from the left end
+				youHolder = s.holder
 			else
-				TweenService:Create(s.holder, TWEEN, { Position = at }):Play()
+				local at = UDim2.new(0, math.floor(row.x + 0.5), 0.5, 0)   -- pixels: the declutter pass works in them
+				if not s.holder.Visible then
+					s.holder.Visible = true
+					s.holder.Position = at              -- appear in place, do not fly in from the left end
+				else
+					TweenService:Create(s.holder, TWEEN, { Position = at }):Play()
+				end
 			end
 		else
 			s.holder.Visible = false
+			if s.holder == youHolder then youHolder = nil end   -- our face left the screen; loop idles
 		end
 	end
 
-	TweenService:Create(fill, TWEEN, { Size = UDim2.new(me.t, 0, 1, 0) }):Play()
+	-- The gold fill trails YOU and is driven live by the RenderStepped loop below (not tweened here), so it
+	-- stays glued to the marker as it flies up and walks back down.
+
+	-- Re-solve the fixed island checkpoints on the same clock (cheap: ISLE_N holders, position + state only).
+	updateIslands()
 end
 
 --======================================================================
@@ -535,6 +906,10 @@ local function layout()
 	-- Centred on the BANNER's midpoint -- vw/2 everywhere except a phone with an asymmetric safe area.
 	root.Position = UDim2.new(0, math.floor(bannerCentreX(vw) - half + NUDGE_X), 0, BAR_Y)
 	root.Size = UDim2.new(0, math.floor(half * 2), 0, LINE_H)
+
+	-- The track just changed width: re-space the island checkpoints against the new size so their gaps stay
+	-- perfectly even on every resolution / aspect / rotation.
+	updateIslands()
 end
 
 layout()
@@ -542,9 +917,32 @@ do
 	local cam = Workspace.CurrentCamera
 	if cam then cam:GetPropertyChangedSignal("ViewportSize"):Connect(function() pcall(layout) end) end
 end
+-- Reaching a new island flips completed/current/future the instant the server publishes it -- no polling lag.
+player:GetAttributeChangedSignal("HighestIsland"):Connect(function() pcall(updateIslands) end)
+
+-- Remove any OTHER ClimbRaceBar ScreenGui that is an older build (a stale copy baked into the place, or an
+-- earlier instance of this same script). A build equal-to-or-newer than mine is left alone, so two live
+-- copies can never destroy each other in a loop -- only the single newest one survives, and it is the one
+-- with these edits. This is the authoritative fix for "the change didn't take effect": the override was a
+-- duplicate GUI, and this deletes it at its source rather than fighting it.
+local function killStaleClimbBars()
+	for _, sg in ipairs(PlayerGui:GetChildren()) do
+		if sg ~= gui and sg:IsA("ScreenGui") and sg.Name == "ClimbRaceBar" then
+			local b = tonumber(sg:GetAttribute("CRBBuild")) or 0
+			local g = tonumber(sg:GetAttribute("CRBGen")) or 0
+			if b < CRB_BUILD or (b == CRB_BUILD and g < CRB_GEN) then
+				sg:Destroy()
+			end
+		end
+	end
+end
+pcall(killStaleClimbBars)   -- clear any duplicate that is already on screen at boot
 
 task.spawn(function()
 	while true do
+		-- Kill stale duplicates first: a baked copy can build its ScreenGui a frame after this one, so the
+		-- check has to keep running, not fire once.
+		pcall(killStaleClimbBars)
 		-- layout() rides the same clock as refresh: NotifyHero is built by a different LocalScript and can
 		-- arrive after this one, ResponsiveUI re-applies its insets on rotation, and both change where the
 		-- banner's midpoint is. Re-measuring twice a second costs a handful of property reads and means the
@@ -553,6 +951,29 @@ task.spawn(function()
 		pcall(refresh)
 		task.wait(0.5)
 	end
+end)
+
+-- ===== THE YOU MARKER, LIVE, EVERY FRAME =====
+-- refresh() (twice a second) decides WHICH pooled face is yours and spreads the others; THIS drives that
+-- face's X every frame straight from your real height (youTargetX -> piecewise between the correct two
+-- islands, mapped onto the evenly-spaced checkpoints). So it tracks the climb smoothly and walks straight
+-- back down the instant you fall -- no fixed-duration tween to the next checkpoint. Light exponential
+-- smoothing removes jitter without noticeable lag; a slot hand-off snaps instead of sliding. The gold fill
+-- trails it live. This is the only thing that positions the YOU marker.
+RunService.RenderStepped:Connect(function(dt)
+	local h = youHolder
+	if not h or not h.Parent then return end
+	local target = youTargetX()
+	if h ~= youLastHolder or youDispX == nil then
+		youDispX = target                       -- new/first holder: snap, don't slide from a stale spot
+		youLastHolder = h
+	else
+		local a = 1 - math.exp(-dt / 0.05)      -- ~50ms time-constant: follows live, still smooth
+		youDispX = youDispX + (target - youDispX) * a
+	end
+	h.Position = UDim2.new(0, math.floor(youDispX + 0.5), 0.5, 0)
+	local w = math.max(1, root.AbsoluteSize.X)
+	fill.Size = UDim2.new(math.clamp(youDispX / w, 0, 1), 0, 1, 0)
 end)
 
 -- ===== ALWAYS VISIBLE, WITH NOTHING THAT COLLAPSES =====
@@ -589,6 +1010,16 @@ task.spawn(function()
 	end
 end)
 
-print(("[ClimbRace] ready -- line x %d..%d of %dpx (stops clear of the gear + currency capsule), up to %d faces, YOU in gold, always on")
-	:format(root.AbsolutePosition.X, root.AbsolutePosition.X + root.AbsoluteSize.X,
-	         (Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize.X) or 0, MAX_MARKERS))
+do
+	-- Count the ClimbRaceBar ScreenGuis after the boot sweep. If this prints more than 1 for more than a
+	-- moment, a stale baked copy is present -- delete the duplicate ClimbRaceBar LocalScript in Studio and
+	-- republish (this sweep hides its GUI meanwhile, but the extra script is still wasting a frame's work).
+	local n = 0
+	for _, sg in ipairs(PlayerGui:GetChildren()) do
+		if sg:IsA("ScreenGui") and sg.Name == "ClimbRaceBar" then n += 1 end
+	end
+	print(("[ClimbRace] ready -- BUILD %d gen %d | %d ClimbRaceBar ScreenGui(s) live | line x %d..%d of %dpx, up to %d faces, YOU in gold, always on")
+		:format(CRB_BUILD, CRB_GEN, n,
+		         root.AbsolutePosition.X, root.AbsolutePosition.X + root.AbsoluteSize.X,
+		         (Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize.X) or 0, MAX_MARKERS))
+end
